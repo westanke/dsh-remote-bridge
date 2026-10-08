@@ -1,5 +1,93 @@
 # 开发日志
 
+## 2026-10-08 · 插件清单端点（`PLUGIN-001`，下游分支）
+
+### 基于什么
+
+- 上游 `Hakunm/dsh-workspace` v1.0.0，同分支内接在 DSH 0.2.x 兼容适配之后。
+- 触发自真实使用反馈：**「功能单调点，无法查看装的插件情况」**。
+
+### 为什么
+
+用户人在外面用手机时，想知道这台机器装了哪些插件、有没有出问题的，**必须回到电脑前的 WebUI**。
+核实过插件的对外 API 面：`/api/v1` 当时共 10 个端点
+（`healthz` / `pairings/exchange` / `devices/self` / `roots` / `trash` / `chat/sessions` /
+`chat/workspaces` / `chat/agent-presets` / `settings/models` / `settings/providers`），
+外加 WS `events` —— **没有任何一个与插件相关**；loopback 管理面 `/manage/status` 也只回
+`remote` / `roots` / `devices`。所以这个信息在远程侧完全不可见。
+
+### 数据源与依据
+
+DSH 把每个 profile 的插件状态放在同一个 `package.json` 的两个字段里，缺一不可：
+
+| 字段 | 含义 |
+|---|---|
+| `dependencies` | **装了哪些包**（含版本声明，如 `^0.4.5`） |
+| `dsh.profile.bundles` | **实际加载了哪些包** |
+
+两者之差是有意义的信息：
+- 在 `dependencies` 但不在 `bundles` → **装了但没启用**；
+- 在 `bundles` 但找不到 → **声明加载却缺失**，通常意味着启动有问题。
+
+另外 `node_modules/<name>/package.json` 的 `version` 才是**实际装上的版本** ——
+只看 `dependencies` 的 `^0.4.5` 回答不了「我现在跑的是哪个版本」。
+
+profile 名取自 `DSH_PROFILE` 环境变量 → `--profile=<name>` → `--profile <name>`（实测 DSH 以
+`dsh --profile web --port …` 启动）；`DSH_HOME` 缺省为 `~/.dsh`。都拿不到时**不猜**，
+返回 `PROFILE_UNKNOWN` 让界面如实说明。
+
+### 干了什么
+
+- 新增 `src/host/plugin-inventory.ts`：纯逻辑，不做 IO 之外的副作用，`resolveProfileName` /
+  `resolveDshHome` / `readPluginInventory` / `resolveState` 均可单测，支持注入 env 与 argv。
+- `src/host/router.ts` 新增 `GET /api/v1/settings/plugins`，要求 scope `settings.read`
+  （与 `settings/models` 一致）。读取失败不抛 500，而是返回 `available:false` + `reason` ——
+  一个只读的信息端点不该因为文件缺失就让整个请求失败。
+- 返回字段被**限制**为「包名 + 版本 + 状态」，不回传任何文件内容；另有测试断言字段集合，
+  防止将来有人顺手把整个 manifest 塞进去。
+
+### 一处真实数据才能暴露的设计缺陷（重要）
+
+首版把「在 `bundles` 里但 `node_modules` 找不到」一律判为 `declared-missing`。
+**单元测试全绿**（mock 数据里没有官方包），但在真实机器上一次性产生了 **5 条假警报**：
+
+```
+[declared-missing] @deepseek-ai/dsh-base
+[declared-missing] @deepseek-ai/dsh-web-app
+[declared-missing] @deepseek-ai/dsh-experimental-*
+```
+
+原因是**官方内核包随 DSH 主包安装，不会出现在 profile 的 `node_modules` 下**，这是正常状态。
+修正为新增状态 `runtime-provided`（`official && loaded && !installed`），并在 `problemCount`
+中排除它。修正后真实机器上「需注意」从 7 条降到 **2 条**，且这两条是真实洞察：
+
+```
+[installed-not-loaded] dsh-hyperframes  声明=^0.4.2  实装=0.4.2
+[installed-not-loaded] dsh-remotion     声明=^0.3.4  实装=0.3.4
+```
+
+**教训**：mock 数据只能证明逻辑自洽，证明不了判定规则符合真实世界。这类「把正常状态误判为异常」
+的缺陷，只有拿真实环境跑一遍才会暴露 —— 而假警报比没有信息更糟，它会让用户学会忽略警告。
+
+### 测了什么
+
+| 测试文件 | 用例 | 覆盖 |
+|---|---|---|
+| `tests/plugin-inventory.spec.ts` | 19 | profile 解析（含 `--profile --port` 不误判）、`DSH_HOME` 缺省、三种状态分类、scoped 包名展开、`runtime-provided` 判定、官方/非官方、排序稳定、profile 未知、manifest 缺失与格式损坏、字段集合不泄漏 |
+| `tests/plugin-inventory-api.spec.ts` | 4 | 真起 HTTP server：有 `settings.read` → 200 且结构正确；无该 scope → 403；未认证 → 401；profile 不可解析 → 200 且带 `reason` |
+
+全量：`15` 个测试文件 / `65` 用例通过；`tsc --noEmit` 通过；`tsdown` 构建通过。
+
+### 安装
+
+```sh
+pnpm pack        # prepack 自动跑 typecheck + test + docs:check + build
+```
+
+产物需安装进 profile 并**重启 DSH** 才生效。
+
+---
+
 ## 2026-10-08 · DSH 0.2.x 兼容适配（下游分支）
 
 - **背景**：DSH 0.2.x 起用 `@deepseek-ai/dsh-api-gateway`（服务名 `typertGateway`）替换了

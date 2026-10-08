@@ -8,6 +8,7 @@ import type { DshChatAdapter } from './chat-adapter.ts'
 import type { StoredRoot, WorkspaceDatabase } from './database.ts'
 import { ApiError, asApiError } from './errors.ts'
 import type { FileService } from './file-service.ts'
+import { readPluginInventory } from './plugin-inventory.ts'
 import type { CustomProviderCreate, DshSettingsAdapter, ProviderPatch } from './settings-adapter.ts'
 import { PLUGIN_VERSION } from '../shared/version.ts'
 
@@ -236,6 +237,14 @@ export class ApiRouter {
     if (method === 'GET' && pathname === '/api/v1/settings/models') {
       this.options.auth.requireScope(principal, 'settings.read')
       sendJson(res, 200, await this.options.settings.catalog())
+      return
+    }
+
+    // 插件清单：让手机端能看到这台机器装了哪些插件、跑的是哪个版本、有没有加载失败。
+    // 此前 /api/v1 的 10 个端点里没有任何一个与插件相关，用户在手机上无法自查插件状况。
+    if (method === 'GET' && pathname === '/api/v1/settings/plugins') {
+      this.options.auth.requireScope(principal, 'settings.read')
+      sendJson(res, 200, await readPluginInventory())
       return
     }
 

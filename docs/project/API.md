@@ -53,6 +53,37 @@ curl "http://192.168.1.20:3090/api/v1/roots/ROOT_ID/entries?path=src" \
 
 `POST /settings/providers` 使用自定义 route、显示名、Base URL、协议与至少一个模型创建 DSH 自定义供应商；route 必须匹配 DSH WebUI 的小写短横线规则。`PATCH /settings/providers/{providerId}` 可更新 Base URL、协议、模型和写入/清除凭据；`POST .../discover` 使用草稿配置发现模型。读取与修改分别要求 `settings.read`、`settings.write`，并由 DSH 设置服务决定配置是否可写。
 
+## 插件清单
+
+`GET /settings/plugins` 返回当前 profile 的插件状况，要求 `settings.read`：
+
+```json
+{
+  "profile": "web",
+  "profilePath": "/home/user/.dsh/profiles/web",
+  "available": true,
+  "reason": null,
+  "loadedCount": 17,
+  "problemCount": 2,
+  "items": [
+    { "name": "dsh-ffmpeg", "declared": "^0.4.5", "installed": "0.4.7", "loaded": true, "official": false, "state": "loaded" }
+  ]
+}
+```
+
+`items` 是 `dependencies` 与 `dsh.profile.bundles` 的并集，因此能区分三种情况：
+
+| `state` | 含义 |
+| --- | --- |
+| `loaded` | 声明加载且在 profile 的 `node_modules` 里找到 |
+| `runtime-provided` | 官方包（`@deepseek-ai/`），随 DSH 运行时安装，不出现在 profile 的 `node_modules` —— **正常状态** |
+| `installed-not-loaded` | 装了但不在加载列表里（常见于备用插件先装不启用） |
+| `declared-missing` | 非官方包声明加载却找不到，通常意味着启动会出问题 |
+
+`declared` 是 `dependencies` 里的版本声明，`installed` 是 `node_modules` 里**实际装上的版本**（前者回答不了「现在跑的是哪个版本」）。`problemCount` 统计 `installed-not-loaded` 与 `declared-missing`，**不计** `runtime-provided`。
+
+profile 名依次取自 `DSH_PROFILE`、`--profile=<name>`、`--profile <name>`；`DSH_HOME` 缺省为 `~/.dsh`。无法判定时**不猜**，返回 `available: false` 与 `reason`（`PROFILE_UNKNOWN` 或 `MANIFEST_UNREADABLE`）而不是 500。返回值只包含包名、版本与状态，不返回任何文件内容。
+
 ## 工具审批
 
 `GET /chat/sessions/{sessionId}/approvals` 返回当前授权会话的待审批操作；要求 `chat.read` 及对应 root grant。响应只包含公开 `approvalId`、工具名、风险等级，以及可选的脱敏原因和限长命令预览，不返回 DSH 私有 `rpcId`、原始工具参数或未脱敏正文。
