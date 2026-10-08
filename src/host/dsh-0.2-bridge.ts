@@ -32,19 +32,53 @@ import type { SettingsApiProxy } from './settings-adapter.ts'
 export interface SessionControllerLike {
   list(request: { cursor?: string }, signal: AbortSignal): Promise<{ items: readonly unknown[] }>
   create(request: { workspaceId?: string; cwd?: string; sessionId?: string; agentPreset?: string }): Promise<{ sessionId: string; agentPreset?: string }>
-  page(request: {
+  /**
+   * Live follow stream. Its first frame is always a `snapshot` carrying the
+   * opening window (`cursor`, `records`, `hasMore`), and that is the only
+   * reliable way to read history: `page()` demands a `throughSeq` "obtained from
+   * the corresponding follow opening frame", so guessing one (e.g. `-1`) returns
+   * a well-formed but *empty* page — a silent failure, not an error.
+   */
+  follow(request: {
     address: { kind: 'session'; sessionId: string }
-    /** Inclusive log cut; `-1` means "to the end of the log". */
-    throughSeq: number
-    beforeSeq?: number
     maxMessages?: number
-  }, signal: AbortSignal): Promise<{ records: readonly unknown[]; hasMore: boolean }>
+    /**
+     * Assistant presentation frames are opt-in: without `assistantStream: true`
+     * the host emits durable events only, so a live stream would carry no
+     * incremental text at all (the transcript then appears only after commit).
+     */
+    assistantStream?: true
+  }, signal: AbortSignal): AsyncIterable<{
+    type?: string
+    cursor?: number
+    records?: readonly unknown[]
+    hasMore?: boolean
+  }>
   prompt(request: { requestId: string; sessionId: string; mode: 'queue' | 'steer'; content: readonly { type: 'text'; text: string }[]; clientTimeZone?: string }, signal: AbortSignal): Promise<{ accepted: true }>
   cancel(request: { sessionId: string }): { accepted: true }
   rename(request: { sessionId: string; title: string }): Promise<{ title: string; seq: number }>
   fork(request: { sessionId: string; atSeq?: number }): Promise<{ sessionId: string }>
   selectModel(request: { sessionId: string; provider: string; model: string; reasoningEffort?: string }): Promise<{ selected: unknown }>
-  modelCatalog(): Promise<unknown>
+  /**
+   * Host model catalog. 0.2.x reports `default`, the routable route list, and
+   * per-route failures; the plugin's `SessionModelsView` instead wants a boolean
+   * `routable` plus a per-session `current`, so the bridge folds them (see the
+   * `models` method) rather than passing this through.
+   */
+  modelCatalog(): Promise<{
+    default?: unknown
+    routableProviders?: readonly string[]
+    groups?: readonly unknown[]
+    failures?: readonly { id?: unknown; name?: unknown; message?: unknown }[]
+  }>
+  /**
+   * Projection baseline for one session. Unlike the catalog this is per-session,
+   * which is what makes it the source of the session's *current* model selection
+   * (`values.modelSelection`).
+   */
+  projections(request: { sessionId: string }, signal: AbortSignal): Promise<
+    { asOfSeq?: number; values?: Record<string, unknown> } | null
+  >
   resolveAgent(sessionId: string): Promise<unknown>
 }
 
@@ -172,23 +206,30 @@ class FrameHub {
   }
 
   subscribe(signal: AbortSignal): AsyncIterable<Frame> {
-    const hub = this
     const queue: Frame[] = []
     let wake: (() => void) | undefined
+    let closed = false
     const onFrame = (frame: Frame): void => {
+      if (closed) return
       queue.push(frame)
       wake?.()
     }
+    // Subscribe eagerly, not on the first `next()`: the host may publish between
+    // the caller recieving the iterable and starting to consume it (a session
+    // event, or an approval arriving the moment the stream is opened), and those
+    // frames must not be dropped.
+    this.listeners.add(onFrame)
+    const detach = (): void => {
+      if (closed) return
+      closed = true
+      this.listeners.delete(onFrame)
+      wake?.()
+    }
+    signal.addEventListener('abort', detach, { once: true })
     return {
       async *[Symbol.asyncIterator](): AsyncIterator<Frame> {
-        hub.listeners.add(onFrame)
-        const detach = (): void => {
-          hub.listeners.delete(onFrame)
-          wake?.()
-        }
-        signal.addEventListener('abort', detach, { once: true })
         try {
-          while (!signal.aborted) {
+          while (!closed && !signal.aborted) {
             if (queue.length === 0) {
               await new Promise<void>(resolve => { wake = resolve })
               wake = undefined
@@ -200,6 +241,102 @@ class FrameHub {
           detach()
         }
       },
+    }
+  }
+}
+
+// ── live session event relay ──────────────────────────────────────────────
+
+/**
+ * Relays live session frames into the old `session/event` shape.
+ *
+ * 0.2.x has no process-wide session event stream: both durable events and the
+ * in-flight assistant stream arrive per session through `follow()`. The plugin's
+ * event pipeline instead consumes one mux carrying `session/event` frames, so
+ * this relay keeps a follow subscription for each *running* session and fans its
+ * frames out. Without it the client never sees streamed assistant text — the
+ * transcript would only appear once a message had been committed and re-read.
+ */
+class SessionEventRelay {
+  private readonly active = new Map<string, AbortController>()
+
+  constructor(
+    private readonly host: Dsh02HostServices,
+    private readonly mux: FrameHub,
+    /** Cap concurrent subscriptions so a busy host cannot exhaust file handles. */
+    private readonly limit = 8,
+  ) {}
+
+  /** Start following one session; idempotent per session. */
+  attach(sessionId: string): void {
+    if (this.active.has(sessionId)) return
+    if (this.active.size >= this.limit) return
+    const controller = new AbortController()
+    this.active.set(sessionId, controller)
+    void this.pump(sessionId, controller.signal).catch(() => {
+      this.detach(sessionId)
+    })
+  }
+
+  /** Stop following one session. */
+  detach(sessionId: string): void {
+    const controller = this.active.get(sessionId)
+    if (controller === undefined) return
+    this.active.delete(sessionId)
+    controller.abort()
+  }
+
+  /** Stop every subscription (plugin teardown). */
+  detachAll(): void {
+    for (const sessionId of [...this.active.keys()]) this.detach(sessionId)
+  }
+
+  private async pump(sessionId: string, signal: AbortSignal): Promise<void> {
+    // `assistantStream: true` is required: without it the host never emits the
+    // incremental presentation frames, and streaming would silently degrade to
+    // "nothing until the message is committed".
+    const stream = this.host.sessionController.follow(
+      { address: { kind: 'session', sessionId }, assistantStream: true },
+      signal,
+    )
+    let turn: number | undefined
+    let step: number | undefined
+    for await (const rawFrame of stream) {
+      if (signal.aborted) break
+      const frame = rawFrame as {
+        type?: string
+        event?: unknown
+        frame?: { type?: string; index?: unknown; time?: unknown; chunk?: unknown; turn?: unknown; step?: unknown }
+      }
+      if (frame.type === 'event') {
+        // Durable session event: the plugin's normalizer reads `event.type` and,
+        // for `assistant/chunk`, `event.data.chunk`.
+        this.mux.push({ type: 'session/event', sessionId, event: frame.event })
+        continue
+      }
+      if (frame.type !== 'assistant-stream' || frame.frame === undefined) continue
+      const inner = frame.frame
+      if (inner.type === 'start') {
+        // turn/step are announced once per attempt and tag every later chunk.
+        turn = typeof inner.turn === 'number' ? inner.turn : undefined
+        step = typeof inner.step === 'number' ? inner.step : undefined
+        continue
+      }
+      if (inner.type !== 'chunk') continue
+      this.mux.push({
+        type: 'session/event',
+        sessionId,
+        event: {
+          type: 'assistant/chunk',
+          seq: typeof inner.index === 'number' ? inner.index : 0,
+          time: typeof inner.time === 'number' ? inner.time : Date.now(),
+          data: {
+            chunk: inner.chunk,
+            ...(turn === undefined ? {} : { turn }),
+            ...(step === undefined ? {} : { step }),
+          },
+        },
+      })
     }
   }
 }
@@ -319,19 +456,40 @@ export function createDsh02ApiProxy(host: Dsh02HostServices): SettingsApiProxy {
   const hostFrames = new FrameHub()
   const approvals = new ApprovalBridge(host, mux)
   approvals.attach()
+  const relay = new SessionEventRelay(host, mux)
 
   // Session registry changes used to ride the `host` stream. 0.2.x publishes
   // them as Cordis events instead, so relay them into the old frame shape.
   host.on('api-session/added', (summary: unknown) => {
     const sessionId = sessionIdOf(summary)
-    if (sessionId !== undefined) hostFrames.push({ type: 'session/added', sessionId, summary, session: summary })
+    if (sessionId === undefined) return
+    hostFrames.push({ type: 'session/added', sessionId, summary, session: summary })
+    // A session restored in a running state already has output to stream.
+    if ((summary as { running?: unknown }).running === true) relay.attach(sessionId)
   })
   host.on('api-session/removed', (sessionId: unknown) => {
-    if (typeof sessionId === 'string') hostFrames.push({ type: 'session/removed', sessionId })
+    if (typeof sessionId !== 'string') return
+    relay.detach(sessionId)
+    hostFrames.push({ type: 'session/removed', sessionId })
   })
-  host.on('api-session/status', (summary: unknown) => {
-    const sessionId = sessionIdOf(summary)
-    if (sessionId !== undefined) hostFrames.push({ type: 'session/status', sessionId, summary, session: summary })
+  // Signature is (sessionId, running) — the first argument is the bare id, not a
+  // summary object, so it must not go through sessionIdOf().
+  host.on('api-session/status', (sessionId: unknown, running: unknown) => {
+    if (typeof sessionId !== 'string') return
+    // Starting a run is what makes the assistant stream worth following; a
+    // finished run releases the subscription.
+    if (running === true) relay.attach(sessionId)
+    else relay.detach(sessionId)
+    // The plugin's normalizer keys this frame as `host/session-status` (hyphen);
+    // `session/status` would fall through to the generic branch and never reach
+    // the chat.session.status projection the client watches.
+    hostFrames.push({ type: 'host/session-status', sessionId, running })
+  })
+  // The preset registry announces selections as a Cordis event; the plugin reads
+  // them off the host stream as `host/remote-event`.
+  host.on('agent-preset/selected', (sessionId: unknown, agentPreset: unknown) => {
+    if (typeof sessionId !== 'string' || typeof agentPreset !== 'string') return
+    hostFrames.push({ type: 'host/remote-event', event: 'agent-preset/selected', args: [sessionId, agentPreset] })
   })
 
   /** Ask the host for the Agent backing a session before agent-scoped calls. */
@@ -351,19 +509,44 @@ export function createDsh02ApiProxy(host: Dsh02HostServices): SettingsApiProxy {
       // are asserted at the boundary: the host supplied the row, and the shape
       // mismatch (0.2.x adds `agentAvailable`, drops `agentPreset`) is handled
       // by the adapter's own tolerant reads.
-      list: request => call(() => host.sessionController.list(request.payload, new AbortController().signal) as never),
+      list: request => call(async () => {
+        const page = await host.sessionController.list(request.payload, new AbortController().signal)
+        // 0.2.x lists every Session row, subagents included, flagging them with
+        // `origin: 'subagent'`. Those are internal delegations that the host
+        // refuses to activate as ordinary sessions, so exposing them only yields
+        // rows that break when opened. The old facade never listed them.
+        const items = Array.isArray(page.items)
+          ? page.items.filter(item => (item as { origin?: unknown }).origin !== 'subagent')
+          : page.items
+        return { ...page, items } as never
+      }),
       create: request => call(() => host.sessionController.create(request.payload)),
       history: request => call(async () => {
-        const { sessionId, ...rest } = request.payload
-        // 0.2.x addresses a session through a discriminated `SessionAddress` and
-        // requires an explicit log cut; `-1` reads to the end of the log, which
-        // is what the old facade's page-less `history` call meant.
-        const page = await host.sessionController.page(
-          { address: { kind: 'session', sessionId }, throughSeq: -1, ...rest },
-          new AbortController().signal,
-        )
-        // 0.2.x names the durable event array `records`; the plugin reads `events`.
-        return { events: [...page.records], hasMore: page.hasMore } as never
+        const { sessionId, maxMessages } = request.payload
+        // Read history from the follow stream's opening snapshot. `page()` would
+        // need a `throughSeq` cut taken from this very frame; hard-coding one
+        // returns an empty page with HTTP 200, which looks like "no messages"
+        // rather than a bug. The snapshot carries the same opening window, so
+        // take it and drop the live subscription immediately.
+        const controller = new AbortController()
+        try {
+          const stream = host.sessionController.follow(
+            { address: { kind: 'session', sessionId }, ...(maxMessages === undefined ? {} : { maxMessages }) },
+            controller.signal,
+          )
+          const first = await stream[Symbol.asyncIterator]().next()
+          const snapshot = first.value
+          if (snapshot === undefined || snapshot.type !== 'snapshot') {
+            return { events: [], hasMore: false } as never
+          }
+          // 0.2.x names the durable event array `records`; the plugin reads `events`.
+          return {
+            events: Array.isArray(snapshot.records) ? [...snapshot.records] : [],
+            hasMore: snapshot.hasMore === true,
+          } as never
+        } finally {
+          controller.abort()
+        }
       }),
       prompt: request => call(async () => {
         // 0.2.x requires a client-minted requestId that the old payload omitted.
@@ -377,8 +560,43 @@ export function createDsh02ApiProxy(host: Dsh02HostServices): SettingsApiProxy {
       rename: request => call(() => host.sessionController.rename(request.payload)),
       fork: request => call(() => host.sessionController.fork(request.payload)),
       models: request => call(async () => {
-        await request.payload.sessionId
-        return host.sessionController.modelCatalog() as Promise<never>
+        const { sessionId } = request.payload
+        // The plugin's cold-session path (chat-adapter's `commandAgent`) reaches
+        // an Agent by calling `sessions.models` and then reading
+        // `ctx.agents.get(sessionId)`: the old facade resumed the Agent as a side
+        // effect of that call. `agents.get` itself only reads an existing agent,
+        // so the resume must happen here — otherwise command discovery fails with
+        // COMMANDS_UNAVAILABLE ("could not be activated").
+        try {
+          await host.sessionController.resolveAgent(sessionId)
+        } catch {
+          // A failed resume must not break model reads: the catalog and the
+          // projection stay meaningful for a still-cold session.
+        }
+        // 0.2.x splits this across two reads that the old single `sessions.models`
+        // call returned together: the host catalog (routes, groups, failures,
+        // default) and the session's own projection (which model it actually
+        // uses). Fold them into the plugin's `{ current, routable, groups,
+        // failures }` view; a strict client decoder rejects the catalog alone.
+        const catalog = await host.sessionController.modelCatalog()
+        const baseline = await host.sessionController.projections({ sessionId }, new AbortController().signal)
+        const selection = baseline?.values?.['modelSelection'] as
+          | { lastUsed?: unknown; pending?: unknown }
+          | undefined
+        // A pending choice outranks the last used one, which outranks the
+        // host-wide default an unconfigured session would run with.
+        const current = selection?.pending ?? selection?.lastUsed ?? catalog.default
+        return {
+          current,
+          routable: Array.isArray(catalog.routableProviders) && catalog.routableProviders.length > 0,
+          groups: Array.isArray(catalog.groups) ? catalog.groups : [],
+          failures: Array.isArray(catalog.failures)
+            ? catalog.failures.map(entry => ({
+                provider: typeof entry.id === 'string' ? entry.id : String(entry.name ?? ''),
+                message: typeof entry.message === 'string' ? entry.message : '',
+              }))
+            : [],
+        } as never
       }),
       selectModel: request => call(() => host.sessionController.selectModel(request.payload) as never),
     },
@@ -408,19 +626,28 @@ export function createDsh02ApiProxy(host: Dsh02HostServices): SettingsApiProxy {
 
     agentPresets: {
       list: () => call(async () => {
+        // 0.2.x dropped the old `trust: 'system' | 'user'` split: every preset a
+        // deployment declares is equally trusted, so neither `AgentPreset` nor
+        // `AgentPresetRow` carries the field. The plugin's `AgentPresetView`
+        // (and the Android client's strict kotlinx.serialization decoder, which
+        // otherwise fails with "Field 'trust' is required") still require it.
+        const withTrust = (rows: readonly unknown[]): unknown[] => rows.map(row => ({
+          ...(row as Record<string, unknown>),
+          trust: (row as { trust?: unknown }).trust ?? 'system',
+        }))
         const roster = await host.agentPresets.remoteExportList()
         if (roster && typeof roster === 'object') {
           const view = roster as { presets?: unknown; authorable?: unknown; hasDocument?: unknown }
           if (Array.isArray(view.presets)) {
             return {
-              presets: view.presets,
+              presets: withTrust(view.presets),
               authorable: view.authorable === true,
               hasDocument: view.hasDocument === true,
-            }
+            } as never
           }
         }
         const items = await host.agentPresets.list()
-        return { presets: [...items], authorable: false, hasDocument: false }
+        return { presets: withTrust(items), authorable: false, hasDocument: false } as never
       }),
       select: request => call(async () => {
         const agent = await agentFor(request.payload.sessionId)

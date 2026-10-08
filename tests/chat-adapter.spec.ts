@@ -139,6 +139,11 @@ describe('DSH chat choices', () => {
         { name: 'permission', description: 'Switch permission preset', input: { hint: '<preset>' } },
         { name: 'compact', description: 'Compact session context' },
       ])
+      // A session the host refuses to activate (e.g. one owned by a subagent)
+      // has no commands rather than an error: the client can still open it.
+      await expect(adapter.listCommands(principal, 'session-blank')).resolves.toEqual([])
+      await expect(adapter.executeCommand(principal, 'session-blank', '/permission workspace-write'))
+        .rejects.toMatchObject({ status: 409, code: 'COMMANDS_UNAVAILABLE' })
       await expect(adapter.executeCommand(principal, 'session-visible', '/permission workspace-write'))
         .resolves.toEqual({ commandId: 'command-1', result: { kind: 'success', text: 'preset workspace-write' } })
       expect(commandLines).toEqual(['/permission workspace-write'])

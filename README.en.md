@@ -19,6 +19,12 @@
 
 The interface is bilingual and defaults to Chinese. Prebuilt packages run on Windows, macOS, and Linux without compiling on the target server.
 
+> **DSH 0.2.x compatibility**: this branch adds a compatibility layer for DSH `0.2.0-rc.2` on top of
+> upstream `v1.0.0`. DSH 0.2.x replaced `dsh-host-apiproxy` (which provided the `apiProxy` service)
+> with `dsh-api-gateway`, leaving the upstream release unable to start on 0.2.x — it surfaces as
+> "adding an authorized root returns 405". Background, rationale, changes, and test results are in
+> [DSH 0.2.x compatibility notes](./docs/project/DSH-0.2-COMPAT.md).
+
 ## Screenshots
 
 Browse and edit files without leaving DSH WebUI.
@@ -34,6 +40,7 @@ Remote access remains disabled until a local administrator chooses a bind addres
 ### Requirements
 
 - A working DeepSeek Harness WebUI installation
+- DSH kernel `0.1.x` or `0.2.x` (0.2.x is supported by this branch's compatibility layer — see [DSH 0.2.x compatibility notes](./docs/project/DSH-0.2-COMPAT.md))
 - Node.js `^22.19.0` or `>=24.0.0`
 - Port `3090`, or another available port
 

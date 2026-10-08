@@ -1,5 +1,36 @@
 # 开发日志
 
+## 2026-10-08 · DSH 0.2.x 兼容适配（下游分支）
+
+- **背景**：DSH 0.2.x 起用 `@deepseek-ai/dsh-api-gateway`（服务名 `typertGateway`）替换了
+  `@deepseek-ai/dsh-host-apiproxy`（服务名 `apiProxy`，最后一版 `0.1.1-rc.2`）。0.2.x 上不再有任何
+  服务提供 `apiProxy`，插件的 `inject` 无法满足，Cordis 让该行永久停在 `pending`，`apply()` 从不执行，
+  HTTP 路由从未挂载——用户侧表现为「添加根目录返回 405」，而非任何显式报错。
+- **做法**：新增 `src/host/dsh-0.2-bridge.ts`，在 0.2.x 宿主服务之上重建旧版 `apiProxy` 门面
+  （25 个方法），插件的 `chat-adapter.ts` / `settings-adapter.ts`（约 1300 行）零改动。
+  桥接层只用结构化类型，不 import 任何 `@deepseek-ai/*` 运行时模块。
+- 桥接层同时承担三项非转发职责：事件中继（0.2.x 无进程级会话事件流，改为按运行中会话 `follow()` 后扇出）、
+  审批桥（认领 Cordis 瀑布 `approval/request`，转成 `approval/requested`，答复后经 `next()` 放行，
+  无人应答则委托下一个 answerer）、门面翻译（`SessionAddress` 判别联合、`AsyncIterable` 流、
+  `{ rpcId, payload } → { result: { ok, value } }` 信封）。
+- 适配过程中修复 **10 处契约缺口**，全部为「不抛错的静默失败」：`agent-presets` 缺 `trust`；
+  会话模型缺 `current`/`routable`；history 恒为空（`page()` 的 `throughSeq` 必须取自 `follow()`
+  开场帧，硬编码 `-1` 返回结构合法的空页）；冷会话命令发现失败（0.2.x 激活 Agent 的正路是
+  `resolveAgent()`，`agents.get()` 只读）；实时流式输出缺失（新增 `SessionEventRelay`）；
+  `api-session/status` 签名误读（参数是 `(sessionId, running)`，首参为裸 id 非对象）；
+  事件名不符（应为 `host/session-status`）；`agent-preset/selected` 未转发；
+  流式帧未产生（`follow()` 的 `assistantStream` 是 opt-in，不传宿主不产生任何增量帧）；
+  内部会话混入列表并报 409（0.2.x `list()` 返回 subagent 拥有的会话，而 `resolveAgent()`
+  按设计拒绝激活它们——过滤 `origin === 'subagent'` 并把命令发现改为可降级返回空列表）。
+- 第 6、7、9 项属适配过程中自己引入或遗漏的问题，一并记入 `docs/project/DSH-0.2-COMPAT.md` 作为例证。
+- **验证**：`pnpm test` 42 项通过（13 个文件）、`npx tsc --noEmit` 零错误；隔离 `DSH_HOME` 中安装真实
+  tarball 后「添加根目录」由 405 变为 **201**，8/8 接口 200，文件读写与会话创建正常；真实设备令牌
+  验证 8/8 接口 200 后**立即吊销探针设备**；端到端 WebSocket 实测（订阅事件流并真实发消息）
+  从修复前的 `chat.message.delta` **0 帧**变为 **11 帧**、累积流式文本正确输出；70 个真实会话逐个
+  探测命令发现，结果 正常 67 / 空列表 3 / **报错 0**，会话列表由 75 收敛到 70。
+- 新增 `docs/project/DSH-0.2-COMPAT.md` 完整记录「基于什么、为什么、改了什么、测了什么、已知边界」。
+- 未改动公开接口（`docs/api/openapi.yaml`、`asyncapi.yaml` 契约保持不变），未改动许可证（仍为 `AGPL-3.0-only`）。
+
 ## 2026-08-15 · v1.0.0
 
 - 完成 `DOC-003` 与 `REL-004`：按发布要求删除中英文 README 的截图环境说明，并继续以单一根提交同步公开分支和标签。

@@ -490,6 +490,10 @@ export class DshChatAdapter {
 
   async listCommands(principal: Principal, sessionId: string): Promise<CommandDescriptorView[]> {
     const agent = await this.commandAgent(principal, sessionId)
+    // A session that cannot be activated (e.g. one owned by a subagent) simply
+    // exposes no commands. Reporting an error here would surface as a failure on
+    // a session the client can otherwise open and read.
+    if (agent === undefined) return []
     return this.commandServices!.commands.list(agent).map(command => ({
       name: command.name,
       description: command.description,
@@ -505,6 +509,10 @@ export class DshChatAdapter {
     const match = /^\/([a-z][a-z0-9_-]*)(?=$|[\t\n\r ])/u.exec(normalized)
     if (match === null) throw new ApiError(400, 'COMMAND_INVALID', 'A slash command must start with a valid command name.')
     const agent = await this.commandAgent(principal, sessionId)
+    // Execution genuinely needs a live Agent; unlike listing, this stays an error.
+    if (agent === undefined) {
+      throw new ApiError(409, 'COMMANDS_UNAVAILABLE', 'The session could not be activated for command execution.')
+    }
     const known = this.commandServices!.commands.list(agent).some(command => command.name === match[1])
     if (!known) throw new ApiError(404, 'COMMAND_NOT_FOUND', 'The command is not available for this session.')
     try {
@@ -581,7 +589,15 @@ export class DshChatAdapter {
     return false
   }
 
-  private async commandAgent(principal: Principal, sessionId: string): Promise<unknown> {
+  /**
+   * Resolve the Agent backing a session for command work.
+   *
+   * Returns `undefined` when the session exists but cannot be activated. 0.2.x
+   * rejects activation for a Session owned by a subagent, so that outcome is a
+   * property of the session rather than a failure of this call: the caller
+   * decides whether it means "no commands" (listing) or an error (execution).
+   */
+  private async commandAgent(principal: Principal, sessionId: string): Promise<unknown | undefined> {
     await this.requireSession(principal, sessionId)
     const services = this.commandServices
     if (services === undefined) {
@@ -597,11 +613,7 @@ export class DshChatAdapter {
     } catch {
       // The registry lookup below is the authoritative availability result.
     }
-    agent = services.agents.get(sessionId)
-    if (agent === undefined) {
-      throw new ApiError(409, 'COMMANDS_UNAVAILABLE', 'The session could not be activated for command discovery.')
-    }
-    return agent
+    return services.agents.get(sessionId)
   }
 
   private async requireSession(principal: Principal, sessionId: string): Promise<ChatSessionView> {
