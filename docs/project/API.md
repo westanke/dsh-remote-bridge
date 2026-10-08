@@ -16,6 +16,46 @@ curl -X POST http://192.168.1.20:3090/api/v1/pairings/exchange \
 
 响应中的 `token` 只出现一次。后续请求使用 `Authorization: Bearer <token>`。
 
+## 生成配置文本
+
+回环管理接口 `POST /manage/config/text` 直接产出一行可粘贴的 `DSH1:` 文本，
+用于「人已出门、电脑在家」时把连接信息带到手机上。WebUI 的「远程访问」页有对应按钮。
+
+```sh
+curl -X POST http://127.0.0.1:3090/manage/config/text \
+  -H "Content-Type: application/json" \
+  -d '{}'
+```
+
+请求体字段全部可选：
+
+| 字段 | 说明 |
+| --- | --- |
+| `displayName` | 电脑显示名，缺省取本机主机名 |
+| `deviceName` | 设备名（写进 `devices` 表，便于日后吊销），缺省 `Android 设备` |
+| `scopes` | 设备权限，缺省为 5 项**非破坏性**权限（不含 `files.delete` / `settings.write`） |
+| `rootIds` | 授权的根，缺省为全部已注册根 |
+| `port` | 自动探测地址时拼接的端口，缺省 `3090` |
+| `endpoints` | 显式指定地址 `[{label, baseUrl}]`；缺省时自动探测本机非回环 IPv4 |
+
+响应 `201`：
+
+```json
+{ "text": "DSH1:...", "displayName": "家里的电脑", "deviceName": "Pixel 9",
+  "endpoints": [{ "label": "局域网（eno1）", "baseUrl": "http://192.168.1.126:3090", "kind": "LAN" }],
+  "deviceId": "..." }
+```
+
+两点刻意设计：
+
+- **响应不单独回传 `token`** —— 它已包含在 `text` 内，多一份只会让它出现在日志、
+  浏览器历史与开发者工具里。
+- **不返回配对码的 `expiresAt`** —— 那是配对码的十分钟有效期，而设备令牌**不过期**
+  （`devices` 表没有过期列）。回传它会被误读为「这段文本十分钟后失效」。
+
+探测不到任何非回环地址时返回 `400 NO_ENDPOINT`，此时应显式传 `endpoints`。
+`text` 内含设备令牌，等价于一把钥匙，只应发给自己。
+
 ## 管理文件
 
 路径必须由 `rootId` 和使用 `/` 的相对路径组成：

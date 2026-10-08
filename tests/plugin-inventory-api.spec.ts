@@ -256,6 +256,98 @@ describe('GET /api/v1/roots/resolve', () => {
   })
 })
 
+describe('POST /manage/config/text', () => {
+  const origin = 'http://127.0.0.1:3080'
+
+  it('produces a decodable config text and never echoes the token separately', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'daw-config-'))
+    cleanup.push(root)
+    const server = await startServer()
+    try {
+      await server.database.addRoot(root, 'workspace')
+
+      const response = await fetch(`${server.baseUrl}/manage/config/text`, {
+        method: 'POST',
+        headers: { Origin: origin, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          displayName: '家里的电脑',
+          deviceName: 'Pixel 9',
+          scopes: ['files.read'],
+          endpoints: [{ label: '家里局域网', baseUrl: 'http://192.168.1.126:3090' }],
+        }),
+      })
+
+      expect(response.status).toBe(201)
+      const body = await response.json() as Record<string, unknown>
+      const text = body.text as string
+
+      expect(text.startsWith('DSH1:')).toBe(true)
+      expect(body).toMatchObject({ displayName: '家里的电脑', deviceName: 'Pixel 9' })
+
+      // 单独回传 token 会让它出现在日志、浏览器历史与开发者工具里 —— 它已经在 text 内，
+      // 不需要第二份。这条断言防止后人「顺手」把它加回响应。
+      expect(Object.keys(body).sort()).toEqual(
+        ['deviceId', 'deviceName', 'displayName', 'endpoints', 'text'],
+      )
+
+      // 文本必须真的能被解开，且地址里的 /api/v1 已被剥掉。
+      const decoded = JSON.parse(Buffer.from(text.slice('DSH1:'.length), 'base64url').toString('utf8'))
+      expect(decoded.displayName).toBe('家里的电脑')
+      expect(decoded.endpoints).toEqual([{ label: '家里局域网', baseUrl: 'http://192.168.1.126:3090' }])
+      expect(typeof decoded.token).toBe('string')
+      expect(decoded.token.length).toBeGreaterThan(8)
+      expect(decoded.scopes).toEqual(['files.read'])
+
+      // 生成的设备应当真的出现在 devices 表里，用户之后才能吊销它。
+      const deviceId = body.deviceId as string
+      expect(server.database.listDevices().some(device => device.id === deviceId)).toBe(true)
+    } finally {
+      await server.close()
+    }
+  })
+
+  it('detects local addresses when none are provided', async () => {
+    const server = await startServer()
+    try {
+      const response = await fetch(`${server.baseUrl}/manage/config/text`, {
+        method: 'POST',
+        headers: { Origin: origin, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ port: 3090 }),
+      })
+
+      // 无网卡可用时服务端返回 400 NO_ENDPOINT；有网卡时应为 201 且地址非回环。
+      if (response.status === 201) {
+        const body = await response.json() as { endpoints: Array<{ baseUrl: string }> }
+        expect(body.endpoints.length).toBeGreaterThan(0)
+        for (const endpoint of body.endpoints) {
+          expect(endpoint.baseUrl).not.toContain('127.0.0.1')
+          expect(endpoint.baseUrl).not.toContain('169.254.')
+        }
+      } else {
+        expect(response.status).toBe(400)
+        await expect(response.json()).resolves.toMatchObject({ error: { code: 'NO_ENDPOINT' } })
+      }
+    } finally {
+      await server.close()
+    }
+  })
+
+  it('is not reachable from a non-loopback origin', async () => {
+    const server = await startServer()
+    try {
+      const response = await fetch(`${server.baseUrl}/manage/config/text`, {
+        method: 'POST',
+        headers: { Origin: 'https://evil.example', 'Content-Type': 'application/json' },
+        body: JSON.stringify({}),
+      })
+      // 管理面只认回环，而配置文本是凭据载体，绝不能被外部 origin 触发。
+      expect(response.status).not.toBe(201)
+    } finally {
+      await server.close()
+    }
+  })
+})
+
 function fakeApi() {
   const empty = async function* () { /* no live events in this contract test */ }
   return {

@@ -1,5 +1,61 @@
 # 开发日志
 
+## 2026-10-08 · 配置文本的 WebUI 入口（`CFG-001`，下游分支）
+
+### 为什么：一句被用户戳穿的话
+
+README 把「配置导入」写成主路径：
+
+> 电脑上生成一行文本 → 发给自己（微信 / 邮件 / 私密笔记）→ 到了外面粘贴进 App
+
+用户追问：**「电脑 在哪里生成？」**
+
+**这一问是对的。** 当时的生成端只有一个命令行脚本（在另一个仓库里）：
+用户得装 Node、开终端、`cd` 到仓库、记命令。对一个「人已出门、电脑在家」的场景，
+这等于「请先编译源码」，不是入口。而配对码本来就在 WebUI 的「远程访问」页一键生成 ——
+配置文本理应出现在同一处。
+
+### 干了什么
+
+- 新增 `src/host/config-text.ts`：线格式编码 + 本机地址探测。
+  - `detectEndpoints()` 枚举非回环 IPv4，**排除 `169.254.*`**（只在没有 DHCP 时出现，
+    给用户只会换来「为什么这个地址连不上」的困惑）。
+  - `classifyHost()` 与 Kotlin `EndpointKind.infer` 的规则一致（含 `100.64.0.0/10` 归虚拟网，
+    因为 Tailscale 与 BeyondTunnel 都在用这个 CGNAT 网段）。
+  - `encodeConfigText()` 用**对象字面量固定键顺序**，不依赖 `JSON.stringify` 的字典序。
+- `src/host/router.ts` 新增 `POST /manage/config/text`（回环管理面）：
+  内部走既有的 `createPairing` → `exchangePairing`，默认授予 5 项**非破坏性**权限
+  （刻意不含 `files.delete` 与 `settings.write` —— 那是用户显式要求才给的东西）。
+- WebUI「远程访问」页在「生成配对码」旁加「生成配置文本」（见 `CFG-001` 的客户端部分）。
+
+### 一个刻意的字段省略
+
+响应**不返回 `pairing.expiresAt`**。它是**配对码**的十分钟有效期，而设备令牌本身
+**不过期**（`devices` 表没有过期列）。回传它会被读成「这段文本十分钟后就失效」，
+诱发没必要的重复生成。同理，响应也**不单独回传 token** —— 它已在 `text` 内，
+多一份只会让它出现在日志、浏览器历史与开发者工具里；有测试断言响应字段集合防止后人加回。
+
+### 三处实现必须逐字节一致
+
+同一套线格式现在有三处实现：Kotlin 编解码（`ConnectionShare.kt`）、命令行脚本
+（`dsh-companion/tools/emit-config.mjs`）、本模块。任何一处在键顺序或「空值不写键」上跑偏，
+都会产出**字节不同但都能被解码**的文本 —— 三处单测各自都绿，跨端却不再兼容。
+
+因此 `tests/config-text.spec.ts` 里钉了一条 **golden 逐字节断言**，输入取自脚本的真实
+stdout（而该脚本的输出已被 Kotlin 端 `ConnectionShareInteropTest` 断言与 `ConnectionShare.encode()`
+相同）。一条断言同时钉住三处实现。
+
+### 测了什么
+
+| 测试文件 | 用例 | 覆盖 |
+| --- | --- | --- |
+| `tests/config-text.spec.ts` | 9 | **golden 逐字节**、空值不写键、键顺序稳定、`/api/v1` 剥离、无地址拒绝生成、各网段分类（含 `100.128`/`100.63` 两个边界外必须归 WAN）、探测结果不含回环与 link-local |
+| `tests/plugin-inventory-api.spec.ts` | 11 | 真起 HTTP server：配置文本可解码且**响应不含 token**、生成的设备确实入库、未给地址时自动探测、**非回环 origin 不可触发** |
+
+全量：`17` 个测试文件 / `94` 用例通过；`tsc --noEmit` 通过。
+
+---
+
 ## 2026-10-08 · 绝对路径解析端点（`FS-003`，下游分支）
 
 ### 基于什么

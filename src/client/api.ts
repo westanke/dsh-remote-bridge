@@ -19,6 +19,53 @@ export class WorkspaceApiError extends Error {
   }
 }
 
+/** One hand-written address for a config text; omit `endpoints` entirely to let the host probe its NICs. */
+export interface ConfigTextEndpointDraft {
+  label: string
+  baseUrl: string
+}
+
+/**
+ * Every field is optional: the host fills in hostname, device name, scopes and root grants when omitted.
+ *
+ * Security note: leaving `scopes` out is the recommended path. The host then grants its five
+ * non-destructive scopes (`chat.read`, `chat.write`, `files.read`, `files.write`, `settings.read`).
+ * Do **not** blanket-forward `DEVICE_SCOPES` here — that array also contains `files.delete` and
+ * `settings.write`, so it would silently hand a phone the right to delete files and rewrite settings.
+ */
+export interface ConfigTextDraft {
+  displayName?: string
+  deviceName?: string
+  scopes?: DeviceScope[]
+  rootIds?: string[]
+  port?: number
+  endpoints?: ConfigTextEndpointDraft[]
+}
+
+export interface ConfigTextEndpoint {
+  label: string
+  baseUrl: string
+  kind?: string
+}
+
+/**
+ * Response of `POST /manage/config/text`.
+ *
+ * There is deliberately **no `token` field**: the device token is already embedded inside `text`,
+ * and echoing it separately would only spread the secret across more surfaces.
+ *
+ * There is also deliberately **no `expiresAt`**: the ten-minute expiry belongs to the *pairing code*,
+ * while the device token itself never expires. Surfacing it here would read as "this text dies in ten
+ * minutes" and push users into needless regeneration.
+ */
+export interface ConfigTextResult {
+  text: string
+  displayName: string
+  deviceName: string
+  endpoints: ConfigTextEndpoint[]
+  deviceId: string
+}
+
 export class WorkspaceApi {
   constructor(
     readonly apiBase: string,
@@ -115,6 +162,16 @@ export class WorkspaceApi {
 
   async createPairing(rootIds: string[], scopes: DeviceScope[]): Promise<{ code: string; expiresAt: number }> {
     return this.manageJson('/pairings', { method: 'POST', body: JSON.stringify({ rootIds, scopes }) })
+  }
+
+  /**
+   * Mint a one-line `DSH1:` config text that can be sent to yourself and pasted into the phone app.
+   *
+   * This is the entry point that replaces "scan a QR code at the computer": the user is already
+   * away from home, so the only workable path is "generate here, send it to myself, paste there".
+   */
+  async createConfigText(draft: ConfigTextDraft = {}): Promise<ConfigTextResult> {
+    return this.manageJson('/config/text', { method: 'POST', body: JSON.stringify(draft) })
   }
 
   async updateDevice(deviceId: string, scopes: DeviceScope[], rootIds: string[]): Promise<void> {

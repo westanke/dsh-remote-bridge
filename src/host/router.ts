@@ -9,6 +9,14 @@ import type { DshChatAdapter } from './chat-adapter.ts'
 import type { StoredRoot, WorkspaceDatabase } from './database.ts'
 import { ApiError, asApiError } from './errors.ts'
 import type { FileService } from './file-service.ts'
+import {
+  DEFAULT_PORT,
+  classifyHost,
+  defaultDisplayName,
+  detectEndpoints,
+  encodeConfigText,
+  type ConfigEndpoint,
+} from './config-text.ts'
 import { readPluginInventory } from './plugin-inventory.ts'
 import { inspectResolvedPath, matchAuthorizedRoot } from './root-resolver.ts'
 import type { CustomProviderCreate, DshSettingsAdapter, ProviderPatch } from './settings-adapter.ts'
@@ -599,6 +607,58 @@ export class ApiRouter {
       ))
       return
     }
+
+    // 生成一行可粘贴的 `DSH1:` 配置文本 —— 用户不必开终端跑脚本。
+    //
+    // 存在的理由：本版本把「配置文本导入」当作连接主路径（扫码与配对码都要求电脑在旁，
+    // 而真实场景是人已出门、电脑在家）。此前这条路径只有命令行脚本可用，用户的质疑是
+    // 「电脑 在哪里生成？」。配对码本来就在 WebUI 的这个页面生成，配置文本理应同处。
+    if (method === 'POST' && pathname === '/manage/config/text') {
+      const body = await readJson(req, 64_000) as Record<string, unknown>
+
+      const port = Number.isInteger(body.port) && Number(body.port) > 0 && Number(body.port) < 65_536
+        ? Number(body.port)
+        : DEFAULT_PORT
+
+      const endpoints = readRequestedEndpoints(body.endpoints) ?? detectEndpoints(port)
+      if (endpoints.length === 0) {
+        throw new ApiError(
+          400,
+          'NO_ENDPOINT',
+          'No usable local address was detected. Provide endpoints explicitly.',
+        )
+      }
+
+      const scopes = body.scopes === undefined
+        ? [...DEFAULT_CONFIG_SCOPES]
+        : validateScopes(body.scopes)
+      const rootIds = body.rootIds === undefined
+        ? this.options.database.listRoots().map(root => root.id)
+        : validateStringArray(body.rootIds, 'rootIds')
+      const deviceName = readOptionalText(body.deviceName) ?? 'Android 设备'
+      const displayName = readOptionalText(body.displayName) ?? defaultDisplayName()
+
+      const pairing = this.options.database.createPairing(rootIds, scopes)
+      const exchanged = this.options.database.exchangePairing(pairing.code, deviceName)
+
+      sendJson(res, 201, {
+        text: encodeConfigText({
+          displayName,
+          endpoints,
+          token: exchanged.token,
+          deviceName,
+          scopes,
+        }),
+        displayName,
+        deviceName,
+        endpoints,
+        deviceId: exchanged.device.id,
+        // 刻意不返回 pairing.expiresAt：那是**配对码**的十分钟有效期，
+        // 而设备令牌本身不过期（devices 表没有过期列）。回传它会被读成
+        // 「这段文本十分钟后就失效」，从而诱发没必要的重复生成。
+      })
+      return
+    }
     if (method === 'POST' && pathname === '/manage/remote/enable') {
       const body = await readJson(req, 64_000) as Record<string, unknown>
       const operation = this.options.remote.enable(
@@ -829,6 +889,49 @@ function validateStringArray(value: unknown, name: string): string[] {
     throw new ApiError(400, 'BODY_INVALID', `${name} must be an array of strings.`)
   }
   return [...new Set(value as string[])]
+}
+
+/**
+ * 生成配置文本时的默认设备权限。
+ *
+ * 刻意**不含** `files.delete` 与 `settings.write`：这两个是破坏性权限，应当是用户显式
+ * 要求才授予，而不是因为「生成了一段配置文本」就顺手给了。需要时可在请求里显式传 scopes。
+ */
+const DEFAULT_CONFIG_SCOPES: readonly DeviceScope[] = [
+  'chat.read',
+  'chat.write',
+  'files.read',
+  'files.write',
+  'settings.read',
+]
+
+function readOptionalText(value: unknown): string | null {
+  if (typeof value !== 'string') return null
+  const text = value.trim()
+  return text === '' ? null : text
+}
+
+/**
+ * 读取请求里显式给出的地址列表；没给或格式不对时返回 null（调用方改用自动探测）。
+ *
+ * 这里对空数组也返回 null —— 「用户明确说一个地址都不要」不是有意义的输入。
+ */
+function readRequestedEndpoints(value: unknown): ConfigEndpoint[] | null {
+  if (!Array.isArray(value) || value.length === 0) return null
+  const endpoints: ConfigEndpoint[] = []
+  for (const item of value) {
+    if (typeof item !== 'object' || item === null) {
+      throw new ApiError(400, 'BODY_INVALID', 'endpoints must be an array of objects.')
+    }
+    const baseUrl = readOptionalText((item as Record<string, unknown>).baseUrl)
+    if (baseUrl === null) {
+      throw new ApiError(400, 'BODY_INVALID', 'Each endpoint requires a non-empty baseUrl.')
+    }
+    const label = readOptionalText((item as Record<string, unknown>).label) ?? baseUrl
+    const host = baseUrl.replace(/^https?:\/\//i, '').split('/')[0]?.split(':')[0] ?? ''
+    endpoints.push({ label, baseUrl, kind: classifyHost(host) })
+  }
+  return endpoints
 }
 
 function optionalInteger(value: string | null): number | undefined {

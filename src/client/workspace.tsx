@@ -20,6 +20,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { DeviceScope, DeviceView, FileEntryView, RootView } from '../shared/contracts.ts'
 import { DEVICE_SCOPES } from '../shared/contracts.ts'
 import { WorkspaceApi, WorkspaceApiError } from './api.ts'
+import type { ConfigTextResult } from './api.ts'
 import { CodeEditor } from './editor.tsx'
 import { LanguageToggle, type MessageKey, type Translate, useWorkspaceI18n } from './i18n.tsx'
 import { installWorkspaceStyles } from './styles.ts'
@@ -357,6 +358,9 @@ export function AdminOverlay(props: { api: WorkspaceApi; open: boolean; onClose(
   const [listenerHost, setListenerHost] = useState('0.0.0.0')
   const [listenerPort, setListenerPort] = useState('3090')
   const [pairing, setPairing] = useState<{ code: string; expiresAt?: number }>()
+  const [configText, setConfigText] = useState<ConfigTextResult>()
+  const [configEndpoint, setConfigEndpoint] = useState('')
+  const [configTextBusy, setConfigTextBusy] = useState(false)
   const [error, setError] = useState<unknown>()
 
   const refresh = useCallback(async () => {
@@ -372,6 +376,12 @@ export function AdminOverlay(props: { api: WorkspaceApi; open: boolean; onClose(
   }, [props.api, tab])
 
   useEffect(() => { if (props.open) void refresh() }, [props.open, refresh])
+  // The generated config text embeds a device token, so drop it from memory as soon as the dialog closes.
+  useEffect(() => {
+    if (props.open) return
+    setConfigText(undefined)
+    setConfigEndpoint('')
+  }, [props.open])
   useEffect(() => {
     if (status === undefined) return
     setListenerHost(status.configuredHost)
@@ -443,8 +453,27 @@ export function AdminOverlay(props: { api: WorkspaceApi; open: boolean; onClose(
             {status?.remoteEnabled
               ? <button className="daw-command danger" onClick={() => { void props.api.disableRemote().then(result => poll(result.id)).then(refresh).catch(setError) }}>{t('disableRemote')}</button>
               : <button className="daw-command primary" disabled={roots.length === 0 || listenerDirty || !listenerPortValid || listenerHost.trim() === ''} onClick={() => { void props.api.enableRemote(roots.map(root => root.id), [...DEVICE_SCOPES]).then(result => poll(result.id)).catch(setError) }}>{t('enablePairing')}</button>}
-            {status?.remoteEnabled && <button className="daw-command daw-inline-command" onClick={() => { void props.api.createPairing(roots.map(root => root.id), [...DEVICE_SCOPES]).then(value => setPairing(value)).catch(setError) }}>{t('newPairingCode')}</button>}
+            {status?.remoteEnabled && <>
+              <button className="daw-command daw-inline-command" onClick={() => { void props.api.createPairing(roots.map(root => root.id), [...DEVICE_SCOPES]).then(value => setPairing(value)).catch(setError) }}>{t('newPairingCode')}</button>
+              <button className="daw-command daw-inline-command" disabled={configTextBusy} onClick={() => {
+                const manual = configEndpoint.trim()
+                setConfigTextBusy(true)
+                setError(undefined)
+                // No `scopes` on purpose: the host then grants its five non-destructive defaults,
+                // which exclude `files.delete` and `settings.write`. Forwarding `DEVICE_SCOPES`
+                // here would silently widen the phone's rights to include file deletion.
+                void props.api.createConfigText({
+                  ...(roots.length === 0 ? {} : { rootIds: roots.map(root => root.id) }),
+                  ...(manual === '' ? {} : { endpoints: [{ label: t('configTextManualLabel'), baseUrl: manual }] }),
+                }).then(value => { setConfigText(value); return refresh() }).catch(setError).finally(() => setConfigTextBusy(false))
+              }}>{t('newConfigText')}</button>
+            </>}
             {pairing !== undefined && <div className="daw-code">{pairing.code}</div>}
+            {status?.remoteEnabled && <div style={{ marginTop: 12, maxWidth: 560 }}>
+              <label className="daw-field"><span>{t('configTextManual')}</span><input className="daw-input" value={configEndpoint} spellCheck={false} placeholder={t('configTextManualPlaceholder')} onChange={event => setConfigEndpoint(event.target.value)} /></label>
+              <div className="daw-list-meta" style={{ marginTop: 5 }}>{t('configTextManualHint')}</div>
+            </div>}
+            {configText !== undefined && <ConfigTextPanel result={configText} />}
           </>}
           {tab === 'devices' && <>
             <h3>{t('pairedDevices')}</h3>
@@ -461,6 +490,72 @@ export function AdminOverlay(props: { api: WorkspaceApi; open: boolean; onClose(
         </main>
       </div>
     </section>
+  </div>
+}
+
+/**
+ * Shows a freshly minted `DSH1:` config text.
+ *
+ * The text is a credential carrier, so this panel keeps the "it is a key" reminder visible and lists
+ * the addresses the host actually detected, letting the user confirm them before sending the text away.
+ * Copying degrades to "the text is selected, copy it yourself" when the Clipboard API is unavailable —
+ * the normal case when this WebUI is opened over plain HTTP on a LAN address.
+ */
+function ConfigTextPanel(props: { result: ConfigTextResult }): JSX.Element {
+  const { t } = useWorkspaceI18n()
+  const [copyState, setCopyState] = useState<'done' | 'manual'>()
+  const textRef = useRef<HTMLTextAreaElement>(null)
+
+  const copy = useCallback(async () => {
+    const clipboard = globalThis.navigator?.clipboard
+    if (clipboard !== undefined) {
+      try {
+        await clipboard.writeText(props.result.text)
+        setCopyState('done')
+        return
+      } catch {
+        // The Clipboard API needs a secure context; fall back to manual copying below.
+      }
+    }
+    const node = textRef.current
+    if (node !== null) {
+      node.focus()
+      node.select()
+    }
+    setCopyState('manual')
+  }, [props.result.text])
+
+  return <div style={{ marginTop: 14 }}>
+    <div className="daw-warning">{t('configTextSecurity')}</div>
+    <div className="daw-list-meta">{t('configTextHint')}</div>
+    <textarea
+      ref={textRef}
+      className="daw-input"
+      style={{ width: '100%', height: 'auto', minHeight: 76, marginTop: 8, padding: '8px 9px', fontFamily: 'ui-monospace,SFMono-Regular,Consolas,monospace', fontSize: 12, lineHeight: 1.5, resize: 'vertical' }}
+      readOnly
+      rows={4}
+      spellCheck={false}
+      value={props.result.text}
+      onFocus={event => event.currentTarget.select()}
+    />
+    <div className="daw-form-row" style={{ marginTop: 8, marginBottom: 10, gridTemplateColumns: 'auto auto minmax(0,1fr)', alignItems: 'center' }}>
+      <button className="daw-command primary" onClick={() => { void copy() }}>{t('copy')}</button>
+      {copyState === 'done' && <span className="daw-pill on">{t('copied')}</span>}
+      {copyState === 'manual' && <span className="daw-list-meta">{t('copyManual')}</span>}
+    </div>
+    <div className="daw-list-meta" style={{ marginBottom: 2 }}>
+      {t('configTextDevice')}: {props.result.deviceName} · {t('configTextDeviceId')}: <span style={{ fontFamily: 'ui-monospace,SFMono-Regular,Consolas,monospace' }}>{props.result.deviceId}</span>
+    </div>
+    <div className="daw-list-meta" style={{ marginBottom: 10 }}>{t('configTextScopes')}</div>
+    <strong>{t('configTextDetected')}</strong>
+    {props.result.endpoints.length === 0
+      ? <div className="daw-warning" style={{ marginTop: 8 }}>{t('configTextNoEndpoints')}</div>
+      : <div className="daw-list">{props.result.endpoints.map(endpoint => <div className="daw-list-row" key={`${endpoint.label}:${endpoint.baseUrl}`}>
+          <div>
+            <div className="daw-list-title">{endpoint.label}</div>
+            <div className="daw-list-meta">{endpoint.baseUrl}{endpoint.kind === undefined ? '' : ` · ${endpoint.kind}`}</div>
+          </div>
+        </div>)}</div>}
   </div>
 }
 
@@ -559,6 +654,8 @@ function apiErrorKey(error: WorkspaceApiError): MessageKey | undefined {
   if (error.code === 'LISTENER_HOST_INVALID') return 'listenerHostInvalid'
   if (error.code === 'LISTENER_PORT_INVALID') return 'listenerPortInvalid'
   if (error.code === 'REMOTE_ENABLED') return 'disableToEditListener'
+  // Detecting no non-loopback NIC is not a dead end: the user can type an address and retry.
+  if (error.code === 'NO_ENDPOINT') return 'configTextNoEndpoints'
   if (error.code.includes('PATH') || error.code.includes('SYMLINK') || error.code.includes('REPARSE')) return 'errorPathInvalid'
   if (error.status === 403) return 'errorForbidden'
   if (error.status === 404) return 'errorNotFound'
