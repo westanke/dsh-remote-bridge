@@ -14,3 +14,6 @@ kotlin-sdk/build/
 .DS_Store
 Thumbs.db
 .tmp/
+
+# Local DSH test harness (isolated DSH_HOME used for 0.2.x verification)
+.testenv/
