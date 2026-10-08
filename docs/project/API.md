@@ -22,10 +22,38 @@ curl -X POST http://192.168.1.20:3090/api/v1/pairings/exchange \
 
 ```sh
 curl "http://192.168.1.20:3090/api/v1/roots/ROOT_ID/entries?path=src" \
+ \
   -H "Authorization: Bearer TOKEN"
 ```
 
 读取文件返回原始字节和 `ETag`。保存时必须回传 `If-Match`；新建空路径使用 `If-None-Match: *`。陈旧版本返回 `412 ETAG_MISMATCH`。
+
+### 把绝对路径解析为授权根
+
+会话事件里出现的文件路径是**服务器绝对路径**，而 `/roots` 刻意不返回根的绝对路径。客户端因此无法自己完成映射，需要本端点做一次转换：
+
+```sh
+curl "http://192.168.1.20:3090/api/v1/roots/resolve?path=%2Fmedia%2Fdata%2Fproject%2FREADME.md" \
+  -H "Authorization: Bearer TOKEN"
+```
+
+```json
+{ "rootId": "b3cc74d4-...", "path": "project/README.md", "kind": "file",
+  "size": 1234, "modifiedAt": 1791498310753, "contentType": "text/markdown" }
+```
+
+要求 `files.read`。行为约定：
+
+| 情况 | 结果 |
+| --- | --- |
+| 命中授权根 | `200`，返回 `rootId` 与根内相对路径，**不含根的绝对路径** |
+| 落在多个嵌套根内 | 取**最长**匹配的那个根 |
+| 不在任何授权根内 | `404 PATH_OUTSIDE_ROOTS` |
+| 传入相对路径 | `400 PATH_NOT_ABSOLUTE`（相对路径会按服务端 cwd 解析，语义不确定，拒绝比猜安全） |
+| 路径是目录 | `200` 且 `kind: "directory"`、`size: null`（会话里提到的可能是目录，不该报错） |
+| 路径不存在 | `404 PATH_NOT_FOUND` |
+
+安全校验复用文件接口的同一套逻辑（逐段 `lstat`、拒绝路径中的符号链接），因此字符串前缀匹配的局限不会导致越权读取。拿到 `rootId` 与相对路径后，读取内容仍走上面的 `/roots/{rootId}/content`。
 
 ## 创建 DSH 会话
 

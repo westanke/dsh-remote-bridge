@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import type { IncomingMessage, ServerResponse } from 'node:http'
+import path from 'node:path'
 import type { DeviceScope, Principal } from '../shared/contracts.ts'
 import { DEVICE_SCOPES } from '../shared/contracts.ts'
 import type { AuthService } from './auth.ts'
@@ -9,6 +10,7 @@ import type { StoredRoot, WorkspaceDatabase } from './database.ts'
 import { ApiError, asApiError } from './errors.ts'
 import type { FileService } from './file-service.ts'
 import { readPluginInventory } from './plugin-inventory.ts'
+import { inspectResolvedPath, matchAuthorizedRoot } from './root-resolver.ts'
 import type { CustomProviderCreate, DshSettingsAdapter, ProviderPatch } from './settings-adapter.ts'
 import { PLUGIN_VERSION } from '../shared/version.ts'
 
@@ -122,6 +124,31 @@ export class ApiRouter {
       this.options.auth.requireScope(principal, 'files.read')
       const roots = this.authorizedRoots(principal).map(({ id, label, createdAt }) => ({ id, label, createdAt }))
       sendJson(res, 200, { items: roots })
+      return
+    }
+
+    // 把服务器绝对路径解析成「属于哪个授权根 + 相对路径」。
+    //
+    // 存在的理由：会话事件里的文件路径是服务器绝对路径，而 /roots 刻意不返回根的绝对路径，
+    // 客户端无法自己完成这段映射；把绝对路径直接传给 /roots/:id/content 又会被
+    // PATH_INVALID 拒绝（实测 400）。所以必须由服务端做这一次转换。
+    //
+    // 返回**只含 rootId 与相对路径**，依然不泄露授权根的绝对路径。
+    if (method === 'GET' && pathname === '/api/v1/roots/resolve') {
+      this.options.auth.requireScope(principal, 'files.read')
+      const requested = url.searchParams.get('path')?.trim() ?? ''
+      if (requested === '') {
+        throw new ApiError(400, 'BODY_INVALID', 'path is required.')
+      }
+      if (!path.isAbsolute(requested)) {
+        // 相对路径会被 path.resolve 按服务端 cwd 解析，语义不确定，直接拒绝比猜更安全。
+        throw new ApiError(400, 'PATH_NOT_ABSOLUTE', 'path must be an absolute path.')
+      }
+      const match = matchAuthorizedRoot(path.resolve(requested), this.authorizedRoots(principal))
+      if (match === undefined) {
+        throw new ApiError(404, 'PATH_OUTSIDE_ROOTS', 'The path is not inside any root this device may access.')
+      }
+      sendJson(res, 200, await inspectResolvedPath(this.requireRoot(principal, match.rootId), match.path))
       return
     }
 

@@ -39,3 +39,4 @@
 | REL-003 | done | BRAND-002,LICENSE-001,DOC-002 | 重新打包 v1.0.0，以单一根提交重写公开 `main` 与 `v1.0.0` 标签，并替换 Release 校验和与产物 |
 | REL-004 | done | DOC-003,REL-003 | README 刷新后继续以单一根提交重写公开 `main` 与 `v1.0.0` 标签，不保留中间修改历史 |
 | PLUGIN-001 | done | - | 新增 `GET /api/v1/settings/plugins`，远程设备可见 profile 已装/已加载插件、实际版本与异常状态；含纯逻辑与 HTTP 层测试 |
+| FS-003 | done | DSH-02-COMPAT | 新增 `GET /api/v1/roots/resolve`，把服务器绝对路径解析成「授权根 + 相对路径」，供客户端打开会话事件里提到的文件；**不泄露根的绝对路径** |

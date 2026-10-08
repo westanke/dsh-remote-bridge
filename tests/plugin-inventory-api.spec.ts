@@ -173,6 +173,89 @@ describe('GET /api/v1/settings/plugins', () => {
   })
 })
 
+describe('GET /api/v1/roots/resolve', () => {
+  it('maps an absolute path to rootId plus relative path without leaking the root path', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'daw-resolve-api-'))
+    cleanup.push(root)
+    await writeFile(path.join(root, 'notes.md'), '# notes')
+
+    const server = await startServer()
+    try {
+      const rootRecord = await server.database.addRoot(root, 'workspace')
+      const pairing = server.database.createPairing([rootRecord.id], ['files.read'])
+      const token = server.database.exchangePairing(pairing.code, 'Resolve test').token
+
+      const response = await fetch(
+        `${server.baseUrl}/api/v1/roots/resolve?path=${encodeURIComponent(path.join(root, 'notes.md'))}`,
+        { headers: { Authorization: `Bearer ${token}` } },
+      )
+
+      expect(response.status).toBe(200)
+      const body = await response.json() as Record<string, unknown>
+      expect(body).toMatchObject({ rootId: rootRecord.id, path: 'notes.md', kind: 'file' })
+      // 关键安全断言：响应里不得出现授权根的绝对路径。
+      expect(JSON.stringify(body)).not.toContain(root)
+    } finally {
+      await server.close()
+    }
+  })
+
+  it('rejects a path outside every authorized root', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'daw-resolve-api-'))
+    cleanup.push(root)
+    const server = await startServer()
+    try {
+      const rootRecord = await server.database.addRoot(root, 'workspace')
+      const pairing = server.database.createPairing([rootRecord.id], ['files.read'])
+      const token = server.database.exchangePairing(pairing.code, 'Resolve test').token
+
+      const response = await fetch(
+        `${server.baseUrl}/api/v1/roots/resolve?path=${encodeURIComponent('/etc/hostname')}`,
+        { headers: { Authorization: `Bearer ${token}` } },
+      )
+
+      expect(response.status).toBe(404)
+      await expect(response.json()).resolves.toMatchObject({ error: { code: 'PATH_OUTSIDE_ROOTS' } })
+    } finally {
+      await server.close()
+    }
+  })
+
+  it('rejects a relative path instead of guessing a base directory', async () => {
+    const server = await startServer()
+    try {
+      const pairing = server.database.createPairing([], ['files.read'])
+      const token = server.database.exchangePairing(pairing.code, 'Resolve test').token
+
+      const response = await fetch(`${server.baseUrl}/api/v1/roots/resolve?path=notes.md`, {
+        headers: { Authorization: `Bearer ${token}` },
+      })
+
+      expect(response.status).toBe(400)
+      await expect(response.json()).resolves.toMatchObject({ error: { code: 'PATH_NOT_ABSOLUTE' } })
+    } finally {
+      await server.close()
+    }
+  })
+
+  it('rejects a device without files.read', async () => {
+    const server = await startServer()
+    try {
+      const pairing = server.database.createPairing([], ['settings.read'])
+      const token = server.database.exchangePairing(pairing.code, 'No files').token
+
+      const response = await fetch(
+        `${server.baseUrl}/api/v1/roots/resolve?path=${encodeURIComponent('/tmp/x')}`,
+        { headers: { Authorization: `Bearer ${token}` } },
+      )
+
+      expect(response.status).toBe(403)
+    } finally {
+      await server.close()
+    }
+  })
+})
+
 function fakeApi() {
   const empty = async function* () { /* no live events in this contract test */ }
   return {
