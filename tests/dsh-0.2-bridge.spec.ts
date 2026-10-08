@@ -62,6 +62,13 @@ function makeHost() {
       listConfigurableProviders: vi.fn(() => [] as any[]),
       discoverModels: vi.fn(async () => []),
     },
+    fileUploads: {
+      upload: vi.fn(async () => ({ receiptId: 'receipt-1' })),
+      bindPrompt: vi.fn(() => ({ commit: vi.fn() })),
+    },
+    attachments: {
+      readImage: vi.fn(async () => ({ ref: { mediaType: 'image/jpeg' }, data: new Uint8Array([1, 2, 3]) })),
+    },
     on(event: string, listener: Listener): () => void {
       const list = handlers.get(event) ?? []
       list.push(listener)
@@ -175,6 +182,119 @@ describe('dsh 0.2.x bridge: approval answerer', () => {
     const [outcomePromise] = emit('approval/request', { toolName: 'Bash' }, next)
     expect(await outcomePromise).toBe('unavailable')
     expect(delegated).toBe(true)
+  })
+})
+
+describe('dsh 0.2.x bridge: attachments', () => {
+  it('reads image bytes by id and reports the media type', async () => {
+    const { host } = makeHost()
+    const api = createDsh02ApiProxy(host)
+
+    const response = await api.sessions.readAttachment({
+      rpcId: 'r',
+      payload: { attachmentId: 'sha256:9759b45815c74eb5289a46074ad655a0' },
+    })
+
+    expect(response.result.ok).toBe(true)
+    expect(response.result.ok && response.result.value.mediaType).toBe('image/jpeg')
+    expect(response.result.ok && Array.from(response.result.value.bytes)).toEqual([1, 2, 3])
+    // 只按 id 查找：其余元数据（宽高、name）对附件存储的定位没有意义。
+    const [ref] = vi.mocked(host.attachments.readImage).mock.calls[0] as [{ attachmentId: string }]
+    expect(ref).toEqual({
+      attachmentId: 'sha256:9759b45815c74eb5289a46074ad655a0',
+    })
+  })
+
+  it('surfaces a storage failure instead of returning empty bytes', async () => {
+    // 附件不存在时必须抛错：返回空字节会让客户端渲染出一个 0 字节的"破图"，
+    // 而错误能让界面显示"图片已过期或不可用"。
+    const { host } = makeHost()
+    const api = createDsh02ApiProxy(host)
+    vi.mocked(host.attachments.readImage).mockRejectedValueOnce(new Error('ENOENT'))
+
+    const response = await api.sessions.readAttachment({ rpcId: 'r', payload: { attachmentId: 'sha256:dead' } })
+    expect(response.result.ok).toBe(false)
+  })
+
+  it('uploads file bytes and returns the receipt the prompt will reference', async () => {
+    const { host } = makeHost()
+    const api = createDsh02ApiProxy(host)
+
+    const response = await api.sessions.uploadAttachment({
+      rpcId: 'r',
+      payload: { sessionId: 'session-1', data: 'QUJD', name: 'notes.txt' },
+    })
+
+    expect(response.result.ok).toBe(true)
+    expect(response.result.ok && response.result.value).toEqual({ receiptId: 'receipt-1', name: 'notes.txt' })
+    expect(host.fileUploads.upload).toHaveBeenCalledTimes(1)
+    // 上传必须绑定到会话对应的 Agent —— 凭证的作用域是 Agent，不是全局。
+    expect(host.sessionController.resolveAgent).toHaveBeenCalledWith('session-1')
+  })
+
+  it('omits an empty name rather than sending a blank one', async () => {
+    const { host } = makeHost()
+    const api = createDsh02ApiProxy(host)
+
+    await api.sessions.uploadAttachment({ rpcId: 'r', payload: { sessionId: 'session-1', data: 'QUJD', name: '' } })
+
+    const [, request] = vi.mocked(host.fileUploads.upload).mock.calls[0] as [
+      unknown,
+      { data: string; name?: string },
+      AbortSignal,
+    ]
+    expect(request).toEqual({ data: 'QUJD' })
+  })
+
+  it('binds file receipts to the prompt and commits only after it succeeds', async () => {
+    const { host } = makeHost()
+    const api = createDsh02ApiProxy(host)
+    const binding = { commit: vi.fn() }
+    vi.mocked(host.fileUploads.bindPrompt).mockReturnValue(binding)
+
+    const payload = {
+      sessionId: 'session-1',
+      mode: 'queue' as const,
+      content: [{ type: 'file' as const, receiptId: 'receipt-1' }],
+    }
+
+    await api.sessions.prompt({ rpcId: 'r', payload })
+    expect(host.fileUploads.bindPrompt).toHaveBeenCalledTimes(1)
+    expect(binding.commit).toHaveBeenCalledTimes(1)
+
+    // 失败时不 commit：内核的语义是「unless delivery commits it」才归还凭证，
+    // 所以不 commit 意味着凭证保留，用户可以重试而不是重新上传。
+    binding.commit.mockClear()
+    vi.mocked(host.sessionController.prompt).mockRejectedValueOnce(new Error('delivery failed'))
+    await api.sessions.prompt({ rpcId: 'r', payload })
+    expect(binding.commit).not.toHaveBeenCalled()
+  })
+
+  it('never touches fileUploads for a text-only prompt', async () => {
+    const { host } = makeHost()
+    const api = createDsh02ApiProxy(host)
+
+    await api.sessions.prompt({
+      rpcId: 'r',
+      payload: { sessionId: 'session-1', mode: 'queue', content: [{ type: 'text', text: 'hello' }] },
+    })
+
+    expect(host.fileUploads.bindPrompt).not.toHaveBeenCalled()
+    expect(host.fileUploads.upload).not.toHaveBeenCalled()
+  })
+
+  it('passes image parts through unchanged so the host can inline them', async () => {
+    const { host } = makeHost()
+    const api = createDsh02ApiProxy(host)
+
+    const content = [
+      { type: 'text' as const, text: '看这张' },
+      { type: 'image' as const, mediaType: 'image/png', data: 'aW1n', name: 'shot.png' },
+    ]
+    await api.sessions.prompt({ rpcId: 'r', payload: { sessionId: 'session-1', mode: 'steer', content } })
+
+    const [request] = vi.mocked(host.sessionController.prompt).mock.calls[0] as [{ content: unknown }, AbortSignal]
+    expect(request.content).toEqual(content)
   })
 })
 

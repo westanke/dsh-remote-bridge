@@ -6,6 +6,7 @@ import { DEVICE_SCOPES } from '../shared/contracts.ts'
 import type { AuthService } from './auth.ts'
 import { requestAddress } from './auth.ts'
 import type { DshChatAdapter } from './chat-adapter.ts'
+import type { PromptContentPart } from './chat-adapter.ts'
 import type { StoredRoot, WorkspaceDatabase } from './database.ts'
 import { ApiError, asApiError } from './errors.ts'
 import type { FileService } from './file-service.ts'
@@ -418,18 +419,21 @@ export class ApiRouter {
       }
       if (method === 'POST') {
         this.options.auth.requireScope(principal, 'chat.write')
-        const body = await readJson(req, 1_000_000) as Record<string, unknown>
+        // 上限刻意放大到 12 MiB：图片以 base64 内联在 payload 里，而 base64 会把字节
+        // 膨胀约 33%。12 MiB ≈ 8 MiB 原图，与客户端侧的限制对齐 —— 两端不一致的话，
+        // 用户会看到「明明还没到限制却被拒」。
+        const body = await readJson(req, 12_000_000) as Record<string, unknown>
         const cached = this.readIdempotent(principal, body.clientRequestId)
         if (cached !== undefined) {
           sendJson(res, cached.status, cached.body)
           return
         }
-        if (typeof body.text !== 'string') throw new ApiError(400, 'BODY_INVALID', 'text is required.')
+        const parts = readPromptParts(body)
         const mode = body.mode === 'steer' ? 'steer' : 'queue'
         const result = await this.options.chat.prompt(
           principal,
           sessionId,
-          body.text,
+          parts,
           mode,
           typeof body.clientTimeZone === 'string' ? body.clientTimeZone : undefined,
         )
@@ -439,6 +443,49 @@ export class ApiRouter {
         sendJson(res, 202, response)
         return
       }
+    }
+
+    // 附件字节：会话历史里的图片以 attachmentId 引用存在，客户端要靠这条把图取回来。
+    //
+    // id 形如 `sha256:<hex>` —— **含冒号**，所以路径段必须 URL 解码；
+    // 客户端也要记得编码，否则 `:` 在路径里会被某些代理改写。
+    const attachmentRoute = pathname.match(/^\/api\/v1\/attachments\/([^/]+)$/)
+    if (attachmentRoute !== null && method === 'GET') {
+      this.options.auth.requireScope(principal, 'files.read')
+      const attachmentId = decodeURIComponent(attachmentRoute[1] as string)
+      const { bytes, mediaType } = await this.options.chat.readAttachment(principal, attachmentId)
+      res.statusCode = 200
+      res.setHeader('Content-Type', mediaType)
+      res.setHeader('Content-Length', String(bytes.byteLength))
+      // 附件内容按 id（内容哈希）寻址，永不变更，可以放心长缓存。
+      res.setHeader('Cache-Control', 'private, max-age=31536000, immutable')
+      res.end(Buffer.from(bytes))
+      return
+    }
+
+    // 附件上传：客户端把文件字节发上来，换一个 prompt 可引用的 receiptId。
+    //
+    // 为什么必须由插件中转：核心里那条 `/api/session/uploadFileBinary` 只绑 loopback，
+    // 手机根本到不了；而 `ctx.fileUploads` 这个 cordis 服务就在同一进程里，可直接调。
+    const attachmentsRoute = pathname.match(/^\/api\/v1\/chat\/sessions\/([^/]+)\/attachments$/)
+    if (attachmentsRoute !== null && method === 'POST') {
+      this.options.auth.requireScope(principal, 'chat.write')
+      const body = await readJson(req, 24_000_000) as Record<string, unknown>
+      if (typeof body.data !== 'string' || body.data === '') {
+        throw new ApiError(400, 'BODY_INVALID', 'data (base64) is required.')
+      }
+      const name = typeof body.name === 'string' && body.name.trim() !== '' ? body.name.trim() : undefined
+      sendJson(
+        res,
+        201,
+        await this.options.chat.uploadAttachment(
+          principal,
+          decodeURIComponent(attachmentsRoute[1] as string),
+          body.data,
+          name,
+        ),
+      )
+      return
     }
 
     const commandsRoute = pathname.match(/^\/api\/v1\/chat\/sessions\/([^/]+)\/commands$/)
@@ -882,6 +929,55 @@ function validateScopes(value: unknown): DeviceScope[] {
     throw new ApiError(400, 'SCOPE_INVALID', 'The request contains an unknown device scope.')
   }
   return [...new Set(values)] as DeviceScope[]
+}
+
+/**
+ * 把请求体解析成 prompt 内容片段。
+ *
+ * **向后兼容是硬要求**：旧客户端只发 `{"text":"..."}`，新客户端发 `{"content":[...]}`。
+ * 两种都必须能用 —— 否则一次服务端升级就会让所有还在用旧版的人发不出消息。
+ *
+ * 这里逐项校验而不是直接透传：`content` 里的 `type` 是判别器，透传非法结构给内核
+ * 只会换来一个更难懂的报错。
+ */
+function readPromptParts(body: Record<string, unknown>): PromptContentPart[] {
+  if (body.content === undefined) {
+    if (typeof body.text !== 'string') {
+      throw new ApiError(400, 'BODY_INVALID', 'text or content is required.')
+    }
+    return [{ type: 'text', text: body.text }]
+  }
+  if (!Array.isArray(body.content) || body.content.length === 0) {
+    throw new ApiError(400, 'BODY_INVALID', 'content must be a non-empty array.')
+  }
+  return body.content.map((raw, index) => {
+    if (typeof raw !== 'object' || raw === null) {
+      throw new ApiError(400, 'BODY_INVALID', `content[${index}] must be an object.`)
+    }
+    const part = raw as Record<string, unknown>
+    if (part.type === 'text') {
+      if (typeof part.text !== 'string') throw new ApiError(400, 'BODY_INVALID', `content[${index}].text is required.`)
+      return { type: 'text', text: part.text } satisfies PromptContentPart
+    }
+    if (part.type === 'image') {
+      if (typeof part.mediaType !== 'string' || typeof part.data !== 'string') {
+        throw new ApiError(400, 'BODY_INVALID', `content[${index}] needs mediaType and data.`)
+      }
+      return {
+        type: 'image',
+        mediaType: part.mediaType,
+        data: part.data,
+        ...(typeof part.name === 'string' && part.name !== '' ? { name: part.name } : {}),
+      } satisfies PromptContentPart
+    }
+    if (part.type === 'file') {
+      if (typeof part.receiptId !== 'string' || part.receiptId === '') {
+        throw new ApiError(400, 'BODY_INVALID', `content[${index}].receiptId is required.`)
+      }
+      return { type: 'file', receiptId: part.receiptId } satisfies PromptContentPart
+    }
+    throw new ApiError(400, 'BODY_INVALID', `content[${index}].type is not supported.`)
+  })
 }
 
 function validateStringArray(value: unknown, name: string): string[] {

@@ -21,13 +21,55 @@
  */
 
 import { randomUUID } from 'node:crypto'
-import type { RpcResponse } from './chat-adapter.ts'
+import type { PromptContentPart, RpcResponse } from './chat-adapter.ts'
 import type { SettingsApiProxy } from './settings-adapter.ts'
 
 // ── structural views of the 0.2.x host services ────────────────────────────
 // Only the members this bridge actually calls are declared; the real services
 // are richer. Anything missing degrades to an explicit RPC error rather than a
 // crash, so a future Host change is diagnosable from the client.
+
+/**
+ * Prompt content a 0.2.x Host accepts — mirrors its `PromptContentPart` union.
+ *
+ * 权威定义在 `chat-adapter.ts`（协议层），这里只是复用它，避免两处各写一遍
+ * 然后悄悄漂移。
+ */
+export type PromptContentPartLike = PromptContentPart
+
+/**
+ * `ctx.fileUploads`：内核的文件上传服务。
+ *
+ * 由内核的 `@deepseek-ai/dsh-client-file-upload` 以 cordis 服务的形式暴露，
+ * 因此插件**不需要**把字节转发到内核的 HTTP 路由（那条路由只绑 loopback，手机也到不了）。
+ */
+export interface FileUploadsLike {
+  upload(
+    agent: unknown,
+    request: { data: string; name?: string },
+    signal: AbortSignal,
+  ): Promise<{ receiptId: string }>
+  /**
+   * 把凭证绑定到某次 prompt。返回值不 commit 的话凭证会被回收 ——
+   * 所以调用方必须在 prompt **成功之后** commit()。
+   */
+  bindPrompt(agent: unknown, receiptIds: readonly string[], requestId: string): { commit(): void }
+}
+
+/**
+ * `ctx.attachments`：内核的附件存储。
+ *
+ * 为什么会话里的图片必须经由它：消息**发送时**图片是 base64 内联的，但**存进历史后**
+ * 会变成 `{type:'image', attachment:{attachmentId:'sha256:…'}}` 这样的引用 ——
+ * 字节在附件存储里，不在事件里。客户端只拿到 id，所以必须有一步「按 id 取字节」，
+ * 否则历史里的图片一律显示不出来。
+ */
+export interface AttachmentStoreLike {
+  readImage(
+    ref: { attachmentId: string },
+    signal?: AbortSignal,
+  ): Promise<{ ref: { mediaType: string }; data: Uint8Array }>
+}
 
 export interface SessionControllerLike {
   list(request: { cursor?: string }, signal: AbortSignal): Promise<{ items: readonly unknown[] }>
@@ -54,7 +96,7 @@ export interface SessionControllerLike {
     records?: readonly unknown[]
     hasMore?: boolean
   }>
-  prompt(request: { requestId: string; sessionId: string; mode: 'queue' | 'steer'; content: readonly { type: 'text'; text: string }[]; clientTimeZone?: string }, signal: AbortSignal): Promise<{ accepted: true }>
+  prompt(request: { requestId: string; sessionId: string; mode: 'queue' | 'steer'; content: readonly PromptContentPartLike[]; clientTimeZone?: string }, signal: AbortSignal): Promise<{ accepted: true }>
   cancel(request: { sessionId: string }): { accepted: true }
   rename(request: { sessionId: string; title: string }): Promise<{ title: string; seq: number }>
   fork(request: { sessionId: string; atSeq?: number }): Promise<{ sessionId: string }>
@@ -139,6 +181,15 @@ export interface Dsh02HostServices {
   credentialsController: CredentialsControllerLike
   agentPresets: AgentPresetsLike
   llm: LlmLike
+  /** 内核附件存储（`ctx.attachments`）；会话历史里的图片要经它取字节。 */
+  attachments: AttachmentStoreLike
+  /**
+   * Kernel file-upload service (`ctx.fileUploads`).
+   *
+   * 为什么用它而不是内核那条 `/api/session/uploadFileBinary` HTTP 路由：那条路由
+   * 只绑 loopback（手机根本到不了），而这个 cordis 服务就在同一个进程里，插件可直接调。
+   */
+  fileUploads: FileUploadsLike
   /**
    * Cordis event bus of the host context. Used for the two facts the old
    * `apiProxy` event streams carried that no controller returns: session
@@ -550,11 +601,42 @@ export function createDsh02ApiProxy(host: Dsh02HostServices): SettingsApiProxy {
       }),
       prompt: request => call(async () => {
         // 0.2.x requires a client-minted requestId that the old payload omitted.
+        const requestId = randomUUID()
+        const receiptIds = request.payload.content
+          .filter((part): part is { type: 'file'; receiptId: string } => part.type === 'file')
+          .map(part => part.receiptId)
+
+        // 带文件的 prompt 必须先把凭证绑定到这次请求：内核的注释写明凭证
+        // 「unless delivery commits it」会恢复原主人，所以绑定后还要在**成功之后**
+        // commit —— 失败时不 commit，凭证得以保留供用户重试。
+        const binding = receiptIds.length === 0
+          ? undefined
+          : await (async () => host.fileUploads.bindPrompt(await agentFor(request.payload.sessionId), receiptIds, requestId))()
+
         await host.sessionController.prompt(
-          { requestId: randomUUID(), ...request.payload },
+          { requestId, ...request.payload },
           new AbortController().signal,
         )
+        binding?.commit()
         return { accepted: true as const }
+      }),
+      uploadAttachment: request => call(async () => {
+        const { sessionId, data, name } = request.payload
+        const value = await host.fileUploads.upload(
+          await agentFor(sessionId),
+          name === undefined || name === '' ? { data } : { data, name },
+          new AbortController().signal,
+        )
+        return { receiptId: value.receiptId, name: name ?? null }
+      }),
+      readAttachment: request => call(async () => {
+        // 只按 id 取字节：附件存储的实现用 `ID_PATTERN.exec(String(ref.attachmentId))`
+        // 定位对象，其余字段（mediaType/宽高）只是元数据，不参与查找。
+        const stored = await host.attachments.readImage(
+          { attachmentId: request.payload.attachmentId },
+          new AbortController().signal,
+        )
+        return { bytes: stored.data, mediaType: stored.ref.mediaType }
       }),
       cancel: request => call(() => host.sessionController.cancel(request.payload)),
       rename: request => call(() => host.sessionController.rename(request.payload)),

@@ -35,6 +35,12 @@ export const inject = [
   'webServer',
   'agents',
   'commands',
+  // 文件上传服务（ctx.fileUploads）：内核以 cordis 服务形式暴露。用它而不是内核那条
+  // /api/session/uploadFileBinary HTTP 路由 —— 后者只绑 loopback，手机根本到不了。
+  'fileUploads',
+  // 附件存储（ctx.attachments）：会话历史里的图片以 attachmentId 引用存在，
+  // 要显示它们就必须能按 id 取回字节。
+  'attachments',
 ]
 
 export interface Config {
