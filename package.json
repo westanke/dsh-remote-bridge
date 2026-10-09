@@ -1,6 +1,6 @@
 {
   "name": "dsh-remote-bridge",
-  "version": "2.1.2",
+  "version": "2.1.3",
   "description": "A bilingual file workspace and secure remote API for DeepSeek Harness WebUI and mobile clients.",
   "type": "module",
   "packageManager": "pnpm@11.19.0",

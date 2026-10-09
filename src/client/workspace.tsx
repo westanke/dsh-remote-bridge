@@ -542,6 +542,13 @@ export function AdminPanel(props: { api: WorkspaceApi; section: AdminTab }): JSX
           </>}
           {tab === 'trash' && <>
             <h3>{t('pluginTrash')}</h3>
+            {/*
+              用户的原话：「回收站 我一直没找到用途」。
+              原因很实在：桌面端这个面板已经不含文件树，从这里删不了任何文件，
+              所以这个列表只可能来自手机 App 或独立页 /dsh-workspace。
+              写清楚来路，比让人对着空列表猜要好。
+            */}
+            <p className="daw-list-meta">{t('pluginTrashHint')}</p>
             <div className="daw-list">{trash.map(item => <div className="daw-list-row" key={item.id}><div><div className="daw-list-title">{item.path}</div><div className="daw-list-meta">{item.kind} · {formatBytes(item.size)} · {new Date(item.createdAt).toLocaleString(locale)}</div></div><div><button className="daw-command" onClick={() => { void props.api.restoreTrash(item.id).then(refresh).catch(setError) }}>{t('restore')}</button><button className="daw-icon danger" title={t('deletePermanently')} onClick={() => { if (confirm(t('purgeConfirm'))) void props.api.purgeTrash(item.id).then(refresh).catch(setError) }}><Trash2 size={15} /></button></div></div>)}</div>
           </>}
           {tab === 'audit' && <>
