@@ -17,6 +17,7 @@
 - 跨平台结论变化时更新 `COMPATIBILITY.md`；安全边界变化时更新 `SECURITY.md`。
 - 不可逆的架构或协议决定写入 `decisions/ADR-NNNN-*.md`，并加入下方索引。
 - 每次提交前运行 `pnpm docs:check`，把已运行命令追加到 `TESTING.md` 和 `CHANGELOG-DEV.md`。
+- 准备发版、发布 npm 或建双站 Release 时，先读 [RELEASE.md](RELEASE.md) —— 版本号清单、打包器差异、npm 的 2FA 与首次发布暂存审核、发完必做的实测都在那里。
 
 ## ADR 索引
 
