@@ -58,9 +58,9 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: node -e "require('node:fs').mkdirSync('artifacts',{recursive:true})"
       - run: pnpm pack --pack-destination artifacts
-        # Tarball 名含包名与版本号，两者都会随发版变化。写死 `dsh-workspace-1.0.0.tgz`
-        # 意味着任何一次改名或升版都会让后面两步找不到文件，而失败信息只是「文件不存在」，
-        # 看不出真正原因是名字过时了。这里从 package.json 推出来。
+        # Tarball 名含包名与版本号，两者都会随发版变化。写死任何一个具体名字（比如改名前的
+        # `dsh-workspace-1.0.0.tgz`）都意味着改名或升版后下面两步找不到文件，而失败信息只是
+        # 「文件不存在」，看不出真正原因是名字过时了。这里从 package.json 推出来。
       - name: resolve tarball name
         id: tarball
         shell: bash

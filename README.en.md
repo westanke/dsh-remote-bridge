@@ -28,15 +28,13 @@ The interface is bilingual and defaults to Chinese. Prebuilt packages run on Win
 > "adding an authorized root returns 405". Background, rationale, changes, and test results are in
 > [DSH 0.2.x compatibility notes](./docs/project/DSH-0.2-COMPAT.md).
 
-## Screenshots
+## What it looks like
 
 The desktop entry point is a settings-only panel: the sidebar button is now a **gear** icon and opens five settings sections. The directory tree, editor, and file operations were not removed — they moved out of the desktop panel into the plugin's standalone page `/dsh-workspace` (handy for a mobile WebView or a direct link).
 
-![File workspace: file tree and editor](./assets/screenshots/workspace-editor.png)
-
 Remote access remains disabled until a local administrator chooses a bind address, port, and initial device permissions.
 
-![Remote access settings](./assets/screenshots/remote-access.png)
+> This section used to carry two UI screenshots, but both showed the pre-rename interface (titled "DSH 文件工作区"; the remote-access one was still labelled v1.0.0 and showed the file tree and settings as two stacked dialogs). They no longer match the shape described above, so they were removed rather than left to mislead. Re-recording needs a browser environment that can drive the plugin panel, which is not available here.
 
 ## About the rename (2.0.4)
 

@@ -193,7 +193,8 @@ pnpm test
 
 # 2) 打包并在隔离环境安装
 pnpm build && pnpm pack
-DSH_HOME=/path/to/scratch dsh plugin --profile <name> add ./dsh-workspace-1.0.0.tgz
+# tarball 名随包名与版本变化（2.0.4 起包名为 dsh-remote-bridge），用通配而非写死具体名字
+DSH_HOME=/path/to/scratch dsh plugin --profile <name> add ./dsh-remote-bridge-*.tgz
 
 # 3) 端到端流式验证（需先配对取得 token 与一个 sessionId）
 #    探针脚本见适配分支的 .e2e.mjs
