@@ -74,11 +74,11 @@
   "author": "Hakunm (https://github.com/Hakunm)",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/Hakunm/dsh-workspace.git"
+    "url": "git+https://github.com/westanke/dsh-remote-bridge.git"
   },
-  "homepage": "https://github.com/Hakunm/dsh-workspace#readme",
+  "homepage": "https://github.com/westanke/dsh-remote-bridge#readme",
   "bugs": {
-    "url": "https://github.com/Hakunm/dsh-workspace/issues"
+    "url": "https://github.com/westanke/dsh-remote-bridge/issues"
   },
   "publishConfig": {
     "access": "public"
