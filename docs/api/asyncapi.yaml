@@ -1,7 +1,7 @@
 asyncapi: 3.0.0
 info:
   title: DeepSeek Harness Mobile Events
-  version: 2.0.0
+  version: 2.0.1
   description: Live file and authorized DSH chat events. Reconnect clients must refresh REST state; unbounded replay is not provided.
 servers:
   local:

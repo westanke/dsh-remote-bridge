@@ -181,7 +181,15 @@ export interface Dsh02HostServices {
   credentialsController: CredentialsControllerLike
   agentPresets: AgentPresetsLike
   llm: LlmLike
-  /** 内核附件存储（`ctx.attachments`）；会话历史里的图片要经它取字节。 */
+  /**
+   * 内核附件存储（`ctx.attachments`）；会话历史里的图片要经它取字节。
+   *
+   * 必须是**已经取到的服务对象**，不能是 `ctx` 本身：cordis 的注入属性是有生命周期的
+   * 惰性访问器，只在 `apply` 执行期间可读。把它存进 `host` 里、等到 HTTP 请求回调
+   * （`readAttachment`）里再读，就会撞上
+   * `cannot get property "attachments" without inject` —— 请求链路本身没问题，
+   * 挂在服务端、而且只在真的去取图时才炸，所以很难在本地测出来。
+   */
   attachments: AttachmentStoreLike
   /**
    * Kernel file-upload service (`ctx.fileUploads`).
@@ -505,6 +513,18 @@ function sessionIdOf(summary: unknown): string | undefined {
 export function createDsh02ApiProxy(host: Dsh02HostServices): SettingsApiProxy {
   const mux = new FrameHub()
   const hostFrames = new FrameHub()
+  // **立刻**把要用的 cordis 服务取出来存进局部常量。
+  //
+  // 早先的版本是在 RPC 回调里写 `host.attachments.readImage(...)`，把 ctx 一路传了下去。
+  // 那在 `apply` 执行期间是对的，可请求是之后才来的 —— cordis 的注入属性有生命周期，
+  // 到那时已经失效，于是每张历史图片的读取都报
+  // `cannot get property "attachments" without inject`（500，用户只看到「图片不可用」）。
+  //
+  // 在这里读一次，服务对象本身是稳定的引用，之后闭包直接用它。
+  const attachmentStore = host.attachments
+  // 同上：fileUploads 也是 cordis 服务，取值时机必须和 attachments 一样在 apply 期间。
+  // 它现在还能用，只是因为这个服务恰好一直被别的插件持有；靠「碰巧能用」是不行的。
+  const fileUploadService = host.fileUploads
   const approvals = new ApprovalBridge(host, mux)
   approvals.attach()
   const relay = new SessionEventRelay(host, mux)
@@ -611,7 +631,7 @@ export function createDsh02ApiProxy(host: Dsh02HostServices): SettingsApiProxy {
         // commit —— 失败时不 commit，凭证得以保留供用户重试。
         const binding = receiptIds.length === 0
           ? undefined
-          : await (async () => host.fileUploads.bindPrompt(await agentFor(request.payload.sessionId), receiptIds, requestId))()
+          : await (async () => fileUploadService.bindPrompt(await agentFor(request.payload.sessionId), receiptIds, requestId))()
 
         await host.sessionController.prompt(
           { requestId, ...request.payload },
@@ -622,7 +642,7 @@ export function createDsh02ApiProxy(host: Dsh02HostServices): SettingsApiProxy {
       }),
       uploadAttachment: request => call(async () => {
         const { sessionId, data, name } = request.payload
-        const value = await host.fileUploads.upload(
+        const value = await fileUploadService.upload(
           await agentFor(sessionId),
           name === undefined || name === '' ? { data } : { data, name },
           new AbortController().signal,
@@ -632,7 +652,7 @@ export function createDsh02ApiProxy(host: Dsh02HostServices): SettingsApiProxy {
       readAttachment: request => call(async () => {
         // 只按 id 取字节：附件存储的实现用 `ID_PATTERN.exec(String(ref.attachmentId))`
         // 定位对象，其余字段（mediaType/宽高）只是元数据，不参与查找。
-        const stored = await host.attachments.readImage(
+        const stored = await attachmentStore.readImage(
           { attachmentId: request.payload.attachmentId },
           new AbortController().signal,
         )

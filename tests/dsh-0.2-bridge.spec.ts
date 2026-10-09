@@ -205,6 +205,49 @@ describe('dsh 0.2.x bridge: attachments', () => {
     })
   })
 
+  it('keeps working after the cordis context is torn down', async () => {
+    // 这条钉的是 2.0.0 发出去之后线上炸掉的那个 bug。
+    //
+    // cordis 的注入属性（ctx.attachments / ctx.fileUploads）是**有生命周期**的惰性访问器：
+    // 只在 `apply` 执行期间可读，之后访问会抛
+    // `cannot get property "attachments" without inject`。
+    //
+    // 原来的写法把 ctx 一路传进 RPC 回调，等 HTTP 请求真的来了才去读 ——
+    // 于是所有历史图片的读取全挂，而会话/消息这些端点一切正常，本地也测不出来：
+    // 测试里用的是普通对象属性，没有生命周期。
+    //
+    // 这里用 getter 复现真实语义：apply 期间可读，之后抛错。
+    const { host } = makeHost()
+    const attachments = host.attachments
+    const fileUploads = host.fileUploads
+    let alive = true
+    const ephemeral = new Proxy(host, {
+      get(target, prop, receiver) {
+        if (prop === 'attachments' && !alive) throw new Error('cannot get property "attachments" without inject')
+        if (prop === 'fileUploads' && !alive) throw new Error('cannot get property "fileUploads" without inject')
+        return Reflect.get(target, prop, receiver)
+      },
+    }) as Dsh02HostServices
+    const api = createDsh02ApiProxy(ephemeral)
+    // apply 结束：cordis 注销注入。
+    alive = false
+
+    const read = await api.sessions.readAttachment({
+      rpcId: 'r',
+      payload: { attachmentId: 'sha256:9759b45815c74eb5289a46074ad655a0' },
+    })
+    expect(read.result.ok).toBe(true)
+    expect(read.result.ok && Array.from(read.result.value.bytes)).toEqual([1, 2, 3])
+    expect(attachments.readImage).toHaveBeenCalledTimes(1)
+
+    const uploaded = await api.sessions.uploadAttachment({
+      rpcId: 'u',
+      payload: { sessionId: 'session-1', data: 'QUJD', name: 'notes.txt' },
+    })
+    expect(uploaded.result.ok).toBe(true)
+    expect(fileUploads.upload).toHaveBeenCalledTimes(1)
+  })
+
   it('surfaces a storage failure instead of returning empty bytes', async () => {
     // 附件不存在时必须抛错：返回空字节会让客户端渲染出一个 0 字节的"破图"，
     // 而错误能让界面显示"图片已过期或不可用"。
