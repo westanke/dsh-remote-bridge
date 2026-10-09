@@ -15,7 +15,7 @@
   <img alt="License" src="https://img.shields.io/badge/license-AGPL--3.0-2da44e">
 </p>
 
-`dsh-remote-bridge` is the remote-access bridge plugin for DeepSeek Harness (DSH). It translates DSH's private remote protocol into a versioned REST API so [dsh-companion](https://github.com/westanke/dsh-companion) and other trusted clients can keep using the same chat, workspace, and file capabilities while away from the machine. On the desktop it provides a centralized settings center (Roots / Remote / Devices / Trash / Audit), and it ships a standalone file workspace page at `/dsh-workspace` for browsing and editing local files.
+`dsh-remote-bridge` is the remote-access bridge plugin for DeepSeek Harness (DSH). It translates DSH's private remote protocol into a versioned REST API so dsh-companion ([GitHub](https://github.com/westanke/dsh-companion) · [Gitee](https://gitee.com/westanke/dsh-companion)) and other trusted clients can keep using the same chat, workspace, and file capabilities while away from the machine. On the desktop it provides a centralized settings center (Roots / Remote / Devices / Trash / Audit), and it ships a standalone file workspace page at `/dsh-workspace` for browsing and editing local files.
 
 The interface is bilingual and defaults to Chinese. Prebuilt packages run on Windows, macOS, and Linux without compiling on the target server.
 
@@ -60,12 +60,21 @@ So seeing `dsh-workspace` in a URL, the standalone page path, or the state direc
 - Node.js `^22.19.0` or `>=24.0.0`
 - Port `3090`, or another available port
 
-Run as the same operating-system user that runs DSH WebUI:
+Run as the same operating-system user that runs DSH WebUI (pick either host — the tarball is identical):
 
 ```sh
+# GitHub
 dsh plugin --profile web add https://github.com/westanke/dsh-remote-bridge/releases/download/v2.0.4/dsh-remote-bridge-2.0.4.tgz
+
+# Gitee (faster from mainland China)
+dsh plugin --profile web add https://gitee.com/westanke/dsh-remote-bridge/releases/download/v2.0.4/dsh-remote-bridge-2.0.4.tgz
+
 npx @deepseek-ai/dsh web
 ```
+
+> This README is shared verbatim by GitHub and Gitee, so any address that must carry a hostname
+> (the install commands, release downloads) lists both hosts. Relative links follow the site you
+> are reading on, but `/releases/download/...` has no relative form.
 
 Restart WebUI after installation. A **Workspace settings** entry with a gear icon appears at the bottom of the sidebar; it opens the settings-only panel, which does **not** contain the file tree. The in-conversation **Files** tab was removed in 2.0.4. To browse or edit files, open the standalone page `/dsh-workspace`.
 
@@ -273,4 +282,4 @@ v2.0.4 was developed against DSH `master@47f943859bef60e4160492346772ded9b24f765
 - Author: upstream [Hakunm](https://github.com/Hakunm); this fork maintained by [westanke](https://github.com/westanke)
 - Repository: [GitHub](https://github.com/westanke/dsh-remote-bridge) · [Gitee](https://gitee.com/westanke/dsh-remote-bridge)
 - License: [GNU Affero General Public License v3.0](./LICENSE)
-- Android client: [dsh-companion](https://github.com/westanke/dsh-companion) (a fork of the upstream [dsh-android-app](https://github.com/Hakunm/dsh-android-app), kept in step with this plugin)
+- Android client: dsh-companion ([GitHub](https://github.com/westanke/dsh-companion) · [Gitee](https://gitee.com/westanke/dsh-companion)), a fork of the upstream [dsh-android-app](https://github.com/Hakunm/dsh-android-app), kept in step with this plugin
