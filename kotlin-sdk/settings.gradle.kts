@@ -1,1 +1,1 @@
-rootProject.name = "dsh-workspace-kotlin"
+rootProject.name = "dsh-remote-bridge-kotlin"

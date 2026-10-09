@@ -58,6 +58,14 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: node -e "require('node:fs').mkdirSync('artifacts',{recursive:true})"
       - run: pnpm pack --pack-destination artifacts
+        # Tarball 名含包名与版本号，两者都会随发版变化。写死 `dsh-workspace-1.0.0.tgz`
+        # 意味着任何一次改名或升版都会让后面两步找不到文件，而失败信息只是「文件不存在」，
+        # 看不出真正原因是名字过时了。这里从 package.json 推出来。
+      - name: resolve tarball name
+        id: tarball
+        shell: bash
+        run: |
+          echo "file=$(node -p "require('./package.json').name + '-' + require('./package.json').version + '.tgz'")" >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@v4
         with:
           repository: deepseek-ai/deepseek-harness
@@ -65,7 +73,7 @@ jobs:
           path: deepseek-harness
       - working-directory: deepseek-harness
         run: pnpm install --frozen-lockfile
-      - run: pnpm exec tsx scripts/smoke-profile-install.ts deepseek-harness artifacts/dsh-workspace-1.0.0.tgz
+      - run: pnpm exec tsx scripts/smoke-profile-install.ts deepseek-harness "artifacts/${{ steps.tarball.outputs.file }}"
       - if: matrix.os == 'ubuntu-latest'
         working-directory: deepseek-harness
         run: pnpm build
@@ -74,7 +82,7 @@ jobs:
         run: |
           set -euo pipefail
           export DSH_HOME="$RUNNER_TEMP/daw-runtime-home"
-          (cd deepseek-harness && pnpm dsh plugin --profile web add "$GITHUB_WORKSPACE/artifacts/dsh-workspace-1.0.0.tgz")
+          (cd deepseek-harness && pnpm dsh plugin --profile web add "$GITHUB_WORKSPACE/artifacts/${{ steps.tarball.outputs.file }}")
           (cd deepseek-harness && node --import tsx/esm apps/cli/src/bin.ts web --port 43992) &
           server_pid=$!
           trap 'kill "$server_pid" 2>/dev/null || true' EXIT

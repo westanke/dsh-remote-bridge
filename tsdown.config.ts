@@ -14,7 +14,7 @@ const clientExternals = [
 
 export default defineConfig([
   {
-    name: 'dsh-workspace/host',
+    name: 'dsh-remote-bridge/host',
     entry: { index: 'src/index.ts' },
     outDir: 'lib',
     format: 'esm',
@@ -25,7 +25,7 @@ export default defineConfig([
     clean: false,
   },
   {
-    name: 'dsh-workspace/client',
+    name: 'dsh-remote-bridge/client',
     entry: { client: 'src/client/index.tsx' },
     outDir: 'lib',
     format: 'cjs',
@@ -41,13 +41,13 @@ export default defineConfig([
     },
     outputOptions: {
       entryFileNames: 'client.cjs',
-      banner: "window.__ModuleLoader__.load({ id: 'dsh-workspace', factory: (require) => {",
+      banner: "window.__ModuleLoader__.load({ id: 'dsh-remote-bridge', factory: (require) => {",
       intro: 'var module = { exports: {} }; var exports = module.exports;',
       footer: 'return module.exports; } });',
     },
   },
   {
-    name: 'dsh-workspace/standalone',
+    name: 'dsh-remote-bridge/standalone',
     entry: { standalone: 'src/standalone/index.tsx' },
     outDir: 'lib',
     format: 'iife',

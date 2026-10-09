@@ -14,8 +14,9 @@ interface ClientContext {
 }
 
 // One event, one dialog. The section lives inside the panel, so opening it never means opening a
-// second overlay: 'dsh-workspace:open-section' can carry a section name via `detail`.
-const OPEN_PANEL_EVENT = 'dsh-workspace:open-panel'
+// second overlay; the event's `detail` may carry a section name.
+// The event name is plugin-internal and tracks the package rename; the API prefix below is not.
+const OPEN_PANEL_EVENT = 'dsh-remote-bridge:open-panel'
 const DEFAULT_SECTION: PanelSection = DEFAULT_PANEL_SECTION
 const api = new WorkspaceApi('/dsh-workspace-api/api/v1', '/dsh-workspace-api/manage', undefined, true)
 
@@ -33,7 +34,7 @@ export function apply(ctx: ClientContext): void {
   // So: restore the sidebar button, pointing at the unified settings panel. One button, one dialog,
   // every section reachable from its rail.
   ctx.effect(() => localizedSlot(ctx, 'sidebar.footer.action', {
-    name: 'sidebar.footer.action', id: 'dsh-workspace-open', order: 80,
+    name: 'sidebar.footer.action', id: 'dsh-remote-bridge-open', order: 80,
   }, SidebarAction), 'dsh workspace sidebar action')
 
   // `conversation.view` (the in-chat file tab) is deliberately NOT registered: the user asked for
@@ -42,7 +43,7 @@ export function apply(ctx: ClientContext): void {
 
   ctx.effect(() => ctx.slots.inject('shell.overlay', () => ctx.slots.register({
     name: 'shell.overlay',
-    id: 'dsh-workspace-overlay',
+    id: 'dsh-remote-bridge-overlay',
     order: 80,
   }, GlobalOverlay)), 'dsh workspace settings overlay')
 }

@@ -11,7 +11,22 @@ import { attachEmbeddedRoutes, RemoteApiServer } from './host/server.ts'
 import { DshSettingsAdapter } from './host/settings-adapter.ts'
 import { PLUGIN_VERSION } from './shared/version.ts'
 
-export const name = 'dsh-workspace'
+/**
+ * 插件身份。
+ *
+ * 2.0.4 起由 `dsh-workspace` 改名为 `dsh-remote-bridge`：插件实际承担的是
+ * 「把 DSH 内核的私有 remote 协议翻译成版本化 REST，供手机端远程访问这台机器」，
+ * 外加一个设置中心（根目录 / 远程访问 / 设备 / 回收站 / 审计）。原先的
+ * 「workspace」只是其中一页，名字比内容宽。
+ *
+ * **以下三处刻意不改**，它们是已发布客户端依赖的对外契约，改了等于破坏兼容：
+ * - REST 前缀 `/dsh-workspace-api`（`src/host/server.ts`）
+ * - 独立页路径 `/dsh-workspace`（同上）
+ * - 浏览器存储键 `dsh-workspace-device-token`（`src/standalone/index.tsx`）
+ *
+ * 已发布的 App 把这些路径写死了，改名只动「装的时候叫什么、bundle 叫什么」。
+ */
+export const name = 'dsh-remote-bridge'
 
 /**
  * Host services this plugin needs, for DSH 0.2.x.
@@ -63,7 +78,7 @@ export async function apply(ctx: HostContext, config: Config = {}): Promise<void
   const port = normalizeListenerPort(config.port ?? 3090, true)
   const remoteHost = normalizeListenerHost(config.remoteHost ?? DEFAULT_REMOTE_HOST)
   const maxUploadBytes = config.maxUploadBytes ?? 20 * 1024 * 1024
-  if (!Number.isSafeInteger(maxUploadBytes) || maxUploadBytes < 1) throw new Error('dsh-workspace: maxUploadBytes must be positive')
+  if (!Number.isSafeInteger(maxUploadBytes) || maxUploadBytes < 1) throw new Error('dsh-remote-bridge: maxUploadBytes must be positive')
 
   const database = new WorkspaceDatabase(dataDir)
   const events = new WorkspaceEventBus()
@@ -97,9 +112,9 @@ export async function apply(ctx: HostContext, config: Config = {}): Promise<void
     disposeEmbedded()
     await remote.stop()
     database.close()
-  }, 'dsh-workspace lifecycle')
+  }, 'dsh-remote-bridge lifecycle')
   const status = remote.status()
-  ctx.logger.info(`dsh-workspace v${PLUGIN_VERSION}: ${status.host}:${status.port} (${status.remoteEnabled ? 'remote enabled' : 'loopback only'})`)
+  ctx.logger.info(`dsh-remote-bridge v${PLUGIN_VERSION}: ${status.host}:${status.port} (${status.remoteEnabled ? 'remote enabled' : 'loopback only'})`)
 }
 
 export default apply

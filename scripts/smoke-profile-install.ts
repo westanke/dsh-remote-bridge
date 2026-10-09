@@ -15,15 +15,18 @@ try {
     dependencies?: Record<string, string>
     dsh?: { profile?: { bundles?: string[] } }
   }
-  if (manifest.dependencies?.['dsh-workspace'] === undefined) {
+  // 2.0.4 起包名是 dsh-remote-bridge（原先 dsh-workspace，名字比内容宽）。
+  // 这三条断言盯的是「tarball 真的装进了 profile 并被激活」，所以必须跟着包名走 ——
+  // 改了名不改这里，CI 会在真实安装成功之后报「插件没被记录」。
+  if (manifest.dependencies?.['dsh-remote-bridge'] === undefined) {
     throw new Error('The plugin was not recorded as a profile dependency.')
   }
-  if (!manifest.dsh?.profile?.bundles?.includes('dsh-workspace')) {
+  if (!manifest.dsh?.profile?.bundles?.includes('dsh-remote-bridge')) {
     throw new Error('The plugin bundle was not activated in the web profile.')
   }
   const composed = runDsh(['web', '--dump-config'], true)
-  if (!composed.includes('name: dsh-workspace')) {
-    throw new Error('The composed DSH profile does not contain the workspace host row.')
+  if (!composed.includes('name: dsh-remote-bridge')) {
+    throw new Error('The composed DSH profile does not contain the remote-bridge host row.')
   }
   console.log('profile-install: tarball installed, bundle activated, and DSH config composed')
 } finally {

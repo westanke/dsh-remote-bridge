@@ -1,13 +1,15 @@
 # Install this layer with:
-# dsh plugin --profile web add dsh-workspace
+# dsh plugin --profile web add dsh-remote-bridge
 - insert:
-    - id: dsh-workspace
-      name: dsh-workspace
+    - id: dsh-remote-bridge
+      name: dsh-remote-bridge
       # DSH 0.2.x host services (see src/host/dsh-0.2-bridge.ts). The pre-0.2
       # `apiProxy` facade is rebuilt from these; `@deepseek-ai/dsh-host-apiproxy`
       # stopped shipping at 0.1.1-rc.2 and nothing provides `apiProxy` after it.
       inject: [sessionController, workspaceController, workspaceRegistry, settingsController, credentialsController, agentPresets, llm, webServer, agents, commands]
       config:
+        # 状态目录**不改名**：已装的机器上有既有数据库与回收站，换目录等于让用户
+        # 的授权根配置和回收站全部消失。改名只动「装的时候叫什么、bundle 叫什么」。
         dataDir: !!js dshHomePath('dsh-workspace')
         remoteHost: 0.0.0.0
         port: 3090
