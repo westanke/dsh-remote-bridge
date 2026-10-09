@@ -15,7 +15,7 @@
   <img alt="License" src="https://img.shields.io/badge/license-AGPL--3.0-2da44e">
 </p>
 
-`dsh-remote-bridge` 是 DeepSeek Harness（DSH）的远程访问桥接插件：它把 DSH 内核的私有 remote 协议翻译成版本化的 REST 接口，让 [dsh-android-app](https://github.com/Hakunm/dsh-android-app) 等受信任客户端在离开电脑后仍能使用同一套聊天、工作区与文件能力；桌面端提供一个集中设置中心（根目录 / 远程访问 / 设备 / 回收站 / 审计），插件另带一个独立的文件工作区页面 `/dsh-workspace`，用于浏览与编辑本机文件。
+`dsh-remote-bridge` 是 DeepSeek Harness（DSH）的远程访问桥接插件：它把 DSH 内核的私有 remote 协议翻译成版本化的 REST 接口，让 [dsh-companion](https://github.com/westanke/dsh-companion) 等受信任客户端在离开电脑后仍能使用同一套聊天、工作区与文件能力；桌面端提供一个集中设置中心（根目录 / 远程访问 / 设备 / 回收站 / 审计），插件另带一个独立的文件工作区页面 `/dsh-workspace`，用于浏览与编辑本机文件。
 
 界面默认中文，可随时切换 English。插件支持 Windows、macOS 和 Linux，安装包已经包含编译产物，不要求用户在服务器上重新构建。
 
@@ -273,7 +273,7 @@ v2.0.4 基于 DSH `master@47f943859bef60e4160492346772ded9b24f765a` 开发，CI 
 ## 项目信息
 
 - 当前版本：`v2.0.4`
-- 作者：[Github@Hakunm](https://github.com/Hakunm)
+- 作者：上游 [Hakunm](https://github.com/Hakunm)，本 fork 维护 [westanke](https://github.com/westanke)
 - 仓库：[GitHub](https://github.com/westanke/dsh-remote-bridge) · [Gitee](https://gitee.com/westanke/dsh-remote-bridge)
 - 许可证：[GNU Affero General Public License v3.0](./LICENSE)
-- Android 客户端：[dsh-android-app](https://github.com/Hakunm/dsh-android-app)
+- Android 客户端：[dsh-companion](https://github.com/westanke/dsh-companion)（上游 [dsh-android-app](https://github.com/Hakunm/dsh-android-app) 的 fork，与本插件配套）

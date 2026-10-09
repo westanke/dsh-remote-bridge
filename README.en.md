@@ -15,7 +15,7 @@
   <img alt="License" src="https://img.shields.io/badge/license-AGPL--3.0-2da44e">
 </p>
 
-`dsh-remote-bridge` is the remote-access bridge plugin for DeepSeek Harness (DSH). It translates DSH's private remote protocol into a versioned REST API so [dsh-android-app](https://github.com/Hakunm/dsh-android-app) and other trusted clients can keep using the same chat, workspace, and file capabilities while away from the machine. On the desktop it provides a centralized settings center (Roots / Remote / Devices / Trash / Audit), and it ships a standalone file workspace page at `/dsh-workspace` for browsing and editing local files.
+`dsh-remote-bridge` is the remote-access bridge plugin for DeepSeek Harness (DSH). It translates DSH's private remote protocol into a versioned REST API so [dsh-companion](https://github.com/westanke/dsh-companion) and other trusted clients can keep using the same chat, workspace, and file capabilities while away from the machine. On the desktop it provides a centralized settings center (Roots / Remote / Devices / Trash / Audit), and it ships a standalone file workspace page at `/dsh-workspace` for browsing and editing local files.
 
 The interface is bilingual and defaults to Chinese. Prebuilt packages run on Windows, macOS, and Linux without compiling on the target server.
 
@@ -272,7 +272,7 @@ v2.0.4 was developed against DSH `master@47f943859bef60e4160492346772ded9b24f765
 ## Project
 
 - Version: `v2.0.4`
-- Author: [Github@Hakunm](https://github.com/Hakunm)
+- Author: upstream [Hakunm](https://github.com/Hakunm); this fork maintained by [westanke](https://github.com/westanke)
 - Repository: [GitHub](https://github.com/westanke/dsh-remote-bridge) · [Gitee](https://gitee.com/westanke/dsh-remote-bridge)
 - License: [GNU Affero General Public License v3.0](./LICENSE)
-- Android client: [dsh-android-app](https://github.com/Hakunm/dsh-android-app)
+- Android client: [dsh-companion](https://github.com/westanke/dsh-companion) (a fork of the upstream [dsh-android-app](https://github.com/Hakunm/dsh-android-app), kept in step with this plugin)
