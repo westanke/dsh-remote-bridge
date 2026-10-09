@@ -205,47 +205,54 @@ describe('dsh 0.2.x bridge: attachments', () => {
     })
   })
 
-  it('keeps working after the cordis context is torn down', async () => {
-    // 这条钉的是 2.0.0 发出去之后线上炸掉的那个 bug。
+  it('activates even when no plugin provides ctx.attachments or ctx.fileUploads', async () => {
+    // 这条钉的是同一个根因连踩三次的那个 bug。
     //
-    // cordis 的注入属性（ctx.attachments / ctx.fileUploads）是**有生命周期**的惰性访问器：
-    // 只在 `apply` 执行期间可读，之后访问会抛
-    // `cannot get property "attachments" without inject`。
+    // 事实：`attachments` / `fileUploads` 是**惰性解析**的注入属性，读一个没人提供的
+    // 服务 cordis 会抛 `cannot get property "x" without inject`。
+    // - 2.0.0 留在 RPC 回调里现读 → 每张历史图片 500；
+    // - 2.0.1 改成在 apply 期间读 `attachments` → 插件整个激活失败；
+    // - 2.0.2 只给 `attachments` 加了容错、忘了 `fileUploads` → 重启后换个名字继续炸。
     //
-    // 原来的写法把 ctx 一路传进 RPC 回调，等 HTTP 请求真的来了才去读 ——
-    // 于是所有历史图片的读取全挂，而会话/消息这些端点一切正常，本地也测不出来：
-    // 测试里用的是普通对象属性，没有生命周期。
-    //
-    // 这里用 getter 复现真实语义：apply 期间可读，之后抛错。
+    // 所以这条用例把**两个服务一起**置为缺席，并断言四件事：
+    // 构造不抛（插件能加载）、纯文本 prompt 照常发（不牵连）、
+    // 只有用到附件的那两条 RPC 才失败，且原因可读。
     const { host } = makeHost()
-    const attachments = host.attachments
-    const fileUploads = host.fileUploads
-    let alive = true
     const ephemeral = new Proxy(host, {
       get(target, prop, receiver) {
-        if (prop === 'attachments' && !alive) throw new Error('cannot get property "attachments" without inject')
-        if (prop === 'fileUploads' && !alive) throw new Error('cannot get property "fileUploads" without inject')
+        if (prop === 'attachments') throw new Error('cannot get property "attachments" without inject')
+        if (prop === 'fileUploads') throw new Error('cannot get property "fileUploads" without inject')
         return Reflect.get(target, prop, receiver)
       },
     }) as Dsh02HostServices
-    const api = createDsh02ApiProxy(ephemeral)
-    // apply 结束：cordis 注销注入。
-    alive = false
 
+    // 第 1 条：构造本身不能抛。
+    const api = createDsh02ApiProxy(ephemeral)
+
+    // 第 2 条：纯文本 prompt 不碰附件，照常成功。
+    const sent = await api.sessions.prompt({
+      rpcId: 'p',
+      payload: { sessionId: 'session-1', mode: 'queue', content: [{ type: 'text', text: '你好' }] },
+    })
+    expect(sent.result.ok).toBe(true)
+
+    // 第 3 条：只有读图这一条失败，且原因可读。
     const read = await api.sessions.readAttachment({
       rpcId: 'r',
       payload: { attachmentId: 'sha256:9759b45815c74eb5289a46074ad655a0' },
     })
-    expect(read.result.ok).toBe(true)
-    expect(read.result.ok && Array.from(read.result.value.bytes)).toEqual([1, 2, 3])
-    expect(attachments.readImage).toHaveBeenCalledTimes(1)
+    expect(read.result.ok).toBe(false)
+    // 断言 message 而不是 code：code 恒等于错误类名（'Error'），
+    // 真正承载「附件存储不可用」这句话的是 message，App 显示的也是它。
+    expect(read.result.ok === false && read.result.error.message).toMatch(/ATTACHMENT_STORE_UNAVAILABLE/)
 
+    // 第 4 条：上传同理。
     const uploaded = await api.sessions.uploadAttachment({
       rpcId: 'u',
       payload: { sessionId: 'session-1', data: 'QUJD', name: 'notes.txt' },
     })
-    expect(uploaded.result.ok).toBe(true)
-    expect(fileUploads.upload).toHaveBeenCalledTimes(1)
+    expect(uploaded.result.ok).toBe(false)
+    expect(uploaded.result.ok === false && uploaded.result.error.message).toMatch(/FILE_UPLOADS_UNAVAILABLE/)
   })
 
   it('surfaces a storage failure instead of returning empty bytes', async () => {

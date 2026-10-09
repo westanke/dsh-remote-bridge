@@ -208,6 +208,25 @@ export interface Dsh02HostServices {
 
 // ── RPC envelope helpers ───────────────────────────────────────────────────
 
+/**
+ * 容错读取一个 cordis 服务。
+ *
+ * 为什么需要它：读一个没人提供的注入属性，cordis 会抛
+ * `cannot get property "x" without inject`。这个异常**不能**让插件整个激活失败 ——
+ * 一个可选能力缺席，凭什么把会话、消息、设置这些无关功能一起拖下水。
+ *
+ * 代价要说清楚：返回 `null` 意味着这条能力在这套 profile 上就是没有。
+ * 调用方必须自己给出可读的错误（见 readAttachment），而不是让用户看到一个
+ * 语焉不详的 500。
+ */
+function optionalService<T>(host: object, name: string): T | null {
+  try {
+    return (host as Record<string, unknown>)[name] as T
+  } catch {
+    return null
+  }
+}
+
 function ok<T>(value: T): RpcResponse<T> {
   return { result: { ok: true, value } }
 }
@@ -513,18 +532,19 @@ function sessionIdOf(summary: unknown): string | undefined {
 export function createDsh02ApiProxy(host: Dsh02HostServices): SettingsApiProxy {
   const mux = new FrameHub()
   const hostFrames = new FrameHub()
-  // **立刻**把要用的 cordis 服务取出来存进局部常量。
+  // cordis 的注入属性是**惰性解析**的：读一个没人提供的服务会抛
+  // `cannot get property "x" without inject`，而**这不是**「时机不对」，是「压根没有」。
   //
-  // 早先的版本是在 RPC 回调里写 `host.attachments.readImage(...)`，把 ctx 一路传了下去。
-  // 那在 `apply` 执行期间是对的，可请求是之后才来的 —— cordis 的注入属性有生命周期，
-  // 到那时已经失效，于是每张历史图片的读取都报
-  // `cannot get property "attachments" without inject`（500，用户只看到「图片不可用」）。
+  // 2.0.0 把 `host.attachments` 留在 RPC 回调里现读，于是每张历史图片的读取都 500。
+  // 2.0.1 改成在 apply 期间读一次 —— 结果插件**整个激活失败**，因为这条 profile 的
+  // bundles 里没有任何插件提供 `attachments`（`dsh-attachment-local` 只是个库，没有 apply）。
   //
-  // 在这里读一次，服务对象本身是稳定的引用，之后闭包直接用它。
-  const attachmentStore = host.attachments
-  // 同上：fileUploads 也是 cordis 服务，取值时机必须和 attachments 一样在 apply 期间。
-  // 它现在还能用，只是因为这个服务恰好一直被别的插件持有；靠「碰巧能用」是不行的。
-  const fileUploadService = host.fileUploads
+  // 所以正确做法是**容错读取**：有就用，没有就让这一条 RPC 明确报「附件存储不可用」，
+  // 而不是拖垮整个插件。前者只坏一个功能，后者插件根本不加载。
+  const attachmentStore = optionalService<AttachmentStoreLike>(host, 'attachments')
+  // fileUploads 同理。2.0.2 只给 attachments 加了容错、忘了这一个，重启后换个名字继续炸
+  // —— 同一个根因连踩两次。两个可选能力必须一起处理。
+  const fileUploadService = optionalService<FileUploadsLike>(host, 'fileUploads')
   const approvals = new ApprovalBridge(host, mux)
   approvals.attach()
   const relay = new SessionEventRelay(host, mux)
@@ -629,9 +649,17 @@ export function createDsh02ApiProxy(host: Dsh02HostServices): SettingsApiProxy {
         // 带文件的 prompt 必须先把凭证绑定到这次请求：内核的注释写明凭证
         // 「unless delivery commits it」会恢复原主人，所以绑定后还要在**成功之后**
         // commit —— 失败时不 commit，凭证得以保留供用户重试。
+        //
+        // 没有 fileUploads 服务时，只有**带文件**的 prompt 走不通；纯文本 / 纯图片
+        // 照常发。所以这里只在真的要绑凭证时才报错，不牵连其它消息。
         const binding = receiptIds.length === 0
           ? undefined
-          : await (async () => fileUploadService.bindPrompt(await agentFor(request.payload.sessionId), receiptIds, requestId))()
+          : await (async () => {
+              if (fileUploadService == null) {
+                throw new Error('FILE_UPLOADS_UNAVAILABLE: this DSH build provides no ctx.fileUploads service, so file attachments cannot be sent')
+              }
+              return fileUploadService.bindPrompt(await agentFor(request.payload.sessionId), receiptIds, requestId)
+            })()
 
         await host.sessionController.prompt(
           { requestId, ...request.payload },
@@ -642,6 +670,7 @@ export function createDsh02ApiProxy(host: Dsh02HostServices): SettingsApiProxy {
       }),
       uploadAttachment: request => call(async () => {
         const { sessionId, data, name } = request.payload
+        if (fileUploadService == null) throw new Error('FILE_UPLOADS_UNAVAILABLE: this DSH build provides no ctx.fileUploads service, so file attachments cannot be sent')
         const value = await fileUploadService.upload(
           await agentFor(sessionId),
           name === undefined || name === '' ? { data } : { data, name },
@@ -650,6 +679,10 @@ export function createDsh02ApiProxy(host: Dsh02HostServices): SettingsApiProxy {
         return { receiptId: value.receiptId, name: name ?? null }
       }),
       readAttachment: request => call(async () => {
+        // 没有附件存储时明确报错，而不是 `undefined.readImage` 那种看不懂的 TypeError。
+        // 用户的 App 会把这段原因原样显示出来（v1.8.0 起），
+        // 这样「图片读不出来」至少有一个人话的解释。
+        if (attachmentStore == null) throw new Error('ATTACHMENT_STORE_UNAVAILABLE: this DSH build provides no ctx.attachments service, so stored image bytes cannot be read')
         // 只按 id 取字节：附件存储的实现用 `ID_PATTERN.exec(String(ref.attachmentId))`
         // 定位对象，其余字段（mediaType/宽高）只是元数据，不参与查找。
         const stored = await attachmentStore.readImage(
