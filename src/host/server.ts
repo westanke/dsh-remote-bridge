@@ -128,54 +128,6 @@ export class RemoteApiServer implements RemoteControl {
     })
   }
 
-  async serveWorkspace(
-    req: IncomingMessage,
-    res: ServerResponse,
-    options: { apiBase: string; manageBase: string; scriptUrl: string },
-  ): Promise<void> {
-    if (req.method !== 'GET' && req.method !== 'HEAD') {
-      res.writeHead(405)
-      res.end()
-      return
-    }
-    const template = await readFirst([
-      fileURLToPath(new URL('../assets/workspace.html', import.meta.url)),
-      fileURLToPath(new URL('../../assets/workspace.html', import.meta.url)),
-    ], 'utf8') as string
-    const body = template
-      .replaceAll('__API_BASE__', options.apiBase)
-      .replaceAll('__MANAGE_BASE__', options.manageBase)
-      .replaceAll('__SCRIPT_URL__', options.scriptUrl)
-    res.writeHead(200, {
-      'Content-Type': 'text/html; charset=utf-8',
-      'Content-Length': Buffer.byteLength(body),
-      'Cache-Control': 'no-store',
-      'Content-Security-Policy': "default-src 'self'; script-src 'self'; style-src 'unsafe-inline'; connect-src 'self' ws: wss:; img-src 'self' data:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'",
-      'Referrer-Policy': 'no-referrer',
-      'X-Content-Type-Options': 'nosniff',
-    })
-    res.end(req.method === 'HEAD' ? undefined : body)
-  }
-
-  async serveStandaloneScript(req: IncomingMessage, res: ServerResponse): Promise<void> {
-    if (req.method !== 'GET' && req.method !== 'HEAD') {
-      res.writeHead(405)
-      res.end()
-      return
-    }
-    const body = await readFirst([
-      fileURLToPath(new URL('./standalone.js', import.meta.url)),
-      fileURLToPath(new URL('../../lib/standalone.js', import.meta.url)),
-    ]) as Buffer
-    res.writeHead(200, {
-      'Content-Type': 'text/javascript; charset=utf-8',
-      'Content-Length': body.length,
-      'Cache-Control': 'no-cache',
-      'X-Content-Type-Options': 'nosniff',
-    })
-    res.end(req.method === 'HEAD' ? undefined : body)
-  }
-
   private scheduleChange(input: Omit<OperationState, 'id' | 'state'>): RemoteOperationView {
     if (this.changing) throw new ApiError(409, 'LISTENER_CHANGE_PENDING', 'A listener change is already in progress.')
     const operation: OperationState = {
@@ -251,16 +203,6 @@ export class RemoteApiServer implements RemoteControl {
 
   private async createBoundServer(host: string, port: number): Promise<{ server: Server; port: number }> {
     const server = createServer((req, res) => {
-      const url = new URL(req.url ?? '/', 'http://workspace.local')
-      if (url.pathname === '/workspace' || url.pathname === '/workspace/') {
-        void this.serveWorkspace(req, res, { apiBase: '/api/v1', manageBase: '/manage', scriptUrl: '/workspace/standalone.js' })
-          .catch(error => failResponse(res, error))
-        return
-      }
-      if (url.pathname === '/workspace/standalone.js') {
-        void this.serveStandaloneScript(req, res).catch(error => failResponse(res, error))
-        return
-      }
       void this.options.handle(req, res).catch(error => failResponse(res, error))
     })
     server.requestTimeout = 30_000
@@ -362,25 +304,14 @@ export function attachEmbeddedRoutes(
   router: ApiRouter,
   remote: RemoteApiServer,
 ): () => void {
+  // Only the API proxy is registered. The `/dsh-workspace` **page** was removed in 2.2.0 — but the
+  // `/dsh-workspace-api` prefix stays: released apps hard-code it, so dropping the page must not
+  // drop the prefix. Removing the web entry point is not removing the server-side capability.
   const disposers = [
     webServer.register({
       kind: 'prefix',
       path: '/dsh-workspace-api',
       handler: (req, res) => router.handle(req, res, '/dsh-workspace-api'),
-    }),
-    webServer.register({
-      kind: 'exact',
-      path: '/dsh-workspace',
-      handler: (req, res) => remote.serveWorkspace(req, res, {
-        apiBase: '/dsh-workspace-api/api/v1',
-        manageBase: '/dsh-workspace-api/manage',
-        scriptUrl: '/dsh-workspace/standalone.js',
-      }),
-    }),
-    webServer.register({
-      kind: 'exact',
-      path: '/dsh-workspace/standalone.js',
-      handler: (req, res) => remote.serveStandaloneScript(req, res),
     }),
   ]
   return () => { for (const dispose of disposers.reverse()) dispose() }

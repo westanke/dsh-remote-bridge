@@ -4,7 +4,7 @@
 
 | ID | 状态 | 依赖 | 验收条件 |
 | --- | --- | --- | --- |
-| BOOT-001 | done | - | 独立仓库可安装依赖、构建 Host/Client/standalone 并打包 |
+| BOOT-001 | done | - | 独立仓库可安装依赖、构建 Host/Client 并打包（2.2.0 起 standalone entry 已随独立页删除） |
 | DOC-001 | done | BOOT-001 | 恢复文档、ADR 和文档校验器可用 |
 | DOC-002 | done | DOC-001,REL-002 | 参考高关注 DSH 相关仓库重构中英双语用户 README，插入真实脱敏截图并提供可执行的 GitHub Release 安装路径 |
 | DOC-003 | done | DOC-002 | 按发布要求删除中英文 README 的截图环境说明，同时保留两张实际效果图和安装文档 |

@@ -1,5 +1,51 @@
 # 开发日志
 
+## 2026-10-09 · v2.2.0 删除独立页，包体 1.72 MB → 0.25 MB
+
+### 为什么删
+
+`/dsh-workspace` 独立页（文件树 + CodeMirror 编辑器）自 2.0.4 起就已经不在桌面设置里，
+只剩它自己那一套入口。删它的依据不是「代码不好看」，而是**能力已经有人做过了**：
+手机 App 的文件页原生覆盖同一套操作（列目录、上传下载、重命名、移入回收站），走的是同一组
+REST 端点；桌面上这个页面没有人用。留着它，等于同时维护两份文件管理界面，
+并为其中没人用的一份付 7 倍体积。
+
+### 删了什么
+
+- `src/standalone/`（独立页入口）与 `assets/workspace.html`
+- `src/client/editor.tsx`（CodeMirror 6 封装）
+- `workspace.tsx` 里的 `WorkspaceApp`、`DirectoryNode`、`CommandDialog`、`AdminOverlay`
+- `scripts/test-server.ts`
+- 8 个 `@codemirror/*` 与 `@lezer/highlight` 依赖
+
+发布包因此从 **1.72 MB 降到 0.25 MB**（`artifacts/dsh-remote-bridge-2.2.0.tgz`，
+264,167 字节，SHA-256 `6c3301f8a2110a63daf5c51865e2f2bec9e6cb893740694b79aa8afd7db899b5`）。
+
+### 保留了什么（这条比删除本身重要）
+
+**删的是页面，不是接口**：
+
+- `/dsh-workspace-api` 代理前缀原样保留 —— 已发布的 App 把它写死了，删掉等于让所有在用的手机失联；
+- `/roots`、`/roots/{rootId}/entries`、`/roots/{rootId}/content`、`/roots/resolve`、`/trash`
+  等 REST 文件端点一个没动，**手机 App 的文件功能完全不受影响**；
+- 设置面板六个分区（根目录 / 远程访问 / 设备 / 回收站 / 审计 / App 下载）一个未减。
+
+所以这次是**减界面，不是减能力**。代价也要说清楚：桌面端从此没有文件管理界面，
+在电脑上动文件只剩两条路 —— 在会话里让 agent 用工具读写，或者自己开终端。
+`Playwright` 配置里那句「插件唯一能打开的网页」也随之失效，这一层现在只测面板计算样式。
+
+### 为什么顺手关掉 source map
+
+`tsdown` 改 `sourcemap: false`。映射本身约 5 MB，而插件发的是**预构建 bundle**、
+包内并不含原始 TypeScript 源码 —— 拿不到源码的映射对排障没有价值，只白占体积。
+这一次体积和可调试性不冲突：删掉它两头都更好。
+
+### 验证
+
+`pnpm check` 全绿：`tsc --noEmit`、**19 个测试文件 / 113 个用例**、
+`docs:check`（9 份项目文档、38 项任务、6 份 ADR 与 API/SDK 版本一致性）、两个 entry 构建完成；
+另有 **3 个浏览器层用例**（Playwright 用真实浏览器量「手机设置」面板的计算样式）。
+
 ## 2026-10-09 · v2.1.3 回收站页补来路说明
 
 ### 为什么

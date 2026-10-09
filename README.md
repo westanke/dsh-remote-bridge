@@ -9,17 +9,17 @@
 </p>
 
 <p align="center">
-  <img alt="Version" src="https://img.shields.io/badge/version-v2.1.3-087f8c">
+  <img alt="Version" src="https://img.shields.io/badge/version-v2.2.0-087f8c">
   <img alt="DSH plugin" src="https://img.shields.io/badge/DeepSeek_Harness-plugin-1f2328">
   <img alt="Platforms" src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-586069">
   <img alt="License" src="https://img.shields.io/badge/license-AGPL--3.0-2da44e">
 </p>
 
-`dsh-remote-bridge` 是 DeepSeek Harness（DSH）的远程访问桥接插件：它把 DSH 内核的私有 remote 协议翻译成版本化的 REST 接口，让 dsh-companion（[GitHub](https://github.com/westanke/dsh-companion) · [Gitee](https://gitee.com/westanke/dsh-companion)）等受信任客户端在离开电脑后仍能使用同一套聊天、工作区与文件能力；桌面端在你的 DSH 设置里提供一个「手机设置」，内联六个分区（根目录 / 远程访问 / 设备 / 回收站 / 审计 / App 下载），插件另带一个独立的文件工作区页面 `/dsh-workspace`，用于浏览与编辑本机文件。
+`dsh-remote-bridge` 是 DeepSeek Harness（DSH）的远程访问桥接插件：它把 DSH 内核的私有 remote 协议翻译成版本化的 REST 接口，让 dsh-companion（[GitHub](https://github.com/westanke/dsh-companion) · [Gitee](https://gitee.com/westanke/dsh-companion)）等受信任客户端在离开电脑后仍能使用同一套聊天、工作区与文件能力；桌面端在你的 DSH 设置里提供一个「手机设置」，内联六个分区（根目录 / 远程访问 / 设备 / 回收站 / 审计 / App 下载）。**桌面端不再提供文件管理界面**：文件树与编辑器已于 2.2.0 删除，电脑上管理文件请走手机 App，或在会话里让 agent 用工具完成（见「桌面端不再有文件管理界面」）。
 
 界面默认中文，可随时切换 English。插件支持 Windows、macOS 和 Linux，安装包已经包含编译产物，不要求用户在服务器上重新构建。
 
-> **版本警告**：已发布的 `v2.0.0` 与 `v2.0.1` 存在严重缺陷（`v2.0.0` 历史图片读取全部失败，`v2.0.1` 插件无法激活）。请务必使用 **`v2.1.3`**（或 ≥ `v2.0.4`）。
+> **版本警告**：已发布的 `v2.0.0` 与 `v2.0.1` 存在严重缺陷（`v2.0.0` 历史图片读取全部失败，`v2.0.1` 插件无法激活）。请务必使用 **`v2.2.0`**（或 ≥ `v2.0.4`）。
 > `v2.0.2` 与 `v2.0.3` **从未发布**，请不要按这两个版本号寻找安装包。
 
 > **DSH 0.2.x 兼容性**：本分支在上游 `v1.0.0` 的基础上增加了对 DSH `0.2.0-rc.2` 的兼容层。
@@ -29,7 +29,7 @@
 
 ## 实际效果
 
-桌面端的入口**就在你的 DSH 设置里**：打开设置，在「📱 手机访问」下面就是「📱 手机设置」，点进去直接内联渲染六个分区，不再另开弹窗。目录树、编辑器和文件操作没有删除，但已移出桌面设置，改由插件的独立页 `/dsh-workspace` 提供（适合手机 WebView 或直接打开链接）。
+桌面端的入口**就在你的 DSH 设置里**：打开设置，在「📱 手机访问」下面就是「📱 手机设置」，点进去直接内联渲染六个分区，不再另开弹窗。它只做设置，**不含文件树**——独立页 `/dsh-workspace` 以及其中的文件树、CodeMirror 编辑器已于 2.2.0 一并删除，理由与代价见下文「桌面端不再有文件管理界面」。
 
 远程访问默认关闭。管理员可在本机 WebUI 中设置绑定 IP、端口和新设备的初始权限。
 
@@ -44,11 +44,14 @@
 | 保持不变 | 位置 | 为什么不能改 |
 | --- | --- | --- |
 | REST 前缀 `/dsh-workspace-api` | `src/host/server.ts` | 已发布的 App 把它写死了 |
-| 独立页路径 `/dsh-workspace` | 同上 | 手机 WebView 直接访问这个地址 |
-| 浏览器存储键 `dsh-workspace-device-token` | `src/standalone/index.tsx` | 改了会让独立页上已保存的设备令牌失效，需要重新填写 |
 | 状态目录（`dataDir`，默认 `dsh-workspace`） | DSH profile 配置 | 换目录等于让用户的授权根配置与回收站全部消失 |
 
-所以安装后看到 URL、独立页路径或状态目录里仍然是 `dsh-workspace`，是**预期行为**，不是改名没改干净。
+**已不再列入契约的两项**（2.2.0 随独立页一并退役）：
+
+- **独立页路径 `/dsh-workspace`**：该页面（文件树 + CodeMirror 编辑器）已删除，路径随之下线。注意它与 REST 前缀 `/dsh-workspace-api` 是两回事 —— **前缀还在，是 App 的对外契约；页面没了，不再承诺任何东西**。
+- **浏览器存储键 `dsh-workspace-device-token`**：它只被那个已删的页面读写过，现在全仓库（含 App）已无任何读写方。一个没人读的键不构成契约，所以不列入上表；键名本身也不回收，以免日后排查时多一个迷惑项。
+
+所以安装后看到 REST 地址或状态目录里仍然是 `dsh-workspace`，是**预期行为**，不是改名没改干净。
 
 ## 快速安装
 
@@ -63,10 +66,10 @@
 
 ```sh
 # GitHub
-dsh plugin --profile web add https://github.com/westanke/dsh-remote-bridge/releases/download/v2.1.3/dsh-remote-bridge-2.1.3.tgz
+dsh plugin --profile web add https://github.com/westanke/dsh-remote-bridge/releases/download/v2.2.0/dsh-remote-bridge-2.2.0.tgz
 
 # Gitee（国内访问更快）
-dsh plugin --profile web add https://gitee.com/westanke/dsh-remote-bridge/releases/download/v2.1.3/dsh-remote-bridge-2.1.3.tgz
+dsh plugin --profile web add https://gitee.com/westanke/dsh-remote-bridge/releases/download/v2.2.0/dsh-remote-bridge-2.2.0.tgz
 
 npx @deepseek-ai/dsh web
 ```
@@ -74,37 +77,36 @@ npx @deepseek-ai/dsh web
 > 本 README 由 GitHub 与 Gitee 共用同一份文件，因此凡是必须带主机名的地址（安装命令、Release 下载）
 > 都会把两站都列出来 —— 相对链接可以跟着站点走，但 `/releases/download/...` 没有相对形式。
 
-重启 DSH 后，打开设置就能看到「手机设置」（在「手机访问」下面）。它是**纯设置**，不含文件树；会话视图中工具轨迹旁的「文件」标签页已在 2.0.4 移除。要浏览和编辑文件，请打开独立页 `/dsh-workspace`。
+重启 DSH 后，打开设置就能看到「手机设置」（在「手机访问」下面）。它是**纯设置**，不含文件树；会话视图中工具轨迹旁的「文件」标签页已在 2.0.4 移除。**桌面端不再有浏览或编辑文件的界面**：独立页 `/dsh-workspace` 已在 2.2.0 删除，文件操作请走手机 App，或在会话里让 agent 用工具完成。
 
 从 GitHub Release 下载离线安装包时，可直接安装 tarball：
 
 ```sh
-dsh plugin --profile web add ./dsh-remote-bridge-2.1.3.tgz
+dsh plugin --profile web add ./dsh-remote-bridge-2.2.0.tgz
 ```
 
 ## 第一次使用
 
 1. 打开 DSH 设置，进入「手机设置」（在「手机访问」下面；默认落在「根目录」页）。
 2. 在「根目录」页添加允许管理的本机目录，并为它起一个容易识别的名字。
-3. 需要浏览或编辑文件时，打开独立页 `/dsh-workspace`，选择授权根即可。
-4. 需要连接手机时，回到设置面板进入「远程访问」，填写绑定 IP 和端口并保存。
-5. 点击“启用并创建配对”，再将十分钟内有效的一次性配对码填入 App。
+3. 需要连接手机时，进入「远程访问」，填写绑定 IP 和端口并保存。
+4. 点击“启用并创建配对”，再将十分钟内有效的一次性配对码填入 App。
+5. 在手机 App 的文件页里选择授权根，即可浏览和编辑文件。
 
 远程访问只有在至少存在一个授权根时才能开启。安装插件本身不会把服务暴露到局域网，未启用时只监听回环地址。
 
 ## 你可以做什么
 
-### 在独立页中管理文件
+### 桌面端不再有文件管理界面
 
-文件工作区现在是独立页 `/dsh-workspace`，可在桌面浏览器、手机 WebView 或直接打开的链接中访问：
+2.2.0 删除了独立页 `/dsh-workspace`，包括整个文件树、上传下载入口和 CodeMirror 6 编辑器。原因是手机 App 的文件页已经原生覆盖同一套能力，桌面端这个页面没人用，却让发布包从 **0.25 MB 撑到 1.72 MB**。
 
-- 懒加载浏览目录，新建文件或文件夹。
-- 上传、下载、替换、重命名和移动文件。
-- 使用 CodeMirror 6 查看和编辑 UTF-8 文本。
-- 尽量保留 UTF-8 BOM 与原有换行风格。
-- 使用 ETag 检测外部修改，遇到冲突时拒绝静默覆盖。
-- 删除内容时先进入插件回收站，之后可恢复或由本机管理员永久清理。
-- 二进制文件只提供元数据、下载和替换，不会被误当作文本写回。
+代价要说清楚：**现在在电脑上动文件只剩两条路** ——
+
+1. 在会话里对 agent 说话，让它用工具读写文件；
+2. 打开终端自己操作。
+
+手机端不受影响：App 的文件页照旧可用，走的是插件保留的同一套 REST 文件接口（`/dsh-workspace-api` 前缀与 `/roots`、`/roots/{rootId}/content` 等端点一个都没删）。回收站里的删除记录现在只来自手机 App。
 
 ### 桌面端设置面板
 
@@ -115,7 +117,7 @@ dsh plugin --profile web add ./dsh-remote-bridge-2.1.3.tgz
 | 根目录 | 添加、移除授权目录并设置显示名称 |
 | 远程访问 | 设置绑定 IP / 端口，启用远程访问并创建配对码 |
 | 设备 | 查看设备权限与根目录授权，随时撤销 |
-| 回收站 | 查看与恢复被删除的条目（只列出来自手机 App 或独立页 `/dsh-workspace` 的删除记录） |
+| 回收站 | 查看与恢复被删除的条目（只列出来自手机 App 的删除记录） |
 | 审计 | 查看操作类型与对象的审计记录 |
 | App 下载 | 扫码下载 Android 客户端，二维码指向两个站点的 Releases 列表页 |
 
@@ -264,9 +266,13 @@ DSH 的 cordis 注入属性（`ctx.attachments` / `ctx.fileUploads`）是惰性�
 
 ## 常见问题
 
-**安装后找不到文件工作区入口**
+**安装后看不到「手机设置」**
 
-入口在 DSH 设置里的「手机设置」（在「手机访问」下面），它是设置面板，不含文件树；文件树在独立页 `/dsh-workspace`。如果设置里看不到这一项，确认插件安装在 `web` profile，并在安装后**重启 DSH**（插件为进程内加载，不重启不生效）。
+入口在 DSH 设置里，位于「手机访问」下面。如果看不到，确认插件安装在 `web` profile，并在安装后**重启 DSH**（插件为进程内加载，不重启不生效）。
+
+**桌面上找不到浏览或编辑文件的界面**
+
+这是 2.2.0 的有意改动：独立页 `/dsh-workspace` 已删除，桌面端不再提供文件管理界面。请在手机 App 的文件页操作，或在会话里让 agent 用工具读写文件。
 
 **“启用并创建配对”按钮不可用**
 
@@ -288,13 +294,15 @@ pnpm check
 pnpm pack
 ```
 
-`pnpm check` 覆盖类型检查、文档一致性与测试；当前 **17 个测试文件 / 104 个用例**全部通过。
+`pnpm check` 覆盖类型检查、文档一致性与测试；当前 **19 个测试文件 / 113 个用例**，外加 **3 个浏览器层用例**（Playwright 实测量出的计算样式），全部通过。
 
-v2.1.3 基于 DSH `master@47f943859bef60e4160492346772ded9b24f765a` 开发，CI 覆盖 Windows、Ubuntu 和 macOS。
+`pnpm pack` 的产物约 **0.25 MB**：2.2.0 删除独立页及其编辑器依赖、并关闭 source map 之后，从 1.72 MB 降下来。
+
+v2.2.0 基于 DSH `master@47f943859bef60e4160492346772ded9b24f765a` 开发，CI 覆盖 Windows、Ubuntu 和 macOS。
 
 ## 项目信息
 
-- 当前版本：`v2.1.3`
+- 当前版本：`v2.2.0`
 - 作者：上游 [Hakunm](https://github.com/Hakunm)，本 fork 维护 [westanke](https://github.com/westanke)
 - 仓库：[GitHub](https://github.com/westanke/dsh-remote-bridge) · [Gitee](https://gitee.com/westanke/dsh-remote-bridge)
 - 许可证：[GNU Affero General Public License v3.0](./LICENSE)
