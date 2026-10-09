@@ -23,7 +23,7 @@ flowchart LR
 
 Web Client 使用独立的外部语言 store 跨多个 DSH slot React 根同步界面语言，默认值为 `zh-CN`。语言按钮切换 `zh-CN`/`en` 并写入浏览器存储；slot 注册会随语言变化刷新标签，独立工作区同时更新文档标题和 `lang` 属性。
 
-`sidebar.footer.action` 是桌面端主要入口，触发 `shell.overlay` 中的完整文件树和编辑器，不改变 DSH 页面 URL。overlay 使用 `closed/workspace/settings` 状态机；从工作区打开设置时仅隐藏而不卸载编辑器，关闭设置后保留目录、当前文件和未保存文本。`conversation.view` 保留会话内文件标签，`/dsh-workspace` 仅作为移动 WebView、直接链接和故障排查入口。
+桌面端只有一个 `shell.overlay` 设置面板（`WorkspacePanel`），入口是侧边栏的 `sidebar.footer.action` 按钮（Settings 图标），点击后打开默认页「根目录」。面板左侧竖排导航就是五个管理页：根目录 / 远程访问 / 设备 / 回收站 / 审计 —— **不含文件树**：文件工作区已从面板移出，桌面端不再能从这个对话框打开文件树。`WorkspaceApp` 与 `AdminOverlay` 仍导出给 `/dsh-workspace` 独立页（移动 WebView、直链、故障排查），文件树在那里依然可用 —— 它需要整个窗口，而不是一个设置对话框。`conversation.view` 插槽（会话内文件标签）不再注册，桌面端只保留侧边栏这一个入口。统一事件 `dsh-workspace:open-panel`（`detail.section` 可选，默认 `roots`）负责打开面板。
 
 ## 数据流
 

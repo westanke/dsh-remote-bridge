@@ -4,6 +4,7 @@ import {
   Download,
   File,
   FilePlus2,
+  FolderCode,
   Folder,
   FolderOpen,
   FolderPlus,
@@ -347,9 +348,79 @@ function CommandDialog(props: {
   </div>
 }
 
-export function AdminOverlay(props: { api: WorkspaceApi; open: boolean; onClose(): void }): JSX.Element | null {
+export type AdminTab = 'roots' | 'remote' | 'devices' | 'trash' | 'audit'
+/**
+ * The panel's sections are exactly the admin tabs.
+ *
+ * `'workspace'` is deliberately **not** a member any more: the file tree left the dialog. Keeping it
+ * in the union would let `AdminPanel` be asked to render a section it has no branch for, and the
+ * old `props.section === 'workspace' ? 'roots' : props.section` fallback exists only to paper over
+ * that. With the file tree gone there is nothing to fall back from.
+ */
+export type PanelSection = AdminTab
+
+export const ADMIN_TABS: readonly AdminTab[] = ['roots', 'remote', 'devices', 'trash', 'audit']
+
+/** What the sidebar button opens: authorized roots, the first admin section. */
+export const DEFAULT_PANEL_SECTION: AdminTab = 'roots'
+
+/**
+ * The single desktop dialog: a vertical section rail on the left, one content pane on the right.
+ *
+ * Settings only — the five admin sections. The file tree used to live here as a sixth row; it does
+ * not any more, so this is the old `AdminOverlay` body with a rail, not a workspace host.
+ */
+export function WorkspacePanel(props: {
+  api: WorkspaceApi
+  open: boolean
+  section: PanelSection
+  onSection(section: PanelSection): void
+  onClose(): void
+}): JSX.Element | null {
+  const { t } = useWorkspaceI18n()
+  if (!props.open) return null
+  return <div className="daw-root daw-overlay" role="presentation" onMouseDown={event => { if (event.target === event.currentTarget) props.onClose() }}>
+    <section className="daw-dialog" role="dialog" aria-modal="true" aria-label={t('workspaceSettings')}>
+      <header className="daw-dialog-head">
+        <Settings size={17} aria-hidden="true" />
+        <h2>{t('workspaceSettings')}</h2>
+        <span className="daw-version" title={t('version')}>v{PLUGIN_VERSION}</span>
+        <span className="daw-toolbar-spacer" />
+        <LanguageToggle />
+        <button className="daw-icon" title={t('close')} onClick={props.onClose}><X size={17} /></button>
+      </header>
+      <div className="daw-dialog-body">
+        <nav className="daw-tabs" aria-label={t('panelNav')}>
+          {/*
+            Settings only.
+
+            An earlier revision led with 工作区 (the file tree) and grouped the admin sections under
+            a 设置 heading. The user's call: keep just the five admin sections. The file tree is no
+            longer reachable from this panel — `WorkspaceApp` stays exported for the standalone
+            `/dsh-workspace` page (mobile WebView / direct link), which is where a file tree still
+            belongs: it needs the full window, not a settings dialog.
+          */}
+          {ADMIN_TABS.map(name => <button key={name} className={`daw-tab${props.section === name ? ' active' : ''}`} onClick={() => props.onSection(name)}>
+            {tabIcon(name)} {t(`${name}Tab`)}
+          </button>)}
+        </nav>
+        <div className="daw-panel-body">
+          <div className="daw-panel-pane">
+            <AdminPanel api={props.api} section={props.section} />
+          </div>
+        </div>
+      </div>
+    </section>
+  </div>
+}
+
+/**
+ * The settings content of one admin section, extracted from `AdminOverlay` so the unified panel and
+ * the standalone `/dsh-workspace` page render exactly the same body.
+ */
+export function AdminPanel(props: { api: WorkspaceApi; section: AdminTab }): JSX.Element {
   const { locale, t } = useWorkspaceI18n()
-  const [tab, setTab] = useState<'roots' | 'remote' | 'devices' | 'trash' | 'audit'>('roots')
+  const tab = props.section
   const [status, setStatus] = useState<Awaited<ReturnType<WorkspaceApi['status']>>>()
   const [trash, setTrash] = useState<Awaited<ReturnType<WorkspaceApi['trashItems']>>['items']>([])
   const [audit, setAudit] = useState<Record<string, unknown>[]>([])
@@ -375,19 +446,15 @@ export function AdminOverlay(props: { api: WorkspaceApi; open: boolean; onClose(
     }
   }, [props.api, tab])
 
-  useEffect(() => { if (props.open) void refresh() }, [props.open, refresh])
-  // The generated config text embeds a device token, so drop it from memory as soon as the dialog closes.
-  useEffect(() => {
-    if (props.open) return
-    setConfigText(undefined)
-    setConfigEndpoint('')
-  }, [props.open])
+  // Refresh whenever the section becomes visible: the trash and audit lists are section-local.
+  useEffect(() => { void refresh() }, [refresh])
+  // The generated config text embeds a device token. This panel unmounts when the dialog closes,
+  // which drops it from memory — no explicit teardown effect needed.
   useEffect(() => {
     if (status === undefined) return
     setListenerHost(status.configuredHost)
     setListenerPort(String(status.configuredPort))
   }, [status?.configuredHost, status?.configuredPort])
-  if (!props.open) return null
   const roots = status?.roots ?? []
   const parsedListenerPort = Number(listenerPort)
   const listenerPortValid = Number.isInteger(parsedListenerPort) && parsedListenerPort >= 1 && parsedListenerPort <= 65535
@@ -412,14 +479,7 @@ export function AdminOverlay(props: { api: WorkspaceApi; open: boolean; onClose(
     throw new Error(t('listenerTimedOut'))
   }
 
-  return <div className="daw-root daw-overlay" role="presentation" onMouseDown={event => { if (event.target === event.currentTarget) props.onClose() }}>
-    <section className="daw-dialog" role="dialog" aria-modal="true" aria-label={t('workspaceSettings')}>
-      <header className="daw-dialog-head"><h2>{t('workspaceSettings')}</h2><span className="daw-version" title={t('version')}>v{PLUGIN_VERSION}</span><span className="daw-toolbar-spacer" /><a href="https://github.com/Hakunm" target="_blank" rel="noreferrer" style={{ color: 'var(--daw-muted)', fontSize: 12, fontWeight: 500, textDecoration: 'none', whiteSpace: 'nowrap' }}>{t('author')}</a><LanguageToggle /><button className="daw-icon" title={t('close')} onClick={props.onClose}><X size={17} /></button></header>
-      <div className="daw-dialog-body">
-        <nav className="daw-tabs">
-          {(['roots', 'remote', 'devices', 'trash', 'audit'] as const).map(name => <button key={name} className={`daw-tab${tab === name ? ' active' : ''}`} onClick={() => setTab(name)}>{tabIcon(name)} {t(`${name}Tab`)}</button>)}
-        </nav>
-        <main className="daw-admin">
+  return <main className="daw-admin">
           {error !== undefined && <div className="daw-warning">{messageOf(error, t)}</div>}
           {tab === 'roots' && <>
             <h3>{t('authorizedRoots')}</h3>
@@ -488,6 +548,25 @@ export function AdminOverlay(props: { api: WorkspaceApi; open: boolean; onClose(
             <div className="daw-list">{audit.map((item, index) => <div className="daw-list-row" key={String(item.id ?? index)}><div><div className="daw-list-title">{String(item.action ?? t('event'))}</div><div className="daw-list-meta">{new Date(Number(item.time ?? 0)).toLocaleString(locale)} · {String(item.actorType ?? '')}:{String(item.actorId ?? '')} · {String(item.relativePath ?? '')}</div></div></div>)}</div>
           </>}
         </main>
+}
+
+/**
+ * Standalone settings overlay kept for the `/dsh-workspace` page (mobile WebView / direct link), where
+ * there is no section rail and no file tree to switch back to. The desktop WebUI uses
+ * `WorkspacePanel` instead, so a user never bounces between two dialogs.
+ */
+export function AdminOverlay(props: { api: WorkspaceApi; open: boolean; onClose(): void }): JSX.Element | null {
+  const { t } = useWorkspaceI18n()
+  const [tab, setTab] = useState<AdminTab>('roots')
+  if (!props.open) return null
+  return <div className="daw-root daw-overlay" role="presentation" onMouseDown={event => { if (event.target === event.currentTarget) props.onClose() }}>
+    <section className="daw-dialog" role="dialog" aria-modal="true" aria-label={t('workspaceSettings')}>
+      <header className="daw-dialog-head"><h2>{t('workspaceSettings')}</h2><span className="daw-version" title={t('version')}>v{PLUGIN_VERSION}</span><span className="daw-toolbar-spacer" /><a href="https://github.com/Hakunm" target="_blank" rel="noreferrer" style={{ color: 'var(--daw-muted)', fontSize: 12, fontWeight: 500, textDecoration: 'none', whiteSpace: 'nowrap' }}>{t('author')}</a><LanguageToggle /><button className="daw-icon" title={t('close')} onClick={props.onClose}><X size={17} /></button></header>
+      <div className="daw-dialog-body">
+        <nav className="daw-tabs">
+          {ADMIN_TABS.map(name => <button key={name} className={`daw-tab${tab === name ? ' active' : ''}`} onClick={() => setTab(name)}>{tabIcon(name)} {t(`${name}Tab`)}</button>)}
+        </nav>
+        <AdminPanel api={props.api} section={tab} />
       </div>
     </section>
   </div>
