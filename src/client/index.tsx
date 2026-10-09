@@ -1,8 +1,8 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useState } from 'react'
 import { WorkspaceApi } from './api.ts'
 import { getWorkspaceLocale, subscribeWorkspaceLocale, translate, useWorkspaceI18n, type MessageKey } from './i18n.tsx'
 import { installWorkspaceStyles } from './styles.ts'
-import { ADMIN_TABS, DEFAULT_PANEL_SECTION, WorkspacePanel, type AdminTab, type PanelSection } from './workspace.tsx'
+import { DEFAULT_PANEL_SECTION, PhoneSettingsBody, type PanelSection } from './workspace.tsx'
 
 interface ClientContext {
   effect(register: () => (() => void) | void, label?: string): void
@@ -12,10 +12,6 @@ interface ClientContext {
   }
 }
 
-// One event, one dialog. The section lives inside the panel, so opening it never means opening a
-// second overlay; the event's `detail` may carry a section name.
-// The event name is plugin-internal and tracks the package rename; the API prefix below is not.
-const OPEN_PANEL_EVENT = 'dsh-remote-bridge:open-panel'
 const DEFAULT_SECTION: PanelSection = DEFAULT_PANEL_SECTION
 const api = new WorkspaceApi('/dsh-workspace-api/api/v1', '/dsh-workspace-api/manage', undefined, true)
 
@@ -37,63 +33,31 @@ export function apply(ctx: ClientContext): void {
   ctx.effect(() => localizedSlot(ctx, 'settings.section', {
     name: 'settings.section', id: 'dsh-remote-bridge', order: 2,
   }, SettingsSection, 'phoneSettings'), 'dsh remote bridge settings section')
-
-  ctx.effect(() => ctx.slots.inject('shell.overlay', () => ctx.slots.register({
-    name: 'shell.overlay',
-    id: 'dsh-remote-bridge-overlay',
-    order: 80,
-  }, GlobalOverlay)), 'dsh remote bridge settings overlay')
 }
 
 /**
- * The `settings.section` row.
+ * DSH 设置页里的「手机设置」一节。
  *
- * It renders a launcher rather than the panel itself: the panel is a full-screen dialog, and nesting
- * a dialog inside a settings page would stack two overlays. Clicking the row opens the panel at its
- * default section, which is where Remote / Devices / App download live.
+ * **内联渲染整个面板**（导航栏 + 内容区），而不是放一个按钮去开模态框。
+ *
+ * 早先的版本是后者：一节说明加一个「打开手机设置面板」按钮，真正的设置藏在弹窗里。
+ * 用户点进去只看到一句话，直接问「其他的可以设置的东西那去了」—— 入口看起来是空的，
+ * 因为内容在下一层。设置页本身就是容器，没有理由再套一层；把弹窗嵌进设置页是设计错误。
+ *
+ * 用户的另一条要求也靠内联才落地：二维码要**单独一页**（`app-download`），
+ * 它是导航栏里可点的一项，而不是藏在按钮后面。
  */
 function SettingsSection(): JSX.Element {
   const { t } = useWorkspaceI18n()
-  return <div className="daw-settings-launch">
+  const [section, setSection] = useState<PanelSection>(DEFAULT_SECTION)
+  return <div className="daw-settings-section">
     <p className="daw-list-meta">{t('phoneSettingsHint')}</p>
-    <button className="daw-command primary" onClick={openSection(DEFAULT_SECTION)}>
-      {t('openPanel')}
-    </button>
+    <PhoneSettingsBody api={api} section={section} onSection={setSection} />
   </div>
 }
 
-function GlobalOverlay(): JSX.Element | null {
-  const [open, setOpen] = useState(false)
-  const [section, setSection] = useState<PanelSection>(DEFAULT_SECTION)
-  useEffect(() => {
-    const listener = (event: Event): void => {
-      const requested = (event as CustomEvent<{ section?: unknown }>).detail?.section
-      setSection(isPanelSection(requested) ? requested : DEFAULT_SECTION)
-      setOpen(true)
-    }
-    window.addEventListener(OPEN_PANEL_EVENT, listener)
-    return () => { window.removeEventListener(OPEN_PANEL_EVENT, listener) }
-  }, [])
-  const stableApi = useMemo(() => api, [])
-  return <WorkspacePanel
-    api={stableApi}
-    open={open}
-    section={section}
-    onSection={setSection}
-    onClose={() => setOpen(false)}
-  />
-}
 
-function isPanelSection(value: unknown): value is PanelSection {
-  return typeof value === 'string' && ADMIN_TABS.includes(value as AdminTab)
-}
 
-/** Ask the panel to open at `section`. Passed straight to `onClick`, so it must not return a value. */
-function openSection(section: PanelSection): () => void {
-  return () => {
-    window.dispatchEvent(new CustomEvent(OPEN_PANEL_EVENT, { detail: { section } }))
-  }
-}
 
 function localizedSlot(
   ctx: ClientContext,

@@ -385,48 +385,34 @@ function tabLabelKey(tab: AdminTab): MessageKey {
  * Settings only — the five admin sections. The file tree used to live here as a sixth row; it does
  * not any more, so this is the old `AdminOverlay` body with a rail, not a workspace host.
  */
-export function WorkspacePanel(props: {
+/**
+ * 导航栏 + 内容区，**不含任何对话框外壳**。
+ *
+ * 抽出来是为了让 DSH 设置页能把它**内联**渲染。
+ *
+ * 早先的版本做不到这一点，于是设置页里只放了一句说明加一个「打开手机设置面板」按钮，
+ * 真正的设置藏在按钮后面的模态框里。用户的反应很直接：「其他的可以设置的东西那去了」——
+ * 这就是把弹窗嵌进设置页的代价：入口看起来是空的，因为内容在下一层。
+ * 设置页本身就是一层容器，没有任何理由再套一层。
+ */
+export function PhoneSettingsBody(props: {
   api: WorkspaceApi
-  open: boolean
   section: PanelSection
   onSection(section: PanelSection): void
-  onClose(): void
-}): JSX.Element | null {
+}): JSX.Element {
   const { t } = useWorkspaceI18n()
-  if (!props.open) return null
-  return <div className="daw-root daw-overlay" role="presentation" onMouseDown={event => { if (event.target === event.currentTarget) props.onClose() }}>
-    <section className="daw-dialog" role="dialog" aria-modal="true" aria-label={t('phoneSettings')}>
-      <header className="daw-dialog-head">
-        <Settings size={17} aria-hidden="true" />
-        <h2>{t('phoneSettings')}</h2>
-        <span className="daw-version" title={t('version')}>v{PLUGIN_VERSION}</span>
-        <span className="daw-toolbar-spacer" />
-        <LanguageToggle />
-        <button className="daw-icon" title={t('close')} onClick={props.onClose}><X size={17} /></button>
-      </header>
-      <div className="daw-dialog-body">
-        <nav className="daw-tabs" aria-label={t('panelNav')}>
-          {/*
-            Settings only.
-
-            An earlier revision led with 工作区 (the file tree) and grouped the admin sections under
-            a 设置 heading. The user's call: keep just the five admin sections. The file tree is no
-            longer reachable from this panel — `WorkspaceApp` stays exported for the standalone
-            `/dsh-workspace` page (mobile WebView / direct link), which is where a file tree still
-            belongs: it needs the full window, not a settings dialog.
-          */}
-          {ADMIN_TABS.map(name => <button key={name} className={`daw-tab${props.section === name ? ' active' : ''}`} onClick={() => props.onSection(name)}>
-            {tabIcon(name)} {t(tabLabelKey(name))}
-          </button>)}
-        </nav>
-        <div className="daw-panel-body">
-          <div className="daw-panel-pane">
-            <AdminPanel api={props.api} section={props.section} />
-          </div>
-        </div>
+  return <>
+    <nav className="daw-tabs" aria-label={t('panelNav')}>
+      {ADMIN_TABS.map(name => <button key={name} className={`daw-tab${props.section === name ? ' active' : ''}`} onClick={() => props.onSection(name)}>
+        {tabIcon(name)} {t(tabLabelKey(name))}
+      </button>)}
+    </nav>
+    <div className="daw-panel-body">
+      <div className="daw-panel-pane">
+        <AdminPanel api={props.api} section={props.section} />
       </div>
-    </section>
-  </div>
+    </div>
+  </>
 }
 
 /**
@@ -593,9 +579,11 @@ function AppDownloadSection(): JSX.Element {
 }
 
 /**
- * Standalone settings overlay kept for the `/dsh-workspace` page (mobile WebView / direct link), where
- * there is no section rail and no file tree to switch back to. The desktop WebUI uses
- * `WorkspacePanel` instead, so a user never bounces between two dialogs.
+ * Standalone settings overlay kept for the `/dsh-workspace` page (mobile WebView / direct link).
+ *
+ * The desktop WebUI does **not** use this: its settings live inline inside DSH's own settings page
+ * (`PhoneSettingsBody`), so a user never opens a dialog from inside a dialog. This one keeps its own
+ * shell because the standalone page has no settings container to render into.
  */
 export function AdminOverlay(props: { api: WorkspaceApi; open: boolean; onClose(): void }): JSX.Element | null {
   const { t } = useWorkspaceI18n()
