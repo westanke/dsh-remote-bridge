@@ -20,6 +20,7 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { DeviceScope, DeviceView, FileEntryView, RootView } from '../shared/contracts.ts'
 import { DEVICE_SCOPES } from '../shared/contracts.ts'
+import { APP_QR_CODES } from './app-qr.ts'
 import { WorkspaceApi, WorkspaceApiError } from './api.ts'
 import type { ConfigTextResult } from './api.ts'
 import { CodeEditor } from './editor.tsx'
@@ -348,21 +349,35 @@ function CommandDialog(props: {
   </div>
 }
 
-export type AdminTab = 'roots' | 'remote' | 'devices' | 'trash' | 'audit'
 /**
- * The panel's sections are exactly the admin tabs.
+ * Panel sections.
  *
- * `'workspace'` is deliberately **not** a member any more: the file tree left the dialog. Keeping it
- * in the union would let `AdminPanel` be asked to render a section it has no branch for, and the
- * old `props.section === 'workspace' ? 'roots' : props.section` fallback exists only to paper over
- * that. With the file tree gone there is nothing to fall back from.
+ * The file tree is deliberately **not** a member: it left the dialog in 2.0.4 and lives on the
+ * standalone `/dsh-workspace` page. Keeping it in the union would let `AdminPanel` be asked to render
+ * a section it has no branch for.
+ *
+ * `app-download` is last on purpose: it is a one-off destination for someone setting up a *new*
+ * phone, not a page visited while administering this machine. The rail is ordered by how often the
+ * reader is expected to need it, and that is the opposite.
  */
+export type AdminTab = 'roots' | 'remote' | 'devices' | 'trash' | 'audit' | 'app-download'
 export type PanelSection = AdminTab
 
-export const ADMIN_TABS: readonly AdminTab[] = ['roots', 'remote', 'devices', 'trash', 'audit']
+export const ADMIN_TABS: readonly AdminTab[] = ['roots', 'remote', 'devices', 'trash', 'audit', 'app-download']
 
-/** What the sidebar button opens: authorized roots, the first admin section. */
+/** What the settings-page launcher opens: authorized roots, the first section. */
 export const DEFAULT_PANEL_SECTION: AdminTab = 'roots'
+
+/**
+ * i18n key for a rail entry.
+ *
+ * Most sections map to `${name}Tab`, but `app-download` contains a hyphen, so a bare template would
+ * ask for `app-downloadTab` — a key nobody should have to remember the spelling of. Map it
+ * explicitly instead of encoding a naming rule into a template.
+ */
+function tabLabelKey(tab: AdminTab): MessageKey {
+  return tab === 'app-download' ? 'appDownloadTab' : `${tab}Tab`
+}
 
 /**
  * The single desktop dialog: a vertical section rail on the left, one content pane on the right.
@@ -380,10 +395,10 @@ export function WorkspacePanel(props: {
   const { t } = useWorkspaceI18n()
   if (!props.open) return null
   return <div className="daw-root daw-overlay" role="presentation" onMouseDown={event => { if (event.target === event.currentTarget) props.onClose() }}>
-    <section className="daw-dialog" role="dialog" aria-modal="true" aria-label={t('workspaceSettings')}>
+    <section className="daw-dialog" role="dialog" aria-modal="true" aria-label={t('phoneSettings')}>
       <header className="daw-dialog-head">
         <Settings size={17} aria-hidden="true" />
-        <h2>{t('workspaceSettings')}</h2>
+        <h2>{t('phoneSettings')}</h2>
         <span className="daw-version" title={t('version')}>v{PLUGIN_VERSION}</span>
         <span className="daw-toolbar-spacer" />
         <LanguageToggle />
@@ -401,7 +416,7 @@ export function WorkspacePanel(props: {
             belongs: it needs the full window, not a settings dialog.
           */}
           {ADMIN_TABS.map(name => <button key={name} className={`daw-tab${props.section === name ? ' active' : ''}`} onClick={() => props.onSection(name)}>
-            {tabIcon(name)} {t(`${name}Tab`)}
+            {tabIcon(name)} {t(tabLabelKey(name))}
           </button>)}
         </nav>
         <div className="daw-panel-body">
@@ -547,7 +562,34 @@ export function AdminPanel(props: { api: WorkspaceApi; section: AdminTab }): JSX
             <h3>{t('recentAudit')}</h3>
             <div className="daw-list">{audit.map((item, index) => <div className="daw-list-row" key={String(item.id ?? index)}><div><div className="daw-list-title">{String(item.action ?? t('event'))}</div><div className="daw-list-meta">{new Date(Number(item.time ?? 0)).toLocaleString(locale)} · {String(item.actorType ?? '')}:{String(item.actorId ?? '')} · {String(item.relativePath ?? '')}</div></div></div>)}</div>
           </>}
+          {tab === 'app-download' && <AppDownloadSection />}
         </main>
+}
+
+/**
+ * The App download page: one QR card per release host.
+ *
+ * The codes come from `APP_QR_CODES` as inlined SVG data URLs, so this page makes **no network
+ * request** and adds no runtime dependency — the bytes are in the bundle. Both point at a Releases
+ * *listing* page rather than a fixed file, so publishing a new APK needs no change here.
+ *
+ * The address is rendered as a real link next to the image on purpose: a phone cannot scan its own
+ * screen, so this page is mostly used by the desktop admin to send a code to someone else. Without
+ * the text there would be no way to type the address in by hand when a camera is unavailable.
+ */
+function AppDownloadSection(): JSX.Element {
+  const { t } = useWorkspaceI18n()
+  return <>
+    <h3>{t('appDownloadTitle')}</h3>
+    <p className="daw-list-meta">{t('appDownloadHint')}</p>
+    <div className="daw-qr-grid">
+      {APP_QR_CODES.map(code => <figure key={code.key} className="daw-qr-card">
+        <img className="daw-qr-image" src={code.dataUrl} alt={t('appDownloadQrAlt', { site: code.label })} width={180} height={180} />
+        <figcaption className="daw-qr-site">{code.label}</figcaption>
+        <a className="daw-qr-url" href={code.url} target="_blank" rel="noreferrer">{code.url}</a>
+      </figure>)}
+    </div>
+  </>
 }
 
 /**
@@ -560,11 +602,11 @@ export function AdminOverlay(props: { api: WorkspaceApi; open: boolean; onClose(
   const [tab, setTab] = useState<AdminTab>('roots')
   if (!props.open) return null
   return <div className="daw-root daw-overlay" role="presentation" onMouseDown={event => { if (event.target === event.currentTarget) props.onClose() }}>
-    <section className="daw-dialog" role="dialog" aria-modal="true" aria-label={t('workspaceSettings')}>
-      <header className="daw-dialog-head"><h2>{t('workspaceSettings')}</h2><span className="daw-version" title={t('version')}>v{PLUGIN_VERSION}</span><span className="daw-toolbar-spacer" /><a href="https://github.com/Hakunm" target="_blank" rel="noreferrer" style={{ color: 'var(--daw-muted)', fontSize: 12, fontWeight: 500, textDecoration: 'none', whiteSpace: 'nowrap' }}>{t('author')}</a><LanguageToggle /><button className="daw-icon" title={t('close')} onClick={props.onClose}><X size={17} /></button></header>
+    <section className="daw-dialog" role="dialog" aria-modal="true" aria-label={t('phoneSettings')}>
+      <header className="daw-dialog-head"><h2>{t('phoneSettings')}</h2><span className="daw-version" title={t('version')}>v{PLUGIN_VERSION}</span><span className="daw-toolbar-spacer" /><a href="https://github.com/Hakunm" target="_blank" rel="noreferrer" style={{ color: 'var(--daw-muted)', fontSize: 12, fontWeight: 500, textDecoration: 'none', whiteSpace: 'nowrap' }}>{t('author')}</a><LanguageToggle /><button className="daw-icon" title={t('close')} onClick={props.onClose}><X size={17} /></button></header>
       <div className="daw-dialog-body">
         <nav className="daw-tabs">
-          {ADMIN_TABS.map(name => <button key={name} className={`daw-tab${tab === name ? ' active' : ''}`} onClick={() => setTab(name)}>{tabIcon(name)} {t(`${name}Tab`)}</button>)}
+          {ADMIN_TABS.map(name => <button key={name} className={`daw-tab${tab === name ? ' active' : ''}`} onClick={() => setTab(name)}>{tabIcon(name)} {t(tabLabelKey(name))}</button>)}
         </nav>
         <AdminPanel api={props.api} section={tab} />
       </div>
@@ -695,6 +737,9 @@ function tabIcon(tab: string): JSX.Element {
   if (tab === 'devices') return <Smartphone size={15} />
   if (tab === 'trash') return <Trash2 size={15} />
   if (tab === 'remote') return <Upload size={15} />
+  // A download arrow, not a phone: the phone glyph already belongs to 设备, and this page is about
+  // getting the app onto one.
+  if (tab === 'app-download') return <Download size={15} />
   return <File size={15} />
 }
 

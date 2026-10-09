@@ -124,6 +124,24 @@ The panel width shrank from 1400px to 920px, and the in-conversation **Files** t
 
 ### Stable client API
 
+The companion Android client is [dsh-companion](https://github.com/westanke/dsh-companion)
+([Gitee](https://gitee.com/westanke/dsh-companion)) — scan either code below with your phone to
+download it. Both point at the **Releases list page** of their host, so publishing a new version
+never requires regenerating them:
+
+| GitHub | Gitee (faster from mainland China) |
+| --- | --- |
+| ![dsh-companion releases on GitHub](assets/app-qr-github.png) | ![dsh-companion releases on Gitee](assets/app-qr-gitee.png) |
+| <https://github.com/westanke/dsh-companion/releases> | <https://gitee.com/westanke/dsh-companion/releases> |
+
+> The codes encode the Releases **list page**, not a specific APK filename — so a new release
+> never needs new artwork, and whoever scans always lands on the latest version. Both images are
+> produced by `pnpm qr:app` (`scripts/generate-app-qr.mjs`), which verifies its own output with an
+> independent decoder; the test suite also decodes the committed files back and checks the address.
+
+Once the app is installed, generate a config text or pairing code under
+**Phone settings → Remote access** to connect it to this machine.
+
 The public API is independent of DSH private wire protocols. Authorized clients can:
 
 - list, register, rename, and remove DSH workspace registrations;

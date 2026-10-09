@@ -1,6 +1,6 @@
 {
   "name": "dsh-remote-bridge",
-  "version": "2.0.4",
+  "version": "2.1.0",
   "description": "A bilingual file workspace and secure remote API for DeepSeek Harness WebUI and mobile clients.",
   "type": "module",
   "packageManager": "pnpm@11.19.0",
@@ -56,6 +56,7 @@
     "test:e2e": "playwright test",
     "dev:test-server": "tsx scripts/test-server.ts",
     "docs:check": "tsx scripts/check-project-docs.ts",
+    "qr:app": "node scripts/generate-app-qr.mjs",
     "check": "pnpm typecheck && pnpm test && pnpm docs:check && pnpm build",
     "prepack": "pnpm check"
   },
@@ -101,9 +102,12 @@
   "devDependencies": {
     "@playwright/test": "^1.55.0",
     "@types/node": "^22.19.0",
+    "@types/qrcode": "^1.5.6",
     "@types/react": "^18.3.18",
     "@types/react-dom": "^18.3.5",
     "@types/ws": "^8.5.13",
+    "jsqr": "^1.4.0",
+    "qrcode": "^1.5.4",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "tsdown": "^0.22.0",
