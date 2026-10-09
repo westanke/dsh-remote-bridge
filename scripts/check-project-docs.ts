@@ -14,6 +14,7 @@ const requiredDocs = [
   'SECURITY.md',
   'TESTING.md',
   'CHANGELOG-DEV.md',
+  'RELEASE.md',
 ]
 const validStatuses = new Set(['planned', 'in-progress', 'blocked', 'done'])
 
