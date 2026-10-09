@@ -1,13 +1,16 @@
 # 测试记录
 
 > **阅读提示**：下表是按日期倒序的**历史流水**，记录的是当时那一刻的验证结果。其中 2026-08-14
-> 那几条描述的「侧栏文件入口 → 完整文件树与 CodeMirror 编辑器」已被 2.0.4 推翻 —— 桌面端现在
-> 是纯设置面板（不含文件树），文件树只存在于独立页 `/dsh-workspace`。表中的旧包名
+> 那几条描述的「侧栏文件入口 → 完整文件树与 CodeMirror 编辑器」已被 2.0.4 推翻；2.1.x 又把
+> 桌面入口搬进 DSH 设置页的「手机设置」并改为内联渲染，侧栏齿轮按钮不再存在。表中的旧包名
 > （`dsh-workspace-*`）与旧测试数（12 文件/24 项、144 项等）同样只代表当时。
-> **当前基线见 [STATUS.md](./STATUS.md)：17 个测试文件 / 104 个用例。**
+> **当前基线见 [STATUS.md](./STATUS.md)：19 个测试文件 / 113 个用例。**
 
 | 日期 | 环境 | 验证 | 结果 |
 | --- | --- | --- | --- |
+| 2026-10-09 | Linux / Node 24.19.0 | v2.1.3 的 `pnpm check` | 通过；19 个测试文件 / 113 个用例、9 份项目文档 / 38 个任务 / 6 个 ADR、OpenAPI/AsyncAPI/Kotlin SDK 版本与 package.json 一致，三个 entry（host / client / standalone）构建完成 |
+| 2026-10-09 | Linux / Node 24.19.0 + Playwright | 2.1.2 隐形按钮的**计算样式**取证（`.daw-command.primary` 的 `background`） | 修复前为 `rgba(0, 0, 0, 0)`（`--daw-accent` 未解析 → 白字白底），修复后取到实际色值；另新增 `tests/styles.spec.ts` 守住「自定义属性必须同时定义在 `.daw-root,.daw-settings-section`」这条结构不变量 |
+| 2026-10-09 | Linux / Node 24.19.0 | 2.1.0 二维码资产的独立解码器交叉验证（`tests/app-qr.spec.ts`） | 通过；用 `qrcode` 编码、`jsqr` 解码回读**提交进仓库的** `assets/app-qr-*.svg`，确认内含地址与 `src/client/app-qr.ts` 一致且指向 Releases 列表页 |
 | 2026-10-09 | Linux / Node 24.19.0 | 改名 `dsh-workspace` → `dsh-remote-bridge`、桌面端收敛为纯设置面板后的 `pnpm check` | 通过；17 个测试文件 / 104 个用例、9 份项目文档 / 38 个任务 / 6 个 ADR、OpenAPI/AsyncAPI/Kotlin SDK 版本与 package.json 一致，三个 entry（host / client / standalone）构建完成 |
 | 2026-08-15 | Windows 11 | 中英文 README 发布复验与 `pnpm pack --pack-destination artifacts` | 通过；指定截图环境说明已从仓库及 tarball 删除，两张实际效果图路径仍存在；12 个文件/24 项 Vitest、文档/API/SDK 和三份 bundle 一致；tarball 2,644,838 字节，SHA-256 `C4EB21A5A28D7C6B3529BFD59DEB7809D06850C3F0A2BB15C4DCBE52D0274823` |
 | 2026-08-15 | Windows 11 / Node 22.19.0 与 24 | listener 冲突回滚与测试稳定性复验 | 不同端口改为候选 listener 成功绑定后再切换，端口占用时不再中断旧 listener；测试预算调整为 15 秒；Node 22 连续 5 轮及 Node 24 一轮完整回归全部通过，共 144 项 Vitest |

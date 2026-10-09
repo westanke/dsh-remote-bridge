@@ -9,7 +9,7 @@
 </p>
 
 <p align="center">
-  <img alt="Version" src="https://img.shields.io/badge/version-v2.0.4-087f8c">
+  <img alt="Version" src="https://img.shields.io/badge/version-v2.1.3-087f8c">
   <img alt="DSH plugin" src="https://img.shields.io/badge/DeepSeek_Harness-plugin-1f2328">
   <img alt="Platforms" src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-586069">
   <img alt="License" src="https://img.shields.io/badge/license-AGPL--3.0-2da44e">
@@ -19,7 +19,7 @@
 
 The interface is bilingual and defaults to Chinese. Prebuilt packages run on Windows, macOS, and Linux without compiling on the target server.
 
-> **Version warning**: the published `v2.0.0` and `v2.0.1` have serious defects (`v2.0.0` fails to read any historical images; `v2.0.1` cannot activate the plugin). Use **`v2.0.4` or newer**.
+> **Version warning**: the published `v2.0.0` and `v2.0.1` have serious defects (`v2.0.0` fails to read any historical images; `v2.0.1` cannot activate the plugin). Use **`v2.1.3`** (or ≥ `v2.0.4`).
 > `v2.0.2` and `v2.0.3` were **never released** — do not look for installers under those version numbers.
 
 > **DSH 0.2.x compatibility**: this branch adds a compatibility layer for DSH `0.2.0-rc.2` on top of
@@ -30,7 +30,7 @@ The interface is bilingual and defaults to Chinese. Prebuilt packages run on Win
 
 ## What it looks like
 
-The desktop entry point is a settings-only panel: the sidebar button is now a **gear** icon and opens five settings sections. The directory tree, editor, and file operations were not removed — they moved out of the desktop panel into the plugin's standalone page `/dsh-workspace` (handy for a mobile WebView or a direct link).
+The desktop entry lives **inside your DSH settings**: under **📱 Phone access** you will find **📱 Phone settings**, which renders six sections inline — no second dialog. The directory tree, editor, and file operations were not removed — they moved out of the desktop settings into the plugin's standalone page `/dsh-workspace` (handy for a mobile WebView or a direct link).
 
 Remote access remains disabled until a local administrator chooses a bind address, port, and initial device permissions.
 
@@ -64,10 +64,10 @@ Run as the same operating-system user that runs DSH WebUI (pick either host — 
 
 ```sh
 # GitHub
-dsh plugin --profile web add https://github.com/westanke/dsh-remote-bridge/releases/download/v2.0.4/dsh-remote-bridge-2.0.4.tgz
+dsh plugin --profile web add https://github.com/westanke/dsh-remote-bridge/releases/download/v2.1.3/dsh-remote-bridge-2.1.3.tgz
 
 # Gitee (faster from mainland China)
-dsh plugin --profile web add https://gitee.com/westanke/dsh-remote-bridge/releases/download/v2.0.4/dsh-remote-bridge-2.0.4.tgz
+dsh plugin --profile web add https://gitee.com/westanke/dsh-remote-bridge/releases/download/v2.1.3/dsh-remote-bridge-2.1.3.tgz
 
 npx @deepseek-ai/dsh web
 ```
@@ -76,17 +76,17 @@ npx @deepseek-ai/dsh web
 > (the install commands, release downloads) lists both hosts. Relative links follow the site you
 > are reading on, but `/releases/download/...` has no relative form.
 
-Restart WebUI after installation. A **Workspace settings** entry with a gear icon appears at the bottom of the sidebar; it opens the settings-only panel, which does **not** contain the file tree. The in-conversation **Files** tab was removed in 2.0.4. To browse or edit files, open the standalone page `/dsh-workspace`.
+Restart DSH after installation, then open settings — **Phone settings** sits right below **Phone access**. It is settings-only and does **not** contain the file tree. The in-conversation **Files** tab was removed in 2.0.4. To browse or edit files, open the standalone page `/dsh-workspace`.
 
 To install a downloaded release archive:
 
 ```sh
-dsh plugin --profile web add ./dsh-remote-bridge-2.0.4.tgz
+dsh plugin --profile web add ./dsh-remote-bridge-2.1.3.tgz
 ```
 
 ## First connection
 
-1. Open **Workspace settings** from the gear icon in the DSH WebUI sidebar (it lands on **Roots**).
+1. Open DSH settings and go to **Phone settings** (below **Phone access**; it lands on **Roots**).
 2. Add a local directory under **Roots** and give it a recognizable label.
 3. To browse or edit files, open the standalone page `/dsh-workspace` and select that root.
 4. For mobile access, go back to the settings panel and open **Remote**, enter the bind IP and port, and save them.
@@ -110,17 +110,18 @@ The file workspace now lives on the standalone page `/dsh-workspace`, reachable 
 
 ### Desktop settings panel
 
-The sidebar button is now a gear icon labelled **Workspace settings**. The panel renders exactly five sections and lands on **Roots**:
+The entry lives in DSH settings under the title **Phone settings**. It renders its rail and content **inline** — no pop-up — with a horizontal rail, landing on **Roots**:
 
 | Section | Purpose |
 | --- | --- |
 | Roots | Add or remove authorized directories and set display labels |
 | Remote | Set bind IP/port, enable remote access, and create pairing codes |
 | Devices | Inspect and revoke device scopes and per-root grants |
-| Trash | View and restore deleted entries |
+| Trash | View and restore deleted entries (only deletions made from the phone app or the standalone page `/dsh-workspace` appear here) |
 | Audit | Operation type and target audit records |
+| App download | Scan to install the Android client; the codes point at both hosts' Releases list pages |
 
-The panel width shrank from 1400px to 920px, and the in-conversation **Files** tab was removed: the desktop keeps this single settings entry point.
+The sidebar gear button was **removed**: having the entry in both the sidebar and the settings page gave one thing two starting points. The in-conversation **Files** tab is gone too, so the desktop now has exactly one entry point.
 
 ### Stable client API
 
@@ -268,7 +269,7 @@ The user-visible consequence: **if this DSH build provides no attachment store, 
 
 **The file workspace entry is missing**
 
-The sidebar entry is now the gear icon labelled **Workspace settings**; it opens the settings panel, which has no file tree. The file tree is on the standalone page `/dsh-workspace`. Make sure the plugin was installed into the `web` profile and restart DSH WebUI.
+The entry is **Phone settings** inside DSH settings (below **Phone access**); it is a settings panel with no file tree. The file tree is on the standalone page `/dsh-workspace`. If you cannot see it, make sure the plugin was installed into the `web` profile and **restart DSH** — plugins load in-process and a restart is required.
 
 **Enable and create pairing is disabled**
 
@@ -292,11 +293,11 @@ pnpm pack
 
 `pnpm check` covers type-checking, documentation consistency, and tests. It currently passes **17 test files / 104 cases**.
 
-v2.0.4 was developed against DSH `master@47f943859bef60e4160492346772ded9b24f765a`. CI covers Windows, Ubuntu, and macOS.
+v2.1.3 was developed against DSH `master@47f943859bef60e4160492346772ded9b24f765a`. CI covers Windows, Ubuntu, and macOS.
 
 ## Project
 
-- Version: `v2.0.4`
+- Version: `v2.1.3`
 - Author: upstream [Hakunm](https://github.com/Hakunm); this fork maintained by [westanke](https://github.com/westanke)
 - Repository: [GitHub](https://github.com/westanke/dsh-remote-bridge) · [Gitee](https://gitee.com/westanke/dsh-remote-bridge)
 - License: [GNU Affero General Public License v3.0](./LICENSE)
