@@ -122,7 +122,22 @@ dsh plugin --profile web add ./dsh-remote-bridge-2.0.4.tgz
 
 ### 连接 Android App 或其他客户端
 
-公开 API 不依赖 DSH 私有协议，可用于：
+配套的 Android 客户端是 [dsh-companion](https://github.com/westanke/dsh-companion)（[Gitee](https://gitee.com/westanke/dsh-companion)）。
+用手机扫描下面任意一个码即可下载 —— 两个码都指向**对应站点的 Releases 列表页**，
+所以发新版不需要更换二维码：
+
+| GitHub | Gitee（国内访问更快） |
+| --- | --- |
+| ![GitHub 上的 dsh-companion Releases](assets/app-qr-github.png) | ![Gitee 上的 dsh-companion Releases](assets/app-qr-gitee.png) |
+| <https://github.com/westanke/dsh-companion/releases> | <https://gitee.com/westanke/dsh-companion/releases> |
+
+> 二维码里写的是 Releases **列表页**，不是某个具体的 APK 文件名 ——
+> 这样每次发新版都不必重新出图，扫码的人总能拿到最新版。
+> 两张图由 `pnpm qr:app` 生成（`scripts/generate-app-qr.mjs`），
+> 生成时用独立的解码器回读校验，测试也会把提交进仓库的图解回来核对。
+
+装好 App 后，在「手机设置 → 远程访问」里生成配置文本或配对码即可连上本机。
+公开 API 不依赖 DSH 私有协议，也可用于其他客户端：
 
 - 查看、新建、重命名和移除 DSH 工作区登记。
 - 创建、重命名、分叉和归档会话。

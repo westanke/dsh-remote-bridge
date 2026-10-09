@@ -23,7 +23,7 @@ flowchart LR
 
 Web Client 使用独立的外部语言 store 跨多个 DSH slot React 根同步界面语言，默认值为 `zh-CN`。语言按钮切换 `zh-CN`/`en` 并写入浏览器存储；slot 注册会随语言变化刷新标签，独立工作区同时更新文档标题和 `lang` 属性。
 
-桌面端只有一个 `shell.overlay` 设置面板（`WorkspacePanel`），入口是侧边栏的 `sidebar.footer.action` 按钮（Settings 图标），点击后打开默认页「根目录」。面板左侧竖排导航就是五个管理页：根目录 / 远程访问 / 设备 / 回收站 / 审计 —— **不含文件树**：文件工作区已从面板移出，桌面端不再能从这个对话框打开文件树。`WorkspaceApp` 与 `AdminOverlay` 仍导出给 `/dsh-workspace` 独立页（移动 WebView、直链、故障排查），文件树在那里依然可用 —— 它需要整个窗口，而不是一个设置对话框。`conversation.view` 插槽（会话内文件标签）不再注册，桌面端只保留侧边栏这一个入口。统一事件 `dsh-workspace:open-panel`（`detail.section` 可选，默认 `roots`）负责打开面板。
+桌面端只有一个 `shell.overlay` 设置面板（`WorkspacePanel`），入口搬进了 DSH 自带设置页的 `settings.section` 插槽（`id: dsh-remote-bridge`、`order: 2`，紧跟 pocket-relay 的「📱 手机访问」之下），面板标题为「手机设置」。原先侧边栏 `sidebar.footer.action` 的齿轮按钮已删除 —— 入口分散在侧栏图标和设置页两处会让同一件事有两个起点，现在远程访问、配对与客户端下载都收在设置页一处。面板左侧竖排导航依次是 根目录 / 远程访问 / 设备 / 回收站 / 审计 / App 下载 —— **不含文件树**：文件工作区已从面板移出，桌面端不再能从这个对话框打开文件树。`App 下载` 刻意排在最后：它是给**新手机**准备的一次性目的地，不是日常管理页。`WorkspaceApp` 与 `AdminOverlay` 仍导出给 `/dsh-workspace` 独立页（移动 WebView、直链、故障排查），文件树在那里依然可用 —— 它需要整个窗口，而不是一个设置对话框。`conversation.view` 插槽（会话内文件标签）不再注册。二维码来自 `src/client/app-qr.ts`（由 `scripts/generate-app-qr.mjs` 生成，勿手改）：以 data URL 内联 SVG，客户端零依赖、零网络请求，且指向 Releases **列表页**而非具体文件，所以发新版不必重新生成。统一事件 `dsh-remote-bridge:open-panel`（`detail.section` 可选，默认 `roots`）负责打开面板。
 
 ## 数据流
 
