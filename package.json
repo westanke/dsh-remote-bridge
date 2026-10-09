@@ -1,6 +1,6 @@
 {
   "name": "dsh-remote-bridge",
-  "version": "2.2.0",
+  "version": "2.2.1",
   "description": "Versioned REST bridge for DeepSeek Harness: remote access for trusted clients (chat, files, devices) plus a Phone-settings panel inside the DSH WebUI.",
   "type": "module",
   "packageManager": "pnpm@11.19.0",

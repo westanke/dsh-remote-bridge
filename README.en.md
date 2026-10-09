@@ -9,7 +9,7 @@
 </p>
 
 <p align="center">
-  <img alt="Version" src="https://img.shields.io/badge/version-v2.2.0-087f8c">
+  <img alt="Version" src="https://img.shields.io/badge/version-v2.2.1-087f8c">
   <img alt="DSH plugin" src="https://img.shields.io/badge/DeepSeek_Harness-plugin-1f2328">
   <img alt="Platforms" src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-586069">
   <img alt="License" src="https://img.shields.io/badge/license-AGPL--3.0-2da44e">
@@ -73,7 +73,7 @@ dsh plugin --profile web add dsh-remote-bridge
 dsh plugin --profile web add dsh-remote-bridge --registry https://registry.npmmirror.com
 
 # 2. tarball from the GitHub release
-dsh plugin --profile web add https://github.com/westanke/dsh-remote-bridge/releases/download/v2.2.0/dsh-remote-bridge-2.2.0.tgz
+dsh plugin --profile web add https://github.com/westanke/dsh-remote-bridge/releases/download/v2.2.1/dsh-remote-bridge-2.2.1.tgz
 
 # 3. tarball from the Gitee release (faster from mainland China)
 dsh plugin --profile web add https://gitee.com/westanke/dsh-remote-bridge/releases/download/v2.2.0/dsh-remote-bridge-2.2.0.tgz
@@ -93,7 +93,7 @@ Restart DSH after installation, then open settings — **Phone settings** sits r
 To install a downloaded release archive:
 
 ```sh
-dsh plugin --profile web add ./dsh-remote-bridge-2.2.0.tgz
+dsh plugin --profile web add ./dsh-remote-bridge-2.2.1.tgz
 ```
 
 ## First connection
@@ -308,13 +308,13 @@ pnpm pack
 
 `pnpm check` covers type-checking, documentation consistency, and tests. It currently passes **19 test files / 113 cases**, plus **3 browser-layer cases** (Playwright measuring real computed styles).
 
-`pnpm pack` produces roughly a **0.25 MB** archive: 2.2.0 dropped the standalone page and its editor dependencies and turned source maps off, down from 1.72 MB.
+`npm pack` produces roughly a **0.25 MB** archive: 2.2.0 dropped the standalone page and its editor dependencies and turned source maps off, down from 1.72 MB.
 
-v2.2.0 was developed against DSH `master@47f943859bef60e4160492346772ded9b24f765a`. CI covers Windows, Ubuntu, and macOS.
+v2.2.1 was developed against DSH `master@47f943859bef60e4160492346772ded9b24f765a`. CI covers Windows, Ubuntu, and macOS.
 
 ## Project
 
-- Version: `v2.2.0`
+- Version: `v2.2.1`
 - Author: upstream [Hakunm](https://github.com/Hakunm); this fork maintained by [westanke](https://github.com/westanke)
 - Repository: [GitHub](https://github.com/westanke/dsh-remote-bridge) · [Gitee](https://gitee.com/westanke/dsh-remote-bridge)
 - npm: [`dsh-remote-bridge`](https://www.npmjs.com/package/dsh-remote-bridge) ([mainland-China mirror](https://registry.npmmirror.com/dsh-remote-bridge))

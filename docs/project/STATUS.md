@@ -1,7 +1,7 @@
 # 当前状态
 
 - 日期：2026-10-09
-- 阶段：`dsh-remote-bridge` v2.2.0（删除独立页 `/dsh-workspace`，发布包 1.72 MB → 0.25 MB）
+- 阶段：`dsh-remote-bridge` v2.2.1（README 增加 npm 安装方式；包自 2.2.0 起已在 npm 上）
 - 当前任务：`REL-005`
 - DSH 基线：`master` / `47f943859bef60e4160492346772ded9b24f765a`
 - 插件路径：本仓库（历史上游为 `Hakunm/dsh-workspace`，v1.0.0 保持原样不动）
@@ -16,6 +16,7 @@
 - 最近验证：`pnpm check` 全绿 —— `tsc --noEmit`、**19 个测试文件 / 113 个用例**、`docs:check` 一致性、两个 entry（host / client）构建完成；另有 **3 个浏览器层用例**（Playwright 用真实浏览器量计算样式），3/3 通过
 - 界面截图：桌面界面截图**已删除**（那是改名前的旧界面，含 v1.0.0 徽章与旧的 1400px 文件树对话框）。重录需要能驱动插件面板的浏览器环境，目前不具备；二维码另有 SVG/PNG 资产。桌面文件工作区界面（独立页）已于 2.2.0 删除，不再有对应截图需求
 - 仓库：`https://github.com/westanke/dsh-remote-bridge`，topic 包含 `dsh-plugin`
-- Release：`https://github.com/westanke/dsh-remote-bridge/releases`（v2.0.0 及其后为已知缺陷版；v2.2.0 待发）
-- 正式产物：`artifacts/dsh-remote-bridge-2.2.0.tgz`，**265,426 字节（约 0.25 MB）**，SHA-256 `66914e589d7169ccaf60766d419d921e22ddd61534cea806ee47ffcb502e1a1e`
-- 阻塞项：npm 包尚未发布；Android 与 DSH WebUI 的后续完整能力对等仍按 `PARITY-001` 推进
+- Release：`https://github.com/westanke/dsh-remote-bridge/releases`（`v2.0.0` / `v2.0.1` 为已知缺陷版，`v2.0.2` / `v2.0.3` 从未发布；两站与 npm 现均为 v2.2.1）
+- 正式产物：`artifacts/dsh-remote-bridge-2.2.1.tgz`，**260,778 字节（约 0.25 MB）**，SHA-256 `9aed753c461135a48f4a1a3daabfd8739e1bf0b0eb0671e50496c3fae1b3a596`
+- 分发：npm [`dsh-remote-bridge`](https://www.npmjs.com/package/dsh-remote-bridge)（官方源 + npmmirror 均有），`dsh plugin --profile web add dsh-remote-bridge` 可用
+- 阻塞项：Android 与 DSH WebUI 的后续完整能力对等仍按 `PARITY-001` 推进

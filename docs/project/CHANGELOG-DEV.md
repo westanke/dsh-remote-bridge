@@ -1,5 +1,39 @@
 # 开发日志
 
+## 2026-10-09 · v2.2.1 README 增加 npm 安装方式
+
+### 为什么
+
+插件在 2.2.0 之后已经发布到 npm（`dsh-remote-bridge`，官方源 + npmmirror 都有），
+但 README 只列了 GitHub / Gitee 两个 Release tarball 的装法 —— 最省事的那条路没写出来。
+
+### 改了什么
+
+README 中英两份的安装段从两种变成三种，并把 **npm 包名放在首位**：
+
+```
+dsh plugin --profile web add dsh-remote-bridge                                  # 推荐
+dsh plugin --profile web add dsh-remote-bridge --registry https://registry.npmmirror.com
+```
+
+推荐它是因为装的是**预构建产物**，pnpm 不会要求构建授权 —— 这也是 DSH 插件清单
+（awesome-dsh-plugin）指南的推荐做法。项目信息一节补了 npm 链接。
+
+### 一件先验证再写的事
+
+记不清 `dsh plugin add` 是否接受 `--registry`（印象里有两种相反的说法），所以实测两次：
+
+- 该子命令的 `--help` 输出的其实是 **`pnpm add` 的帮助**，其中明确列有
+  `--registry <url>  The registry to use for the installation` —— 它就是转发给 pnpm 的；
+- 用 `--registry https://registry.invalid.example` 做证伪：pnpm 明确去访问该域名并以
+  `ENOTFOUND` 失败；去掉该参数则照常成功。说明这个 flag 真的生效，不是被静默忽略。
+
+### 顺带
+
+发版流程第 1 步改为**用 `npm pack` 产出 Release 产物**（见
+[RELEASE.md](./RELEASE.md)）：2.2.0 那次用的是 `pnpm pack`，产物与 npm 上那份哈希对不上
+（文件清单一致、内容一致，只差 npm 改写的 package.json 元数据），对账时容易误判。
+
 ## 2026-10-09 · v2.2.0 删除独立页，包体 1.72 MB → 0.25 MB
 
 ### 为什么删
