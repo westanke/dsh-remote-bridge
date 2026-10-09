@@ -1,7 +1,14 @@
 # 测试记录
 
+> **阅读提示**：下表是按日期倒序的**历史流水**，记录的是当时那一刻的验证结果。其中 2026-08-14
+> 那几条描述的「侧栏文件入口 → 完整文件树与 CodeMirror 编辑器」已被 2.0.4 推翻 —— 桌面端现在
+> 是纯设置面板（不含文件树），文件树只存在于独立页 `/dsh-workspace`。表中的旧包名
+> （`dsh-workspace-*`）与旧测试数（12 文件/24 项、144 项等）同样只代表当时。
+> **当前基线见 [STATUS.md](./STATUS.md)：17 个测试文件 / 104 个用例。**
+
 | 日期 | 环境 | 验证 | 结果 |
 | --- | --- | --- | --- |
+| 2026-10-09 | Linux / Node 24.19.0 | 改名 `dsh-workspace` → `dsh-remote-bridge`、桌面端收敛为纯设置面板后的 `pnpm check` | 通过；17 个测试文件 / 104 个用例、9 份项目文档 / 38 个任务 / 6 个 ADR、OpenAPI/AsyncAPI/Kotlin SDK 版本与 package.json 一致，三个 entry（host / client / standalone）构建完成 |
 | 2026-08-15 | Windows 11 | 中英文 README 发布复验与 `pnpm pack --pack-destination artifacts` | 通过；指定截图环境说明已从仓库及 tarball 删除，两张实际效果图路径仍存在；12 个文件/24 项 Vitest、文档/API/SDK 和三份 bundle 一致；tarball 2,644,838 字节，SHA-256 `C4EB21A5A28D7C6B3529BFD59DEB7809D06850C3F0A2BB15C4DCBE52D0274823` |
 | 2026-08-15 | Windows 11 / Node 22.19.0 与 24 | listener 冲突回滚与测试稳定性复验 | 不同端口改为候选 listener 成功绑定后再切换，端口占用时不再中断旧 listener；测试预算调整为 15 秒；Node 22 连续 5 轮及 Node 24 一轮完整回归全部通过，共 144 项 Vitest |
 | 2026-08-15 | GitHub Actions / Windows、Ubuntu、macOS | [run 31839641415](https://github.com/Hakunm/dsh-workspace/actions/runs/31839641415) | 暴露 Windows runner 负载下默认 5 秒测试超时，以及失败重绑定短暂关闭旧 listener 导致的连接重置；其余九项作业通过，问题已按上一行修复并纳入最终矩阵 |

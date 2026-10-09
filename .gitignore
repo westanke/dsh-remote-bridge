@@ -1,15 +1,16 @@
 node_modules/
 lib/
 coverage/
+# Everything under artifacts/ is a local build product (pnpm pack output, release notes).
+# Only the checksum file is tracked, so it needs an explicit exemption; the tarball deliberately
+# does not — a 2.6 MB binary in git is not a source artefact, and CI re-packs on every release.
 artifacts/*
-!artifacts/dsh-workspace-1.0.0.tgz
 !artifacts/SHA256SUMS.txt
 playwright-report/
 test-results/
 kotlin-sdk/.gradle/
 kotlin-sdk/build/
 *.tgz
-!artifacts/dsh-workspace-1.0.0.tgz
 *.log
 .DS_Store
 Thumbs.db
