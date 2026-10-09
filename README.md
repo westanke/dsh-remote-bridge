@@ -9,17 +9,17 @@
 </p>
 
 <p align="center">
-  <img alt="Version" src="https://img.shields.io/badge/version-v2.0.4-087f8c">
+  <img alt="Version" src="https://img.shields.io/badge/version-v2.1.3-087f8c">
   <img alt="DSH plugin" src="https://img.shields.io/badge/DeepSeek_Harness-plugin-1f2328">
   <img alt="Platforms" src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-586069">
   <img alt="License" src="https://img.shields.io/badge/license-AGPL--3.0-2da44e">
 </p>
 
-`dsh-remote-bridge` 是 DeepSeek Harness（DSH）的远程访问桥接插件：它把 DSH 内核的私有 remote 协议翻译成版本化的 REST 接口，让 dsh-companion（[GitHub](https://github.com/westanke/dsh-companion) · [Gitee](https://gitee.com/westanke/dsh-companion)）等受信任客户端在离开电脑后仍能使用同一套聊天、工作区与文件能力；桌面端提供一个集中设置中心（根目录 / 远程访问 / 设备 / 回收站 / 审计），插件另带一个独立的文件工作区页面 `/dsh-workspace`，用于浏览与编辑本机文件。
+`dsh-remote-bridge` 是 DeepSeek Harness（DSH）的远程访问桥接插件：它把 DSH 内核的私有 remote 协议翻译成版本化的 REST 接口，让 dsh-companion（[GitHub](https://github.com/westanke/dsh-companion) · [Gitee](https://gitee.com/westanke/dsh-companion)）等受信任客户端在离开电脑后仍能使用同一套聊天、工作区与文件能力；桌面端在你的 DSH 设置里提供一个「手机设置」，内联六个分区（根目录 / 远程访问 / 设备 / 回收站 / 审计 / App 下载），插件另带一个独立的文件工作区页面 `/dsh-workspace`，用于浏览与编辑本机文件。
 
 界面默认中文，可随时切换 English。插件支持 Windows、macOS 和 Linux，安装包已经包含编译产物，不要求用户在服务器上重新构建。
 
-> **版本警告**：已发布的 `v2.0.0` 与 `v2.0.1` 存在严重缺陷（`v2.0.0` 历史图片读取全部失败，`v2.0.1` 插件无法激活）。请务必使用 **`v2.0.4` 或更高版本**。
+> **版本警告**：已发布的 `v2.0.0` 与 `v2.0.1` 存在严重缺陷（`v2.0.0` 历史图片读取全部失败，`v2.0.1` 插件无法激活）。请务必使用 **`v2.1.3`**（或 ≥ `v2.0.4`）。
 > `v2.0.2` 与 `v2.0.3` **从未发布**，请不要按这两个版本号寻找安装包。
 
 > **DSH 0.2.x 兼容性**：本分支在上游 `v1.0.0` 的基础上增加了对 DSH `0.2.0-rc.2` 的兼容层。
@@ -29,11 +29,11 @@
 
 ## 实际效果
 
-桌面端入口是一个纯设置面板：侧栏按钮已从文件夹图标换成**齿轮**，打开后只有五行设置。目录树、编辑器和文件操作没有删除，但已移出桌面面板，改由插件的独立页 `/dsh-workspace` 提供（适合手机 WebView 或直接打开链接）。
+桌面端的入口**就在你的 DSH 设置里**：打开设置，在「📱 手机访问」下面就是「📱 手机设置」，点进去直接内联渲染六个分区，不再另开弹窗。目录树、编辑器和文件操作没有删除，但已移出桌面设置，改由插件的独立页 `/dsh-workspace` 提供（适合手机 WebView 或直接打开链接）。
 
 远程访问默认关闭。管理员可在本机 WebUI 中设置绑定 IP、端口和新设备的初始权限。
 
-> 本节原先配有两张界面截图，但那是改名前的旧界面（标题仍是「DSH 文件工作区」；远程访问那张还标着 v1.0.0，且是文件树与设置两个弹窗叠加的形态），与上面描述的当前形态不符，已删除以免误导。重录需要能驱动插件面板的浏览器环境，目前不具备。
+> 本节原先配有两张界面截图，但那是改名前的旧界面（标题仍是「DSH 文件工作区」；远程访问那张还标着 v1.0.0，且是文件树与设置两个弹窗叠加的形态），与上面描述的当前形态完全不符，已删除以免误导。缓存的旧截图不会自动更新，请以本节文字与 `docs/project/ARCHITECTURE.md` 为准。
 
 ## 关于改名（2.0.4）
 
@@ -63,10 +63,10 @@
 
 ```sh
 # GitHub
-dsh plugin --profile web add https://github.com/westanke/dsh-remote-bridge/releases/download/v2.0.4/dsh-remote-bridge-2.0.4.tgz
+dsh plugin --profile web add https://github.com/westanke/dsh-remote-bridge/releases/download/v2.1.3/dsh-remote-bridge-2.1.3.tgz
 
 # Gitee（国内访问更快）
-dsh plugin --profile web add https://gitee.com/westanke/dsh-remote-bridge/releases/download/v2.0.4/dsh-remote-bridge-2.0.4.tgz
+dsh plugin --profile web add https://gitee.com/westanke/dsh-remote-bridge/releases/download/v2.1.3/dsh-remote-bridge-2.1.3.tgz
 
 npx @deepseek-ai/dsh web
 ```
@@ -74,17 +74,17 @@ npx @deepseek-ai/dsh web
 > 本 README 由 GitHub 与 Gitee 共用同一份文件，因此凡是必须带主机名的地址（安装命令、Release 下载）
 > 都会把两站都列出来 —— 相对链接可以跟着站点走，但 `/releases/download/...` 没有相对形式。
 
-重启 WebUI 后，侧栏底部会出现齿轮图标的「工作区设置」入口，它打开的是纯设置面板，**不含文件树**；会话视图中工具轨迹旁的「文件」标签页已在 2.0.4 移除。要浏览和编辑文件，请打开独立页 `/dsh-workspace`。
+重启 DSH 后，打开设置就能看到「手机设置」（在「手机访问」下面）。它是**纯设置**，不含文件树；会话视图中工具轨迹旁的「文件」标签页已在 2.0.4 移除。要浏览和编辑文件，请打开独立页 `/dsh-workspace`。
 
 从 GitHub Release 下载离线安装包时，可直接安装 tarball：
 
 ```sh
-dsh plugin --profile web add ./dsh-remote-bridge-2.0.4.tgz
+dsh plugin --profile web add ./dsh-remote-bridge-2.1.3.tgz
 ```
 
 ## 第一次使用
 
-1. 在 DSH WebUI 中点击侧栏的齿轮图标，打开「工作区设置」（默认落在「根目录」页）。
+1. 打开 DSH 设置，进入「手机设置」（在「手机访问」下面；默认落在「根目录」页）。
 2. 在「根目录」页添加允许管理的本机目录，并为它起一个容易识别的名字。
 3. 需要浏览或编辑文件时，打开独立页 `/dsh-workspace`，选择授权根即可。
 4. 需要连接手机时，回到设置面板进入「远程访问」，填写绑定 IP 和端口并保存。
@@ -108,17 +108,18 @@ dsh plugin --profile web add ./dsh-remote-bridge-2.0.4.tgz
 
 ### 桌面端设置面板
 
-侧栏按钮的图标已从文件夹换成齿轮，文案为「工作区设置」。面板只渲染五行设置，默认落在「根目录」：
+入口在 DSH 设置里，标题为「手机设置」。设置区**内联渲染**导航与内容，不另开弹窗；导航横排，默认落在「根目录」：
 
 | 分区 | 用途 |
 | --- | --- |
 | 根目录 | 添加、移除授权目录并设置显示名称 |
 | 远程访问 | 设置绑定 IP / 端口，启用远程访问并创建配对码 |
 | 设备 | 查看设备权限与根目录授权，随时撤销 |
-| 回收站 | 查看与恢复被删除的条目 |
+| 回收站 | 查看与恢复被删除的条目（只列出来自手机 App 或独立页 `/dsh-workspace` 的删除记录） |
 | 审计 | 查看操作类型与对象的审计记录 |
+| App 下载 | 扫码下载 Android 客户端，二维码指向两个站点的 Releases 列表页 |
 
-面板宽度从 1400px 收回 920px；会话视图中工具轨迹旁的「文件」标签页已移除，桌面端只保留这一个设置入口。
+侧栏那个齿轮按钮**已移除**：入口分散在侧栏图标和设置页两处，会让同一件事有两个起点。会话视图中工具轨迹旁的「文件」标签页也早已移除，桌面端现在只有这一个入口。
 
 ### 连接 Android App 或其他客户端
 
@@ -265,7 +266,7 @@ DSH 的 cordis 注入属性（`ctx.attachments` / `ctx.fileUploads`）是惰性�
 
 **安装后找不到文件工作区入口**
 
-侧栏入口现在是齿轮图标的「工作区设置」，它打开的是设置面板，不含文件树。文件树在独立页 `/dsh-workspace`。确认插件安装在 `web` profile，并在安装后重启 DSH WebUI。
+入口在 DSH 设置里的「手机设置」（在「手机访问」下面），它是设置面板，不含文件树；文件树在独立页 `/dsh-workspace`。如果设置里看不到这一项，确认插件安装在 `web` profile，并在安装后**重启 DSH**（插件为进程内加载，不重启不生效）。
 
 **“启用并创建配对”按钮不可用**
 
@@ -289,11 +290,11 @@ pnpm pack
 
 `pnpm check` 覆盖类型检查、文档一致性与测试；当前 **17 个测试文件 / 104 个用例**全部通过。
 
-v2.0.4 基于 DSH `master@47f943859bef60e4160492346772ded9b24f765a` 开发，CI 覆盖 Windows、Ubuntu 和 macOS。
+v2.1.3 基于 DSH `master@47f943859bef60e4160492346772ded9b24f765a` 开发，CI 覆盖 Windows、Ubuntu 和 macOS。
 
 ## 项目信息
 
-- 当前版本：`v2.0.4`
+- 当前版本：`v2.1.3`
 - 作者：上游 [Hakunm](https://github.com/Hakunm)，本 fork 维护 [westanke](https://github.com/westanke)
 - 仓库：[GitHub](https://github.com/westanke/dsh-remote-bridge) · [Gitee](https://gitee.com/westanke/dsh-remote-bridge)
 - 许可证：[GNU Affero General Public License v3.0](./LICENSE)
