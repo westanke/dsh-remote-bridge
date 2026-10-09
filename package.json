@@ -1,7 +1,7 @@
 {
   "name": "dsh-remote-bridge",
-  "version": "2.1.3",
-  "description": "A bilingual file workspace and secure remote API for DeepSeek Harness WebUI and mobile clients.",
+  "version": "2.2.0",
+  "description": "Versioned REST bridge for DeepSeek Harness: remote access for trusted clients (chat, files, devices) plus a Phone-settings panel inside the DSH WebUI.",
   "type": "module",
   "packageManager": "pnpm@11.19.0",
   "main": "lib/index.js",
@@ -54,7 +54,6 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:e2e": "playwright test",
-    "dev:test-server": "tsx scripts/test-server.ts",
     "docs:check": "tsx scripts/check-project-docs.ts",
     "qr:app": "node scripts/generate-app-qr.mjs",
     "check": "pnpm typecheck && pnpm test && pnpm docs:check && pnpm build",
@@ -68,8 +67,8 @@
     "deepseek-harness",
     "vibe-coding",
     "android",
-    "file-manager",
-    "remote-api"
+    "remote-access",
+    "rest-api"
   ],
   "license": "AGPL-3.0-only",
   "author": "Hakunm (https://github.com/Hakunm)",
@@ -88,14 +87,6 @@
     "access": "public"
   },
   "dependencies": {
-    "@codemirror/commands": "^6.10.1",
-    "@codemirror/lang-javascript": "^6.2.4",
-    "@codemirror/lang-json": "^6.0.2",
-    "@codemirror/lang-markdown": "^6.5.0",
-    "@codemirror/language": "^6.11.3",
-    "@codemirror/state": "^6.5.2",
-    "@codemirror/view": "^6.38.6",
-    "@lezer/highlight": "^1.2.1",
     "lucide-react": "^0.468.0",
     "ws": "^8.18.0"
   },

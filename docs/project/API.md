@@ -1,6 +1,6 @@
 # API 使用说明
 
-公开接口基址为 `http://HOST:PORT/api/v1`。`PORT` 默认是 `3090`，可由本机 WebUI 的“工作区设置 → 远程访问”修改。完整 schema 见 [OpenAPI](../api/openapi.yaml) 和 [AsyncAPI](../api/asyncapi.yaml)。
+公开接口基址为 `http://HOST:PORT/api/v1`。`PORT` 默认是 `3090`，可由 DSH 设置里「手机设置 → 远程访问」修改。完整 schema 见 [OpenAPI](../api/openapi.yaml) 和 [AsyncAPI](../api/asyncapi.yaml)。
 
 绑定设置接受本机数值 IPv4/IPv6 地址，例如 `0.0.0.0`、`192.168.1.20` 或 `::`；它不接受域名。绑定 `0.0.0.0` 后，客户端仍可使用解析到该服务器的域名连接。监听配置属于回环管理 API，不是对外 `/api/v1` 契约的一部分。
 

@@ -19,12 +19,15 @@ import { PLUGIN_VERSION } from './shared/version.ts'
  * 外加一个设置中心（根目录 / 远程访问 / 设备 / 回收站 / 审计）。原先的
  * 「workspace」只是其中一页，名字比内容宽。
  *
- * **以下三处刻意不改**，它们是已发布客户端依赖的对外契约，改了等于破坏兼容：
+ * **以下一处刻意不改**，它是已发布客户端依赖的对外契约，改了等于破坏兼容：
  * - REST 前缀 `/dsh-workspace-api`（`src/host/server.ts`）
- * - 独立页路径 `/dsh-workspace`（同上）
- * - 浏览器存储键 `dsh-workspace-device-token`（`src/standalone/index.tsx`）
  *
- * 已发布的 App 把这些路径写死了，改名只动「装的时候叫什么、bundle 叫什么」。
+ * 已发布的 App 把它写死了，改名只动「装的时候叫什么、bundle 叫什么」。
+ *
+ * 另外两项**已随 2.2.0 删除独立页一并退役**，不再是契约：独立页路径 `/dsh-workspace`
+ * （页面已删）、浏览器存储键 `dsh-workspace-device-token`（只被那个页面读写过，现已无人使用）。
+ * 另有一项契约不在此处：状态目录 `dshHomePath('dsh-workspace')`（在 `cordis.patch.yml`），
+ * 换目录等于清空用户的授权根与回收站。
  */
 export const name = 'dsh-remote-bridge'
 

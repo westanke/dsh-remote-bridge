@@ -4,10 +4,11 @@
 > 那几条描述的「侧栏文件入口 → 完整文件树与 CodeMirror 编辑器」已被 2.0.4 推翻；2.1.x 又把
 > 桌面入口搬进 DSH 设置页的「手机设置」并改为内联渲染，侧栏齿轮按钮不再存在。表中的旧包名
 > （`dsh-workspace-*`）与旧测试数（12 文件/24 项、144 项等）同样只代表当时。
-> **当前基线见 [STATUS.md](./STATUS.md)：19 个测试文件 / 113 个用例。**
+> **当前基线见 [STATUS.md](./STATUS.md)：19 个测试文件 / 113 个用例，外加 3 个浏览器层样式用例。**
 
 | 日期 | 环境 | 验证 | 结果 |
 | --- | --- | --- | --- |
+| 2026-10-09 | Linux / Node 24.19.0 + Playwright | 2.2.0 删除独立页后的 `pnpm check` 与 `pnpm test:e2e` | 通过；19 个测试文件 / 113 个用例、9 份项目文档 / 38 个任务 / 6 个 ADR、OpenAPI/AsyncAPI/Kotlin SDK 版本与 package.json 一致，**两个 entry（host / client）** 构建完成 —— standalone entry 随独立页一并删除；浏览器层 3 个用例通过（按钮可见 / 导航横排 / 二维码解码）；发布包 **0.25 MB**（原 1.72 MB） |
 | 2026-10-09 | Linux / Node 24.19.0 | v2.1.3 的 `pnpm check` | 通过；19 个测试文件 / 113 个用例、9 份项目文档 / 38 个任务 / 6 个 ADR、OpenAPI/AsyncAPI/Kotlin SDK 版本与 package.json 一致，三个 entry（host / client / standalone）构建完成 |
 | 2026-10-09 | Linux / Node 24.19.0 + Playwright | 2.1.2 隐形按钮的**计算样式**取证（`.daw-command.primary` 的 `background`） | 修复前为 `rgba(0, 0, 0, 0)`（`--daw-accent` 未解析 → 白字白底），修复后取到实际色值；另新增 `tests/styles.spec.ts` 守住「自定义属性必须同时定义在 `.daw-root,.daw-settings-section`」这条结构不变量 |
 | 2026-10-09 | Linux / Node 24.19.0 | 2.1.0 二维码资产的独立解码器交叉验证（`tests/app-qr.spec.ts`） | 通过；用 `qrcode` 编码、`jsqr` 解码回读**提交进仓库的** `assets/app-qr-*.svg`，确认内含地址与 `src/client/app-qr.ts` 一致且指向 Releases 列表页 |

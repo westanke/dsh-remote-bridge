@@ -12,6 +12,15 @@ const clientExternals = [
   '@deepseek-ai/dsh-client-runtime/client',
 ]
 
+// Two entries, not three.
+//
+// The `standalone` entry (the `/dsh-workspace` page) was removed in 2.2.0: the desktop file tree had
+// already moved out of the settings panel in 2.0.4, so that page was the last consumer of CodeMirror
+// and of `assets/workspace.html`. Dropping it took the tarball from 1.72 MB to 0.25 MB.
+//
+// `sourcemap` is off on purpose. The maps were ~5 MB of the published package and nobody could use
+// them: this plugin ships pre-built bundles, and a consumer debugging a crash inside `client.cjs`
+// needs the original TypeScript sources, which are not in the tarball either way.
 export default defineConfig([
   {
     name: 'dsh-remote-bridge/host',
@@ -32,7 +41,7 @@ export default defineConfig([
     platform: 'browser',
     target: 'es2022',
     dts: false,
-    sourcemap: true,
+    sourcemap: false,
     clean: false,
     deps: {
       neverBundle: clientExternals,
@@ -45,18 +54,5 @@ export default defineConfig([
       intro: 'var module = { exports: {} }; var exports = module.exports;',
       footer: 'return module.exports; } });',
     },
-  },
-  {
-    name: 'dsh-remote-bridge/standalone',
-    entry: { standalone: 'src/standalone/index.tsx' },
-    outDir: 'lib',
-    format: 'iife',
-    platform: 'browser',
-    target: 'es2022',
-    dts: false,
-    sourcemap: true,
-    clean: false,
-    deps: { alwaysBundle: () => true, onlyBundle: false },
-    outputOptions: { entryFileNames: 'standalone.js' },
   },
 ])

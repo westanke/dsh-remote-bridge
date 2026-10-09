@@ -9,17 +9,17 @@
 </p>
 
 <p align="center">
-  <img alt="Version" src="https://img.shields.io/badge/version-v2.1.3-087f8c">
+  <img alt="Version" src="https://img.shields.io/badge/version-v2.2.0-087f8c">
   <img alt="DSH plugin" src="https://img.shields.io/badge/DeepSeek_Harness-plugin-1f2328">
   <img alt="Platforms" src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-586069">
   <img alt="License" src="https://img.shields.io/badge/license-AGPL--3.0-2da44e">
 </p>
 
-`dsh-remote-bridge` is the remote-access bridge plugin for DeepSeek Harness (DSH). It translates DSH's private remote protocol into a versioned REST API so dsh-companion ([GitHub](https://github.com/westanke/dsh-companion) · [Gitee](https://gitee.com/westanke/dsh-companion)) and other trusted clients can keep using the same chat, workspace, and file capabilities while away from the machine. On the desktop it provides a centralized settings center (Roots / Remote / Devices / Trash / Audit), and it ships a standalone file workspace page at `/dsh-workspace` for browsing and editing local files.
+`dsh-remote-bridge` is the remote-access bridge plugin for DeepSeek Harness (DSH). It translates DSH's private remote protocol into a versioned REST API so dsh-companion ([GitHub](https://github.com/westanke/dsh-companion) · [Gitee](https://gitee.com/westanke/dsh-companion)) and other trusted clients can keep using the same chat, workspace, and file capabilities while away from the machine. On the desktop it provides a **Phone settings** section inside your DSH settings, rendering six tabs inline (Roots / Remote / Devices / Trash / Audit / App download). **The desktop no longer offers a file-management UI**: the file tree and editor were deleted in 2.2.0 — manage files from the phone app, or ask the agent to use its tools in a conversation (see "No file-management UI on the desktop").
 
 The interface is bilingual and defaults to Chinese. Prebuilt packages run on Windows, macOS, and Linux without compiling on the target server.
 
-> **Version warning**: the published `v2.0.0` and `v2.0.1` have serious defects (`v2.0.0` fails to read any historical images; `v2.0.1` cannot activate the plugin). Use **`v2.1.3`** (or ≥ `v2.0.4`).
+> **Version warning**: the published `v2.0.0` and `v2.0.1` have serious defects (`v2.0.0` fails to read any historical images; `v2.0.1` cannot activate the plugin). Use **`v2.2.0`** (or ≥ `v2.0.4`).
 > `v2.0.2` and `v2.0.3` were **never released** — do not look for installers under those version numbers.
 
 > **DSH 0.2.x compatibility**: this branch adds a compatibility layer for DSH `0.2.0-rc.2` on top of
@@ -30,7 +30,7 @@ The interface is bilingual and defaults to Chinese. Prebuilt packages run on Win
 
 ## What it looks like
 
-The desktop entry lives **inside your DSH settings**: under **📱 Phone access** you will find **📱 Phone settings**, which renders six sections inline — no second dialog. The directory tree, editor, and file operations were not removed — they moved out of the desktop settings into the plugin's standalone page `/dsh-workspace` (handy for a mobile WebView or a direct link).
+The desktop entry lives **inside your DSH settings**: under **📱 Phone access** you will find **📱 Phone settings**, which renders six tabs inline — no second dialog. It is settings-only and contains **no file tree**: the standalone page `/dsh-workspace` and its file tree and CodeMirror editor were deleted in 2.2.0. The reason and the cost are covered in "No file-management UI on the desktop" below.
 
 Remote access remains disabled until a local administrator chooses a bind address, port, and initial device permissions.
 
@@ -45,11 +45,14 @@ The plugin was renamed from `dsh-workspace` to `dsh-remote-bridge`. The old name
 | Unchanged | Location | Why it must stay |
 | --- | --- | --- |
 | REST prefix `/dsh-workspace-api` | `src/host/server.ts` | Published apps hard-code it |
-| Standalone page path `/dsh-workspace` | same | Mobile WebViews open that exact URL |
-| Browser storage key `dsh-workspace-device-token` | `src/standalone/index.tsx` | Renaming it would invalidate the saved device token on the standalone page |
 | State directory (`dataDir`, default `dsh-workspace`) | DSH profile config | A new directory would erase every authorized root and the trash |
 
-So seeing `dsh-workspace` in a URL, the standalone page path, or the state directory is **expected**, not an incomplete rename.
+**Two items that are no longer contracts** (both retired with the standalone page in 2.2.0):
+
+- **The standalone page path `/dsh-workspace`**: that page (file tree + CodeMirror editor) was deleted, so the path went with it. It is a different thing from the REST prefix `/dsh-workspace-api` — **the prefix stays and remains the app's contract; the page is gone and promises nothing**.
+- **The browser storage key `dsh-workspace-device-token`**: only that deleted page ever read or wrote it; nothing in this repo or in the app touches it now. A key nobody reads is not a contract, so it is not listed above. The name itself is not recycled, to avoid adding a red herring when debugging later.
+
+So seeing `dsh-workspace` in a REST address or the state directory is **expected**, not an incomplete rename.
 
 ## Quick install
 
@@ -64,10 +67,10 @@ Run as the same operating-system user that runs DSH WebUI (pick either host — 
 
 ```sh
 # GitHub
-dsh plugin --profile web add https://github.com/westanke/dsh-remote-bridge/releases/download/v2.1.3/dsh-remote-bridge-2.1.3.tgz
+dsh plugin --profile web add https://github.com/westanke/dsh-remote-bridge/releases/download/v2.2.0/dsh-remote-bridge-2.2.0.tgz
 
 # Gitee (faster from mainland China)
-dsh plugin --profile web add https://gitee.com/westanke/dsh-remote-bridge/releases/download/v2.1.3/dsh-remote-bridge-2.1.3.tgz
+dsh plugin --profile web add https://gitee.com/westanke/dsh-remote-bridge/releases/download/v2.2.0/dsh-remote-bridge-2.2.0.tgz
 
 npx @deepseek-ai/dsh web
 ```
@@ -76,37 +79,36 @@ npx @deepseek-ai/dsh web
 > (the install commands, release downloads) lists both hosts. Relative links follow the site you
 > are reading on, but `/releases/download/...` has no relative form.
 
-Restart DSH after installation, then open settings — **Phone settings** sits right below **Phone access**. It is settings-only and does **not** contain the file tree. The in-conversation **Files** tab was removed in 2.0.4. To browse or edit files, open the standalone page `/dsh-workspace`.
+Restart DSH after installation, then open settings — **Phone settings** sits right below **Phone access**. It is settings-only and does **not** contain the file tree. The in-conversation **Files** tab was removed in 2.0.4. **The desktop no longer offers a UI for browsing or editing files**: the standalone page `/dsh-workspace` was deleted in 2.2.0 — use the phone app, or ask the agent to use its tools in a conversation.
 
 To install a downloaded release archive:
 
 ```sh
-dsh plugin --profile web add ./dsh-remote-bridge-2.1.3.tgz
+dsh plugin --profile web add ./dsh-remote-bridge-2.2.0.tgz
 ```
 
 ## First connection
 
 1. Open DSH settings and go to **Phone settings** (below **Phone access**; it lands on **Roots**).
 2. Add a local directory under **Roots** and give it a recognizable label.
-3. To browse or edit files, open the standalone page `/dsh-workspace` and select that root.
-4. For mobile access, go back to the settings panel and open **Remote**, enter the bind IP and port, and save them.
-5. Select **Enable and create pairing**, then enter the ten-minute one-time code in the app.
+3. For mobile access, go to **Remote**, enter the bind IP and port, and save them.
+4. Select **Enable and create pairing**, then enter the ten-minute one-time code in the app.
+5. In the phone app's file page, select that root to browse and edit files.
 
 Remote access cannot be enabled before at least one root exists. Installing the plugin does not expose it to the LAN; it listens on loopback until a local administrator enables remote access.
 
 ## Features
 
-### File workspace (standalone page)
+### No file-management UI on the desktop
 
-The file workspace now lives on the standalone page `/dsh-workspace`, reachable from a desktop browser, a mobile WebView, or a direct link:
+2.2.0 deleted the standalone page `/dsh-workspace`, including the whole file tree, the upload/download entry points, and the CodeMirror 6 editor. The phone app's file page already covers the same ground natively, nobody used the desktop page, and it bloated the published package from **0.25 MB to 1.72 MB**.
 
-- Lazy directory browsing and file/folder creation.
-- Upload, download, replace, rename, and move.
-- CodeMirror 6 editing for UTF-8 text.
-- Best-effort preservation of UTF-8 BOM and original line endings.
-- ETag conflict detection that refuses silent overwrites.
-- Plugin-managed trash and restore; permanent purge stays local-only.
-- Metadata, download, and replacement for binary files without treating them as text.
+The cost, stated plainly — **on the desktop there are now only two ways to touch files**:
+
+1. Talk to the agent in a conversation and let it read and write files with its tools;
+2. Open a terminal and do it yourself.
+
+Mobile is unaffected: the app's file page still works against the same REST file endpoints the plugin kept (`/dsh-workspace-api` prefix, `/roots`, `/roots/{rootId}/content`, and so on — none were removed). Trash entries now come only from the phone app.
 
 ### Desktop settings panel
 
@@ -117,7 +119,7 @@ The entry lives in DSH settings under the title **Phone settings**. It renders i
 | Roots | Add or remove authorized directories and set display labels |
 | Remote | Set bind IP/port, enable remote access, and create pairing codes |
 | Devices | Inspect and revoke device scopes and per-root grants |
-| Trash | View and restore deleted entries (only deletions made from the phone app or the standalone page `/dsh-workspace` appear here) |
+| Trash | View and restore deleted entries (only deletions made from the phone app appear here) |
 | Audit | Operation type and target audit records |
 | App download | Scan to install the Android client; the codes point at both hosts' Releases list pages |
 
@@ -267,9 +269,13 @@ The user-visible consequence: **if this DSH build provides no attachment store, 
 
 ## Troubleshooting
 
-**The file workspace entry is missing**
+**Phone settings is missing**
 
-The entry is **Phone settings** inside DSH settings (below **Phone access**); it is a settings panel with no file tree. The file tree is on the standalone page `/dsh-workspace`. If you cannot see it, make sure the plugin was installed into the `web` profile and **restart DSH** — plugins load in-process and a restart is required.
+The entry is inside DSH settings, right below **Phone access**. If you cannot see it, make sure the plugin was installed into the `web` profile and **restart DSH** — plugins load in-process and a restart is required.
+
+**There is no UI for browsing or editing files on the desktop**
+
+That is intentional in 2.2.0: the standalone page `/dsh-workspace` was deleted and the desktop no longer offers a file-management UI. Use the phone app's file page, or ask the agent to read and write files with its tools in a conversation.
 
 **Enable and create pairing is disabled**
 
@@ -291,13 +297,15 @@ pnpm check
 pnpm pack
 ```
 
-`pnpm check` covers type-checking, documentation consistency, and tests. It currently passes **17 test files / 104 cases**.
+`pnpm check` covers type-checking, documentation consistency, and tests. It currently passes **19 test files / 113 cases**, plus **3 browser-layer cases** (Playwright measuring real computed styles).
 
-v2.1.3 was developed against DSH `master@47f943859bef60e4160492346772ded9b24f765a`. CI covers Windows, Ubuntu, and macOS.
+`pnpm pack` produces roughly a **0.25 MB** archive: 2.2.0 dropped the standalone page and its editor dependencies and turned source maps off, down from 1.72 MB.
+
+v2.2.0 was developed against DSH `master@47f943859bef60e4160492346772ded9b24f765a`. CI covers Windows, Ubuntu, and macOS.
 
 ## Project
 
-- Version: `v2.1.3`
+- Version: `v2.2.0`
 - Author: upstream [Hakunm](https://github.com/Hakunm); this fork maintained by [westanke](https://github.com/westanke)
 - Repository: [GitHub](https://github.com/westanke/dsh-remote-bridge) · [Gitee](https://gitee.com/westanke/dsh-remote-bridge)
 - License: [GNU Affero General Public License v3.0](./LICENSE)

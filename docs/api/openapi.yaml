@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: DeepSeek Harness Mobile API
-  version: 2.1.3
+  version: 2.2.0
   description: Versioned file and chat BFF for mobile and third-party DSH clients. HTTP and HTTPS are both supported.
 servers:
   - url: http://127.0.0.1:3090/api/v1
@@ -24,7 +24,7 @@ paths:
                 properties:
                   ok: { type: boolean, const: true }
                   version: { type: string, const: v1 }
-                  pluginVersion: { type: string, const: 2.1.3 }
+                  pluginVersion: { type: string, const: 2.2.0 }
   /pairings/exchange:
     post:
       security: []

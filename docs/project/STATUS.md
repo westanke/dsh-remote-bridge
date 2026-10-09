@@ -1,7 +1,7 @@
 # 当前状态
 
 - 日期：2026-10-09
-- 阶段：`dsh-remote-bridge` v2.1.3（入口搬进 DSH 设置 + App 下载页 + 回收站来路说明）
+- 阶段：`dsh-remote-bridge` v2.2.0（删除独立页 `/dsh-workspace`，发布包 1.72 MB → 0.25 MB）
 - 当前任务：`REL-005`
 - DSH 基线：`master` / `47f943859bef60e4160492346772ded9b24f765a`
 - 插件路径：本仓库（历史上游为 `Hakunm/dsh-workspace`，v1.0.0 保持原样不动）
@@ -11,10 +11,11 @@
 - 2.0.4：改名 `dsh-workspace` → `dsh-remote-bridge`（旧名比内容窄）；桌面端入口收敛为**纯设置面板**，文件树与编辑器移出桌面面板、保留在独立页 `/dsh-workspace`
 - 2.1.0–2.1.3（桌面设置）：入口从侧栏齿轮按钮**删除**，改为注册 `settings.section`（`id: dsh-remote-bridge`、`order: 2`，紧跟 pocket-relay 的「📱 手机访问」），面板标题改「手机设置」，**在设置页内联渲染**（2.1.1 修正了 2.1.0 那个「只有一句话」的启动器）；导航改横排并修好白字白底的隐形按钮（2.1.2）；新增「App 下载」页与二维码资产、回收站来路说明（2.1.3）
 - 二维码资产：提交进仓库并由 `tests/app-qr.spec.ts` 解码校验，指向 Releases **列表页**（非具体文件），因此发新版不需重新生成
+- 2.2.0（删独立页 + 瘦身）：删除独立页 `/dsh-workspace`（文件树 + CodeMirror 6 编辑器）及 `src/standalone/`、`assets/workspace.html`、`src/client/editor.tsx`、`workspace.tsx` 中的 `WorkspaceApp`/`DirectoryNode`/`CommandDialog`/`AdminOverlay`、`scripts/test-server.ts`，以及 8 个 `@codemirror/*` 与 `@lezer/highlight` 依赖；同时关闭 tsdown source map（映射本身约 5 MB，而插件发的是预构建 bundle、包内又没有原始 TS 源码，消费者根本用不上）。理由：手机 App 的文件页已原生覆盖同一套能力，桌面端这个页面无人使用。发布包 **1.72 MB → 0.25 MB**；`/dsh-workspace-api` 代理前缀与全部 REST 文件端点未动，App 不受影响
 - 附件能力边界：会话历史图片需要宿主提供 `ctx.attachments` 服务；缺失时插件照常激活，读取接口返回 `ATTACHMENT_STORE_UNAVAILABLE`，附件类上传返回 `FILE_UPLOADS_UNAVAILABLE`
-- 最近验证：`pnpm check` 全绿 —— `tsc --noEmit`、**19 个测试文件 / 113 个用例**、`docs:check` 一致性、三个 entry 构建完成
-- 界面截图：桌面界面截图**已删除**（那是改名前的旧界面，含 v1.0.0 徽章与旧的 1400px 文件树对话框）。重录需要能驱动插件面板的浏览器环境，目前不具备；二维码另有 SVG/PNG 资产
+- 最近验证：`pnpm check` 全绿 —— `tsc --noEmit`、**19 个测试文件 / 113 个用例**、`docs:check` 一致性、两个 entry（host / client）构建完成；另有 **3 个浏览器层用例**（Playwright 用真实浏览器量计算样式），3/3 通过
+- 界面截图：桌面界面截图**已删除**（那是改名前的旧界面，含 v1.0.0 徽章与旧的 1400px 文件树对话框）。重录需要能驱动插件面板的浏览器环境，目前不具备；二维码另有 SVG/PNG 资产。桌面文件工作区界面（独立页）已于 2.2.0 删除，不再有对应截图需求
 - 仓库：`https://github.com/westanke/dsh-remote-bridge`，topic 包含 `dsh-plugin`
-- Release：`https://github.com/westanke/dsh-remote-bridge/releases`（v2.0.0 及其后为已知缺陷版；v2.1.3 待发）
-- 正式产物：`artifacts/dsh-remote-bridge-2.1.3.tgz`，**1,800,876 字节**，SHA-256 `d2d332f386ebf1b220dbfa3522da3b18e5c0114796c8cff41f7d4c9c24309273`
+- Release：`https://github.com/westanke/dsh-remote-bridge/releases`（v2.0.0 及其后为已知缺陷版；v2.2.0 待发）
+- 正式产物：`artifacts/dsh-remote-bridge-2.2.0.tgz`，**265,426 字节（约 0.25 MB）**，SHA-256 `66914e589d7169ccaf60766d419d921e22ddd61534cea806ee47ffcb502e1a1e`
 - 阻塞项：npm 包尚未发布；Android 与 DSH WebUI 的后续完整能力对等仍按 `PARITY-001` 推进
