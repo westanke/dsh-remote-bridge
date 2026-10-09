@@ -15,7 +15,7 @@
   <img alt="License" src="https://img.shields.io/badge/license-AGPL--3.0-2da44e">
 </p>
 
-`dsh-remote-bridge` 是 DeepSeek Harness（DSH）的远程访问桥接插件：它把 DSH 内核的私有 remote 协议翻译成版本化的 REST 接口，让 [dsh-companion](https://github.com/westanke/dsh-companion) 等受信任客户端在离开电脑后仍能使用同一套聊天、工作区与文件能力；桌面端提供一个集中设置中心（根目录 / 远程访问 / 设备 / 回收站 / 审计），插件另带一个独立的文件工作区页面 `/dsh-workspace`，用于浏览与编辑本机文件。
+`dsh-remote-bridge` 是 DeepSeek Harness（DSH）的远程访问桥接插件：它把 DSH 内核的私有 remote 协议翻译成版本化的 REST 接口，让 dsh-companion（[GitHub](https://github.com/westanke/dsh-companion) · [Gitee](https://gitee.com/westanke/dsh-companion)）等受信任客户端在离开电脑后仍能使用同一套聊天、工作区与文件能力；桌面端提供一个集中设置中心（根目录 / 远程访问 / 设备 / 回收站 / 审计），插件另带一个独立的文件工作区页面 `/dsh-workspace`，用于浏览与编辑本机文件。
 
 界面默认中文，可随时切换 English。插件支持 Windows、macOS 和 Linux，安装包已经包含编译产物，不要求用户在服务器上重新构建。
 
@@ -59,12 +59,20 @@
 - Node.js `^22.19.0` 或 `>=24.0.0`
 - 默认端口 `3090` 可用，或准备一个其他端口
 
-使用运行 DSH WebUI 的同一系统用户执行：
+使用运行 DSH WebUI 的同一系统用户执行（两站任选其一，内容相同）：
 
 ```sh
+# GitHub
 dsh plugin --profile web add https://github.com/westanke/dsh-remote-bridge/releases/download/v2.0.4/dsh-remote-bridge-2.0.4.tgz
+
+# Gitee（国内访问更快）
+dsh plugin --profile web add https://gitee.com/westanke/dsh-remote-bridge/releases/download/v2.0.4/dsh-remote-bridge-2.0.4.tgz
+
 npx @deepseek-ai/dsh web
 ```
+
+> 本 README 由 GitHub 与 Gitee 共用同一份文件，因此凡是必须带主机名的地址（安装命令、Release 下载）
+> 都会把两站都列出来 —— 相对链接可以跟着站点走，但 `/releases/download/...` 没有相对形式。
 
 重启 WebUI 后，侧栏底部会出现齿轮图标的「工作区设置」入口，它打开的是纯设置面板，**不含文件树**；会话视图中工具轨迹旁的「文件」标签页已在 2.0.4 移除。要浏览和编辑文件，请打开独立页 `/dsh-workspace`。
 
@@ -274,4 +282,4 @@ v2.0.4 基于 DSH `master@47f943859bef60e4160492346772ded9b24f765a` 开发，CI 
 - 作者：上游 [Hakunm](https://github.com/Hakunm)，本 fork 维护 [westanke](https://github.com/westanke)
 - 仓库：[GitHub](https://github.com/westanke/dsh-remote-bridge) · [Gitee](https://gitee.com/westanke/dsh-remote-bridge)
 - 许可证：[GNU Affero General Public License v3.0](./LICENSE)
-- Android 客户端：[dsh-companion](https://github.com/westanke/dsh-companion)（上游 [dsh-android-app](https://github.com/Hakunm/dsh-android-app) 的 fork，与本插件配套）
+- Android 客户端：dsh-companion（[GitHub](https://github.com/westanke/dsh-companion) · [Gitee](https://gitee.com/westanke/dsh-companion)），上游 [dsh-android-app](https://github.com/Hakunm/dsh-android-app) 的 fork，与本插件配套
