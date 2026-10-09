@@ -62,20 +62,29 @@
 - Node.js `^22.19.0` 或 `>=24.0.0`
 - 默认端口 `3090` 可用，或准备一个其他端口
 
-使用运行 DSH WebUI 的同一系统用户执行（两站任选其一，内容相同）：
+使用运行 DSH WebUI 的同一系统用户执行。**推荐用 npm 包名**（三种方式装的是同一份产物）：
 
 ```sh
-# GitHub
+# ① npm 包名（推荐：装的是预构建产物，不需要 pnpm 的构建授权）
+dsh plugin --profile web add dsh-remote-bridge
+
+# 国内镜像更快时，指定 registry
+dsh plugin --profile web add dsh-remote-bridge --registry https://registry.npmmirror.com
+
+# ② GitHub Release 的 tarball
 dsh plugin --profile web add https://github.com/westanke/dsh-remote-bridge/releases/download/v2.2.0/dsh-remote-bridge-2.2.0.tgz
 
-# Gitee（国内访问更快）
+# ③ Gitee Release 的 tarball（国内访问更快）
 dsh plugin --profile web add https://gitee.com/westanke/dsh-remote-bridge/releases/download/v2.2.0/dsh-remote-bridge-2.2.0.tgz
 
 npx @deepseek-ai/dsh web
 ```
 
+> `dsh plugin add` 底层就是 `pnpm add`，因此 `--registry` 等 pnpm 选项可直接使用。
+>
 > 本 README 由 GitHub 与 Gitee 共用同一份文件，因此凡是必须带主机名的地址（安装命令、Release 下载）
 > 都会把两站都列出来 —— 相对链接可以跟着站点走，但 `/releases/download/...` 没有相对形式。
+> npm 包名与 GitHub 上的仓库同名，两站看到的都一样。
 
 重启 DSH 后，打开设置就能看到「手机设置」（在「手机访问」下面）。它是**纯设置**，不含文件树；会话视图中工具轨迹旁的「文件」标签页已在 2.0.4 移除。**桌面端不再有浏览或编辑文件的界面**：独立页 `/dsh-workspace` 已在 2.2.0 删除，文件操作请走手机 App，或在会话里让 agent 用工具完成。
 
@@ -305,5 +314,6 @@ v2.2.0 基于 DSH `master@47f943859bef60e4160492346772ded9b24f765a` 开发，CI 
 - 当前版本：`v2.2.0`
 - 作者：上游 [Hakunm](https://github.com/Hakunm)，本 fork 维护 [westanke](https://github.com/westanke)
 - 仓库：[GitHub](https://github.com/westanke/dsh-remote-bridge) · [Gitee](https://gitee.com/westanke/dsh-remote-bridge)
+- npm：[`dsh-remote-bridge`](https://www.npmjs.com/package/dsh-remote-bridge)（[国内镜像](https://registry.npmmirror.com/dsh-remote-bridge)）
 - 许可证：[GNU Affero General Public License v3.0](./LICENSE)
 - Android 客户端：dsh-companion（[GitHub](https://github.com/westanke/dsh-companion) · [Gitee](https://gitee.com/westanke/dsh-companion)），上游 [dsh-android-app](https://github.com/Hakunm/dsh-android-app) 的 fork，与本插件配套

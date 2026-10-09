@@ -63,21 +63,30 @@ So seeing `dsh-workspace` in a REST address or the state directory is **expected
 - Node.js `^22.19.0` or `>=24.0.0`
 - Port `3090`, or another available port
 
-Run as the same operating-system user that runs DSH WebUI (pick either host — the tarball is identical):
+Run as the same operating-system user that runs DSH WebUI. **The npm package name is recommended** — all three routes install the same build:
 
 ```sh
-# GitHub
+# 1. npm package name (recommended: a prebuilt tarball, so pnpm never asks to approve a build)
+dsh plugin --profile web add dsh-remote-bridge
+
+# ...or point at the mainland-China mirror
+dsh plugin --profile web add dsh-remote-bridge --registry https://registry.npmmirror.com
+
+# 2. tarball from the GitHub release
 dsh plugin --profile web add https://github.com/westanke/dsh-remote-bridge/releases/download/v2.2.0/dsh-remote-bridge-2.2.0.tgz
 
-# Gitee (faster from mainland China)
+# 3. tarball from the Gitee release (faster from mainland China)
 dsh plugin --profile web add https://gitee.com/westanke/dsh-remote-bridge/releases/download/v2.2.0/dsh-remote-bridge-2.2.0.tgz
 
 npx @deepseek-ai/dsh web
 ```
 
+> `dsh plugin add` is a thin wrapper over `pnpm add`, so pnpm options such as `--registry` work directly.
+>
 > This README is shared verbatim by GitHub and Gitee, so any address that must carry a hostname
 > (the install commands, release downloads) lists both hosts. Relative links follow the site you
-> are reading on, but `/releases/download/...` has no relative form.
+> are reading on, but `/releases/download/...` has no relative form. The npm package name is the
+> same as the GitHub repository, so it reads identically on both hosts.
 
 Restart DSH after installation, then open settings — **Phone settings** sits right below **Phone access**. It is settings-only and does **not** contain the file tree. The in-conversation **Files** tab was removed in 2.0.4. **The desktop no longer offers a UI for browsing or editing files**: the standalone page `/dsh-workspace` was deleted in 2.2.0 — use the phone app, or ask the agent to use its tools in a conversation.
 
@@ -308,5 +317,6 @@ v2.2.0 was developed against DSH `master@47f943859bef60e4160492346772ded9b24f765
 - Version: `v2.2.0`
 - Author: upstream [Hakunm](https://github.com/Hakunm); this fork maintained by [westanke](https://github.com/westanke)
 - Repository: [GitHub](https://github.com/westanke/dsh-remote-bridge) · [Gitee](https://gitee.com/westanke/dsh-remote-bridge)
+- npm: [`dsh-remote-bridge`](https://www.npmjs.com/package/dsh-remote-bridge) ([mainland-China mirror](https://registry.npmmirror.com/dsh-remote-bridge))
 - License: [GNU Affero General Public License v3.0](./LICENSE)
 - Android client: dsh-companion ([GitHub](https://github.com/westanke/dsh-companion) · [Gitee](https://gitee.com/westanke/dsh-companion)), a fork of the upstream [dsh-android-app](https://github.com/Hakunm/dsh-android-app), kept in step with this plugin
