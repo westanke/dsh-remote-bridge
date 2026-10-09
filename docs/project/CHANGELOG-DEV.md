@@ -1,5 +1,50 @@
 # 开发日志
 
+## 2026-10-09 · v2.0.0 下游适配版发布（`REL-005`）
+
+### 为什么发 major
+
+不是代码风格洁癖，是**宿主契约变了**：`apiProxy` 在 DSH 0.2.x 已不存在，host bridge 整体迁到
+host services。插件的入口签名与生命周期钩子跟着换，这一类改动对下游集成方就是破坏性的，
+哪怕四个新端点本身都是向后兼容的新增。压成 v1.0.1 会让半年后有人对着旧文档调试新内核，
+那才是真正的破坏。
+
+### 这一版带了什么
+
+| 端点 | 任务 | 解决的用户原话 |
+| --- | --- | --- |
+| `GET /api/v1/settings/plugins` | `PLUGIN-001` | 「无法查看已装插件情况」 |
+| `POST /manage/config/text` + WebUI 按钮 | `CFG-001` | 「电脑在哪里生成？」（配对码本来就在远程访问页） |
+| `GET /api/v1/roots/resolve` | `FS-003` | 「会话中的文件无法查看」 |
+| `GET /api/v1/attachments/:id` | 附件读取 | 会话里发的图片/文件在客户端不可见 |
+
+### 版本号的四处战场
+
+改版本号时踩了一个坑，值得记下来：`package.json` 只是**四个**版本源之一。
+`docs/api/openapi.yaml`（含 `pluginVersion` 的 `const` 约束）、`docs/api/asyncapi.yaml`、
+`kotlin-sdk/build.gradle.kts` 各有一份，而运行时真正对外报版本的是
+`src/shared/version.ts` 里的 `PLUGIN_VERSION`——它才是 `healthz` 与客户端设置页显示的那个值。
+
+只改 `package.json` 而漏掉 `src/shared/version.ts` 的结果是：
+`pnpm docs:check` 全绿（它只校对文档与 package.json 的版本），
+只有 `tests/http-api.spec.ts` 的 `healthz` 断言会红。一条测试抓住一个真实的漏项。
+
+`docs/api/openapi.yaml` 里那个 `const: 2.0.0` 也要一起改，否则规范会把响应钉死在旧版本上。
+
+### 验证
+
+`pnpm check` 全绿：`tsc --noEmit`、**17 个测试文件 / 101 用例**、`docs:check`（9 份项目文档、
+37 项任务、6 份 ADR 与 API/SDK 版本一致性）、三份 bundle 构建。
+产物 `artifacts/dsh-workspace-2.0.0.tgz`，2,676,271 字节，
+SHA-256 `6657DD9C24BB644FBD7245499E51533D51D5D6E83EB676D9708EDC9ED12A6C74`。
+
+### 发布形态
+
+`feat/plugin-inventory` 合并进 `main`，在 `main` 上打 `v2.0.0`，tag 推 GitHub + Gitee，
+GitHub Release 附 tarball 与 `SHA256SUMS.txt`。上游 `Hakunm/dsh-workspace` 与 AtomGit 远端不动。
+
+---
+
 ## 2026-10-08 · 配置文本的 WebUI 入口（`CFG-001`，下游分支）
 
 ### 为什么：一句被用户戳穿的话

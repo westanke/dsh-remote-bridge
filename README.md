@@ -9,7 +9,7 @@
 </p>
 
 <p align="center">
-  <img alt="Version" src="https://img.shields.io/badge/version-v1.0.0-087f8c">
+  <img alt="Version" src="https://img.shields.io/badge/version-v2.0.0-087f8c">
   <img alt="DSH plugin" src="https://img.shields.io/badge/DeepSeek_Harness-plugin-1f2328">
   <img alt="Platforms" src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-586069">
   <img alt="License" src="https://img.shields.io/badge/license-AGPL--3.0-2da44e">
@@ -46,7 +46,7 @@
 使用运行 DSH WebUI 的同一系统用户执行：
 
 ```sh
-dsh plugin --profile web add https://github.com/Hakunm/dsh-workspace/releases/download/v1.0.0/dsh-workspace-1.0.0.tgz
+dsh plugin --profile web add https://github.com/Hakunm/dsh-workspace/releases/download/v2.0.0/dsh-workspace-2.0.0.tgz
 npx @deepseek-ai/dsh web
 ```
 
@@ -55,7 +55,7 @@ npx @deepseek-ai/dsh web
 从 GitHub Release 下载离线安装包时，可直接安装 tarball：
 
 ```sh
-dsh plugin --profile web add ./dsh-workspace-1.0.0.tgz
+dsh plugin --profile web add ./dsh-workspace-2.0.0.tgz
 ```
 
 ## 第一次使用
@@ -219,11 +219,11 @@ pnpm check
 pnpm pack
 ```
 
-v1.0.0 基于 DSH `master@47f943859bef60e4160492346772ded9b24f765a` 开发，CI 覆盖 Windows、Ubuntu 和 macOS。
+v2.0.0 基于 DSH `master@47f943859bef60e4160492346772ded9b24f765a` 开发，CI 覆盖 Windows、Ubuntu 和 macOS。
 
 ## 项目信息
 
-- 当前版本：`v1.0.0`
+- 当前版本：`v2.0.0`
 - 作者：[Github@Hakunm](https://github.com/Hakunm)
 - 许可证：[GNU Affero General Public License v3.0](./LICENSE)
 - Android 客户端：[dsh-android-app](https://github.com/Hakunm/dsh-android-app)
