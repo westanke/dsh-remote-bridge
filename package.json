@@ -72,6 +72,9 @@
   ],
   "license": "AGPL-3.0-only",
   "author": "Hakunm (https://github.com/Hakunm)",
+  "contributors": [
+    "westanke (https://github.com/westanke)"
+  ],
   "repository": {
     "type": "git",
     "url": "git+https://github.com/westanke/dsh-remote-bridge.git"
