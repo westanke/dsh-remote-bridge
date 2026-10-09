@@ -9,7 +9,7 @@
 </p>
 
 <p align="center">
-  <img alt="Version" src="https://img.shields.io/badge/version-v1.0.0-087f8c">
+  <img alt="Version" src="https://img.shields.io/badge/version-v2.0.0-087f8c">
   <img alt="DSH plugin" src="https://img.shields.io/badge/DeepSeek_Harness-plugin-1f2328">
   <img alt="Platforms" src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-586069">
   <img alt="License" src="https://img.shields.io/badge/license-AGPL--3.0-2da44e">
@@ -18,6 +18,11 @@
 `dsh-workspace` 是 DeepSeek Harness（DSH）的 WebUI 文件工作区与远程访问插件。安装后，你可以留在 DSH WebUI 里浏览、编辑和整理本机文件，也可以让 [dsh-android-app](https://github.com/Hakunm/dsh-android-app) 通过版本化 API 连接同一套聊天、工作区和文件能力。
 
 界面默认中文，可随时切换 English。插件支持 Windows、macOS 和 Linux，安装包已经包含编译产物，不要求用户在服务器上重新构建。
+
+> **DSH 0.2.x 兼容性**：本分支在上游 `v1.0.0` 的基础上增加了对 DSH `0.2.0-rc.2` 的兼容层。
+> 0.2.x 用 `dsh-api-gateway` 替换了提供 `apiProxy` 服务的 `dsh-host-apiproxy`，导致上游版本在
+> 0.2.x 上无法启动（表现为「添加根目录返回 405」）。兼容层的完整说明——基于什么、为什么、改了什么、
+> 测了什么——见 [DSH 0.2.x 兼容性适配说明](./docs/project/DSH-0.2-COMPAT.md)。
 
 ## 实际效果
 
@@ -34,13 +39,14 @@
 ### 环境要求
 
 - 已安装并能正常启动的 DeepSeek Harness WebUI
+- DSH 内核 `0.1.x` 或 `0.2.x`（0.2.x 由本分支的兼容层支持，见 [DSH 0.2.x 兼容性适配说明](./docs/project/DSH-0.2-COMPAT.md)）
 - Node.js `^22.19.0` 或 `>=24.0.0`
 - 默认端口 `3090` 可用，或准备一个其他端口
 
 使用运行 DSH WebUI 的同一系统用户执行：
 
 ```sh
-dsh plugin --profile web add https://github.com/Hakunm/dsh-workspace/releases/download/v1.0.0/dsh-workspace-1.0.0.tgz
+dsh plugin --profile web add https://github.com/Hakunm/dsh-workspace/releases/download/v2.0.0/dsh-workspace-2.0.0.tgz
 npx @deepseek-ai/dsh web
 ```
 
@@ -49,7 +55,7 @@ npx @deepseek-ai/dsh web
 从 GitHub Release 下载离线安装包时，可直接安装 tarball：
 
 ```sh
-dsh plugin --profile web add ./dsh-workspace-1.0.0.tgz
+dsh plugin --profile web add ./dsh-workspace-2.0.0.tgz
 ```
 
 ## 第一次使用
@@ -213,11 +219,11 @@ pnpm check
 pnpm pack
 ```
 
-v1.0.0 基于 DSH `master@47f943859bef60e4160492346772ded9b24f765a` 开发，CI 覆盖 Windows、Ubuntu 和 macOS。
+v2.0.0 基于 DSH `master@47f943859bef60e4160492346772ded9b24f765a` 开发，CI 覆盖 Windows、Ubuntu 和 macOS。
 
 ## 项目信息
 
-- 当前版本：`v1.0.0`
+- 当前版本：`v2.0.0`
 - 作者：[Github@Hakunm](https://github.com/Hakunm)
 - 许可证：[GNU Affero General Public License v3.0](./LICENSE)
 - Android 客户端：[dsh-android-app](https://github.com/Hakunm/dsh-android-app)

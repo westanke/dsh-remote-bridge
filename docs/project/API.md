@@ -16,16 +16,84 @@ curl -X POST http://192.168.1.20:3090/api/v1/pairings/exchange \
 
 响应中的 `token` 只出现一次。后续请求使用 `Authorization: Bearer <token>`。
 
+## 生成配置文本
+
+回环管理接口 `POST /manage/config/text` 直接产出一行可粘贴的 `DSH1:` 文本，
+用于「人已出门、电脑在家」时把连接信息带到手机上。WebUI 的「远程访问」页有对应按钮。
+
+```sh
+curl -X POST http://127.0.0.1:3090/manage/config/text \
+  -H "Content-Type: application/json" \
+  -d '{}'
+```
+
+请求体字段全部可选：
+
+| 字段 | 说明 |
+| --- | --- |
+| `displayName` | 电脑显示名，缺省取本机主机名 |
+| `deviceName` | 设备名（写进 `devices` 表，便于日后吊销），缺省 `Android 设备` |
+| `scopes` | 设备权限，缺省为 5 项**非破坏性**权限（不含 `files.delete` / `settings.write`） |
+| `rootIds` | 授权的根，缺省为全部已注册根 |
+| `port` | 自动探测地址时拼接的端口，缺省 `3090` |
+| `endpoints` | 显式指定地址 `[{label, baseUrl}]`；缺省时自动探测本机非回环 IPv4 |
+
+响应 `201`：
+
+```json
+{ "text": "DSH1:...", "displayName": "家里的电脑", "deviceName": "Pixel 9",
+  "endpoints": [{ "label": "局域网（eno1）", "baseUrl": "http://192.168.1.126:3090", "kind": "LAN" }],
+  "deviceId": "..." }
+```
+
+两点刻意设计：
+
+- **响应不单独回传 `token`** —— 它已包含在 `text` 内，多一份只会让它出现在日志、
+  浏览器历史与开发者工具里。
+- **不返回配对码的 `expiresAt`** —— 那是配对码的十分钟有效期，而设备令牌**不过期**
+  （`devices` 表没有过期列）。回传它会被误读为「这段文本十分钟后失效」。
+
+探测不到任何非回环地址时返回 `400 NO_ENDPOINT`，此时应显式传 `endpoints`。
+`text` 内含设备令牌，等价于一把钥匙，只应发给自己。
+
 ## 管理文件
 
 路径必须由 `rootId` 和使用 `/` 的相对路径组成：
 
 ```sh
 curl "http://192.168.1.20:3090/api/v1/roots/ROOT_ID/entries?path=src" \
+ \
   -H "Authorization: Bearer TOKEN"
 ```
 
 读取文件返回原始字节和 `ETag`。保存时必须回传 `If-Match`；新建空路径使用 `If-None-Match: *`。陈旧版本返回 `412 ETAG_MISMATCH`。
+
+### 把绝对路径解析为授权根
+
+会话事件里出现的文件路径是**服务器绝对路径**，而 `/roots` 刻意不返回根的绝对路径。客户端因此无法自己完成映射，需要本端点做一次转换：
+
+```sh
+curl "http://192.168.1.20:3090/api/v1/roots/resolve?path=%2Fmedia%2Fdata%2Fproject%2FREADME.md" \
+  -H "Authorization: Bearer TOKEN"
+```
+
+```json
+{ "rootId": "b3cc74d4-...", "path": "project/README.md", "kind": "file",
+  "size": 1234, "modifiedAt": 1791498310753, "contentType": "text/markdown" }
+```
+
+要求 `files.read`。行为约定：
+
+| 情况 | 结果 |
+| --- | --- |
+| 命中授权根 | `200`，返回 `rootId` 与根内相对路径，**不含根的绝对路径** |
+| 落在多个嵌套根内 | 取**最长**匹配的那个根 |
+| 不在任何授权根内 | `404 PATH_OUTSIDE_ROOTS` |
+| 传入相对路径 | `400 PATH_NOT_ABSOLUTE`（相对路径会按服务端 cwd 解析，语义不确定，拒绝比猜安全） |
+| 路径是目录 | `200` 且 `kind: "directory"`、`size: null`（会话里提到的可能是目录，不该报错） |
+| 路径不存在 | `404 PATH_NOT_FOUND` |
+
+安全校验复用文件接口的同一套逻辑（逐段 `lstat`、拒绝路径中的符号链接），因此字符串前缀匹配的局限不会导致越权读取。拿到 `rootId` 与相对路径后，读取内容仍走上面的 `/roots/{rootId}/content`。
 
 ## 创建 DSH 会话
 
@@ -52,6 +120,37 @@ curl "http://192.168.1.20:3090/api/v1/roots/ROOT_ID/entries?path=src" \
 `GET /settings/providers` 只返回供应商有效配置和凭据是否已配置，不返回 API 密钥正文。有效配置会合并 DSH 模板默认值与用户覆盖值；未显式固化模型时从实时 `llm.models` 目录投影并标记 `modelsInherited: true`。响应中的 `customProvider` 同时说明当前 DSH 是否允许自定义供应商和可用协议。
 
 `POST /settings/providers` 使用自定义 route、显示名、Base URL、协议与至少一个模型创建 DSH 自定义供应商；route 必须匹配 DSH WebUI 的小写短横线规则。`PATCH /settings/providers/{providerId}` 可更新 Base URL、协议、模型和写入/清除凭据；`POST .../discover` 使用草稿配置发现模型。读取与修改分别要求 `settings.read`、`settings.write`，并由 DSH 设置服务决定配置是否可写。
+
+## 插件清单
+
+`GET /settings/plugins` 返回当前 profile 的插件状况，要求 `settings.read`：
+
+```json
+{
+  "profile": "web",
+  "profilePath": "/home/user/.dsh/profiles/web",
+  "available": true,
+  "reason": null,
+  "loadedCount": 17,
+  "problemCount": 2,
+  "items": [
+    { "name": "dsh-ffmpeg", "declared": "^0.4.5", "installed": "0.4.7", "loaded": true, "official": false, "state": "loaded" }
+  ]
+}
+```
+
+`items` 是 `dependencies` 与 `dsh.profile.bundles` 的并集，因此能区分三种情况：
+
+| `state` | 含义 |
+| --- | --- |
+| `loaded` | 声明加载且在 profile 的 `node_modules` 里找到 |
+| `runtime-provided` | 官方包（`@deepseek-ai/`），随 DSH 运行时安装，不出现在 profile 的 `node_modules` —— **正常状态** |
+| `installed-not-loaded` | 装了但不在加载列表里（常见于备用插件先装不启用） |
+| `declared-missing` | 非官方包声明加载却找不到，通常意味着启动会出问题 |
+
+`declared` 是 `dependencies` 里的版本声明，`installed` 是 `node_modules` 里**实际装上的版本**（前者回答不了「现在跑的是哪个版本」）。`problemCount` 统计 `installed-not-loaded` 与 `declared-missing`，**不计** `runtime-provided`。
+
+profile 名依次取自 `DSH_PROFILE`、`--profile=<name>`、`--profile <name>`；`DSH_HOME` 缺省为 `~/.dsh`。无法判定时**不猜**，返回 `available: false` 与 `reason`（`PROFILE_UNKNOWN` 或 `MANIFEST_UNREADABLE`）而不是 500。返回值只包含包名、版本与状态，不返回任何文件内容。
 
 ## 工具审批
 

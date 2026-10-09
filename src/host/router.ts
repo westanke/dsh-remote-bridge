@@ -1,13 +1,25 @@
 import { randomUUID } from 'node:crypto'
 import type { IncomingMessage, ServerResponse } from 'node:http'
+import path from 'node:path'
 import type { DeviceScope, Principal } from '../shared/contracts.ts'
 import { DEVICE_SCOPES } from '../shared/contracts.ts'
 import type { AuthService } from './auth.ts'
 import { requestAddress } from './auth.ts'
 import type { DshChatAdapter } from './chat-adapter.ts'
+import type { PromptContentPart } from './chat-adapter.ts'
 import type { StoredRoot, WorkspaceDatabase } from './database.ts'
 import { ApiError, asApiError } from './errors.ts'
 import type { FileService } from './file-service.ts'
+import {
+  DEFAULT_PORT,
+  classifyHost,
+  defaultDisplayName,
+  detectEndpoints,
+  encodeConfigText,
+  type ConfigEndpoint,
+} from './config-text.ts'
+import { readPluginInventory } from './plugin-inventory.ts'
+import { inspectResolvedPath, matchAuthorizedRoot } from './root-resolver.ts'
 import type { CustomProviderCreate, DshSettingsAdapter, ProviderPatch } from './settings-adapter.ts'
 import { PLUGIN_VERSION } from '../shared/version.ts'
 
@@ -124,6 +136,31 @@ export class ApiRouter {
       return
     }
 
+    // 把服务器绝对路径解析成「属于哪个授权根 + 相对路径」。
+    //
+    // 存在的理由：会话事件里的文件路径是服务器绝对路径，而 /roots 刻意不返回根的绝对路径，
+    // 客户端无法自己完成这段映射；把绝对路径直接传给 /roots/:id/content 又会被
+    // PATH_INVALID 拒绝（实测 400）。所以必须由服务端做这一次转换。
+    //
+    // 返回**只含 rootId 与相对路径**，依然不泄露授权根的绝对路径。
+    if (method === 'GET' && pathname === '/api/v1/roots/resolve') {
+      this.options.auth.requireScope(principal, 'files.read')
+      const requested = url.searchParams.get('path')?.trim() ?? ''
+      if (requested === '') {
+        throw new ApiError(400, 'BODY_INVALID', 'path is required.')
+      }
+      if (!path.isAbsolute(requested)) {
+        // 相对路径会被 path.resolve 按服务端 cwd 解析，语义不确定，直接拒绝比猜更安全。
+        throw new ApiError(400, 'PATH_NOT_ABSOLUTE', 'path must be an absolute path.')
+      }
+      const match = matchAuthorizedRoot(path.resolve(requested), this.authorizedRoots(principal))
+      if (match === undefined) {
+        throw new ApiError(404, 'PATH_OUTSIDE_ROOTS', 'The path is not inside any root this device may access.')
+      }
+      sendJson(res, 200, await inspectResolvedPath(this.requireRoot(principal, match.rootId), match.path))
+      return
+    }
+
     const rootRoute = pathname.match(/^\/api\/v1\/roots\/([^/]+)\/(entries|content)$/)
     if (rootRoute !== null) {
       const rootId = decodeURIComponent(rootRoute[1] as string)
@@ -236,6 +273,14 @@ export class ApiRouter {
     if (method === 'GET' && pathname === '/api/v1/settings/models') {
       this.options.auth.requireScope(principal, 'settings.read')
       sendJson(res, 200, await this.options.settings.catalog())
+      return
+    }
+
+    // 插件清单：让手机端能看到这台机器装了哪些插件、跑的是哪个版本、有没有加载失败。
+    // 此前 /api/v1 的 10 个端点里没有任何一个与插件相关，用户在手机上无法自查插件状况。
+    if (method === 'GET' && pathname === '/api/v1/settings/plugins') {
+      this.options.auth.requireScope(principal, 'settings.read')
+      sendJson(res, 200, await readPluginInventory())
       return
     }
 
@@ -374,18 +419,21 @@ export class ApiRouter {
       }
       if (method === 'POST') {
         this.options.auth.requireScope(principal, 'chat.write')
-        const body = await readJson(req, 1_000_000) as Record<string, unknown>
+        // 上限刻意放大到 12 MiB：图片以 base64 内联在 payload 里，而 base64 会把字节
+        // 膨胀约 33%。12 MiB ≈ 8 MiB 原图，与客户端侧的限制对齐 —— 两端不一致的话，
+        // 用户会看到「明明还没到限制却被拒」。
+        const body = await readJson(req, 12_000_000) as Record<string, unknown>
         const cached = this.readIdempotent(principal, body.clientRequestId)
         if (cached !== undefined) {
           sendJson(res, cached.status, cached.body)
           return
         }
-        if (typeof body.text !== 'string') throw new ApiError(400, 'BODY_INVALID', 'text is required.')
+        const parts = readPromptParts(body)
         const mode = body.mode === 'steer' ? 'steer' : 'queue'
         const result = await this.options.chat.prompt(
           principal,
           sessionId,
-          body.text,
+          parts,
           mode,
           typeof body.clientTimeZone === 'string' ? body.clientTimeZone : undefined,
         )
@@ -395,6 +443,49 @@ export class ApiRouter {
         sendJson(res, 202, response)
         return
       }
+    }
+
+    // 附件字节：会话历史里的图片以 attachmentId 引用存在，客户端要靠这条把图取回来。
+    //
+    // id 形如 `sha256:<hex>` —— **含冒号**，所以路径段必须 URL 解码；
+    // 客户端也要记得编码，否则 `:` 在路径里会被某些代理改写。
+    const attachmentRoute = pathname.match(/^\/api\/v1\/attachments\/([^/]+)$/)
+    if (attachmentRoute !== null && method === 'GET') {
+      this.options.auth.requireScope(principal, 'files.read')
+      const attachmentId = decodeURIComponent(attachmentRoute[1] as string)
+      const { bytes, mediaType } = await this.options.chat.readAttachment(principal, attachmentId)
+      res.statusCode = 200
+      res.setHeader('Content-Type', mediaType)
+      res.setHeader('Content-Length', String(bytes.byteLength))
+      // 附件内容按 id（内容哈希）寻址，永不变更，可以放心长缓存。
+      res.setHeader('Cache-Control', 'private, max-age=31536000, immutable')
+      res.end(Buffer.from(bytes))
+      return
+    }
+
+    // 附件上传：客户端把文件字节发上来，换一个 prompt 可引用的 receiptId。
+    //
+    // 为什么必须由插件中转：核心里那条 `/api/session/uploadFileBinary` 只绑 loopback，
+    // 手机根本到不了；而 `ctx.fileUploads` 这个 cordis 服务就在同一进程里，可直接调。
+    const attachmentsRoute = pathname.match(/^\/api\/v1\/chat\/sessions\/([^/]+)\/attachments$/)
+    if (attachmentsRoute !== null && method === 'POST') {
+      this.options.auth.requireScope(principal, 'chat.write')
+      const body = await readJson(req, 24_000_000) as Record<string, unknown>
+      if (typeof body.data !== 'string' || body.data === '') {
+        throw new ApiError(400, 'BODY_INVALID', 'data (base64) is required.')
+      }
+      const name = typeof body.name === 'string' && body.name.trim() !== '' ? body.name.trim() : undefined
+      sendJson(
+        res,
+        201,
+        await this.options.chat.uploadAttachment(
+          principal,
+          decodeURIComponent(attachmentsRoute[1] as string),
+          body.data,
+          name,
+        ),
+      )
+      return
     }
 
     const commandsRoute = pathname.match(/^\/api\/v1\/chat\/sessions\/([^/]+)\/commands$/)
@@ -561,6 +652,58 @@ export class ApiRouter {
         validateStringArray(body.rootIds, 'rootIds'),
         validateScopes(body.scopes),
       ))
+      return
+    }
+
+    // 生成一行可粘贴的 `DSH1:` 配置文本 —— 用户不必开终端跑脚本。
+    //
+    // 存在的理由：本版本把「配置文本导入」当作连接主路径（扫码与配对码都要求电脑在旁，
+    // 而真实场景是人已出门、电脑在家）。此前这条路径只有命令行脚本可用，用户的质疑是
+    // 「电脑 在哪里生成？」。配对码本来就在 WebUI 的这个页面生成，配置文本理应同处。
+    if (method === 'POST' && pathname === '/manage/config/text') {
+      const body = await readJson(req, 64_000) as Record<string, unknown>
+
+      const port = Number.isInteger(body.port) && Number(body.port) > 0 && Number(body.port) < 65_536
+        ? Number(body.port)
+        : DEFAULT_PORT
+
+      const endpoints = readRequestedEndpoints(body.endpoints) ?? detectEndpoints(port)
+      if (endpoints.length === 0) {
+        throw new ApiError(
+          400,
+          'NO_ENDPOINT',
+          'No usable local address was detected. Provide endpoints explicitly.',
+        )
+      }
+
+      const scopes = body.scopes === undefined
+        ? [...DEFAULT_CONFIG_SCOPES]
+        : validateScopes(body.scopes)
+      const rootIds = body.rootIds === undefined
+        ? this.options.database.listRoots().map(root => root.id)
+        : validateStringArray(body.rootIds, 'rootIds')
+      const deviceName = readOptionalText(body.deviceName) ?? 'Android 设备'
+      const displayName = readOptionalText(body.displayName) ?? defaultDisplayName()
+
+      const pairing = this.options.database.createPairing(rootIds, scopes)
+      const exchanged = this.options.database.exchangePairing(pairing.code, deviceName)
+
+      sendJson(res, 201, {
+        text: encodeConfigText({
+          displayName,
+          endpoints,
+          token: exchanged.token,
+          deviceName,
+          scopes,
+        }),
+        displayName,
+        deviceName,
+        endpoints,
+        deviceId: exchanged.device.id,
+        // 刻意不返回 pairing.expiresAt：那是**配对码**的十分钟有效期，
+        // 而设备令牌本身不过期（devices 表没有过期列）。回传它会被读成
+        // 「这段文本十分钟后就失效」，从而诱发没必要的重复生成。
+      })
       return
     }
     if (method === 'POST' && pathname === '/manage/remote/enable') {
@@ -788,11 +931,103 @@ function validateScopes(value: unknown): DeviceScope[] {
   return [...new Set(values)] as DeviceScope[]
 }
 
+/**
+ * 把请求体解析成 prompt 内容片段。
+ *
+ * **向后兼容是硬要求**：旧客户端只发 `{"text":"..."}`，新客户端发 `{"content":[...]}`。
+ * 两种都必须能用 —— 否则一次服务端升级就会让所有还在用旧版的人发不出消息。
+ *
+ * 这里逐项校验而不是直接透传：`content` 里的 `type` 是判别器，透传非法结构给内核
+ * 只会换来一个更难懂的报错。
+ */
+function readPromptParts(body: Record<string, unknown>): PromptContentPart[] {
+  if (body.content === undefined) {
+    if (typeof body.text !== 'string') {
+      throw new ApiError(400, 'BODY_INVALID', 'text or content is required.')
+    }
+    return [{ type: 'text', text: body.text }]
+  }
+  if (!Array.isArray(body.content) || body.content.length === 0) {
+    throw new ApiError(400, 'BODY_INVALID', 'content must be a non-empty array.')
+  }
+  return body.content.map((raw, index) => {
+    if (typeof raw !== 'object' || raw === null) {
+      throw new ApiError(400, 'BODY_INVALID', `content[${index}] must be an object.`)
+    }
+    const part = raw as Record<string, unknown>
+    if (part.type === 'text') {
+      if (typeof part.text !== 'string') throw new ApiError(400, 'BODY_INVALID', `content[${index}].text is required.`)
+      return { type: 'text', text: part.text } satisfies PromptContentPart
+    }
+    if (part.type === 'image') {
+      if (typeof part.mediaType !== 'string' || typeof part.data !== 'string') {
+        throw new ApiError(400, 'BODY_INVALID', `content[${index}] needs mediaType and data.`)
+      }
+      return {
+        type: 'image',
+        mediaType: part.mediaType,
+        data: part.data,
+        ...(typeof part.name === 'string' && part.name !== '' ? { name: part.name } : {}),
+      } satisfies PromptContentPart
+    }
+    if (part.type === 'file') {
+      if (typeof part.receiptId !== 'string' || part.receiptId === '') {
+        throw new ApiError(400, 'BODY_INVALID', `content[${index}].receiptId is required.`)
+      }
+      return { type: 'file', receiptId: part.receiptId } satisfies PromptContentPart
+    }
+    throw new ApiError(400, 'BODY_INVALID', `content[${index}].type is not supported.`)
+  })
+}
+
 function validateStringArray(value: unknown, name: string): string[] {
   if (!Array.isArray(value) || value.some(item => typeof item !== 'string')) {
     throw new ApiError(400, 'BODY_INVALID', `${name} must be an array of strings.`)
   }
   return [...new Set(value as string[])]
+}
+
+/**
+ * 生成配置文本时的默认设备权限。
+ *
+ * 刻意**不含** `files.delete` 与 `settings.write`：这两个是破坏性权限，应当是用户显式
+ * 要求才授予，而不是因为「生成了一段配置文本」就顺手给了。需要时可在请求里显式传 scopes。
+ */
+const DEFAULT_CONFIG_SCOPES: readonly DeviceScope[] = [
+  'chat.read',
+  'chat.write',
+  'files.read',
+  'files.write',
+  'settings.read',
+]
+
+function readOptionalText(value: unknown): string | null {
+  if (typeof value !== 'string') return null
+  const text = value.trim()
+  return text === '' ? null : text
+}
+
+/**
+ * 读取请求里显式给出的地址列表；没给或格式不对时返回 null（调用方改用自动探测）。
+ *
+ * 这里对空数组也返回 null —— 「用户明确说一个地址都不要」不是有意义的输入。
+ */
+function readRequestedEndpoints(value: unknown): ConfigEndpoint[] | null {
+  if (!Array.isArray(value) || value.length === 0) return null
+  const endpoints: ConfigEndpoint[] = []
+  for (const item of value) {
+    if (typeof item !== 'object' || item === null) {
+      throw new ApiError(400, 'BODY_INVALID', 'endpoints must be an array of objects.')
+    }
+    const baseUrl = readOptionalText((item as Record<string, unknown>).baseUrl)
+    if (baseUrl === null) {
+      throw new ApiError(400, 'BODY_INVALID', 'Each endpoint requires a non-empty baseUrl.')
+    }
+    const label = readOptionalText((item as Record<string, unknown>).label) ?? baseUrl
+    const host = baseUrl.replace(/^https?:\/\//i, '').split('/')[0]?.split(':')[0] ?? ''
+    endpoints.push({ label, baseUrl, kind: classifyHost(host) })
+  }
+  return endpoints
 }
 
 function optionalInteger(value: string | null): number | undefined {

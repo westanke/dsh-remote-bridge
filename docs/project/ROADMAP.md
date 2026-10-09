@@ -38,3 +38,7 @@
 | REL-002 | done | CHAT-005,TEST-001 | `dsh-workspace` v1.0.0 用户文档、版本展示、正式 tarball、独立 Git 仓库和 `v1.0.0` 标签完成 |
 | REL-003 | done | BRAND-002,LICENSE-001,DOC-002 | 重新打包 v1.0.0，以单一根提交重写公开 `main` 与 `v1.0.0` 标签，并替换 Release 校验和与产物 |
 | REL-004 | done | DOC-003,REL-003 | README 刷新后继续以单一根提交重写公开 `main` 与 `v1.0.0` 标签，不保留中间修改历史 |
+| PLUGIN-001 | done | - | 新增 `GET /api/v1/settings/plugins`，远程设备可见 profile 已装/已加载插件、实际版本与异常状态；含纯逻辑与 HTTP 层测试 |
+| FS-003 | done | DSH-02-COMPAT | 新增 `GET /api/v1/roots/resolve`，把服务器绝对路径解析成「授权根 + 相对路径」，供客户端打开会话事件里提到的文件；**不泄露根的绝对路径** |
+| CFG-001 | done | - | 新增 `POST /manage/config/text` 与 WebUI「生成配置文本」入口，让用户不必开终端跑脚本即可产出 `DSH1:` 文本 |
+| REL-005 | in-progress | PLUGIN-001,CFG-001,FS-003,REL-004 | 下游 DSH 0.2.x 适配版合并到 `main` 并发布 `v2.0.0`：host bridge 从 `apiProxy` 迁到 host services，新增插件清单、配置文本、绝对路径解析与会话附件读取四个端点；版本在 package.json、OpenAPI、AsyncAPI、Kotlin SDK 与客户端展示处统一为 `2.0.0` |

@@ -2,6 +2,7 @@ import path from 'node:path'
 import { AuthService } from './host/auth.ts'
 import { DshChatAdapter } from './host/chat-adapter.ts'
 import { WorkspaceDatabase } from './host/database.ts'
+import { createDsh02ApiProxy, type Dsh02HostServices } from './host/dsh-0.2-bridge.ts'
 import { WorkspaceEventBus } from './host/event-bus.ts'
 import { FileService } from './host/file-service.ts'
 import { DEFAULT_REMOTE_HOST, normalizeListenerHost, normalizeListenerPort } from './host/listener-config.ts'
@@ -11,7 +12,36 @@ import { DshSettingsAdapter } from './host/settings-adapter.ts'
 import { PLUGIN_VERSION } from './shared/version.ts'
 
 export const name = 'dsh-workspace'
-export const inject = ['apiProxy', 'webServer', 'agents', 'commands']
+
+/**
+ * Host services this plugin needs, for DSH 0.2.x.
+ *
+ * DSH ≤ 0.1.1 published the client-shaped `apiProxy` facade from
+ * `@deepseek-ai/dsh-host-apiproxy`. DSH 0.1.2-alpha.3 replaced that package with
+ * `@deepseek-ai/dsh-api-gateway` (service `typertGateway`), which publishes no
+ * `apiProxy` — the controllers instead register directly as host services.
+ * Injecting those keeps the plugin loadable on 0.2.x, and
+ * `./host/dsh-0.2-bridge.ts` rebuilds the old facade on top of them so the
+ * chat/settings adapters keep their original contract.
+ */
+export const inject = [
+  'sessionController',
+  'workspaceController',
+  'workspaceRegistry',
+  'settingsController',
+  'credentialsController',
+  'agentPresets',
+  'llm',
+  'webServer',
+  'agents',
+  'commands',
+  // 文件上传服务（ctx.fileUploads）：内核以 cordis 服务形式暴露。用它而不是内核那条
+  // /api/session/uploadFileBinary HTTP 路由 —— 后者只绑 loopback，手机根本到不了。
+  'fileUploads',
+  // 附件存储（ctx.attachments）：会话历史里的图片以 attachmentId 引用存在，
+  // 要显示它们就必须能按 id 取回字节。
+  'attachments',
+]
 
 export interface Config {
   dataDir?: string
@@ -20,8 +50,7 @@ export interface Config {
   maxUploadBytes?: number
 }
 
-interface HostContext {
-  apiProxy: ConstructorParameters<typeof DshChatAdapter>[0] & ConstructorParameters<typeof DshSettingsAdapter>[0]
+interface HostContext extends Dsh02HostServices {
   webServer: Parameters<typeof attachEmbeddedRoutes>[0]
   agents: NonNullable<ConstructorParameters<typeof DshChatAdapter>[2]>['agents']
   commands: NonNullable<ConstructorParameters<typeof DshChatAdapter>[2]>['commands']
@@ -40,8 +69,11 @@ export async function apply(ctx: HostContext, config: Config = {}): Promise<void
   const events = new WorkspaceEventBus()
   const auth = new AuthService(database)
   const files = new FileService(database, event => events.emit(event))
-  const chat = new DshChatAdapter(ctx.apiProxy, database, { agents: ctx.agents, commands: ctx.commands })
-  const settings = new DshSettingsAdapter(ctx.apiProxy)
+  // Rebuild the pre-0.2 `apiProxy` facade over the 0.2.x host services so both
+  // adapters keep the contract they were written against.
+  const apiProxy = createDsh02ApiProxy(ctx)
+  const chat = new DshChatAdapter(apiProxy, database, { agents: ctx.agents, commands: ctx.commands })
+  const settings = new DshSettingsAdapter(apiProxy)
   let router!: ApiRouter
   const remote = new RemoteApiServer({
     port,

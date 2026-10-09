@@ -9,6 +9,21 @@ export interface RpcResponse<T> {
   result: { ok: true; value: T } | { ok: false; error: { code: string; message: string; details?: unknown } }
 }
 
+/**
+ * 一条 prompt 的内容片段 —— 与 DSH 0.2.x 的 `PromptContentPart` 一一对应。
+ *
+ * 三种形态的代价差别很大，值得写清楚：
+ * - `text`  直接发送；
+ * - `image` 字节**内联**在 payload 里（base64），一次调用完成，但请求体膨胀约 33%，
+ *   所以客户端必须先限制原图大小，别等 413；
+ * - `file`  的 `receiptId` 必须来自**先前的**上传调用，并在同一次 prompt 里绑定，
+ *   否则凭证会被回收。
+ */
+export type PromptContentPart =
+  | { type: 'text'; text: string }
+  | { type: 'image'; mediaType: string; data: string; name?: string }
+  | { type: 'file'; receiptId: string }
+
 export interface DshApiProxy {
   respond(message: {
     type: 'client-response'
@@ -19,7 +34,19 @@ export interface DshApiProxy {
     list(request: { rpcId: string; payload: { cursor?: string } }): Promise<RpcResponse<{ items: DshSessionSummary[] }>>
     create(request: { rpcId: string; payload: { cwd?: string; workspaceId?: string; sessionId?: string; agentPreset?: string } }): Promise<RpcResponse<{ sessionId: string; agentPreset?: string }>>
     history(request: { rpcId: string; payload: { sessionId: string; beforeSeq?: number; maxMessages?: number } }): Promise<RpcResponse<{ events: unknown[]; hasMore: boolean; projections?: unknown }>>
-    prompt(request: { rpcId: string; payload: { sessionId: string; mode: 'queue' | 'steer'; content: { type: 'text'; text: string }[]; clientTimeZone?: string } }): Promise<RpcResponse<{ accepted: true; command?: unknown }>>
+    prompt(request: { rpcId: string; payload: { sessionId: string; mode: 'queue' | 'steer'; content: PromptContentPart[]; clientTimeZone?: string } }): Promise<RpcResponse<{ accepted: true; command?: unknown }>>
+    /**
+     * 上传一个文件，换取 prompt 可引用的凭证（`receiptId`）。
+     * `data` 是文件字节的**标准 base64**。
+     */
+    uploadAttachment(request: { rpcId: string; payload: { sessionId: string; data: string; name?: string } }): Promise<RpcResponse<{ receiptId: string; name: string | null }>>
+    /**
+     * 按 id 取回附件字节。
+     *
+     * `attachmentId` 形如 `sha256:<hex>`（**含冒号**，客户端必须 URL 编码）。
+     * 返回 `Uint8Array` 而不是 base64：图片动辄上百 KB，多一次编解码纯属浪费。
+     */
+    readAttachment(request: { rpcId: string; payload: { attachmentId: string } }): Promise<RpcResponse<{ bytes: Uint8Array; mediaType: string }>>
     cancel(request: { rpcId: string; payload: { sessionId: string } }): Promise<RpcResponse<{ accepted: true }>>
     rename(request: { rpcId: string; payload: { sessionId: string; title: string } }): Promise<RpcResponse<{ title: string; seq: number }>>
     fork(request: { rpcId: string; payload: { sessionId: string; atSeq?: number } }): Promise<RpcResponse<{ sessionId: string }>>
@@ -368,20 +395,63 @@ export class DshChatAdapter {
   async prompt(
     principal: Principal,
     sessionId: string,
-    text: string,
+    parts: PromptContentPart[],
     mode: 'queue' | 'steer',
     clientTimeZone?: string,
   ): Promise<{ accepted: true; command?: unknown }> {
     await this.requireSession(principal, sessionId)
-    if (text === '') throw new ApiError(400, 'MESSAGE_EMPTY', 'The message text cannot be empty.')
+    // 内核要求「至少一个非空白文本部分或附件」。在这里先拦下来，是为了给客户端
+    // 一个明确的 MESSAGE_EMPTY，而不是让内核报一个更含糊的入参错误。
+    const hasText = parts.some(part => part.type === 'text' && part.text.trim() !== '')
+    const hasAttachment = parts.some(part => part.type !== 'text')
+    if (!hasText && !hasAttachment) {
+      throw new ApiError(400, 'MESSAGE_EMPTY', 'A message needs non-empty text or at least one attachment.')
+    }
     return unwrapDsh(await this.api.sessions.prompt({
       rpcId: randomUUID(),
       payload: {
         sessionId,
         mode,
-        content: [{ type: 'text', text }],
+        content: parts,
         ...(clientTimeZone === undefined ? {} : { clientTimeZone }),
       },
+    }))
+  }
+
+  /**
+   * 上传一个附件，返回 prompt 可以引用的凭证。
+   *
+   * 为什么需要这一步而不是让客户端直接把字节塞进消息：内核对**文件**类型要求的是
+   * `receiptId`（由上传换取），只有**图片**才允许内联 base64。
+   */
+  async uploadAttachment(
+    principal: Principal,
+    sessionId: string,
+    data: string,
+    name?: string,
+  ): Promise<{ receiptId: string; name: string | null }> {
+    await this.requireSession(principal, sessionId)
+    return unwrapDsh(await this.api.sessions.uploadAttachment({
+      rpcId: randomUUID(),
+      payload: { sessionId, data, ...(name === undefined ? {} : { name }) },
+    }))
+  }
+
+  /**
+   * 取回会话历史里某个图片附件的字节。
+   *
+   * 这里不做会话归属校验：附件 id 是内容哈希，拿到 id 就等于拿到内容，
+   * 而且调用方必须已经通过 `files.read` 鉴权并主动持有该 id（它只出现在其有权读取的
+   * 会话事件里）。多一层会话校验并不能提升安全性，却会让「在别的会话里引用同一张图」
+   * 这种正常情况莫名失败。
+   */
+  async readAttachment(principal: Principal, attachmentId: string): Promise<{ bytes: Uint8Array; mediaType: string }> {
+    if (attachmentId.trim() === '') {
+      throw new ApiError(400, 'BODY_INVALID', 'attachmentId is required.')
+    }
+    return unwrapDsh(await this.api.sessions.readAttachment({
+      rpcId: randomUUID(),
+      payload: { attachmentId },
     }))
   }
 
@@ -490,6 +560,10 @@ export class DshChatAdapter {
 
   async listCommands(principal: Principal, sessionId: string): Promise<CommandDescriptorView[]> {
     const agent = await this.commandAgent(principal, sessionId)
+    // A session that cannot be activated (e.g. one owned by a subagent) simply
+    // exposes no commands. Reporting an error here would surface as a failure on
+    // a session the client can otherwise open and read.
+    if (agent === undefined) return []
     return this.commandServices!.commands.list(agent).map(command => ({
       name: command.name,
       description: command.description,
@@ -505,6 +579,10 @@ export class DshChatAdapter {
     const match = /^\/([a-z][a-z0-9_-]*)(?=$|[\t\n\r ])/u.exec(normalized)
     if (match === null) throw new ApiError(400, 'COMMAND_INVALID', 'A slash command must start with a valid command name.')
     const agent = await this.commandAgent(principal, sessionId)
+    // Execution genuinely needs a live Agent; unlike listing, this stays an error.
+    if (agent === undefined) {
+      throw new ApiError(409, 'COMMANDS_UNAVAILABLE', 'The session could not be activated for command execution.')
+    }
     const known = this.commandServices!.commands.list(agent).some(command => command.name === match[1])
     if (!known) throw new ApiError(404, 'COMMAND_NOT_FOUND', 'The command is not available for this session.')
     try {
@@ -581,7 +659,15 @@ export class DshChatAdapter {
     return false
   }
 
-  private async commandAgent(principal: Principal, sessionId: string): Promise<unknown> {
+  /**
+   * Resolve the Agent backing a session for command work.
+   *
+   * Returns `undefined` when the session exists but cannot be activated. 0.2.x
+   * rejects activation for a Session owned by a subagent, so that outcome is a
+   * property of the session rather than a failure of this call: the caller
+   * decides whether it means "no commands" (listing) or an error (execution).
+   */
+  private async commandAgent(principal: Principal, sessionId: string): Promise<unknown | undefined> {
     await this.requireSession(principal, sessionId)
     const services = this.commandServices
     if (services === undefined) {
@@ -597,11 +683,7 @@ export class DshChatAdapter {
     } catch {
       // The registry lookup below is the authoritative availability result.
     }
-    agent = services.agents.get(sessionId)
-    if (agent === undefined) {
-      throw new ApiError(409, 'COMMANDS_UNAVAILABLE', 'The session could not be activated for command discovery.')
-    }
-    return agent
+    return services.agents.get(sessionId)
   }
 
   private async requireSession(principal: Principal, sessionId: string): Promise<ChatSessionView> {

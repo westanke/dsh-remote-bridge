@@ -1,5 +1,290 @@
 # 开发日志
 
+## 2026-10-09 · v2.0.0 下游适配版发布（`REL-005`）
+
+### 为什么发 major
+
+不是代码风格洁癖，是**宿主契约变了**：`apiProxy` 在 DSH 0.2.x 已不存在，host bridge 整体迁到
+host services。插件的入口签名与生命周期钩子跟着换，这一类改动对下游集成方就是破坏性的，
+哪怕四个新端点本身都是向后兼容的新增。压成 v1.0.1 会让半年后有人对着旧文档调试新内核，
+那才是真正的破坏。
+
+### 这一版带了什么
+
+| 端点 | 任务 | 解决的用户原话 |
+| --- | --- | --- |
+| `GET /api/v1/settings/plugins` | `PLUGIN-001` | 「无法查看已装插件情况」 |
+| `POST /manage/config/text` + WebUI 按钮 | `CFG-001` | 「电脑在哪里生成？」（配对码本来就在远程访问页） |
+| `GET /api/v1/roots/resolve` | `FS-003` | 「会话中的文件无法查看」 |
+| `GET /api/v1/attachments/:id` | 附件读取 | 会话里发的图片/文件在客户端不可见 |
+
+### 版本号的四处战场
+
+改版本号时踩了一个坑，值得记下来：`package.json` 只是**四个**版本源之一。
+`docs/api/openapi.yaml`（含 `pluginVersion` 的 `const` 约束）、`docs/api/asyncapi.yaml`、
+`kotlin-sdk/build.gradle.kts` 各有一份，而运行时真正对外报版本的是
+`src/shared/version.ts` 里的 `PLUGIN_VERSION`——它才是 `healthz` 与客户端设置页显示的那个值。
+
+只改 `package.json` 而漏掉 `src/shared/version.ts` 的结果是：
+`pnpm docs:check` 全绿（它只校对文档与 package.json 的版本），
+只有 `tests/http-api.spec.ts` 的 `healthz` 断言会红。一条测试抓住一个真实的漏项。
+
+`docs/api/openapi.yaml` 里那个 `const: 2.0.0` 也要一起改，否则规范会把响应钉死在旧版本上。
+
+### 验证
+
+`pnpm check` 全绿：`tsc --noEmit`、**17 个测试文件 / 101 用例**、`docs:check`（9 份项目文档、
+37 项任务、6 份 ADR 与 API/SDK 版本一致性）、三份 bundle 构建。
+产物 `artifacts/dsh-workspace-2.0.0.tgz`，2,676,271 字节，
+SHA-256 `6657DD9C24BB644FBD7245499E51533D51D5D6E83EB676D9708EDC9ED12A6C74`。
+
+### 发布形态
+
+`feat/plugin-inventory` 合并进 `main`，在 `main` 上打 `v2.0.0`，tag 推 GitHub + Gitee，
+GitHub Release 附 tarball 与 `SHA256SUMS.txt`。上游 `Hakunm/dsh-workspace` 与 AtomGit 远端不动。
+
+---
+
+## 2026-10-08 · 配置文本的 WebUI 入口（`CFG-001`，下游分支）
+
+### 为什么：一句被用户戳穿的话
+
+README 把「配置导入」写成主路径：
+
+> 电脑上生成一行文本 → 发给自己（微信 / 邮件 / 私密笔记）→ 到了外面粘贴进 App
+
+用户追问：**「电脑 在哪里生成？」**
+
+**这一问是对的。** 当时的生成端只有一个命令行脚本（在另一个仓库里）：
+用户得装 Node、开终端、`cd` 到仓库、记命令。对一个「人已出门、电脑在家」的场景，
+这等于「请先编译源码」，不是入口。而配对码本来就在 WebUI 的「远程访问」页一键生成 ——
+配置文本理应出现在同一处。
+
+### 干了什么
+
+- 新增 `src/host/config-text.ts`：线格式编码 + 本机地址探测。
+  - `detectEndpoints()` 枚举非回环 IPv4，**排除 `169.254.*`**（只在没有 DHCP 时出现，
+    给用户只会换来「为什么这个地址连不上」的困惑）。
+  - `classifyHost()` 与 Kotlin `EndpointKind.infer` 的规则一致（含 `100.64.0.0/10` 归虚拟网，
+    因为 Tailscale 与 BeyondTunnel 都在用这个 CGNAT 网段）。
+  - `encodeConfigText()` 用**对象字面量固定键顺序**，不依赖 `JSON.stringify` 的字典序。
+- `src/host/router.ts` 新增 `POST /manage/config/text`（回环管理面）：
+  内部走既有的 `createPairing` → `exchangePairing`，默认授予 5 项**非破坏性**权限
+  （刻意不含 `files.delete` 与 `settings.write` —— 那是用户显式要求才给的东西）。
+- WebUI「远程访问」页在「生成配对码」旁加「生成配置文本」（见 `CFG-001` 的客户端部分）。
+
+### 一个刻意的字段省略
+
+响应**不返回 `pairing.expiresAt`**。它是**配对码**的十分钟有效期，而设备令牌本身
+**不过期**（`devices` 表没有过期列）。回传它会被读成「这段文本十分钟后就失效」，
+诱发没必要的重复生成。同理，响应也**不单独回传 token** —— 它已在 `text` 内，
+多一份只会让它出现在日志、浏览器历史与开发者工具里；有测试断言响应字段集合防止后人加回。
+
+### 三处实现必须逐字节一致
+
+同一套线格式现在有三处实现：Kotlin 编解码（`ConnectionShare.kt`）、命令行脚本
+（`dsh-companion/tools/emit-config.mjs`）、本模块。任何一处在键顺序或「空值不写键」上跑偏，
+都会产出**字节不同但都能被解码**的文本 —— 三处单测各自都绿，跨端却不再兼容。
+
+因此 `tests/config-text.spec.ts` 里钉了一条 **golden 逐字节断言**，输入取自脚本的真实
+stdout（而该脚本的输出已被 Kotlin 端 `ConnectionShareInteropTest` 断言与 `ConnectionShare.encode()`
+相同）。一条断言同时钉住三处实现。
+
+### 测了什么
+
+| 测试文件 | 用例 | 覆盖 |
+| --- | --- | --- |
+| `tests/config-text.spec.ts` | 9 | **golden 逐字节**、空值不写键、键顺序稳定、`/api/v1` 剥离、无地址拒绝生成、各网段分类（含 `100.128`/`100.63` 两个边界外必须归 WAN）、探测结果不含回环与 link-local |
+| `tests/plugin-inventory-api.spec.ts` | 11 | 真起 HTTP server：配置文本可解码且**响应不含 token**、生成的设备确实入库、未给地址时自动探测、**非回环 origin 不可触发** |
+
+全量：`17` 个测试文件 / `94` 用例通过；`tsc --noEmit` 通过。
+
+---
+
+## 2026-10-08 · 绝对路径解析端点（`FS-003`，下游分支）
+
+### 基于什么
+
+- 上游 `Hakunm/dsh-workspace` v1.0.0，接在 `PLUGIN-001` 之后。
+- 触发自真实使用反馈：**「会话中的文件无法查看」**。
+
+### 为什么：一次被实测推翻的判断
+
+我最初判断这一条**不需要改服务端**，理由是「客户端可以把绝对路径与授权根做最长前缀匹配」。
+**这个判断是错的**，实测三条事实推翻了它：
+
+| 事实 | 实测结果 |
+| --- | --- |
+| `/api/v1/roots` 是否返回根的绝对路径 | **不返回**，只有 `{ id, label, createdAt }`（既有安全设计） |
+| 会话的 `cwd` 字段是否可用 | **71/71 全为空字符串** |
+| 绝对路径能否直传 `roots/:id/content` | **400**（`PATH_INVALID`，接口只接受相对路径；`../` 逃逸同样 400） |
+
+于是客户端的处境是：手里有「一个绝对路径」和「一个 rootId」，**中间那一环它永远拿不到**。
+必须由服务端做这一次转换。
+
+### 干了什么
+
+新增 `GET /api/v1/roots/resolve?path=<绝对路径>`（要求 `files.read`）：
+
+```json
+{ "rootId": "...", "path": "dsh-companion/README.md", "kind": "file",
+  "size": 1234, "modifiedAt": 1791498310753, "contentType": "text/markdown" }
+```
+
+- **仍然不返回根的绝对路径** —— 原有安全边界没有被削弱，这正是把转换放在服务端做的原因。
+- 多个根相互嵌套时取**最长**匹配，否则外层根会把内层根下的文件解析成更长的相对路径，
+  绕过内层更严格的授权语义。
+- 相对路径一律 `400 PATH_NOT_ABSOLUTE`：`path.resolve` 会按服务端 cwd 解析，语义不确定，
+  拒绝比猜更安全。
+- 不在任何授权根内 → `404 PATH_OUTSIDE_ROOTS`。
+- **目录不算错误**：会话里提到的路径可能是目录，返回 `kind: "directory"` 比抛 400 更合理。
+
+新增 `src/host/root-resolver.ts`，分为两层：
+
+1. `matchAuthorizedRoot()` —— **纯字符串**粗筛（找出候选根），因此可脱离文件系统单测；
+2. `inspectResolvedPath()` —— 真正的安全校验，委托给既有的 `resolveAuthorizedPath`
+   （它逐段 `lstat` 并拒绝路径中的符号链接）。
+
+**为什么必须分两层**：字符串前缀相等不代表真实落在根内 —— 根内可能存在指向外部的符号链接。
+复用 `resolveAuthorizedPath` 而不是自己写一遍，是为了不重复实现（也就不会重复实现错）。
+另外 `ContentDescriptor` 里带 `absolutePath`，本端点刻意**不返回**该字段。
+
+### 测了什么
+
+| 测试文件 | 用例 | 覆盖 |
+| --- | --- | --- |
+| `tests/root-resolver.spec.ts` | 13 | 单根内文件、根本身、嵌套根取最长、**同前缀兄弟目录必须拒绝**（`/srv/database` vs 根 `/srv/data`）、越界、空根集合、文件/目录/根本身的描述、不存在、**符号链接逃逸被拒**、`../` 逃逸被拒、响应不含绝对路径 |
+| `tests/plugin-inventory-api.spec.ts` | 8 | 真起 HTTP server：resolve 成功且**响应不含根路径**、越界 404、相对路径 400、无 `files.read` 403，外加 `PLUGIN-001` 的四条 |
+
+全量：`16` 个测试文件 / `82` 用例通过；`tsc --noEmit` 通过。
+
+### 教训
+
+「客户端能不能自己做到」这类判断，必须**对着真实响应验证**，不能靠推理。
+我这次先给出结论、后来被自己的实测推翻，代价是多写了一个端点；
+但如果照原判断交付，用户拿到的是一个**永远点不开文件**的功能。
+
+---
+
+## 2026-10-08 · 插件清单端点（`PLUGIN-001`，下游分支）
+
+### 基于什么
+
+- 上游 `Hakunm/dsh-workspace` v1.0.0，同分支内接在 DSH 0.2.x 兼容适配之后。
+- 触发自真实使用反馈：**「功能单调点，无法查看装的插件情况」**。
+
+### 为什么
+
+用户人在外面用手机时，想知道这台机器装了哪些插件、有没有出问题的，**必须回到电脑前的 WebUI**。
+核实过插件的对外 API 面：`/api/v1` 当时共 10 个端点
+（`healthz` / `pairings/exchange` / `devices/self` / `roots` / `trash` / `chat/sessions` /
+`chat/workspaces` / `chat/agent-presets` / `settings/models` / `settings/providers`），
+外加 WS `events` —— **没有任何一个与插件相关**；loopback 管理面 `/manage/status` 也只回
+`remote` / `roots` / `devices`。所以这个信息在远程侧完全不可见。
+
+### 数据源与依据
+
+DSH 把每个 profile 的插件状态放在同一个 `package.json` 的两个字段里，缺一不可：
+
+| 字段 | 含义 |
+|---|---|
+| `dependencies` | **装了哪些包**（含版本声明，如 `^0.4.5`） |
+| `dsh.profile.bundles` | **实际加载了哪些包** |
+
+两者之差是有意义的信息：
+- 在 `dependencies` 但不在 `bundles` → **装了但没启用**；
+- 在 `bundles` 但找不到 → **声明加载却缺失**，通常意味着启动有问题。
+
+另外 `node_modules/<name>/package.json` 的 `version` 才是**实际装上的版本** ——
+只看 `dependencies` 的 `^0.4.5` 回答不了「我现在跑的是哪个版本」。
+
+profile 名取自 `DSH_PROFILE` 环境变量 → `--profile=<name>` → `--profile <name>`（实测 DSH 以
+`dsh --profile web --port …` 启动）；`DSH_HOME` 缺省为 `~/.dsh`。都拿不到时**不猜**，
+返回 `PROFILE_UNKNOWN` 让界面如实说明。
+
+### 干了什么
+
+- 新增 `src/host/plugin-inventory.ts`：纯逻辑，不做 IO 之外的副作用，`resolveProfileName` /
+  `resolveDshHome` / `readPluginInventory` / `resolveState` 均可单测，支持注入 env 与 argv。
+- `src/host/router.ts` 新增 `GET /api/v1/settings/plugins`，要求 scope `settings.read`
+  （与 `settings/models` 一致）。读取失败不抛 500，而是返回 `available:false` + `reason` ——
+  一个只读的信息端点不该因为文件缺失就让整个请求失败。
+- 返回字段被**限制**为「包名 + 版本 + 状态」，不回传任何文件内容；另有测试断言字段集合，
+  防止将来有人顺手把整个 manifest 塞进去。
+
+### 一处真实数据才能暴露的设计缺陷（重要）
+
+首版把「在 `bundles` 里但 `node_modules` 找不到」一律判为 `declared-missing`。
+**单元测试全绿**（mock 数据里没有官方包），但在真实机器上一次性产生了 **5 条假警报**：
+
+```
+[declared-missing] @deepseek-ai/dsh-base
+[declared-missing] @deepseek-ai/dsh-web-app
+[declared-missing] @deepseek-ai/dsh-experimental-*
+```
+
+原因是**官方内核包随 DSH 主包安装，不会出现在 profile 的 `node_modules` 下**，这是正常状态。
+修正为新增状态 `runtime-provided`（`official && loaded && !installed`），并在 `problemCount`
+中排除它。修正后真实机器上「需注意」从 7 条降到 **2 条**，且这两条是真实洞察：
+
+```
+[installed-not-loaded] dsh-hyperframes  声明=^0.4.2  实装=0.4.2
+[installed-not-loaded] dsh-remotion     声明=^0.3.4  实装=0.3.4
+```
+
+**教训**：mock 数据只能证明逻辑自洽，证明不了判定规则符合真实世界。这类「把正常状态误判为异常」
+的缺陷，只有拿真实环境跑一遍才会暴露 —— 而假警报比没有信息更糟，它会让用户学会忽略警告。
+
+### 测了什么
+
+| 测试文件 | 用例 | 覆盖 |
+|---|---|---|
+| `tests/plugin-inventory.spec.ts` | 19 | profile 解析（含 `--profile --port` 不误判）、`DSH_HOME` 缺省、三种状态分类、scoped 包名展开、`runtime-provided` 判定、官方/非官方、排序稳定、profile 未知、manifest 缺失与格式损坏、字段集合不泄漏 |
+| `tests/plugin-inventory-api.spec.ts` | 4 | 真起 HTTP server：有 `settings.read` → 200 且结构正确；无该 scope → 403；未认证 → 401；profile 不可解析 → 200 且带 `reason` |
+
+全量：`15` 个测试文件 / `65` 用例通过；`tsc --noEmit` 通过；`tsdown` 构建通过。
+
+### 安装
+
+```sh
+pnpm pack        # prepack 自动跑 typecheck + test + docs:check + build
+```
+
+产物需安装进 profile 并**重启 DSH** 才生效。
+
+---
+
+## 2026-10-08 · DSH 0.2.x 兼容适配（下游分支）
+
+- **背景**：DSH 0.2.x 起用 `@deepseek-ai/dsh-api-gateway`（服务名 `typertGateway`）替换了
+  `@deepseek-ai/dsh-host-apiproxy`（服务名 `apiProxy`，最后一版 `0.1.1-rc.2`）。0.2.x 上不再有任何
+  服务提供 `apiProxy`，插件的 `inject` 无法满足，Cordis 让该行永久停在 `pending`，`apply()` 从不执行，
+  HTTP 路由从未挂载——用户侧表现为「添加根目录返回 405」，而非任何显式报错。
+- **做法**：新增 `src/host/dsh-0.2-bridge.ts`，在 0.2.x 宿主服务之上重建旧版 `apiProxy` 门面
+  （25 个方法），插件的 `chat-adapter.ts` / `settings-adapter.ts`（约 1300 行）零改动。
+  桥接层只用结构化类型，不 import 任何 `@deepseek-ai/*` 运行时模块。
+- 桥接层同时承担三项非转发职责：事件中继（0.2.x 无进程级会话事件流，改为按运行中会话 `follow()` 后扇出）、
+  审批桥（认领 Cordis 瀑布 `approval/request`，转成 `approval/requested`，答复后经 `next()` 放行，
+  无人应答则委托下一个 answerer）、门面翻译（`SessionAddress` 判别联合、`AsyncIterable` 流、
+  `{ rpcId, payload } → { result: { ok, value } }` 信封）。
+- 适配过程中修复 **10 处契约缺口**，全部为「不抛错的静默失败」：`agent-presets` 缺 `trust`；
+  会话模型缺 `current`/`routable`；history 恒为空（`page()` 的 `throughSeq` 必须取自 `follow()`
+  开场帧，硬编码 `-1` 返回结构合法的空页）；冷会话命令发现失败（0.2.x 激活 Agent 的正路是
+  `resolveAgent()`，`agents.get()` 只读）；实时流式输出缺失（新增 `SessionEventRelay`）；
+  `api-session/status` 签名误读（参数是 `(sessionId, running)`，首参为裸 id 非对象）；
+  事件名不符（应为 `host/session-status`）；`agent-preset/selected` 未转发；
+  流式帧未产生（`follow()` 的 `assistantStream` 是 opt-in，不传宿主不产生任何增量帧）；
+  内部会话混入列表并报 409（0.2.x `list()` 返回 subagent 拥有的会话，而 `resolveAgent()`
+  按设计拒绝激活它们——过滤 `origin === 'subagent'` 并把命令发现改为可降级返回空列表）。
+- 第 6、7、9 项属适配过程中自己引入或遗漏的问题，一并记入 `docs/project/DSH-0.2-COMPAT.md` 作为例证。
+- **验证**：`pnpm test` 42 项通过（13 个文件）、`npx tsc --noEmit` 零错误；隔离 `DSH_HOME` 中安装真实
+  tarball 后「添加根目录」由 405 变为 **201**，8/8 接口 200，文件读写与会话创建正常；真实设备令牌
+  验证 8/8 接口 200 后**立即吊销探针设备**；端到端 WebSocket 实测（订阅事件流并真实发消息）
+  从修复前的 `chat.message.delta` **0 帧**变为 **11 帧**、累积流式文本正确输出；70 个真实会话逐个
+  探测命令发现，结果 正常 67 / 空列表 3 / **报错 0**，会话列表由 75 收敛到 70。
+- 新增 `docs/project/DSH-0.2-COMPAT.md` 完整记录「基于什么、为什么、改了什么、测了什么、已知边界」。
+- 未改动公开接口（`docs/api/openapi.yaml`、`asyncapi.yaml` 契约保持不变），未改动许可证（仍为 `AGPL-3.0-only`）。
+
 ## 2026-08-15 · v1.0.0
 
 - 完成 `DOC-003` 与 `REL-004`：按发布要求删除中英文 README 的截图环境说明，并继续以单一根提交同步公开分支和标签。
