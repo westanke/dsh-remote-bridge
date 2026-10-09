@@ -28,7 +28,6 @@ const zh = {
   // `/dsh-workspace` page, which really is the file workspace.
   phoneSettings: '手机设置',
   phoneSettingsHint: '管理这台机器的手机访问：配对、权限、回收站与客户端下载。',
-  openPanel: '打开手机设置面板',
   appDownloadTab: 'App 下载',
   appDownloadTitle: '下载客户端',
   appDownloadHint: '用手机扫码打开下载页；也可以直接点击地址，或手动输入。',
@@ -160,7 +159,6 @@ const en: Messages = {
   // See the Chinese comment: the panel is about phone access, not the file workspace.
   phoneSettings: 'Phone settings',
   phoneSettingsHint: 'Manage phone access to this machine: pairing, permissions, trash and the app download.',
-  openPanel: 'Open the phone settings panel',
   appDownloadTab: 'App download',
   appDownloadTitle: 'Download the app',
   appDownloadHint: 'Scan with your phone to open the download page, click an address, or type it in.',
