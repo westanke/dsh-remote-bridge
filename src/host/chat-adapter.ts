@@ -78,6 +78,25 @@ export interface DshApiProxy {
     }>>
     select(request: { rpcId: string; payload: { sessionId: string; agentPreset: string } }): Promise<RpcResponse<{ agentPreset: string }>>
   }
+  /**
+   * 用户问题（内核 `ctx.userQuestions`，即 ask_user_question 工具）。
+   *
+   * 为什么单开一个命名空间而不是塞进 `sessions`：它由**另一个内核服务**提供
+   * （`@deepseek-ai/dsh-user-questions`），在一条没装它的 profile 上是**可选能力** ——
+   * 分开之后，「这个能力不在」和「这个会话有问题」在类型上就分得开。
+   */
+  userQuestions: {
+    /**
+     * 列出还能回答的问题（内核 `continued(agent)`）。
+     * 没有 live agent、或没有该服务时返回空列表 —— 冷会话是常态，不该报错。
+     */
+    list(request: { rpcId: string; payload: { sessionId: string } }): Promise<RpcResponse<{ items: UserQuestionView[] }>>
+    /** 提交答案；失败原因见 [UserQuestionAnswerOutcome]。 */
+    answer(request: {
+      rpcId: string
+      payload: { sessionId: string; callId: string; answer: UserQuestionAnswer }
+    }): Promise<RpcResponse<UserQuestionAnswerOutcome>>
+  }
   events: {
     mux(request: { rpcId: string; payload: Record<string, never> }, signal: AbortSignal): AsyncIterable<{ rpcId: string; payload: Record<string, unknown> }>
     host(request: { rpcId: string; payload: Record<string, never> }, signal: AbortSignal): AsyncIterable<{ rpcId: string; payload: Record<string, unknown> }>
@@ -188,6 +207,62 @@ export interface PendingApprovalView {
   risk: 'standard' | 'full-access'
   requestedAt: number
 }
+
+/**
+ * 一条「还能回答」的用户问题 —— 内核 `userQuestions.continued()` 的一行。
+ *
+ * 为什么类型是宽松的、而不是照抄内核的 `AskUserQuestionItem`：内核往 item 或
+ * question 上加过字段（`intent` 就是一例），手机端该自己决定要不要用，
+ * 不该等插件跟着发版。所以这里只钉住三个**契约字段**，其余原样透传。
+ */
+export interface UserQuestionView {
+  callId: string
+  /** 内核 `UserQuestionState`：'open' 或 'continued'；本端点只返回 continued。 */
+  state: string
+  /** 问题项**原样**透传（id / question / detail? / header? / options? / multiSelect? / intent?）。 */
+  questions: unknown[]
+  /** 内核以后加的字段照样透传，不在这里裁剪。 */
+  [key: string]: unknown
+}
+
+/** 一条问题的答案（内核 `AskUserQuestionAnswerItem`）。 */
+export interface UserQuestionAnswerItem {
+  /** 被回答的问题 id，必须与请求里的问题 id 对上。 */
+  id: string
+  /** 选中的选项 label；多选时可能多项。 */
+  selected: string[]
+  /** 可选的「其他」自由文本。 */
+  custom?: string
+}
+
+/** 一次提交的完整答案批次（内核 `AskUserQuestionAnswer`）：一次调用里的每个问题各占一项。 */
+export interface UserQuestionAnswer {
+  answers: UserQuestionAnswerItem[]
+}
+
+/**
+ * 「把答案送进内核」的结果。
+ *
+ * 刻意**不走 RpcResponse 的 error 通道**：`unwrapDsh` 只认 `not-found` /
+ * `busy` / `locked` 三种 code 去映射 HTTP 状态，其余一律 400 —— 而这里需要区分
+ * 409 / 400 / 503。做成**值**之后由 adapter 决定 HTTP 状态，
+ * 和 approvals 的 `respond()` 返回 `{ accepted: false, reason }` 是同一个套路。
+ */
+export type UserQuestionAnswerFailure =
+  /** 内核里没有这个 callId 的悬空问题（`answer()` 返回了 false）。 */
+  | 'not-pending'
+  /** 已经有一条回复在排队（内核 `REPLY_QUEUED`）。重复提交不是服务器故障。 */
+  | 'reply-queued'
+  /** 答案批次没有「一问一答」地对齐（内核 `BAD_ANSWER`）。 */
+  | 'answer-invalid'
+  /** 这个 agent 现在不接受人工回答（非 live root / 被别的 agent 拥有），或会话没有 live agent。 */
+  | 'not-answerable'
+  /** 这套 DSH 构建里压根没有 `ctx.userQuestions` 服务。 */
+  | 'unavailable'
+
+export type UserQuestionAnswerOutcome =
+  | { accepted: true }
+  | { accepted: false; reason: UserQuestionAnswerFailure }
 
 interface PendingApprovalRecord {
   rpcId: string
@@ -533,6 +608,51 @@ export class DshChatAdapter {
     }
     this.pendingApprovals.delete(key)
     return publicApproval(pending)
+  }
+
+  /**
+   * 列出「agent 正在等、且还能回答」的用户问题。
+   *
+   * 口径与 [listPendingApprovals] 一致：先 requireSession（会话对本设备不可见 → 404），
+   * 再问内核；字段一个都不裁 —— 客户端照着渲染，内核加字段不用改插件。
+   */
+  async listUserQuestions(principal: Principal, sessionId: string): Promise<UserQuestionView[]> {
+    await this.requireSession(principal, sessionId)
+    return unwrapDsh(await this.api.userQuestions.list({ rpcId: randomUUID(), payload: { sessionId } })).items
+  }
+
+  /**
+   * 把一次答案提交给内核。
+   *
+   * 失败原因全部由 `api.userQuestions.answer` 以**值**给出（见 [UserQuestionAnswerOutcome]），
+   * 这里翻成 HTTP 语义：503 能力缺失 / 409 状态冲突 / 400 批次不合法。
+   * 为什么不在 bridge 里直接抛：`unwrapDsh` 只把 `not-found` / `busy` / `locked`
+   * 映成 404/409，其余一律 400 —— 表达不了这几种区别。
+   */
+  async answerUserQuestion(
+    principal: Principal,
+    sessionId: string,
+    callId: string,
+    answer: UserQuestionAnswer,
+  ): Promise<void> {
+    await this.requireSession(principal, sessionId)
+    const outcome = unwrapDsh(await this.api.userQuestions.answer({
+      rpcId: randomUUID(),
+      payload: { sessionId, callId, answer },
+    }))
+    if (outcome.accepted) return
+    switch (outcome.reason) {
+      case 'unavailable':
+        throw new ApiError(503, 'USER_QUESTIONS_UNAVAILABLE', 'This DSH build provides no ctx.userQuestions service, so questions cannot be answered.')
+      case 'not-pending':
+        throw new ApiError(409, 'QUESTION_NOT_PENDING', 'This question is no longer pending.')
+      case 'reply-queued':
+        throw new ApiError(409, 'QUESTION_REPLY_QUEUED', 'A reply is already queued for this question.')
+      case 'not-answerable':
+        throw new ApiError(409, 'QUESTION_NOT_ANSWERABLE', 'This session cannot answer questions right now: its agent is not the live root.')
+      case 'answer-invalid':
+        throw new ApiError(400, 'QUESTION_ANSWER_INVALID', 'The answer batch must name each question of the call exactly once.')
+    }
   }
 
   async models(principal: Principal, sessionId: string): Promise<SessionModelsView> {

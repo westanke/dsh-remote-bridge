@@ -21,7 +21,7 @@
  */
 
 import { randomUUID } from 'node:crypto'
-import type { PromptContentPart, RpcResponse } from './chat-adapter.ts'
+import type { PromptContentPart, RpcResponse, UserQuestionAnswer, UserQuestionView } from './chat-adapter.ts'
 import type { SettingsApiProxy } from './settings-adapter.ts'
 
 // ── structural views of the 0.2.x host services ────────────────────────────
@@ -225,6 +225,93 @@ function optionalService<T>(host: object, name: string): T | null {
   } catch {
     return null
   }
+}
+
+/**
+ * 内核 `ctx.userQuestions`（`@deepseek-ai/dsh-user-questions`）里本插件要用到的方法。
+ *
+ * 为什么自己写结构类型：本插件刻意不 import 任何 `@deepseek-ai/*`（见
+ * docs/project/COMPATIBILITY.md），内核服务一律按结构消费。
+ *
+ * **`continued` 属于内核的非公开表面**：它在已发布的 `lib/types/index.d.ts` 里被标成
+ * `private`，但运行时就是普通方法（`lib/types/index.js:156`），所以能调 ——
+ * 升级内核版本时要重新验一遍这个入口。
+ */
+export interface UserQuestionsLike {
+  /** 悬空的、还能回答的问题（内核内部按 `state === 'continued'` 过滤）。 */
+  continued(agent: unknown): unknown
+  /** 把答案作为插话消息送进 agent；返回 `false` = 没有匹配的悬空问题。 */
+  answer(agent: unknown, callId: string, answer: UserQuestionAnswer): boolean
+}
+
+/**
+ * 容错取 Agent 作用域上的 `userQuestions` 服务；拿不到就返回 `null`。
+ *
+ * 依据（全部实测，不是推断）：
+ * - `agent.ctx` 是内核声明的字段：`@deepseek-ai/dsh-agent` 的
+ *   `lib/types/runtime-types.d.ts`（`interface Agent { readonly ctx: Context }`）。
+ * - `ctx.get(name)` 由 cordis 混入 `ctx`：`@deepseek-ai/cordis/lib/index.js` 里
+ *   `this.mixin("reflect", ["get", "set", "provide", "accessor", "mixin"])`；
+ *   同一文件的 `get(name, strict = true)` 在没人提供该服务时返回 `undefined`，**不抛**。
+ * - 内核自己也这么取：`dsh-user-questions/lib/types/index.js` 里
+ *   `this.ctx.get('agents')` / `this.ctx.get('sessionProjections')`。
+ *
+ * 即便如此仍做三层防御（ctx 形状 → get 是不是函数 → try/catch）：这是**可选能力**，
+ * 没装它的 profile 只该少一个功能，不该让整个插件激活失败 —— attachments /
+ * fileUploads 已经用两次线上事故教过这个道理。
+ */
+function userQuestionsOf(agent: unknown): UserQuestionsLike | null {
+  if (agent === null || typeof agent !== 'object') return null
+  const ctx = (agent as { ctx?: unknown }).ctx
+  if (ctx === null || ctx === undefined || typeof ctx !== 'object') return null
+  const get = (ctx as { get?: unknown }).get
+  if (typeof get !== 'function') return null
+  try {
+    const service = (get as (this: unknown, name: string) => unknown).call(ctx, 'userQuestions')
+    return service !== null && typeof service === 'object' ? service as UserQuestionsLike : null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * 内核的一行 `PendingUserQuestion` → 对外 view。
+ *
+ * 只钉三个契约字段（callId / state / questions），其余**原样透传**：内核以后往 item
+ * 或 question 上加字段，手机端自己决定要不要用，插件不用跟着发版。
+ * 缺 callId 或 questions 的行直接丢掉，而不是把残缺的行发给客户端。
+ */
+function toUserQuestionView(value: unknown): UserQuestionView | undefined {
+  if (value === null || typeof value !== 'object') return undefined
+  const row = value as Record<string, unknown>
+  const callId = row['callId']
+  const questions = row['questions']
+  if (typeof callId !== 'string' || callId === '' || !Array.isArray(questions)) return undefined
+  const state = row['state']
+  return {
+    ...row,
+    callId,
+    state: typeof state === 'string' ? state : 'continued',
+    questions: [...questions],
+  }
+}
+
+/**
+ * 内核异常的 `code`，取不到就 `undefined`。
+ *
+ * 不看 `instanceof`（跨包副本 / 跨 realm 会失手），只认 `HarnessError` 上那个
+ * 「稳定、可编程路由」的 `code`：`@deepseek-ai/dsh-llm` 的 `lib/types/error.js` 里
+ * `HarnessError` 就是 `this.code = code`（`name` 也被设成子类名）。
+ */
+function errorCodeOf(error: unknown): string | undefined {
+  if (error === null || typeof error !== 'object') return undefined
+  const code = (error as { code?: unknown }).code
+  return typeof code === 'string' ? code : undefined
+}
+
+/** 会话没有 live agent —— `agentFor()` 抛的正是这个 code。 */
+function isAgentUnavailable(error: unknown): boolean {
+  return errorCodeOf(error) === 'session/agent-unavailable'
 }
 
 function ok<T>(value: T): RpcResponse<T> {
@@ -501,6 +588,251 @@ class ApprovalBridge {
   }
 }
 
+/**
+ * 内核 `AskUserQuestionRequestEvent`（`dsh-user-questions/lib/types/types.d.ts:118-135`，逐字）
+ * 里本插件用到的字段。
+ *
+ * 两个**照抄、不凭印象**的点：
+ * - `agent` 在 payload 里（`types.d.ts:122`），由内核 `ask()` 自己补进来
+ *   （`lib/types/index.js:327` 的 `{ ...request, agent }`）—— 这是唯一可靠的 agent 来源。
+ * - `callId` **不在顶层**，在 `wait.callId`（`types.d.ts:129-134`）。
+ */
+export interface UserQuestionRequestLike {
+  questions?: unknown
+  agent?: unknown
+  signal?: AbortSignal
+  wait?: { callId?: unknown; timed?: unknown }
+}
+
+/** 挂在 [QuestionBridge] 上的一条前台提问。 */
+interface PendingQuestion {
+  sessionId: string
+  callId: string
+  questions: unknown[]
+  settle: (outcome: QuestionBridgeOutcome) => void
+}
+
+/**
+ * 挂起项被谁结算的两种可能。
+ *
+ * 没有「delegate」这一种了：委托是**进入时就发生**的（见 [QuestionBridge.attach]），
+ * 挂起表只负责回答「App 答了」还是「这张卡作废了」（中止 / 电脑端先答）。
+ */
+type QuestionBridgeOutcome =
+  | { kind: 'answered'; answer: UserQuestionAnswer }
+  | { kind: 'dismissed' }
+
+/**
+ * 同一时刻最多挂起多少条前台提问：超了就把后来的直接委托给官方 UI。
+ * 不做无上限的挂起表 —— 失控的 agent 能问出任意多问题，每条都吊着一个 Promise。
+ */
+const MAX_PENDING_QUESTIONS = 32
+
+/**
+ * `user-questions/request` 的接管者 —— 形状照 [ApprovalBridge]。
+ *
+ * 为什么非接不可：`ask_user_question` 只有在**参数 schema 声明了 `timeout`** 时才走
+ * 「前台限时等待 → 超时转 `continued`」那条路（`dsh-user-questions/lib/types/projection.js`
+ * 的 `isTimedAskUserQuestionSchema` 查 `tool.parameters.properties.timeout`），
+ * 而实测 15 个真实调用的参数键清一色只有 `questions`。也就是说绝大多数提问**不进投影**，
+ * `GET /questions` 永远查不到它们；它们只经过这条 Cordis waterfall 事件
+ * （`types.d.ts:136-147`）。官方 WebUI 接了这个事件 → 电脑端看得到、手机端看不到。
+ *
+ * 三处与 approvals 不同，都是内核契约决定的、不是选择：
+ * 1. **先委托，再竞速 —— 两端都能答**：进入时立刻调一次 `next()`（把这条请求交给
+ *    后面的监听者，也就是官方 WebUI 那条远端 answerer），同时自己挂一张卡给 App，
+ *    然后 `Promise.race`：谁先给出答案就算谁的。
+ *    这与 ApprovalBridge 不同（它是「接管 = 否决下游」，cordis `lib/index.js:307-325`
+ *    的文档原话：a listener that does not call next() vetoes the rest of the chain）——
+ *    审批那边先不调，问题这边先调。代价是两端各有一张卡，后答的那张会变陈旧
+ *    （客户端会收到 409「已不再等待」，语义正确）。
+ * 2. **`this` 不能当 agent 用**：dispatcher 把它绑成 `scopeTarget(agent, agent)`
+ *    （`lib/types/index.js:327`），而 `Scoped<T>` 明确写着
+ *    「routing-only … does not expose the subject's properties」
+ *    （`@deepseek-ai/dsh-scope/lib/types/index.d.ts:14-20`）。
+ *    真 agent 只在 `request.agent` 里；官方 WebUI 也是另找 session
+ *    （`ctx.sessions.scopeOf(this)`），而不是读 `this.session`。
+ * 3. 回调必须是**普通函数**：cordis 用 `callback.bind(thisArg)` 绑定作用域载体
+ *   （cordis `lib/index.js:263`）。本实现不依赖 `this`，但签名保持与内核契约一致。
+ */
+class QuestionBridge {
+  private readonly pending = new Map<string, PendingQuestion>()
+
+  constructor(
+    private readonly host: Dsh02HostServices,
+    private readonly mux: FrameHub,
+  ) {}
+
+  /** Register the answerer once, during plugin activation. */
+  attach(): void {
+    const bridge = this
+    // `{ prepend: true }`：**排到官方 WebUI 的 answerer 前面**。
+    //
+    // 这一条是「先委托再竞速」能否成立的前提 —— 我们必须在链的最外层，
+    // 才能自己拿到 `next` 并决定「先把它交出去、同时留一张给 App」。
+    // 排在后面的话，前面那家一旦不调 next（veto 整条链），我们根本不会被调用。
+    //
+    // 另外这是**全局**监听：提问是 agent 作用域派发的（内核用 scopeTarget 派发），
+    // 而 `ctx.on` 默认注册的 hook 带作用域标签、会被派发侧的 filter 过滤掉。
+    this.host.on('user-questions/request', async function (...args: any[]) {
+      const request = args[0] as UserQuestionRequestLike | undefined
+      const next = args[args.length - 1]
+
+      // **进入时就把 next() 调掉，而且整条路径只调这一次。**
+      //
+      // 两个理由：
+      // 1. cordis 的 `next()` 是从**共享数组** shift（`lib/index.js:317-325`），调两次会
+      //    跳过一个监听者；所以「谁赢之后才决定调不调」是错的写法 —— 必须在这里算好。
+      // 2. 「先委托再竞速」正是为了不必抢注册顺序：官方 WebUI（远端 answerer）立刻
+      //    拿到这张卡，电脑端照旧能答；我们同时挂一张给 App，先答者胜。
+      const delegate = (async (): Promise<unknown> => {
+        if (typeof next !== 'function') {
+          // 契约被破坏时给一个明确的拒绝，而不是返回 undefined ——
+          // 后者会被 `ask()` 当成「答案就是 undefined」。
+          throw new Error('user-questions/request was dispatched without a next() delegate')
+        }
+        return (next as () => unknown)()
+      })()
+      // 这个 promise 稍后一定会有结果，而那时可能已经没人在 await 它了
+      // （App 先赢 / 形状不认识时直接 return 也算有人接）。先挂一个空 handler 把
+      // rejection 吞掉，避免 unhandledRejection 污染进程日志。
+      // 注意：这不改变 delegate 本身的结果 —— 后面该 await 的地方照样看得到 reject。
+      void delegate.catch(() => {})
+
+      const sessionId = sessionIdOfAgent(request?.agent)
+      const questions = Array.isArray(request?.questions) ? [...request.questions] : undefined
+      // 关联键：优先用内核给的 `wait.callId`，**没有就自己造一个**。
+      //
+      // 为什么不能「没有就放弃」：`wait` 只有 `askTimed` 才加 ——
+      // `dsh-user-questions/lib/types/index.js:252` 是唯一的 `wait: { callId, timed: true }`
+      // 出现处；而 plan 模式评审走的是不带 wait 的 `ask()`
+      //（`dsh-plan-mode/lib/index.js:259-262` 调 `interaction.ask({ questions, agent, signal })`），
+      // `ask()` 自己又只做 `{ ...request, agent }` 转发（同文件 :327），不会补 wait。
+      //
+      // 所以「要求必须有 wait.callId」等于**把 plan 模式整条挡在门外**：
+      // 那种 request 会直接 return delegate 交给官方界面 —— 电脑端因此能看到卡片，
+      // 而手机端一帧都收不到。这正是真机上报的现象。
+      //
+      // 自造的 id 只是**本插件内部的关联键**（挂起表 → 推帧 → App 回传 → 摘除都用它），
+      // 不要当成内核的 ToolCallId。带 timeout 的那批仍用内核给的那个，语义不变、
+      // 超时后与 continued 的衔接也不受影响。
+      const upstreamCallId = typeof request?.wait?.callId === 'string' && request.wait.callId !== ''
+        ? request.wait.callId
+        : undefined
+      const callId = upstreamCallId ?? `bridge-${randomUUID()}`
+      // 真正拿不到就没法工作的只有两个：会话（取不到就没法定位）与题目（空的无意义）。
+      if (sessionId === undefined || questions === undefined || questions.length === 0) {
+        return delegate
+      }
+      if (request?.signal?.aborted === true) return delegate
+      if (bridge.pending.size >= MAX_PENDING_QUESTIONS) return delegate
+
+      const rpcId = randomUUID()
+      const held = new Promise<QuestionBridgeOutcome>(resolve => {
+        let done = false
+        const settle = (value: QuestionBridgeOutcome): void => {
+          if (done) return
+          done = true
+          resolve(value)
+        }
+        bridge.pending.set(rpcId, { sessionId, callId, questions, settle })
+        // 中止 = 限时窗口到期或整轮被取消 → 让这张卡作废，然后把 delegate 原样交给调用方
+        // （与 task-18 相同：下游没人接就 reject，askTimed 会把它接住并落到 continued）。
+        request?.signal?.addEventListener('abort', () => {
+          bridge.pending.delete(rpcId)
+          settle({ kind: 'dismissed' })
+        }, { once: true })
+        bridge.mux.push({ type: 'userQuestions/requested', sessionId, callId, rpcId, questions })
+      })
+
+      // 竞速：电脑端（下游）先答 vs App 先答 vs 持有中被中止。
+      //
+      // 下游**失败**不算「有人答了」：这条 profile 上可能压根没有远端客户端
+      // （`noAnswerer` 会以 NO_PROVIDER 拒绝，内核 `lib/types/index.js:323`），
+      // 那种情况下继续等 App —— 它才是这套部署里的主要界面。
+      const first = await Promise.race([
+        delegate.then(() => ({ kind: 'delegated' }) as const, () => new Promise<never>(() => {})),
+        held,
+      ])
+
+      if (first.kind === 'answered') {
+        // App 先赢：把**答案本体**交回内核，这就是这次工具调用的返回值。
+        bridge.pending.delete(rpcId)
+        bridge.mux.push({ type: 'userQuestions/answered', sessionId, callId, rpcId })
+        return first.answer
+      }
+      // 电脑端先答（delegated）或持有中被中止（dismissed）：两条都要摘挂起项 +
+      // 推 dismissed 帧 —— 手机端那张卡才会消失，而不是变成一张点不动的陈旧卡片。
+      bridge.pending.delete(rpcId)
+      bridge.mux.push({ type: 'userQuestions/dismissed', sessionId, callId, rpcId })
+      // delegated 分支里 delegate 已经 fulfilled，await 不会抛；
+      // dismissed（中止）分支里把 delegate 原样交出去。
+      return await delegate
+      // ⚠️ 实验：`prepend` 让我们排到链最外层。
+      // 若钩子此前从未被调用过，这一行就是原因（或被官方抢先 veto）。
+    }, { prepend: true })
+  }
+
+  /**
+   * 回答一条**正挂在前台等待**的提问（App 通过 `POST …/answer` 打进来）。
+   *
+   * 与 [ApprovalBridge.respond] 同形：按 (sessionId, callId) **精确**找挂起项；
+   * 找不到就报 `not-pending`，绝不挑一条最近的来答 —— 答错会话的代价太大。
+   */
+  answer(request: { sessionId: string; callId: string; answer: unknown }):
+    { accepted: true } | { accepted: false; reason: 'not-pending' | 'bad-response' } {
+    if (!isUserQuestionAnswerLike(request.answer)) return { accepted: false, reason: 'bad-response' }
+    for (const [rpcId, entry] of this.pending) {
+      if (entry.sessionId !== request.sessionId || entry.callId !== request.callId) continue
+      this.pending.delete(rpcId)
+      entry.settle({ kind: 'answered', answer: request.answer })
+      return { accepted: true }
+    }
+    return { accepted: false, reason: 'not-pending' }
+  }
+
+  /**
+   * 某会话当前挂起中的提问（供 `GET /questions` 合并）。
+   *
+   * `state` 刻意报 `'continued'`：客户端（dsh-companion 的 HarnessViewModel:1314）
+   * 只认这一个值（`sets.filter { it.state == QUESTION_STATE_CONTINUED }`），
+   * 报 `'open'` 等于这张卡片永远不显示 —— 而它恰恰是**此刻真正阻塞着 agent** 的那条。
+   * 「这是插件接管的」由新增的 `viaBridge` 标记表达（客户端 decode 是
+   * `ignoreUnknownKeys = true`，加字段安全），将来客户端想换文案/单独过滤都有依据。
+   */
+  pendingFor(sessionId: string): UserQuestionView[] {
+    const out: UserQuestionView[] = []
+    for (const entry of this.pending.values()) {
+      if (entry.sessionId !== sessionId) continue
+      out.push({
+        callId: entry.callId,
+        state: 'continued',
+        questions: [...entry.questions],
+        viaBridge: true,
+      })
+    }
+    return out
+  }
+}
+
+/**
+ * 答案批次的最小校验（路由层已校验过一遍，这里是防御性第二道）。
+ *
+ * 只查「能不能安全喂给内核」：对象、`answers` 非空数组、每项 `id` 是非空字符串、
+ * `selected` 是字符串数组。更细的「一问一答对齐」由内核自己判（BAD_ANSWER）。
+ */
+function isUserQuestionAnswerLike(value: unknown): value is UserQuestionAnswer {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return false
+  const answers = (value as { answers?: unknown }).answers
+  if (!Array.isArray(answers) || answers.length === 0) return false
+  return answers.every(item => {
+    if (item === null || typeof item !== 'object' || Array.isArray(item)) return false
+    const entry = item as { id?: unknown; selected?: unknown }
+    if (typeof entry.id !== 'string' || entry.id === '') return false
+    return Array.isArray(entry.selected) && entry.selected.every(label => typeof label === 'string')
+  })
+}
+
 /** Best-effort projection of an Agent identity to its session id. */
 function sessionIdOfAgent(agent: unknown): string | undefined {
   if (!agent || typeof agent !== 'object') return undefined
@@ -547,6 +879,10 @@ export function createDsh02ApiProxy(host: Dsh02HostServices): SettingsApiProxy {
   const fileUploadService = optionalService<FileUploadsLike>(host, 'fileUploads')
   const approvals = new ApprovalBridge(host, mux)
   approvals.attach()
+  // 前台提问（没有 timeout 的 ask_user_question）走 Cordis waterfall，不经过投影；
+  // 这个接管者是手机端能看到它们的唯一入口。
+  const questions = new QuestionBridge(host, mux)
+  questions.attach()
   const relay = new SessionEventRelay(host, mux)
 
   // Session registry changes used to ride the `host` stream. 0.2.x publishes
@@ -590,6 +926,22 @@ export function createDsh02ApiProxy(host: Dsh02HostServices): SettingsApiProxy {
       throw Object.assign(new Error(`no live Agent for session ${sessionId}`), { code: 'session/agent-unavailable' })
     }
     return agent
+  }
+
+  /**
+   * `agentFor` 的宽松版：把「这个会话没有 live agent」当成**正常情况**（返回 null）。
+   *
+   * 为什么 list 需要它：手机端会对每个会话各拉一次问题列表，而冷会话（没在跑）没有
+   * agent 是常态。把常态报成错误，客户端只会看到一片红。
+   * 只放过 `session/agent-unavailable` 这一个 code，其它异常照旧往上抛。
+   */
+  async function agentForQuestions(sessionId: string): Promise<unknown | null> {
+    try {
+      return await agentFor(sessionId)
+    } catch (error) {
+      if (isAgentUnavailable(error)) return null
+      throw error
+    }
   }
 
   const bridge: SettingsApiProxy = {
@@ -788,6 +1140,68 @@ export function createDsh02ApiProxy(host: Dsh02HostServices): SettingsApiProxy {
         const agent = await agentFor(request.payload.sessionId)
         const agentPreset = await host.agentPresets.select(agent, request.payload.agentPreset)
         return { agentPreset }
+      }),
+    },
+
+    userQuestions: {
+      list: request => call(async () => {
+        const { sessionId } = request.payload
+        // **两个来源合流**：本插件接管的前台提问（此刻真的在等）+ 内核的 continued
+        // （带 timeout 的提问超时之后留下的、可以迟到回复的那批）。
+        // 挂起中的排前面：它是此刻阻塞着 agent 的那条。同一个 callId 只报一次 ——
+        // 挂起的提问超时后会以 continued 的身份再冒出来，卡片不该闪两下。
+        const bridged = questions.pendingFor(sessionId)
+        const bridgedIds = new Set(bridged.map(item => item.callId))
+        const agent = await agentForQuestions(sessionId)
+        // 没有 live agent / 这条 profile 没装该服务 → 只报挂起那部分（可能是空列表）。
+        // 冷会话是常态（手机端会对每个会话各拉一次），这里绝不报错。
+        if (agent === null) return { items: bridged } as never
+        const service = userQuestionsOf(agent)
+        if (service === null || typeof service.continued !== 'function') return { items: bridged } as never
+        const rows = service.continued(agent)
+        const continued = Array.isArray(rows)
+          ? rows.map(toUserQuestionView).filter((item): item is UserQuestionView => item !== undefined)
+          : []
+        return { items: [...bridged, ...continued.filter(item => !bridgedIds.has(item.callId))] } as never
+      }),
+      answer: request => call(async () => {
+        const { sessionId, callId, answer } = request.payload
+        // **两条路并存**：内核管「带 timeout 的 continued 提问」，本插件管「前台正挂着的提问」。
+        // 先问内核：同一个 callId 不会同时在两边（挂起那条要等超时才进投影），
+        // 但先问它更省一次比对，也让核心行为在插件缺席时保持一致。
+        const agent = await agentForQuestions(sessionId)
+        let kernelCouldNotAnswer = false
+        if (agent !== null) {
+          const service = userQuestionsOf(agent)
+          if (service !== null && typeof service.answer === 'function') {
+            let answered: unknown
+            try {
+              // `await` 同时接住两种失败：**同步抛**（表达式在 try 内求值）与
+              // **返回 rejected promise**（await 把它变成异常）。
+              answered = await service.answer(agent, callId, answer)
+            } catch (error) {
+              const code = errorCodeOf(error)
+              // 重复提交是**状态冲突**，不是服务器故障：内核的 REPLY_QUEUED 必须是 409。
+              if (code === 'REPLY_QUEUED') return { accepted: false, reason: 'reply-queued' } as never
+              // 批次没一对一：客户端给错了（400），同样不该变成 500。
+              if (code === 'BAD_ANSWER') return { accepted: false, reason: 'answer-invalid' } as never
+              // 不是 live root / 被别的 agent 拥有：内核这条路走不通，
+              // 但前台挂起表里可能正等着这一条 —— 记下来，继续往下试。
+              if (code === 'CALLER_NOT_LIVE' || code === 'DELEGATED_CALLER') kernelCouldNotAnswer = true
+              else throw error
+            }
+            if (answered === true) return { accepted: true } as never
+          }
+        }
+        // 前台挂起表（本插件接管的这批）。找不到就是「这条不在等」。
+        const bridged = questions.answer({ sessionId, callId, answer })
+        if (bridged.accepted) return { accepted: true } as never
+        if (bridged.reason === 'bad-response') return { accepted: false, reason: 'answer-invalid' } as never
+        // 内核明确说「这个 agent 现在不能人工回答」，且挂起表也没有 → 保留那个更具体的 409。
+        if (kernelCouldNotAnswer) return { accepted: false, reason: 'not-answerable' } as never
+        // 两条都不认 → 真的不再等待（409），而不是 503：装了本插件之后
+        // 「没人能答」已经不存在，只是这一条不在等了。
+        return { accepted: false, reason: 'not-pending' } as never
       }),
     },
 

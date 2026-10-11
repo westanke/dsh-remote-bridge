@@ -6,7 +6,7 @@ import { DEVICE_SCOPES } from '../shared/contracts.ts'
 import type { AuthService } from './auth.ts'
 import { requestAddress } from './auth.ts'
 import type { DshChatAdapter } from './chat-adapter.ts'
-import type { PromptContentPart } from './chat-adapter.ts'
+import type { PromptContentPart, UserQuestionAnswer } from './chat-adapter.ts'
 import type { StoredRoot, WorkspaceDatabase } from './database.ts'
 import { ApiError, asApiError } from './errors.ts'
 import type { FileService } from './file-service.ts'
@@ -541,6 +541,37 @@ export class ApiRouter {
       return
     }
 
+    const questionsRoute = pathname.match(/^\/api\/v1\/chat\/sessions\/([^/]+)\/questions$/)
+    if (method === 'GET' && questionsRoute !== null) {
+      this.options.auth.requireScope(principal, 'chat.read')
+      const sessionId = decodeURIComponent(questionsRoute[1] as string)
+      sendJson(res, 200, { items: await this.options.chat.listUserQuestions(principal, sessionId) })
+      return
+    }
+
+    const questionAnswerRoute = pathname.match(
+      /^\/api\/v1\/chat\/sessions\/([^/]+)\/questions\/([^/]+)\/answer$/,
+    )
+    if (method === 'POST' && questionAnswerRoute !== null) {
+      this.options.auth.requireScope(principal, 'chat.write')
+      const sessionId = decodeURIComponent(questionAnswerRoute[1] as string)
+      const callId = decodeURIComponent(questionAnswerRoute[2] as string)
+      // 故意收 unknown 再校验，而不是 `as Record<string, unknown>`：JSON body 可以是
+      // null / 数字 / 数组，直接取字段会抛 TypeError → 500；非法输入必须是 400。
+      const answer = readUserQuestionAnswer(await readJson(req, 64_000))
+      await this.options.chat.answerUserQuestion(principal, sessionId, callId, answer)
+      // 审计只记 id 与条数，不记自由文本答案：approvals 也只记 outcome 不记命令内容，
+      // 而且 custom 是用户手打的原文，没有理由落进审计库。
+      this.audit(principal, 'chat.question.answer', undefined, undefined, requestId, {
+        sessionId,
+        callId,
+        answers: answer.answers.length,
+        questionIds: answer.answers.map(item => item.id),
+      })
+      sendJson(res, 202, { accepted: true })
+      return
+    }
+
     const sessionModelsRoute = pathname.match(/^\/api\/v1\/chat\/sessions\/([^/]+)\/model(?:s)?$/)
     if (sessionModelsRoute !== null) {
       const sessionId = decodeURIComponent(sessionModelsRoute[1] as string)
@@ -978,6 +1009,48 @@ function readPromptParts(body: Record<string, unknown>): PromptContentPart[] {
     }
     throw new ApiError(400, 'BODY_INVALID', `content[${index}].type is not supported.`)
   })
+}
+
+/**
+ * 校验一次答案提交：`{ answers: [{ id, selected[], custom? }] }`。
+ *
+ * 为什么要逐项校验，而不是把 body 直接透传给内核：这是**用户输入**，
+ * 形状不对时内核给的报错更难懂；而且内核的 `answer()` 会检查「一问一答」的对齐，
+ * 类型层面能先挡掉的就不要等到那一步。
+ *
+ * 入参故意收 `unknown`：`readJson` 的返回值可能是 null / 数字 / 数组，
+ * 当对象取字段会抛 TypeError 变成 500 —— 非法输入必须是 400。
+ */
+function readUserQuestionAnswer(body: unknown): UserQuestionAnswer {
+  if (body === null || typeof body !== 'object' || Array.isArray(body)) {
+    throw new ApiError(400, 'BODY_INVALID', 'The request body must be a JSON object with an answers array.')
+  }
+  const answers = (body as { answers?: unknown }).answers
+  if (!Array.isArray(answers) || answers.length === 0) {
+    throw new ApiError(400, 'BODY_INVALID', 'answers must be a non-empty array.')
+  }
+  return {
+    answers: answers.map((raw, index) => {
+      if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) {
+        throw new ApiError(400, 'BODY_INVALID', `answers[${index}] must be an object.`)
+      }
+      const item = raw as { id?: unknown; selected?: unknown; custom?: unknown }
+      if (typeof item.id !== 'string' || item.id === '') {
+        throw new ApiError(400, 'BODY_INVALID', `answers[${index}].id is required.`)
+      }
+      if (!Array.isArray(item.selected) || item.selected.some(value => typeof value !== 'string')) {
+        throw new ApiError(400, 'BODY_INVALID', `answers[${index}].selected must be an array of strings.`)
+      }
+      if (item.custom !== undefined && typeof item.custom !== 'string') {
+        throw new ApiError(400, 'BODY_INVALID', `answers[${index}].custom must be a string.`)
+      }
+      return {
+        id: item.id,
+        selected: [...item.selected] as string[],
+        ...(item.custom === undefined ? {} : { custom: item.custom }),
+      }
+    }),
+  }
 }
 
 function validateStringArray(value: unknown, name: string): string[] {
