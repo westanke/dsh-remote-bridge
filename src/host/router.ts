@@ -8,6 +8,7 @@ import { requestAddress } from './auth.ts'
 import type { DshChatAdapter } from './chat-adapter.ts'
 import type { PromptContentPart, UserQuestionAnswer } from './chat-adapter.ts'
 import type { StoredRoot, WorkspaceDatabase } from './database.ts'
+import { handoffLocaleOf } from './dsh-0.2-bridge.ts'
 import { ApiError, asApiError } from './errors.ts'
 import type { FileService } from './file-service.ts'
 import {
@@ -430,12 +431,16 @@ export class ApiRouter {
         }
         const parts = readPromptParts(body)
         const mode = body.mode === 'steer' ? 'steer' : 'queue'
+        const acceptLanguage = req.headers['accept-language']
         const result = await this.options.chat.prompt(
           principal,
           sessionId,
           parts,
           mode,
           typeof body.clientTimeZone === 'string' ? body.clientTimeZone : undefined,
+          // 图片交接的说明要说**发消息这个人**看得懂的语言，所以语言跟着客户端走：
+          // 浏览器与 App 都会在 Accept-Language 里排好优先级。取不到就是中文（既有口径）。
+          handoffLocaleOf(Array.isArray(acceptLanguage) ? acceptLanguage[0] : acceptLanguage),
         )
         const response = { message: result }
         this.saveIdempotent(principal, body.clientRequestId, 202, response)
