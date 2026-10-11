@@ -1,5 +1,9 @@
 node_modules/
 lib/
+# 本机备份：装在 DSH profile 里的插件副本（本地测试前手动同步 lib/ 时留的）。
+# 之前它只是**碰巧**被上面的 `lib/` 规则兜住 —— 因为备份目录里恰好只有 lib/ 一层。
+# 多一层别的文件就会漏出来，所以这里显式声明。
+.local-backup/
 coverage/
 # Everything under artifacts/ is a local build product (pnpm pack output, release notes).
 # Only the checksum file is tracked, so it needs an explicit exemption; the tarball deliberately

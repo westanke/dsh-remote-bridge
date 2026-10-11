@@ -1,5 +1,312 @@
 # 开发日志
 
+## 2026-10-11 · 交接文本追加动作指令：只递路径，模型不一定去读（发布 v2.2.3）
+
+> 真机实测后的补丁。已 publish 到 npmjs，`latest` tag = 2.2.3。DSH 下次自动更新或手动 reinstall 即可拿到。
+
+### 为什么加
+
+重启后交接链路已经通了（20:47:43 图正常落到工作区 `.dsh-images/`，路径也进了消息），
+但真机上出现新现象：用户发「看图，不操作」+ 图，那一轮的模型**并没有去读那张图** ——
+它先去加载界面技能，图放着没看，用户看到的是「你啥都不显示」。
+
+结论：**只递路径是「可以读」，不等于「被要求读」**，所以要在交接文本里明确要求。
+
+### 怎么加（以及为什么不新增一行）
+
+指令塞进原有的第一行，**不另起一行**：
+
+```
+🖼️ 图片 1「274938.jpg」（当前模型不支持图片输入，已保存到工作目录 .dsh-images/xxx.jpg；请先用读图工具打开下面那行的绝对路径，看清内容再回答）
+[Image: source: /绝对路径/.dsh-images/xxx.jpg]
+```
+
+理由：客户端（dsh-companion）摘除交接行是按**行首标记**（`🖼️ 图片 ` 与 `[Image: source:`）
+整行摘掉的，不看括号里的字。所以把指令塞进原行，**手机端不必跟着出包**；
+若新增一行，那一行会被当成正文显示在手机上。
+
+### 验证
+
+`pnpm typecheck` 通过 · `pnpm test` 20 文件 / 126 用例全绿 ·
+新增断言两条：指令存在、且交接文本恰好两行（防回归）。
+`pnpm build` 后已同步到实装目录（sha256 与仓库产物一致）。
+**v2.2.3 已 publish 到 npmjs（latest tag），DSH 下次自动更新即可拿到。**
+
+## 2026-10-11 · 修「刚切到纯文本模型就发图，图片仍被内核拒收」
+
+> **真机报障 → 定位 → 修复**：已构建并同步实装目录，**需重启 dsh 生效**。未发版、未推送。
+
+### 现象（用户真机截图原话）
+
+```
+DSH_SESSION/ATTACHMENT_INVALID: Model "agnes-2.5-flash" does not support image input.
+```
+
+用户把会话切到 `agnes-2.5-flash`（纯文本）后发图，仍被内核拒收 —— 图片交接没有触发。
+
+### 核数据的过程（不靠猜）
+
+1. 先排除「插件版本旧」：dsh 进程 19:47:32 启动，**晚于**插件实装 19:44:31 ✓
+2. 再看有没有落盘：`.dsh-images/` 里只有 19:48 / 19:50 两张老图，**这次没有新文件**
+   → 交接确实没跑。
+3. 回放会话事件（`session-8c2fc46f`）：20:37:20 切到 agnes-2.5-flash，20:38:31 切回
+   deepseek-flash，20:39:03 才发出那条带 image 部件的消息 —— 失败发生在两次切换**之间**。
+4. 对照内核源码看两侧口径：
+   - 内核拒收用 `agents.selectionFor(agent).current`（`pending` 优先）；
+   - 本插件用 `projections().values.modelSelection`。
+
+### 根因：读错了投影的字段名
+
+内核投影对外给的是 **wire 视图**：
+
+```js
+// dsh-api-session-controller/lib/index.js
+view: (state) => ({ lastUsed: state.lastUsed, next: state.pending ?? state.lastUsed })
+```
+
+`pending` 只存在于**内部 state**；`dsh-session-projection` 组装对外值时是
+`values[key] = wire.viewSchema.parse(wire.view(state))`（第 259 行），
+所以对外**只有 `lastUsed` 与 `next`**，没有 `pending`。
+
+插件两处都写了 `selection?.pending ?? selection?.lastUsed`：
+`pending` 恒为 `undefined` → 一路退回 **`lastUsed` = 上一次真正跑过的模型**。
+用户刚切模型、还没用它跑过一轮时，拿到的是旧模型 → 判定「旧模型支持图片、不用插手」
+→ 图片原样交给内核 → 内核按**真实当前模型**拒收。
+
+这也解释了为什么 19:48 那次能成功：当时会话一直在用同一个模型，`lastUsed` 恰好等于当前值。
+
+### 改了什么
+
+- `dsh-0.2-bridge.ts` 两处（`currentModelSelection` 与 `sessions.models` 的 `current`）
+  由 `pending ?? lastUsed ?? catalog.default` 改为 **`next ?? lastUsed ?? catalog.default`**
+  （保留 `lastUsed` 兜底：老内核的 wire 视图没有 `next`）。
+- 顺带修好一个同源偏差：客户端「当前模型」此前也读到 `lastUsed`，
+  切完模型要等它真跑过一轮才更新。
+
+### 测试为什么没拦住，以及怎么补的
+
+原测试桩照**内部 state** 写 `{ lastUsed, pending }` —— 正是实现读错的那个名字，
+于是「桩与实现同错」、一路全绿。改法：
+
+- 所有投影桩改成真实 wire 形状 `{ lastUsed, next }`；
+- 新增「切换后立刻发图」回归用例：`lastUsed` 是**支持图片的旧模型**、`next` 是
+  **纯文本新模型**，且 `resolveModelInfo` 桩**不再无视参数** —— 读错字段就会拿到
+  「支持图片」的结论而不交接，用例立刻失败；
+- 新增「老内核没有 `next` 时退回 `lastUsed`」用例。
+
+### 验证
+
+`pnpm typecheck` 通过 · `pnpm test` **20 文件 / 126 用例全绿** ·
+`pnpm build` 后产物里两处都是 `selection?.next ?? selection?.lastUsed`（`pending` 残留 0 处），
+已同步到 `~/.dsh/profiles/web/node_modules/dsh-remote-bridge/lib/`（sha256 与仓库产物一致）。
+**真机复现待做：需要重启 dsh 进程。**
+
+## 2026-10-11 · 纯文本模型也能发图：图片交接（零插件依赖）
+
+> **待真机验证**：已同步实装目录，需重启 dsh 生效。**未发版、未推送。**
+
+### 诉求
+
+用户原话：「模型不支持图片，图片就发不出去……我装的有图片识别插件，如何能让我发出去，
+让插件去识别，**不要从入口阻拦**。」以及关键约束：
+「你判定了插件，是不是我以后必须装这个插件，装其他插件又不行了」——
+明确拒绝把手机端绑死在任何一个具体识图插件上。
+
+### 谁在拦
+
+是**内核**，不是 App 也不是本插件：`dsh-api-session-controller` 的 prompt 准入里，
+内容只要含 `type:'image'` 部件，就调 `ctx.llm.resolveModelInfo()` 查模型元数据，
+`inputModalities` 已声明且不含 `image` 时抛 `MODEL_DOES_NOT_SUPPORT_IMAGES`。
+内核给「视觉插件」**没有**预留接缝（grep 过，没有 batch-attachments 之类的服务钩子）。
+
+桌面 WebUI 里 modlens 自带一个「浏览器半边」：确认当前模型只支持文本时，把粘贴的图
+POST 到它的 `/modlens/paste` 落成临时文件，输入框收到的是**路径文本**，于是消息里
+没有 image 部件，准入自然不触发。手机端是另一个客户端，拿不到这个浏览器半边。
+
+### 做法：把缺的那半步做在本插件里，但不引用任何插件
+
+- **判定**用内核自己的 `ctx.llm.resolveModelInfo()`（`LlmLike` 补了这个方法）——
+  与内核拒收时查的是**同一份元数据**，结论逐字一致；模型选择按
+  `projections().values.modelSelection`（pending > lastUsed > 目录默认）取。
+- **动作**只做一件通用的事：图片解码落文件、消息里给路径，
+  **任何按路径读图的工具都能接手**，不出现任何插件名。
+- 三条保守原则，宁可退回原样：元数据缺失（`undefined`）不动、模型声明了 image 不动、
+  落盘失败不动（try/catch 包住整个交接）。拿不准就走原路，与内核「未声明模态不拒」一致。
+- 总开关 `createDsh02ApiProxy(host, { imageHandoff: false })`，默认开。
+
+### 落地位置与消息形态（按真机反馈改过一轮）
+
+第一版把文件写进 DSH 私有目录、消息里只有一条 `<image …path>` 裸标签，
+真机验证后用户提了两点：① 应落到**工作目录**而不是 DSH_HOME；② 裸路径只适合机器读，
+不符合人类阅读习惯。改成：
+
+- **落点优先会话工作目录**：用 `sessionController.list()` 找会话 `cwd`（冷会话也有，
+  不依赖 live agent），与注入的授权根（`handoffRoots`，由 index.ts 从数据库给）匹配出
+  真实路径，写到 `<工作目录>/.dsh-images/<sha256>.<ext>`（目录 0700、文件 0600、
+  内容寻址去重）。匹配不到根/解析不出工作目录时，才退回 `<dataDir>/image-handoff`
+  这个 DSH 目录兜底——无论如何不能让发消息失败。
+- **一条 image 部件换成两行文本**，同一处信息伺候两类读者：
+  - 给人看：`🖼️ 图片 N「原名」（当前模型不支持图片输入，已保存到工作目录 .dsh-images/xxx.jpg）`；
+  - 给机器看：`[Image: source: <绝对路径>]`——这是识图技能明确列出的触发形状之一
+    （带图片扩展名的绝对路径同样触发），换任何读图工具都认，不绑插件。
+
+### 取舍说明
+
+- 纯文本模型下，这条消息在历史里是**文件说明文本而不是图片缩略图**——桌面 WebUI 的
+  「paste-to-path」本来也是这个样子；模型本身支持图片时仍走原生 image 部件，缩略图不受影响。
+- 没走「file 附件」那条路：内核把 file 部件也只存成一个**没有路径的引用**，
+  agent 未必拿得到可读路径，不牢靠。
+
+### 验证
+
+`pnpm typecheck` 通过 · `pnpm test` **20 文件 / 124 用例全绿**（7 个交接用例：
+工作目录落地+人话消息、匹配不到根退回兜底、视觉模型→原样、元数据缺失→原样、
+纯文本消息不查元数据、同图去重、可关闭）。已构建并同步实装目录。
+**第一版（裸标签 + DSH 目录）真机跑通过识图；改后的工作目录版待重启验证。**
+
+## 2026-10-11 · v2.2.4（建议）修「历史图片永远显示不出来」：走内核 sessionController.attachment
+
+> **✅ 真机验证通过**（2026-10-11 18:51）：用户确认历史图片与刚发图片都显示了。
+> 诊断日志铁证：`sessionController.attachment ✓ 139215 bytes · image/jpeg`、
+> `✓ 211964 bytes · image/webp`，0 失败。诊断代码与 `.attachment-diag.log` 已清理。
+> **未发版、未推送**：等用户发话再走 `pnpm check` + publish。
+> 版本号建议 v2.2.4（当前 package.json 仍是 2.2.2，bump 留到发版时做）。
+
+### 这一节纠正了我自己的两次误判
+
+排查这个 bug 我走过两段弯路，都是因为**没先看真进程的诊断日志**，光从源码推：
+
+1. 第一次：以为附件存储没数据（`profile bundles` 缺附件服务）→ 实测 35/35 个 id 全部命中磁盘，错的。
+2. 第二次：以为是**缺四项元数据**（客户端没把 `mediaType`/`bytes`/`width`/`height` 传给 `ctx.attachments.readImage`，会被内核完整性校验 `ATTACHMENT_CORRUPT`）→ 从源码看这个判断成立，于是改客户端把四项带上来。
+3. **真因**（重启后读 `.attachment-diag.log` 才看到）：真进程里 **`ctx.attachments` 是 `MISSING`** ——
+   这条 profile 根本没有把附件存储挂成可注入服务（`dsh-attachment-local` 只是个库）。
+   我在 vitest 里看到的 `OK` 全是测试桩噪音（mock host 当然有 attachments），不是真进程。
+
+教训记牢：**测试桩不是运行时，能拿到日志就别从源码猜。**
+
+### 正路：让内核自己取，插件不碰 ctx.attachments
+
+内核主机端本来就有方法 `SessionController.attachment({sessionId, attachmentId})`
+（`dsh-api-session-controller/lib/index.js`，客户端契约里叫 `readAttachment`）。
+它内部一次做完三件事：
+
+1. `readSessionState(sessionId)` —— 确认该会话确实引用了这张图（`referencedImage`）；
+2. 调 `ctx.attachments.readImage(ref)` —— **ref 是它自己从会话事件里取的真实引用**；
+3. 用真实 ref 做完整性校验，返回 `{ attachment, data }`（`data` 是 **base64 字符串**）。
+
+我们绕开它自己调 `ctx.attachments`，既拿不到注入属性、又得自己复刻这三件事 ——
+完整性校验正是先前 `ATTACHMENT_CORRUPT` 的来源。
+
+### 改了什么
+
+- `dsh-0.2-bridge.ts`：`readAttachment` 改为调 `host.sessionController.attachment({sessionId, attachmentId})`，
+  并把返回的 base64 **解码成 Uint8Array**；`SessionControllerLike` 补 `attachment()` 声明。
+  不再读 `ctx.attachments`（`optionalService(host,'attachments')` 只剩诊断观测用）。
+- `chat-adapter.ts`：`readAttachment(principal, sessionId, attachmentId)` —— **sessionId 必需**
+  （内核要靠它读会话事件、定位真实 ref），并保留会话归属校验；撤掉上一轮的 `ref` 参数。
+- `router.ts`：附件端点改为从 query 取 `sessionId`（缺失即 400 `BODY_INVALID`），
+  撤掉 `attachmentRefFromQuery()` 和 mediaType/bytes/width/height 四项 —— 真实 ref 内核手里本来就有。
+- 测试重写：`dsh-0.2-bridge.spec.ts` 断言「调 sessionController.attachment、**不调** ctx.attachments、
+  base64 正确解码、内核报错原样透传」；`attachment-api.spec.ts` 改为钉 sessionId 转发与缺 sessionId 返回 400。
+- 一次性诊断写 `.attachment-diag.log`（**不依赖 logger**：dsh 是前台进程，logger 走 stdout
+  到用户终端、不落盘，`/proc/<pid>/fd/1 -> /dev/pts/0`，实测读不到）。定位完成后这段应删。
+
+### 验证
+
+`pnpm typecheck` 通过 · `pnpm test` **20 个文件 / 117 用例全绿** ·
+`pnpm docs:check` 通过 · `pnpm build` 通过，且已同步到实装目录。
+**图片能否显示待真机验证**（需重启 dsh + 装新版 App v2.2.24）。
+
+### 客户端配套（详见 dsh-companion 的 CHANGELOG-DEV）
+
+`DshClient.readAttachment(sessionId, attachmentId)` 把 sessionId 拼进 query；
+`HarnessViewModel.loadAttachmentImage` 用当前 `selectedSessionId` 调用，不在任何会话时直接返回。
+撤掉了上一轮的 `referenceOf()` 与四项元数据透传（内核不需要）。
+
+## 2026-10-11 · v2.2.3 把 `turn/end` 的失败原因送出去：新增 `chat.turn.failed` 帧
+
+> **未发版、未推送**：等用户真机测试通过后再走 `pnpm check` + publish。
+> 版本号建议 v2.2.3（当前 package.json 仍是 2.2.2， bump 留到发版时做）。
+
+### 为什么
+
+用户真机报的 bug：**模型限流（429）之后，手机端一直在傻傻地等。**
+
+抓到的原样报文：
+
+```
+本轮运行失败429: {"code":"","message":"您已达到免费用户的 API 速率限制。升级 Token Plan
+即可解锁更高限额，继续不间断使用 API。 (request id: 20261011054136674823028JzjiUYGm)","type":"AgnesAI_error"}
+```
+
+### 根因（三处断点，缺一处就还是"傻等"）
+
+1. **内核**把失败写在 `turn/end` 的 `data.reason` 里：`reason.kind === 'error'` 时
+   错误详情在 `reason.error = {message, code}`。权威判据见
+   `dsh-client-ui-chat/lib/client.js` 的 `turn-error.js`（`failureFrom` / `match`）。
+2. **插件** `normalizeDshEvent` 的 `turn/end` 分支只转 `type`，把 `reason` **整段丢掉** ——
+   于是限流、配额用尽、密钥失效这些终局失败，在客户端眼里与「正常跑完」一模一样。
+3. **客户端**只认 `chat.turn.end`，且历史里 `turn/end` 落进 `else -> emptyList()`。
+
+也就是说，那句话从来没到过手机。用户看到的是「转圈」，而真相是「早就失败了」。
+
+### 改了什么
+
+- `chat-adapter.ts`：`turn/end` 命中失败判据时，**额外**发一帧 `chat.turn.failed`
+  （id 为 `<rpcId>:failed`），`data.failure = {message, code, stopped?}`。
+  正常收尾仍然只发 `chat.turn.end` —— 一个失败只有一帧，客户端不会收到两个信号。
+- 新增并导出纯函数 `turnFailureOf(event)`，判据与内核 `turn-error.js` **逐条对齐**：
+  只认 `reason.kind === 'error'` 与「登出导致的 aborted」，**不能多也不能少**。
+- `docs/api/asyncapi.yaml`：新增 `ChatTurnFailed` schema，并把该帧加进事件类型示例。
+- `tests/chat-adapter.spec.ts`：新增一个用例，用**用户报文原样**钉住 429 那一条，
+  外加登出停止、AUTH 空 message、以及四种不该报失败的收尾（含 `max-tokens` 与老帧）。
+
+### 三个刻意的不做
+
+1. **不翻译 message。** 服务端那句话本身就是中文，且本地化是客户端的职责
+   （与官方 `failureMessage()` 的划分一致）。插件只做搬运。
+2. **`max-tokens` 不当失败。** 那是「回答被截断，已有输出保留」，官方渲染成黄色警示。
+   报成失败会让用户以为白跑了一轮。
+3. **AUTH 的 message 不补。** 内核 `displayFailure` 把它抹成空串，客户端用本地化文案
+   「API 密钥无效」顶上。插件补一个字，就两头不一致了。
+
+### 验证
+
+`pnpm typecheck` 通过 · `pnpm test` **19 个文件 / 114 用例全绿**（新增 1 个用例）·
+`pnpm docs:check` 通过。
+
+**✅ 真机验证通过**（2026-10-11）：用户重启 dsh + 装 App v2.2.24 后，
+429 限流被如实显示在客户端上。
+
+### ⚠️ 踩到的坑：改了 lib/ 并不等于改了跑着的插件
+
+这是本轮**真被绊了一跤**的地方，值得单列：
+
+1. `lib/index.js` 是 tsdown 的产物，只在 `pnpm build` / `prepack` 时重建 ——
+   改 `src/` 之后**必须** `pnpm check` 才落到 lib/；
+2. 就算仓库里的 lib/ 重建好了，**DSH 加载的是另一个副本**：
+   `~/.dsh/profiles/web/node_modules/dsh-remote-bridge/lib/`。
+   实测那个目录里的版本号是 2.2.1、`chat.turn.failed` 计数为 0 ——
+   仓库却是 2.2.2 且已含新帧。**两边 package.json 只差版本号**，说明是打包/拷贝过去的实体副本，
+   没有任何链接关系；
+3. 插件是**进程内加载**的：实测 dsh 进程启动于 13:12，而插件目录 13:21 才被写入 ——
+   不重启，跑的就是旧代码。
+
+所以完整动作是三步，缺一步就是"App 变了但没反应"：
+
+```bash
+pnpm check                                                  # ① 重建 lib/
+cp lib/*.js lib/*.d.ts ~/.dsh/profiles/web/node_modules/dsh-remote-bridge/lib/   # ② 同步到实装目录
+# ③ 重启 dsh —— 用户操作，重启会掐掉正在跑的这个会话
+```
+
+> 备份留在 `.local-backup/web-profile-2.2.1/lib/`（插件仓库内，不入版本库）。
+>
+> 更稳的做法是给实装目录建符号链接指向仓库的 lib/，从此不再有"两份"这个问题 ——
+> **本轮没做，等发版时一并考虑**。
+
+（`docs/project/CHANGELOG-DEV.md` 里 `pnpm build` 不查类型那条旧教训依然成立。）
+
 ## 2026-10-11 · v2.2.2 接住 `user-questions/request`：手机端可显示并回答提问
 
 ### 为什么

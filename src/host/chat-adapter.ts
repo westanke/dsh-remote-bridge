@@ -45,8 +45,19 @@ export interface DshApiProxy {
      *
      * `attachmentId` 形如 `sha256:<hex>`（**含冒号**，客户端必须 URL 编码）。
      * 返回 `Uint8Array` 而不是 base64：图片动辄上百 KB，多一次编解码纯属浪费。
+     *
+     * **必须带 `sessionId`**：内核要靠它读会话事件、取出这张图的真实 ref，
+     * 再据此做完整性校验（详见 chat-adapter 的 readAttachment 注释）。
      */
-    readAttachment(request: { rpcId: string; payload: { attachmentId: string } }): Promise<RpcResponse<{ bytes: Uint8Array; mediaType: string }>>
+    readAttachment(request: { rpcId: string; payload: { sessionId: string; attachmentId: string } }): Promise<RpcResponse<{ bytes: Uint8Array; mediaType: string }>>
+    /**
+     * 取回一张**交接图片**的字节（纯文本模型发图时，图片被落成工作区文件）。
+     *
+     * 与 [readAttachment] 的区别：那一个取内核附件存储里的图（走
+     * `sessionController.attachment`），这一个取插件自己写进 `.dsh-images/`
+     * 的交接件。手机端用它把图片**显示**给人看；消息里的路径文本照旧留给模型。
+     */
+    readHandoffImage(request: { rpcId: string; payload: { sessionId: string; name: string } }): Promise<RpcResponse<{ bytes: Uint8Array; mediaType: string }>>
     cancel(request: { rpcId: string; payload: { sessionId: string } }): Promise<RpcResponse<{ accepted: true }>>
     rename(request: { rpcId: string; payload: { sessionId: string; title: string } }): Promise<RpcResponse<{ title: string; seq: number }>>
     fork(request: { rpcId: string; payload: { sessionId: string; atSeq?: number } }): Promise<RpcResponse<{ sessionId: string }>>
@@ -515,18 +526,54 @@ export class DshChatAdapter {
   /**
    * 取回会话历史里某个图片附件的字节。
    *
-   * 这里不做会话归属校验：附件 id 是内容哈希，拿到 id 就等于拿到内容，
-   * 而且调用方必须已经通过 `files.read` 鉴权并主动持有该 id（它只出现在其有权读取的
-   * 会话事件里）。多一层会话校验并不能提升安全性，却会让「在别的会话里引用同一张图」
-   * 这种正常情况莫名失败。
+   * **为什么会走内核的 `sessionController.attachment()`，而不自己调
+   * `ctx.attachments.readImage()`**：
+   * 1. 实测本机 profile 里 `ctx.attachments` 是 **MISSING**（拿不到注入属性）——
+   *    自己拼 ref 那条路根本走不通；
+   * 2. 内核那个方法内部一次做完三件事：校验该会话确实引用了这张图、
+   *    读出字节、用**会话事件里那条真实 ref** 做完整性校验
+   *    （`mediaType` / `bytes` / `width` / `height` 四项逐项比对）。
+   *    绕开它就得把这三件事全复刻 —— 先前正是漏了第三件，于是每张图
+   *    `ATTACHMENT_CORRUPT`：「字节读到了，却被校验拒之门外」。
+   *
+   * 因此 **sessionId 是必需参数**（内核要拿它读会话事件、找到那张图的真实 ref）；
+   * 早先设计的「客户端把四项元数据带上来」是多余的 —— 内核手里本来就有。
    */
-  async readAttachment(principal: Principal, attachmentId: string): Promise<{ bytes: Uint8Array; mediaType: string }> {
+  async readAttachment(
+    principal: Principal,
+    sessionId: string,
+    attachmentId: string,
+  ): Promise<{ bytes: Uint8Array; mediaType: string }> {
     if (attachmentId.trim() === '') {
       throw new ApiError(400, 'BODY_INVALID', 'attachmentId is required.')
     }
+    if (sessionId.trim() === '') {
+      throw new ApiError(400, 'BODY_INVALID', 'sessionId is required.')
+    }
+    // 会话归属照旧校验：附件按内容哈希寻址，但「取字节」是**会话语境**里的动作，
+    // 客户端应证明自己有权读那个会话 —— 与内核的引用校验是两道互补的闸。
+    await this.requireSession(principal, sessionId)
     return unwrapDsh(await this.api.sessions.readAttachment({
       rpcId: randomUUID(),
-      payload: { attachmentId },
+      payload: { sessionId, attachmentId },
+    }))
+  }
+
+  /**
+   * 取回一张**交接图片**（纯文本模型发图时落在工作区 `.dsh-images/` 的那份）。
+   * 与 [readAttachment] 同样要求会话归属；文件名在桥里还有一道白名单校验。
+   */
+  async readHandoffImage(
+    principal: Principal,
+    sessionId: string,
+    name: string,
+  ): Promise<{ bytes: Uint8Array; mediaType: string }> {
+    if (name.trim() === '') throw new ApiError(400, 'BODY_INVALID', 'name is required.')
+    if (sessionId.trim() === '') throw new ApiError(400, 'BODY_INVALID', 'sessionId is required.')
+    await this.requireSession(principal, sessionId)
+    return unwrapDsh(await this.api.sessions.readHandoffImage({
+      rpcId: randomUUID(),
+      payload: { sessionId, name },
     }))
   }
 
@@ -972,6 +1019,32 @@ export function normalizeDshEvent(
       }
     }
     if (eventType === 'turn/start' || eventType === 'turn/end') {
+      // `turn/end` 带的 `reason` 是**这一轮怎么结束的**，四种形态见内核
+      // `turn-error.js` / `turn-max-tokens.js` / `retry.js`：
+      //   reason.kind === 'error'      → reason.error = { message, code }，终局失败；
+      //   reason.kind === 'max-tokens' → 输出撞上限，回答被截断（已有输出保留）；
+      //   reason.kind === 'aborted'    → 被取消 / 被钩子拦下（如登出），不是模型故障；
+      //   reason.kind === 'ok'         → 正常收尾。
+      //
+      // 为什么必须把它带出去：以前这里只转 type，reason 整段丢掉 ——
+      // 于是模型限流（429）、配额用尽、密钥失效这些**终局失败**在客户端眼里
+      // 与「正常跑完」一模一样，App 只能一直转圈，用户干等着不知道早就失败了。
+      // 现在失败时额外发一帧 `chat.turn.failed`，把 message/code 原样送到客户端；
+      // 转出的 message 是**服务端原始口径**，本地化仍然由客户端决定（与官方
+      // `failureMessage()` 的职责划分一致）。
+      if (eventType === 'turn/end') {
+        const failure = turnFailureOf(event)
+        if (failure !== undefined) {
+          const data: Record<string, unknown> = { ...base, failure }
+          if (failure.stopped === true) data.stopped = true
+          return {
+            id: `${frame.rpcId}:failed`,
+            type: 'chat.turn.failed',
+            time,
+            data,
+          }
+        }
+      }
       return {
         id: frame.rpcId,
         type: eventType === 'turn/start' ? 'chat.turn.start' : 'chat.turn.end',
@@ -1001,6 +1074,46 @@ export function normalizeDshEvent(
     }
   }
   return { id: frame.rpcId, type: `chat.${payloadType}`, time, data: payload }
+}
+
+/**
+ * `turn/end` 里的终局失败摘要，取不到就返回 undefined（这轮是正常结束的）。
+ *
+ * 内核 `turn-error.js` 的 match 判据只认两种：`reason.kind === 'error'`，
+ * 以及 `aborted` 且取消原因是「退出 DeepSeek 登录」这个钩子。这里**同一判据**，
+ * 不多不少 ——
+ * - 不能少：漏掉任一形态，客户端就又回到「傻等」状态；
+ * - 不能多：`max-tokens` 是「回答被截断，已有输出保留」，官方单独渲染成黄色警示，
+ *   不是失败（客户端按普通 turn/end 收尾即可）；普通取消（用户点了停止）更不是。
+ *
+ * `code === 'AUTH'` 时内核把 message 抹成空串（`displayFailure`），客户端那边
+ * 用本地化文案「API 密钥无效」顶上。这里保持原样转发，不替客户端猜。
+ */
+export function turnFailureOf(event: Record<string, unknown>): {
+  message: string
+  code?: string
+  stopped?: true
+} | undefined {
+  const reason = isRecord(event.data) ? (event.data as Record<string, unknown>).reason : undefined
+  if (!isRecord(reason)) return undefined
+  const kind = reason.kind
+  if (kind === 'error') {
+    const error = reason.error
+    if (!isRecord(error)) return { message: String(error ?? '本轮运行失败') }
+    const code = typeof error.code === 'string' ? error.code : undefined
+    const message = typeof error.message === 'string' ? error.message : JSON.stringify(error)
+    return code === undefined ? { message } : { message, code }
+  }
+  // 登出导致的停止在内核里也是「任务已停止」，与失败同级展示，所以一并送出。
+  if (
+    kind === 'aborted'
+    && isRecord(reason.reason)
+    && reason.reason.kind === 'hook'
+    && reason.reason.reason === 'deepseek-account/signed-out'
+  ) {
+    return { message: 'Stopped because you signed out of DeepSeek.', code: 'ACCOUNT_SIGNED_OUT', stopped: true }
+  }
+  return undefined
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

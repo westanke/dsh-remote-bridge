@@ -1,8 +1,15 @@
 asyncapi: 3.0.0
 info:
   title: DeepSeek Harness Mobile Events
-  version: 2.2.2
-  description: Live file and authorized DSH chat events. Reconnect clients must refresh REST state; unbounded replay is not provided.
+  version: 2.2.3
+  description: |
+    Live file and authorized DSH chat events. Reconnect clients must refresh
+    REST state; unbounded replay is not provided.
+
+    `chat.turn.failed` carries the terminal failure of a model turn (rate
+    limit, quota exhausted, invalid API key, signed-out stop). Without it a
+    remote client sees an ordinary `chat.turn.end` and keeps waiting on a run
+    that already failed.
 servers:
   local:
     host: 127.0.0.1:3090
@@ -32,7 +39,7 @@ components:
           id: { type: string }
           type:
             type: string
-            examples: [file.changed, file.trashed, chat.message.delta, chat.message.committed, chat.session.status, chat.approval.requested, chat.approval.resolved, connection.ready]
+            examples: [file.changed, file.trashed, chat.message.delta, chat.message.committed, chat.session.status, chat.approval.requested, chat.approval.resolved, chat.turn.failed, connection.ready]
           time: { type: integer }
           data:
             oneOf:
@@ -40,6 +47,7 @@ components:
               - $ref: '#/components/schemas/ChatMessageCommitted'
               - $ref: '#/components/schemas/ChatApprovalRequested'
               - $ref: '#/components/schemas/ChatApprovalResolved'
+              - $ref: '#/components/schemas/ChatTurnFailed'
               - type: object
                 additionalProperties: true
   schemas:
@@ -84,3 +92,30 @@ components:
         sessionId: { type: string }
         approvalId: { type: string }
         outcome: { type: string, enum: [allowed-once, rejected, cancelled, unavailable] }
+    ChatTurnFailed:
+      type: object
+      description: |
+        Terminal failure of a model turn. Emitted instead of a plain
+        `chat.turn.end` when the host reports `reason.kind === 'error'` (rate
+        limit, quota exhausted, invalid key) or an abort caused by signing out
+        of the DeepSeek account. Clients must stop their running indicator and
+        show the message; otherwise a failed run keeps looking like it is in
+        flight.
+      required: [sessionId, eventType, failure]
+      properties:
+        sessionId: { type: string }
+        eventType: { type: string, const: turn/end }
+        seq: { type: integer }
+        failure:
+          type: object
+          description: |
+            `message` is the host's own wording, forwarded verbatim so clients
+            can decide localization. `code` is present only when the host
+            supplies one; an empty string is meaningful and must not be
+            treated as absent. `stopped` marks an account-sign-out stop, which
+            is not a model fault.
+          required: [message]
+          properties:
+            message: { type: string }
+            code: { type: string }
+            stopped: { type: boolean, const: true }

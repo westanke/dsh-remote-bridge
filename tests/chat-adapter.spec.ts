@@ -3,7 +3,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import type { DevicePrincipal } from '../src/shared/contracts.ts'
-import { DshChatAdapter, normalizeDshEvent, redactApprovalText } from '../src/host/chat-adapter.ts'
+import { DshChatAdapter, normalizeDshEvent, redactApprovalText, turnFailureOf } from '../src/host/chat-adapter.ts'
 import { WorkspaceDatabase } from '../src/host/database.ts'
 
 const cleanup: string[] = []
@@ -220,6 +220,84 @@ describe('DSH chat choices', () => {
         risk: 'full-access',
       },
     })
+  })
+
+  it('surfaces terminal turn failures as chat.turn.failed instead of a bare turn/end', () => {
+    // 真机上抓到的原样 payload：免费额度限流。code 是空串、message 是服务端口径，
+    // 插件**不加工** —— 本地化是客户端的事，服务端这句话本身已经是中文。
+    const rateLimited = normalizeDshEvent({
+      rpcId: 'turn-7',
+      payload: {
+        type: 'session/event',
+        sessionId: 'session-1',
+        event: {
+          type: 'turn/end',
+          seq: 900,
+          data: {
+            turn: 3,
+            reason: {
+              kind: 'error',
+              error: {
+                code: '',
+                message: '您已达到免费用户的 API 速率限制。升级 Token Plan 即可解锁更高限额，继续不间断使用 API。 (request id: 20261011054136674823028JzjiUYGm)',
+                type: 'AgnesAI_error',
+              },
+            },
+          },
+        },
+      },
+    }, 'mux', 1234)
+    expect(rateLimited).toEqual({
+      id: 'turn-7:failed',
+      type: 'chat.turn.failed',
+      time: 1234,
+      data: {
+        sessionId: 'session-1',
+        eventType: 'turn/end',
+        seq: 900,
+        failure: {
+          message: '您已达到免费用户的 API 速率限制。升级 Token Plan 即可解锁更高限额，继续不间断使用 API。 (request id: 20261011054136674823028JzjiUYGm)',
+          code: '',
+        },
+      },
+    })
+
+    // 登出停止：内核把它与失败同级对待，且要打上 stopped 标记（不是模型故障）。
+    expect(normalizeDshEvent({
+      rpcId: 'turn-8',
+      payload: {
+        type: 'session/event',
+        sessionId: 'session-1',
+        event: {
+          type: 'turn/end',
+          seq: 901,
+          data: { turn: 4, reason: { kind: 'aborted', reason: { kind: 'hook', reason: 'deepseek-account/signed-out' } } },
+        },
+      },
+    }, 'mux', 1235)).toMatchObject({
+      type: 'chat.turn.failed',
+      data: { failure: { code: 'ACCOUNT_SIGNED_OUT', stopped: true } },
+    })
+
+    // AUTH：内核把 message 抹空，只留 code —— 客户端靠 code 换本地化文案。
+    expect(turnFailureOf({ data: { reason: { kind: 'error', error: { code: 'AUTH', message: '' } } } }))
+      .toEqual({ message: '', code: 'AUTH' })
+
+    // 四种**不该**报失败的收尾，一条都不能漏判成失败：
+    // 正常结束、输出撞上限（回答已保留，官方渲染成黄色警示而非失败）、
+    // 用户主动取消、其它钩子取消。
+    for (const reason of [
+      { kind: 'ok' },
+      { kind: 'max-tokens' },
+      { kind: 'aborted', reason: { kind: 'user' } },
+      { kind: 'aborted', reason: { kind: 'hook', reason: 'some-other-hook' } },
+    ]) {
+      expect(turnFailureOf({ data: { reason } })).toBeUndefined()
+    }
+
+    // 没有 data / 没有 reason 的老帧也不能炸。
+    expect(turnFailureOf({})).toBeUndefined()
+    expect(turnFailureOf({ data: {} })).toBeUndefined()
   })
 
   it('caches approval requests, redacts command previews, and answers only once', async () => {

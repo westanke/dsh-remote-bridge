@@ -89,7 +89,15 @@ export async function apply(ctx: HostContext, config: Config = {}): Promise<void
   const files = new FileService(database, event => events.emit(event))
   // Rebuild the pre-0.2 `apiProxy` facade over the 0.2.x host services so both
   // adapters keep the contract they were written against.
-  const apiProxy = createDsh02ApiProxy(ctx)
+  //
+  // 图片交接的首选落点是**会话工作目录**的 `.dsh-images/`（由 handoffRoots
+  // 解析出会话 cwd），符合「产物放工作目录、别塞进 DSH 私有目录」；
+  // 解析不出工作目录（冷会话 / cwd 不在任何授权根下）时，才退回
+  // `<dataDir>/image-handoff` 这个 DSH 目录兜底 —— 无论如何不能让发消息失败。
+  const apiProxy = createDsh02ApiProxy(ctx, {
+    handoffRoots: database.listRoots().map(root => ({ id: root.id, realPath: root.realPath })),
+    imageHandoffDir: path.join(dataDir, 'image-handoff'),
+  })
   const chat = new DshChatAdapter(apiProxy, database, { agents: ctx.agents, commands: ctx.commands })
   const settings = new DshSettingsAdapter(apiProxy)
   let router!: ApiRouter

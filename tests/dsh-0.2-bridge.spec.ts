@@ -1,3 +1,6 @@
+import { mkdtemp, readFile, stat } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import path from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 import { createDsh02ApiProxy, type Dsh02HostServices } from '../src/host/dsh-0.2-bridge.ts'
 
@@ -12,6 +15,14 @@ import { createDsh02ApiProxy, type Dsh02HostServices } from '../src/host/dsh-0.2
  */
 
 type Listener = (...args: any[]) => unknown
+
+/** 内核 RemoteError 的最小桩：unwrapped 后它的 code/message 会原样透传给 RPC。 */
+class RemoteErrorStub extends Error {
+  constructor(public code: string, message: string) {
+    super(message)
+    this.name = 'RemoteError'
+  }
+}
 
 function makeHost() {
   const handlers = new Map<string, Listener[]>()
@@ -35,6 +46,12 @@ function makeHost() {
       })),
       projections: vi.fn(async () => ({ asOfSeq: 0, values: {} })),
       resolveAgent: vi.fn(async () => ({ sessionId: 'session-1' })),
+      // 主机端取附件的正路（名字就是 attachment，不是客户端契约里的 readAttachment）。
+      // 返回 base64 —— 桥负责解码成 Uint8Array。
+      attachment: vi.fn(async (request: { sessionId: string; attachmentId: string }) => ({
+        attachment: { mediaType: 'image/jpeg', bytes: 3, width: 768, height: 512 },
+        data: Buffer.from([1, 2, 3]).toString('base64'),
+      })),
     },
     workspaceController: {
       create: vi.fn(async () => ({ workspace: {}, created: true })),
@@ -61,6 +78,9 @@ function makeHost() {
       listProviders: vi.fn(() => [] as { id: string }[]),
       listConfigurableProviders: vi.fn(() => [] as any[]),
       discoverModels: vi.fn(async () => []),
+      // 默认返回「未知元数据」：拿不准就不插手，这是图片交接的保守方向。
+      // 需要确认「纯文本模型」的用例自己覆盖这个 mock。
+      resolveModelInfo: vi.fn(async () => undefined as { inputModalities?: readonly string[] } | undefined),
     },
     fileUploads: {
       upload: vi.fn(async () => ({ receiptId: 'receipt-1' })),
@@ -186,23 +206,52 @@ describe('dsh 0.2.x bridge: approval answerer', () => {
 })
 
 describe('dsh 0.2.x bridge: attachments', () => {
-  it('reads image bytes by id and reports the media type', async () => {
+  it('asks the kernel session controller for the bytes and decodes base64', async () => {
+    // 这条钉的是「历史图片永远显示不出来」那个 bug 的最终修法。
+    //
+    // 走了两段弯路：
+    //   1. 只传 { attachmentId } 自己调 ctx.attachments.readImage ——
+    //      内核读完字节会做完整性校验（mediaType/bytes/width/height 逐项比对），
+    //      缺四项 → ATTACHMENT_CORRUPT；
+    //   2. 改成客户端把四项元数据带上来 —— 结果真进程里 ctx.attachments 是
+    //      **MISSING**（诊断日志实测），这条路在本机 profile 根本不存在。
+    //
+    // 正路是内核主机端自己的 `sessionController.attachment({sessionId, attachmentId})`：
+    // 它内部做会话引用校验 + 读字节 + 用**会话事件里那条真实 ref**做完整性校验，
+    // 返回 base64。插件只该调它、再把 base64 解码成字节 —— 不自己碰 ctx.attachments。
     const { host } = makeHost()
     const api = createDsh02ApiProxy(host)
 
     const response = await api.sessions.readAttachment({
       rpcId: 'r',
-      payload: { attachmentId: 'sha256:9759b45815c74eb5289a46074ad655a0' },
+      payload: { sessionId: 'session-1', attachmentId: 'sha256:9759b45815c74eb5289a46074ad655a0' },
     })
 
     expect(response.result.ok).toBe(true)
     expect(response.result.ok && response.result.value.mediaType).toBe('image/jpeg')
+    // base64 必须被解码回原始字节。
     expect(response.result.ok && Array.from(response.result.value.bytes)).toEqual([1, 2, 3])
-    // 只按 id 查找：其余元数据（宽高、name）对附件存储的定位没有意义。
-    const [ref] = vi.mocked(host.attachments.readImage).mock.calls[0] as [{ attachmentId: string }]
-    expect(ref).toEqual({
+    // 内核要拿到会话 id 与附件 id —— 缺 sessionId 它无法定位真实 ref。
+    expect(vi.mocked(host.sessionController.attachment)).toHaveBeenCalledWith({
+      sessionId: 'session-1',
       attachmentId: 'sha256:9759b45815c74eb5289a46074ad655a0',
     })
+  })
+
+  it('does not read ctx.attachments itself — the kernel owns the integrity check', async () => {
+    // 关键：正路上插件**不该再自己调** ctx.attachments.readImage。
+    // 那条注入属性在本机 profile 是 MISSING；就算在，绕开内核也得自己复刻
+    // 会话引用校验与完整性校验两件事，而后者正是先前 ATTACHMENT_CORRUPT 的来源。
+    const { host } = makeHost()
+    const api = createDsh02ApiProxy(host)
+
+    await api.sessions.readAttachment({
+      rpcId: 'r',
+      payload: { sessionId: 'session-1', attachmentId: 'sha256:abc' },
+    })
+
+    expect(host.sessionController.attachment).toHaveBeenCalledTimes(1)
+    expect(host.attachments.readImage).not.toHaveBeenCalled()
   })
 
   it('activates even when no plugin provides ctx.attachments or ctx.fileUploads', async () => {
@@ -214,9 +263,8 @@ describe('dsh 0.2.x bridge: attachments', () => {
     // - 2.0.1 改成在 apply 期间读 `attachments` → 插件整个激活失败；
     // - 2.0.2 只给 `attachments` 加了容错、忘了 `fileUploads` → 重启后换个名字继续炸。
     //
-    // 所以这条用例把**两个服务一起**置为缺席，并断言四件事：
-    // 构造不抛（插件能加载）、纯文本 prompt 照常发（不牵连）、
-    // 只有用到附件的那两条 RPC 才失败，且原因可读。
+    // 现在取图已经不走 `attachments`（改走内核 sessionController），但上传还走
+    // `fileUploads` —— 所以这个缺席场景仍要能正常构造，只有用到上传的 RPC 才失败。
     const { host } = makeHost()
     const ephemeral = new Proxy(host, {
       get(target, prop, receiver) {
@@ -236,17 +284,8 @@ describe('dsh 0.2.x bridge: attachments', () => {
     })
     expect(sent.result.ok).toBe(true)
 
-    // 第 3 条：只有读图这一条失败，且原因可读。
-    const read = await api.sessions.readAttachment({
-      rpcId: 'r',
-      payload: { attachmentId: 'sha256:9759b45815c74eb5289a46074ad655a0' },
-    })
-    expect(read.result.ok).toBe(false)
-    // 断言 message 而不是 code：code 恒等于错误类名（'Error'），
-    // 真正承载「附件存储不可用」这句话的是 message，App 显示的也是它。
-    expect(read.result.ok === false && read.result.error.message).toMatch(/ATTACHMENT_STORE_UNAVAILABLE/)
-
-    // 第 4 条：上传同理。
+    // 第 3 条：上传走 fileUploads，缺席时失败且原因可读。
+    // （取图已改走 sessionController，不再依赖这个服务，所以这里不再测取图。）
     const uploaded = await api.sessions.uploadAttachment({
       rpcId: 'u',
       payload: { sessionId: 'session-1', data: 'QUJD', name: 'notes.txt' },
@@ -255,15 +294,21 @@ describe('dsh 0.2.x bridge: attachments', () => {
     expect(uploaded.result.ok === false && uploaded.result.error.message).toMatch(/FILE_UPLOADS_UNAVAILABLE/)
   })
 
-  it('surfaces a storage failure instead of returning empty bytes', async () => {
-    // 附件不存在时必须抛错：返回空字节会让客户端渲染出一个 0 字节的"破图"，
-    // 而错误能让界面显示"图片已过期或不可用"。
+  it('surfaces a kernel failure instead of returning empty bytes', async () => {
+    // 内核报「这张图没被该会话引用」时必须把错误透出来：
+    // 返回空字节会让客户端渲染一个 0 字节的"破图"，而错误能让界面显示"图片已过期或不可用"。
     const { host } = makeHost()
     const api = createDsh02ApiProxy(host)
-    vi.mocked(host.attachments.readImage).mockRejectedValueOnce(new Error('ENOENT'))
+    vi.mocked(host.sessionController.attachment).mockRejectedValueOnce(
+      new RemoteErrorStub('session/attachment-invalid', 'Image is not referenced by this session.'),
+    )
 
-    const response = await api.sessions.readAttachment({ rpcId: 'r', payload: { attachmentId: 'sha256:dead' } })
+    const response = await api.sessions.readAttachment({
+      rpcId: 'r',
+      payload: { sessionId: 'session-1', attachmentId: 'sha256:dead' },
+    })
     expect(response.result.ok).toBe(false)
+    expect(response.result.ok === false && response.result.error.message).toMatch(/not referenced/i)
   })
 
   it('uploads file bytes and returns the receipt the prompt will reference', async () => {
@@ -411,7 +456,11 @@ describe('dsh 0.2.x bridge: contract shapes', () => {
     }))
     host.sessionController.projections = vi.fn(async () => ({
       asOfSeq: 5,
-      values: { modelSelection: { lastUsed: { provider: 'p1', model: 'm1' }, pending: null } },
+      // 必须是**对外 wire 视图**的形状：内核 `wire.view` 只产出 `{ lastUsed, next }`，
+      // 内部 state 的 `pending` 不会出现在这里（`next = pending ?? lastUsed`）。
+      // 早先这里照内部 state 写 `pending`，于是测试全绿、真机静默失效 ——
+      // 桩跟着错误假设走，比没有测试更危险。
+      values: { modelSelection: { lastUsed: { provider: 'p1', model: 'm1' }, next: { provider: 'p1', model: 'm1' } } },
     }))
     const api = createDsh02ApiProxy(host)
 
@@ -426,17 +475,34 @@ describe('dsh 0.2.x bridge: contract shapes', () => {
     })
   })
 
-  it('prefers a pending model choice over the last used one', async () => {
+  it('reports the model the session will actually use, not the last one it ran', async () => {
+    // 真机那个 bug 的回归钉子：用户刚把会话切到纯文本模型、**还没用它跑过一轮**，
+    // 投影就是 `lastUsed: 旧模型` + `next: 新模型`。读错字段名（找 `pending`）会静默退回
+    // `lastUsed`，客户端显示旧模型，插件的图片交接也会据此判定「不用插手」。
     const { host } = makeHost()
     host.sessionController.projections = vi.fn(async () => ({
       asOfSeq: 5,
-      values: { modelSelection: { lastUsed: { provider: 'old', model: 'o' }, pending: { provider: 'new', model: 'n' } } },
+      values: { modelSelection: { lastUsed: { provider: 'old', model: 'o' }, next: { provider: 'new', model: 'n' } } },
     }))
     const api = createDsh02ApiProxy(host)
 
     const response = await api.sessions.models({ rpcId: 'r', payload: { sessionId: 's' } })
     const value = response.result.ok ? response.result.value : undefined
     expect(value?.current).toEqual({ provider: 'new', model: 'n' })
+  })
+
+  it('falls back to lastUsed when the host predates the next field', async () => {
+    // 老内核的投影只有 `lastUsed`（没有 `next`）：这时退回它，别把 current 丢成 undefined。
+    const { host } = makeHost()
+    host.sessionController.projections = vi.fn(async () => ({
+      asOfSeq: 5,
+      values: { modelSelection: { lastUsed: { provider: 'p1', model: 'm1' } } },
+    }))
+    const api = createDsh02ApiProxy(host)
+
+    const response = await api.sessions.models({ rpcId: 'r', payload: { sessionId: 's' } })
+    const value = response.result.ok ? response.result.value : undefined
+    expect(value?.current).toEqual({ provider: 'p1', model: 'm1' })
   })
 
   it('surfaces a host failure as the plugin rpc error shape', async () => {
@@ -594,5 +660,261 @@ describe('dsh 0.2.x bridge: contract shapes', () => {
       args: ['session-5', 'standard'],
     })
     controller.abort()
+  })
+})
+
+describe('dsh 0.2.x bridge: image handoff for text-only models', () => {
+  // 一张合法的 1x1 PNG（base64）。
+  const PNG = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR42mNk+M8AAAMBAQDJ/pLvAAAAAElFTkSuQmCC'
+
+  async function makeBridge(opts: {
+    modalities: readonly string[] | undefined
+    fallbackDir: string
+    roots?: { id: string; realPath: string }[]
+    sessionCwd?: string
+    /** 覆盖会话投影里的模型选择（wire 形状：`lastUsed` + `next`）。 */
+    selection?: { lastUsed?: unknown; next?: unknown }
+  }) {
+    const { host } = makeHost()
+    vi.mocked(host.llm.resolveModelInfo).mockResolvedValue(
+      opts.modalities === undefined ? undefined : { inputModalities: opts.modalities },
+    )
+    if (opts.selection !== undefined) {
+      host.sessionController.projections = vi.fn(async () => ({
+        asOfSeq: 5,
+        values: { modelSelection: opts.selection },
+      })) as never
+    }
+    if (opts.sessionCwd !== undefined) {
+      vi.mocked(host.sessionController.list).mockResolvedValue({
+        items: [{ sessionId: 'session-1', cwd: opts.sessionCwd }],
+      } as never)
+    }
+    const api = createDsh02ApiProxy(host, {
+      imageHandoffDir: opts.fallbackDir,
+      ...(opts.roots === undefined ? {} : { handoffRoots: opts.roots }),
+    })
+    return { host, api }
+  }
+
+  function sentContent(host: Dsh02HostServices): readonly { type: string; text?: string }[] {
+    const call = vi.mocked(host.sessionController.prompt).mock.calls[0]
+    return (call?.[0] as { content: readonly { type: string; text?: string }[] }).content
+  }
+
+  /** 从一条交接文本里取 `[Image: source: <path>]` 的绝对路径。 */
+  function sourcePath(text: string | undefined): string | undefined {
+    return text?.match(/\[Image: source: (.+?)\]/)?.[1]
+  }
+
+  it('saves into the session workspace and sends a human line + machine path', async () => {
+    const fallback = await mkdtemp(path.join(tmpdir(), 'daw-handoff-fb-'))
+    const workspace = await mkdtemp(path.join(tmpdir(), 'daw-handoff-ws-'))
+    const { host, api } = await makeBridge({
+      modalities: ['text'],
+      fallbackDir: fallback,
+      roots: [{ id: 'root-1', realPath: workspace }],
+      sessionCwd: workspace,
+    })
+
+    await api.sessions.prompt({
+      rpcId: 'p',
+      payload: {
+        sessionId: 'session-1',
+        mode: 'queue',
+        content: [
+          { type: 'text', text: '看这张图' },
+          { type: 'image', mediaType: 'image/png', data: PNG, name: '截图.png' },
+        ],
+      },
+    })
+
+    const content = sentContent(host)
+    expect(content.some(part => part.type === 'image')).toBe(false)
+    expect(content[0]).toMatchObject({ type: 'text', text: '看这张图' })
+
+    const note = content[1]?.text ?? ''
+    const filePath = sourcePath(note)
+    expect(filePath).toBeTruthy()
+    // ① 落在**工作目录**的 .dsh-images 下，不进 DSH 私有目录。
+    expect(filePath!.startsWith(path.join(workspace, '.dsh-images'))).toBe(true)
+    // ② 给人看的那行：图片名 + 工作目录相对路径，不是一串裸路径。
+    expect(note).toContain('截图.png')
+    expect(note).toContain('.dsh-images/')
+    expect(note).toContain('已保存到工作目录')
+    // ③ 动作指令必须在**同一行**里。只递路径是「可以读」，明确要求才是「被要求读」——
+    //    实测模型会拿着路径先去加载界面技能、把图放着不看。也不能另起一行：
+    //    客户端按行首标记整行摘除，多出来的行会当正文显示在手机上。
+    expect(note).toContain('请先用读图工具打开')
+    expect(note.split('\n')).toHaveLength(2)
+    // ④ 零插件依赖：不出现任何插件名。
+    expect(note).not.toMatch(/modlens/i)
+    // ⑤ 文件真的落盘、内容正确、组/其他人不可读。
+    const bytes = await readFile(filePath!)
+    expect(Buffer.from(bytes).toString('base64')).toBe(PNG)
+    expect((await stat(filePath!)).mode & 0o077).toBe(0)
+  })
+
+  it('hands off right after the user switches to a text-only model', async () => {
+    // 真机现场（2026-10-11 20:37）：用户把会话切到纯文本模型 agnes-2.5-flash，
+    // **还没用它跑过一轮**就发了图 → 被内核以 MODEL_DOES_NOT_SUPPORT_IMAGES 拒收。
+    // 那种时刻投影正是 `lastUsed: <旧的视觉模型>` + `next: <纯文本模型>`；
+    // 如果读错字段名（去找内部 state 的 `pending`），就会退回 lastUsed、
+    // 判定「旧的那个支持图片、不用插手」→ 图片原样交给内核 → 被拒。
+    //
+    // 这条用例的桩**不再无视参数**：两个模型的模态不同，读错字段立刻现形。
+    const fallback = await mkdtemp(path.join(tmpdir(), 'daw-handoff-fb8-'))
+    const workspace = await mkdtemp(path.join(tmpdir(), 'daw-handoff-ws8-'))
+    const { host, api } = await makeBridge({
+      modalities: ['text'],
+      fallbackDir: fallback,
+      roots: [{ id: 'root-1', realPath: workspace }],
+      sessionCwd: workspace,
+      selection: {
+        lastUsed: { provider: 'p', model: 'vision-old' },
+        next: { provider: 'p', model: 'text-only-new' },
+      },
+    })
+    vi.mocked(host.llm.resolveModelInfo).mockImplementation(async (_provider, model) =>
+      model === 'vision-old' ? { inputModalities: ['text', 'image'] } : { inputModalities: ['text'] })
+
+    await api.sessions.prompt({
+      rpcId: 'p',
+      payload: {
+        sessionId: 'session-1',
+        mode: 'queue',
+        content: [
+          { type: 'text', text: '看这张图' },
+          { type: 'image', mediaType: 'image/png', data: PNG, name: '截图.png' },
+        ],
+      },
+    })
+
+    // 判定必须基于 next（真正要用的模型）—— 也就是按它去查模态。
+    expect(vi.mocked(host.llm.resolveModelInfo)).toHaveBeenCalledWith('p', 'text-only-new')
+    const content = sentContent(host)
+    expect(content.some(part => part.type === 'image')).toBe(false)
+    expect(sourcePath(content[1]?.text)).toBeTruthy()
+  })
+
+  it('falls back to the DSH dir when the session cwd matches no authorized root', async () => {
+    const fallback = await mkdtemp(path.join(tmpdir(), 'daw-handoff-fb2-'))
+    const workspace = await mkdtemp(path.join(tmpdir(), 'daw-handoff-ws2-'))
+    const { host, api } = await makeBridge({
+      modalities: ['text'],
+      fallbackDir: fallback,
+      roots: [{ id: 'root-1', realPath: workspace }],
+      // 会话 cwd 在授权根之外（给一个不存在于任何根下的路径）。
+      sessionCwd: '/somewhere/else',
+    })
+
+    await api.sessions.prompt({
+      rpcId: 'p',
+      payload: {
+        sessionId: 'session-1',
+        mode: 'queue',
+        content: [{ type: 'image', mediaType: 'image/png', data: PNG }],
+      },
+    })
+
+    const filePath = sourcePath(sentContent(host)[0]?.text)
+    expect(filePath!.startsWith(fallback)).toBe(true)
+  })
+
+  it('keeps native image parts when the model declares image input', async () => {
+    const fallback = await mkdtemp(path.join(tmpdir(), 'daw-handoff-fb3-'))
+    const { host, api } = await makeBridge({ modalities: ['text', 'image'], fallbackDir: fallback })
+
+    await api.sessions.prompt({
+      rpcId: 'p',
+      payload: {
+        sessionId: 'session-1',
+        mode: 'queue',
+        content: [{ type: 'image', mediaType: 'image/png', data: PNG }],
+      },
+    })
+
+    const content = sentContent(host)
+    expect(content).toHaveLength(1)
+    expect(content[0]?.type).toBe('image') // 原生缩略图路径，别抢它的活
+  })
+
+  it('leaves content alone when model metadata is missing (unresolved)', async () => {
+    // 拿不准就走原路 —— 内核在 inputModalities 为 undefined 时也不拒。
+    const fallback = await mkdtemp(path.join(tmpdir(), 'daw-handoff-fb4-'))
+    const { host, api } = await makeBridge({ modalities: undefined, fallbackDir: fallback })
+
+    await api.sessions.prompt({
+      rpcId: 'p',
+      payload: {
+        sessionId: 'session-1',
+        mode: 'queue',
+        content: [{ type: 'image', mediaType: 'image/png', data: PNG }],
+      },
+    })
+
+    expect(sentContent(host)[0]?.type).toBe('image')
+  })
+
+  it('does not touch text-only messages and never consults model metadata for them', async () => {
+    const fallback = await mkdtemp(path.join(tmpdir(), 'daw-handoff-fb5-'))
+    const { host, api } = await makeBridge({ modalities: ['text'], fallbackDir: fallback })
+
+    await api.sessions.prompt({
+      rpcId: 'p',
+      payload: {
+        sessionId: 'session-1',
+        mode: 'queue',
+        content: [{ type: 'text', text: '你好' }],
+      },
+    })
+
+    expect(sentContent(host)).toEqual([{ type: 'text', text: '你好' }])
+    expect(host.llm.resolveModelInfo).not.toHaveBeenCalled()
+  })
+
+  it('gives repeated copies of one image the same content-addressed path', async () => {
+    const fallback = await mkdtemp(path.join(tmpdir(), 'daw-handoff-fb6-'))
+    const workspace = await mkdtemp(path.join(tmpdir(), 'daw-handoff-ws6-'))
+    const { host, api } = await makeBridge({
+      modalities: ['text'],
+      fallbackDir: fallback,
+      roots: [{ id: 'root-1', realPath: workspace }],
+      sessionCwd: workspace,
+    })
+
+    await api.sessions.prompt({
+      rpcId: 'p',
+      payload: {
+        sessionId: 'session-1',
+        mode: 'queue',
+        content: [
+          { type: 'image', mediaType: 'image/png', data: PNG },
+          { type: 'image', mediaType: 'image/png', data: PNG },
+        ],
+      },
+    })
+
+    const paths = sentContent(host).map(part => sourcePath(part.text))
+    expect(paths[0]).toBeTruthy()
+    expect(paths[0]).toBe(paths[1]) // 同一张图 → 同一个文件，不堆副本
+  })
+
+  it('can be switched off entirely', async () => {
+    const fallback = await mkdtemp(path.join(tmpdir(), 'daw-handoff-fb7-'))
+    const { host } = makeHost()
+    vi.mocked(host.llm.resolveModelInfo).mockResolvedValue({ inputModalities: ['text'] })
+    const api = createDsh02ApiProxy(host, { imageHandoff: false, imageHandoffDir: fallback })
+
+    await api.sessions.prompt({
+      rpcId: 'p',
+      payload: {
+        sessionId: 'session-1',
+        mode: 'queue',
+        content: [{ type: 'image', mediaType: 'image/png', data: PNG }],
+      },
+    })
+
+    expect(sentContent(host)[0]?.type).toBe('image')
   })
 })

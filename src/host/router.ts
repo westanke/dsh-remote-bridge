@@ -449,11 +449,21 @@ export class ApiRouter {
     //
     // id 形如 `sha256:<hex>` —— **含冒号**，所以路径段必须 URL 解码；
     // 客户端也要记得编码，否则 `:` 在路径里会被某些代理改写。
+    //
+    // **必须带 query 参数 `sessionId`**：内核 `sessionController.attachment()`
+    // 要先读这个会话的事件、确认它引用了这张图、并取出真实 ref 做完整性校验。
+    // 没有 sessionId 这三件事一件都做不了 —— 早先的设计让客户端把四项元数据
+    // （mediaType/bytes/width/height）带上来，是**错的**：真实 ref 内核手里本来
+    // 就有，而且本机这条 profile 的 `ctx.attachments` 注入属性根本拿不到。
     const attachmentRoute = pathname.match(/^\/api\/v1\/attachments\/([^/]+)$/)
     if (attachmentRoute !== null && method === 'GET') {
       this.options.auth.requireScope(principal, 'files.read')
       const attachmentId = decodeURIComponent(attachmentRoute[1] as string)
-      const { bytes, mediaType } = await this.options.chat.readAttachment(principal, attachmentId)
+      const sessionId = url.searchParams.get('sessionId')?.trim()
+      if (!sessionId) {
+        throw new ApiError(400, 'BODY_INVALID', 'sessionId query parameter is required.')
+      }
+      const { bytes, mediaType } = await this.options.chat.readAttachment(principal, sessionId, attachmentId)
       res.statusCode = 200
       res.setHeader('Content-Type', mediaType)
       res.setHeader('Content-Length', String(bytes.byteLength))
@@ -463,7 +473,29 @@ export class ApiRouter {
       return
     }
 
-    // 附件上传：客户端把文件字节发上来，换一个 prompt 可引用的 receiptId。
+    // 交接图片：纯文本模型发图时，图被落成工作区 `.dsh-images/<sha>.<ext>`，
+    // 消息里只留路径给模型读。手机端靠这条把**图本身**取回来显示给人看 ——
+    // 一条消息因此「人看到图、模型看到路径」，两不耽误。
+    //
+    // 安全：name 只认裸文件名（桥里有哈希+扩展名白名单），目录由会话工作目录推出，
+    // 客户端给绝对路径也不认；同样要求 files.read 与会话归属。
+    if (pathname === '/api/v1/image-handoff' && method === 'GET') {
+      this.options.auth.requireScope(principal, 'files.read')
+      const name = url.searchParams.get('name')?.trim()
+      const sessionId = url.searchParams.get('sessionId')?.trim()
+      if (!name || !sessionId) {
+        throw new ApiError(400, 'BODY_INVALID', 'name and sessionId query parameters are required.')
+      }
+      const { bytes, mediaType } = await this.options.chat.readHandoffImage(principal, sessionId, name)
+      res.statusCode = 200
+      res.setHeader('Content-Type', mediaType)
+      res.setHeader('Content-Length', String(bytes.byteLength))
+      // 文件名是内容哈希，内容不变；短缓存即可（这些是临时交接件，不像正式附件那样长留）。
+      res.setHeader('Cache-Control', 'private, max-age=3600')
+      res.end(Buffer.from(bytes))
+      return
+    }
+
     //
     // 为什么必须由插件中转：核心里那条 `/api/session/uploadFileBinary` 只绑 loopback，
     // 手机根本到不了；而 `ctx.fileUploads` 这个 cordis 服务就在同一进程里，可直接调。

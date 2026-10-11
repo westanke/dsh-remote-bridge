@@ -100,6 +100,9 @@ if (!kotlin.includes('renameChatWorkspace') || !kotlin.includes('deleteChatWorks
 if (!kotlin.includes('renameSession') || !kotlin.includes('forkSession') || !kotlin.includes('archiveSession')) failures.push('Kotlin SDK is missing session management')
 if (!asyncapi.includes('chat.message.delta')) failures.push('AsyncAPI is missing stable chat delta events')
 if (!asyncapi.includes('chat.approval.requested')) failures.push('AsyncAPI is missing approval events')
+// 终局失败帧：限流 429 / 配额 / 密钥。少了它，客户端收到的是与"正常跑完"
+// 一模一样的 chat.turn.end，于是模型早就失败了用户还在傻等。
+if (!asyncapi.includes('ChatTurnFailed')) failures.push('AsyncAPI is missing the terminal turn-failure event')
 
 const trackedText = [
   await readFile(path.join(root, 'README.md'), 'utf8'),

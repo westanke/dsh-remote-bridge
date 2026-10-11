@@ -20,8 +20,12 @@
  * consumed through a structural type and injected by the running Host.
  */
 
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { homedir } from 'node:os'
+import { join } from 'node:path'
 import type { PromptContentPart, RpcResponse, UserQuestionAnswer, UserQuestionView } from './chat-adapter.ts'
+import { wireRelative } from './path-policy.ts'
 import type { SettingsApiProxy } from './settings-adapter.ts'
 
 // ── structural views of the 0.2.x host services ────────────────────────────
@@ -66,7 +70,15 @@ export interface FileUploadsLike {
  */
 export interface AttachmentStoreLike {
   readImage(
-    ref: { attachmentId: string },
+    /**
+     * 附件引用。
+     *
+     * `attachmentId` 是唯一的**定位**字段（内核用 `ID_PATTERN.exec()` 取出 sha256
+     * 再拼 `objects/<前两位>/<sha>`）；而 `mediaType` / `bytes` / `width` / `height`
+     * 参与读后**完整性校验** —— 缺任何一项都会抛 `ATTACHMENT_CORRUPT`，
+     * 哪怕字节已经正确读出来了。
+     */
+    ref: { attachmentId: string; mediaType?: string; bytes?: number; width?: number; height?: number },
     signal?: AbortSignal,
   ): Promise<{ ref: { mediaType: string }; data: Uint8Array }>
 }
@@ -100,6 +112,25 @@ export interface SessionControllerLike {
   cancel(request: { sessionId: string }): { accepted: true }
   rename(request: { sessionId: string; title: string }): Promise<{ title: string; seq: number }>
   fork(request: { sessionId: string; atSeq?: number }): Promise<{ sessionId: string }>
+  /**
+   * 取一张**被这个会话引用过**的图片字节（内核主机端方法，名字就叫 `attachment`）。
+   *
+   * 这是取历史图片的**正路**，它内部一次做完三件事：校验会话确实引用了这张图、
+   * 调 `ctx.attachments.readImage`、用**会话事件里那条真实 ref**做完整性校验
+   *（`mediaType` / `bytes` / `width` / `height` 四项逐项比对）。
+   *
+   * 为什么必须走它、不能自己调 `ctx.attachments`：实测本机这条 profile 里
+   * `ctx.attachments` 是 **MISSING**（诊断日志
+   * `ctx.attachments MISSING（所以改走内核 sessionController.readAttachment）`），
+   * 自己拼 ref 那条路根本走不通；而且绕开内核就得把它内部三件事全复刻一遍，
+   * 早先正是只传了 id、缺四项元数据，导致 `ATTACHMENT_CORRUPT`。
+   *
+   * 注意方法名：**主机端叫 `attachment`**，客户端契约里才叫 `readAttachment`
+   *（`dsh-api-session-controller/lib/types/client/contract/session.d.ts`）。
+   * `data` 是 **base64 字符串**（主机端实现里 `Buffer.from(stored.data).toString("base64")`），
+   * 不是 Uint8Array —— 调用方要自己解码。
+   */
+  attachment(request: { sessionId: string; attachmentId: string }): Promise<{ attachment: { mediaType: string }; data: string }>
   selectModel(request: { sessionId: string; provider: string; model: string; reasoningEffort?: string }): Promise<{ selected: unknown }>
   /**
    * Host model catalog. 0.2.x reports `default`, the routable route list, and
@@ -170,6 +201,15 @@ export interface LlmLike {
     error?: string
   }[]
   discoverModels(settingsNs: string, request: unknown, signal?: AbortSignal): Promise<readonly unknown[]>
+  /**
+   * 一个路由 + 模型 id 的**真实元数据**。
+   *
+   * 为什么必须用它、而不是自己猜模型能不能看图：内核拒绝「给纯文本模型发图片」时
+   * 用的就是**这个方法**（`SessionController` 的 prompt 准入里
+   * `this.ctx.llm.resolveModelInfo(...)` 再查 `inputModalities`）。入口要与内核
+   * 得出同一个结论，只能查同一份元数据 —— 名字、前缀、家族表都是启发式，会漂。
+   */
+  resolveModelInfo(provider: string, model: string, signal?: AbortSignal): Promise<{ inputModalities?: readonly string[] } | undefined>
 }
 
 /** Host services the bridge consumes; assembled by `src/index.ts` from `ctx`. */
@@ -847,6 +887,241 @@ function sessionIdOf(summary: unknown): string | undefined {
   return typeof id === 'string' ? id : undefined
 }
 
+// ── 纯文本模型的图片交接（零插件依赖） ────────────────────────────────────
+
+/**
+ * 内核在 prompt 准入里会因为「模型看不到图」拒收整条消息
+ * （`MODEL_DOES_NOT_SUPPORT_IMAGES`）。手机端拿不到桌面 WebUI 那套
+ * 「粘贴即落成临时文件、路径进输入框」的浏览器半边，所以图片在手机上
+ * **直接发不出去** —— 而用户明明装了识图插件。
+ *
+ * 这里补上手机端缺的那一步，但**刻意不引用任何插件的 API**：
+ * 判定用内核自己的 `llm.resolveModelInfo()`（与内核拒收时查的是同一份元数据），
+ * 动作只是「图片落成文件 + 消息里给路径」—— 任何「按路径读图」的工具都能接手。
+ * 哪天换插件、甚至不用插件，这段代码都不需要改。
+ *
+ * 三条保守原则（宁可退回原样、也不要自作聪明）：
+ * 1. 元数据拿不到 / 解析不出模型 → **不动**（内核这时也不会拒，交给它）；
+ * 2. 模型声明了 image → **不动**（原生图片能显示缩略图，别抢它的活）；
+ * 3. 落盘失败 → **不动**（退回内核自己的报错，至少用户能看懂发生了什么）。
+ *
+ * 两个落点（按优先级）：
+ * - **会话工作目录下的 `.dsh-images/`**（首选）：文件在用户的项目里，
+ *   人和 agent 都找得到，也符合「产物放工作目录、别塞进 DSH 私有目录」；
+ * - 解析不出工作目录时退回 DSH 目录（[DEFAULT_IMAGE_HANDOFF_DIR]）——
+ *   宁可落到私有目录也不能让「发消息」本身失败。
+ */
+const HANDOFF_SUBDIR = '.dsh-images'
+const DEFAULT_IMAGE_HANDOFF_DIR = join(homedir(), '.dsh', 'image-handoff')
+
+const IMAGE_EXTENSIONS: Record<string, string> = {
+  'image/png': 'png',
+  'image/jpeg': 'jpg',
+  'image/webp': 'webp',
+  'image/gif': 'gif',
+  'image/heic': 'heic',
+  'image/heif': 'heif',
+  'image/bmp': 'bmp',
+  'image/avif': 'avif',
+}
+
+/** 扩展名优先按声明的 mediaType，认不出再从魔数嗅，最后 .bin。 */
+function handoffExtension(mediaType: string, bytes: Buffer): string {
+  const declared = IMAGE_EXTENSIONS[mediaType.trim().toLowerCase()]
+  if (declared !== undefined) return declared
+  if (bytes.length >= 8 && bytes[0] === 0x89 && bytes[1] === 0x50) return 'png'
+  if (bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8) return 'jpg'
+  if (bytes.length >= 12 && bytes.toString('ascii', 0, 4) === 'RIFF' && bytes.toString('ascii', 8, 12) === 'WEBP') return 'webp'
+  if (bytes.length >= 6 && bytes.toString('ascii', 0, 3) === 'GIF') return 'gif'
+  return 'bin'
+}
+
+/**
+ * 把一张内联图片写成文件，返回 `{ absolute, relative }`。
+ *
+ * 文件名用**内容哈希**：同一张图重复发不会堆副本（与内核附件存储同一思路），
+ * 也让「同一路径 → 同一内容」对下游工具成立（可安全缓存）。
+ * `relative` 是相对会话工作目录的短路径，给人看；`absolute` 给读图工具用。
+ * 目录 0700、文件 0600：这些字节可能包含用户隐私。
+ */
+function writeHandoffFile(dir: string, workspace: string | undefined, mediaType: string, data: string): { absolute: string; relative: string } {
+  const bytes = Buffer.from(data, 'base64')
+  if (bytes.length === 0) throw new Error('EMPTY_IMAGE')
+  mkdirSync(dir, { recursive: true, mode: 0o700 })
+  const fileName = `${createHash('sha256').update(bytes).digest('hex')}.${handoffExtension(mediaType, bytes)}`
+  const absolute = join(dir, fileName)
+  // 已存在就是同一张图（内容寻址），直接复用，不重写。
+  if (!existsSync(absolute)) writeFileSync(absolute, bytes, { mode: 0o600 })
+  // 落进工作目录时给人看的是 `.dsh-images/xxx.jpg` 这样的短相对路径；
+  // 退回私有目录时只有绝对路径有意义，relative 就用文件名。
+  const relative = workspace !== undefined && absolute.startsWith(workspace + '/')
+    ? absolute.slice(workspace.length + 1)
+    : fileName
+  return { absolute, relative }
+}
+
+/** 已配置的授权根（id + 真实路径）。由 `index.ts` 从数据库注入。 */
+export type HandoffRoot = { id: string; realPath: string }
+
+/** 交接文件名只允许「内容哈希 + 图片扩展名」：挡住一切路径穿越。 */
+const HANDOFF_NAME = /^[0-9a-f]{64}\.(png|jpe?g|webp|gif|heic|heif|bmp|avif)$/i
+const HANDOFF_MEDIA_TYPES: Record<string, string> = {
+  png: 'image/png',
+  jpg: 'image/jpeg',
+  jpeg: 'image/jpeg',
+  webp: 'image/webp',
+  gif: 'image/gif',
+  heic: 'image/heic',
+  heif: 'image/heif',
+  bmp: 'image/bmp',
+  avif: 'image/avif',
+}
+
+/**
+ * 读出一张交接图片的字节（供手机端把它**显示**出来）。
+ *
+ * 只接受裸文件名，目录永远由「会话工作目录 + `.dsh-images`」（或兜底目录）推出，
+ * 客户端给绝对路径也不认 —— 否则这条读文件的口子会变成任意文件读取。
+ * 工作目录与 [writeHandoffFile] 用的是同一套解析，保证「写在哪、从哪读」。
+ */
+async function readHandoffImageFile(
+  host: Dsh02HostServices,
+  roots: readonly HandoffRoot[],
+  fallbackDir: string,
+  sessionId: string,
+  name: string,
+): Promise<{ bytes: Uint8Array; mediaType: string }> {
+  const fileName = name.split(/[/\\]/).pop() ?? name
+  const match = HANDOFF_NAME.exec(fileName)
+  if (match === null) throw new Error('BAD_HANDOFF_NAME')
+  const ext = (match[1] ?? '').toLowerCase()
+  const mediaType = HANDOFF_MEDIA_TYPES[ext] ?? 'application/octet-stream'
+  const workspace = await sessionWorkspaceDir(host, roots, sessionId)
+  const candidates = [
+    ...(workspace !== undefined ? [join(workspace, HANDOFF_SUBDIR, fileName)] : []),
+    join(fallbackDir, fileName),
+  ]
+  const target = candidates.find(candidate => existsSync(candidate))
+  if (target === undefined) throw new Error('HANDOFF_IMAGE_NOT_FOUND')
+  return { bytes: new Uint8Array(readFileSync(target)), mediaType }
+}
+
+
+/**
+ * 解析会话当前的工作目录（绝对路径），冷会话也能用。
+ *
+ * 不走 live agent（冷会话没有 agent）：直接用 `sessionController.list()`
+ * 里那条会话的 `cwd`（相对授权根的 wire 路径），再与数据库里的根拼出真实路径。
+ * 解析不出来（没有授权根 / cwd 不在任何根下）就返回 undefined —— 交给上层兜底。
+ */
+async function sessionWorkspaceDir(
+  host: Dsh02HostServices,
+  roots: readonly HandoffRoot[],
+  sessionId: string,
+): Promise<string | undefined> {
+  if (roots.length === 0) return undefined
+  const list = await host.sessionController.list({}, new AbortController().signal)
+  const item = (list.items as readonly { sessionId?: unknown; cwd?: unknown }[] | undefined)
+    ?.find(entry => entry.sessionId === sessionId)
+  const cwd = typeof item?.cwd === 'string' ? item.cwd : undefined
+  if (cwd === undefined) return undefined
+  for (const root of roots) {
+    const relative = wireRelative(root.realPath, cwd)
+    if (relative !== undefined) return join(root.realPath, relative)
+  }
+  return undefined
+}
+
+/** 会话当前生效的模型（pending > lastUsed > 目录默认），取不到返回 undefined。 */
+async function currentModelSelection(
+  host: Dsh02HostServices,
+  sessionId: string,
+): Promise<{ provider: string; model: string } | undefined> {
+  const baseline = await host.sessionController.projections({ sessionId }, new AbortController().signal)
+  const selection = baseline?.values?.['modelSelection'] as { lastUsed?: unknown; next?: unknown } | undefined
+  const catalog = await host.sessionController.modelCatalog()
+  // 字段名必须用对外**wire 视图**的名字：内核 `wire.view` 产出的是 `{ lastUsed, next }`，
+  // `next = pending ?? lastUsed`；`pending` 只存在于内部 state，投影对外**没有**这个字段。
+  // 早先这里读 `pending`，于是永远 undefined、一路退回 `lastUsed` —— 而 `lastUsed` 是
+  // 「上一次真正跑过的模型」：用户刚切到新模型、还没用它跑过一轮时，这里拿到的是**旧模型**。
+  // 实测症状：切到纯文本模型 agnes-2.5-flash 后发图，判定读成旧模型、认为「不用插手」，
+  // 图片原样交给内核，被内核以 MODEL_DOES_NOT_SUPPORT_IMAGES 拒收。
+  const current = (selection?.next ?? selection?.lastUsed ?? catalog.default) as
+    | { provider?: unknown; model?: unknown }
+    | undefined
+  const provider = current?.provider
+  const model = current?.model
+  if (typeof provider !== 'string' || typeof model !== 'string') return undefined
+  return { provider, model }
+}
+
+/**
+ * 内核会不会因为「这个模型看不到图」拒收？判据与内核**逐字一致**：
+ * `inputModalities` 已声明且不含 `image`。
+ *
+ * 元数据缺失（`undefined`）**不算**「确认看不到图」—— 内核在那种情况下也不拒，
+ * 我们跟着不插手（拿不准就走原路）。
+ */
+async function modelIsConfirmedTextOnly(
+  host: Dsh02HostServices,
+  sessionId: string,
+): Promise<boolean> {
+  const selection = await currentModelSelection(host, sessionId)
+  if (selection === undefined) return false
+  const info = await host.llm.resolveModelInfo(selection.provider, selection.model)
+  const modalities = info?.inputModalities
+  if (!Array.isArray(modalities)) return false
+  return !modalities.includes('image')
+}
+
+/**
+ * 需要交接时，把每个 `image` 部件换成**两行文本**；否则原样返回。
+ *
+ * 同一行路径要同时伺候两类读者：
+ * - **给人看**（第一行）：图片序号、原始文件名、工作目录里的短路径；
+ * - **给机器看**（第二行 `[Image: source: <绝对路径>]`）：这是读图技能明确
+ *   识别的占位形状之一（带图片扩展名的绝对路径同样触发），任何按路径读图的
+ *   工具都能接手，不出现任何具体插件名。
+ *
+ * 任何一步抛错都退回原内容：这个功能的失败**不该**把「发消息」本身弄坏。
+ */
+async function handoffImagesForTextOnlyModel(
+  host: Dsh02HostServices,
+  roots: readonly HandoffRoot[],
+  fallbackDir: string,
+  sessionId: string,
+  content: readonly PromptContentPartLike[],
+): Promise<readonly PromptContentPartLike[]> {
+  if (!content.some(part => part.type === 'image')) return content
+  try {
+    if (!(await modelIsConfirmedTextOnly(host, sessionId))) return content
+    const workspace = await sessionWorkspaceDir(host, roots, sessionId)
+    const dir = workspace !== undefined ? join(workspace, HANDOFF_SUBDIR) : fallbackDir
+    let index = 0
+    return content.map(part => {
+      if (part.type !== 'image') return part
+      index += 1
+      const { absolute, relative } = writeHandoffFile(dir, workspace, part.mediaType, part.data)
+      const name = typeof part.name === 'string' && part.name.trim() !== '' ? part.name.trim() : `图片 ${index}`
+      const text = [
+        // 第一行有两个读者，所以把动作指令塞进这行**而不另起一行**：
+        // - 给人看：图片序号、原始文件名、工作目录里的短路径；
+        // - 给模型看：明确要求「先读图再回答」。实测纯文本模型拿到路径后**并不一定会去读** ——
+        //   曾经出现过它先去加载界面技能、图放着不看的场面（用户的原话是"你啥都不显示"）。
+        //   只递路径是"可以读"，加上这一句才是"被要求读"。
+        // 另外，客户端（dsh-companion）按行首 `🖼️ 图片 ` 与 `[Image: source:` 两个标记整行摘除，
+        // **不看括号里的字**，所以在这里追加指令不需要手机端跟着出包。
+        `🖼️ 图片 ${index}「${name}」（当前模型不支持图片输入，已保存到工作目录 ${relative}；` +
+          `请先用读图工具打开下面那行的绝对路径，看清内容再回答）`,
+        `[Image: source: ${absolute}]`,
+      ].join('\n')
+      return { type: 'text' as const, text }
+    })
+  } catch {
+    return content
+  }
+}
+
 // ── the rebuilt apiProxy ──────────────────────────────────────────────────
 
 /**
@@ -857,11 +1132,28 @@ function sessionIdOf(summary: unknown): string | undefined {
  * `chat-adapter.ts` and `settings-adapter.ts` are written against.
  *
  * @param host - host services resolved from the plugin context.
+ * @param host - host services resolved from the plugin context.
  * @returns a `SettingsApiProxy` (i.e. `DshApiProxy` plus the settings surfaces).
  */
-export function createDsh02ApiProxy(host: Dsh02HostServices): SettingsApiProxy {
+export function createDsh02ApiProxy(
+  host: Dsh02HostServices,
+  options: {
+    /** 图片交接总开关。默认开；关掉就完全按老样子发（内核会照旧拒收纯文本模型的图片）。 */
+    imageHandoff?: boolean
+    /**
+     * 授权根（id + realPath），用于把图片落到会话工作目录。
+     * 没有 / 匹配不上时退回 [imageHandoffDir]。
+     */
+    handoffRoots?: readonly HandoffRoot[]
+    /** 解析不出工作目录时的兜底落地目录。默认 `~/.dsh/image-handoff`。 */
+    imageHandoffDir?: string
+  } = {},
+): SettingsApiProxy {
   const mux = new FrameHub()
   const hostFrames = new FrameHub()
+  const imageHandoff = options.imageHandoff !== false
+  const handoffRoots = options.handoffRoots ?? []
+  const imageHandoffDir = options.imageHandoffDir ?? DEFAULT_IMAGE_HANDOFF_DIR
   // cordis 的注入属性是**惰性解析**的：读一个没人提供的服务会抛
   // `cannot get property "x" without inject`，而**这不是**「时机不对」，是「压根没有」。
   //
@@ -871,7 +1163,10 @@ export function createDsh02ApiProxy(host: Dsh02HostServices): SettingsApiProxy {
   //
   // 所以正确做法是**容错读取**：有就用，没有就让这一条 RPC 明确报「附件存储不可用」，
   // 而不是拖垮整个插件。前者只坏一个功能，后者插件根本不加载。
-  const attachmentStore = optionalService<AttachmentStoreLike>(host, 'attachments')
+  //
+  // 注：取图（readAttachment）已**不再用** `ctx.attachments` —— 这条 profile 里它是
+  // MISSING（附件存储没挂成可注入服务），改走内核自己的 sessionController.attachment()。
+  // 这里保留读取只用于观测/兼容，不影响取图正路。
   // fileUploads 同理。2.0.2 只给 attachments 加了容错、忘了这一个，重启后换个名字继续炸
   // —— 同一个根因连踩两次。两个可选能力必须一起处理。
   const fileUploadService = optionalService<FileUploadsLike>(host, 'fileUploads')
@@ -996,6 +1291,14 @@ export function createDsh02ApiProxy(host: Dsh02HostServices): SettingsApiProxy {
           .filter((part): part is { type: 'file'; receiptId: string } => part.type === 'file')
           .map(part => part.receiptId)
 
+        // 模型确认看不到图时，把图片换成「私有文件 + 路径」，让消息里不再有
+        // image 部件 —— 内核那道模态检查（MODEL_DOES_NOT_SUPPORT_IMAGES）就不会触发，
+        // 用户装的识图插件/工具照常接手。判定与落盘都在 helper 里，
+        // 任何不确定都退回原样（见 handoffImagesForTextOnlyModel 的三条原则）。
+        const content = imageHandoff
+          ? await handoffImagesForTextOnlyModel(host, handoffRoots, imageHandoffDir, request.payload.sessionId, request.payload.content)
+          : request.payload.content
+
         // 带文件的 prompt 必须先把凭证绑定到这次请求：内核的注释写明凭证
         // 「unless delivery commits it」会恢复原主人，所以绑定后还要在**成功之后**
         // commit —— 失败时不 commit，凭证得以保留供用户重试。
@@ -1012,7 +1315,7 @@ export function createDsh02ApiProxy(host: Dsh02HostServices): SettingsApiProxy {
             })()
 
         await host.sessionController.prompt(
-          { requestId, ...request.payload },
+          { requestId, ...request.payload, content },
           new AbortController().signal,
         )
         binding?.commit()
@@ -1029,17 +1332,28 @@ export function createDsh02ApiProxy(host: Dsh02HostServices): SettingsApiProxy {
         return { receiptId: value.receiptId, name: name ?? null }
       }),
       readAttachment: request => call(async () => {
-        // 没有附件存储时明确报错，而不是 `undefined.readImage` 那种看不懂的 TypeError。
-        // 用户的 App 会把这段原因原样显示出来（v1.8.0 起），
-        // 这样「图片读不出来」至少有一个人话的解释。
-        if (attachmentStore == null) throw new Error('ATTACHMENT_STORE_UNAVAILABLE: this DSH build provides no ctx.attachments service, so stored image bytes cannot be read')
-        // 只按 id 取字节：附件存储的实现用 `ID_PATTERN.exec(String(ref.attachmentId))`
-        // 定位对象，其余字段（mediaType/宽高）只是元数据，不参与查找。
-        const stored = await attachmentStore.readImage(
-          { attachmentId: request.payload.attachmentId },
-          new AbortController().signal,
-        )
-        return { bytes: stored.data, mediaType: stored.ref.mediaType }
+        // 走**内核的 sessionController.attachment()**，不自己碰 `ctx.attachments`。
+        //
+        // 这是真机排查出来的正路：真进程里 `ctx.attachments` 是 **MISSING** ——
+        // 这条 profile 没把附件存储挂成可注入服务（`dsh-attachment-local` 只是个库）。
+        // 期间误判过两次：先说「存储没数据」（实测 35/35 命中，错的），
+        // 再说「缺四项元数据」（真因是服务压根拿不到）。教训是先看真进程日志再下结论。
+        //
+        // 内核这个方法一次做完三件事：校验会话确实引用了这张图、读字节、
+        // 用**会话事件里那条真实 ref**做完整性校验。绕开它自己拼 ref，
+        // 等于把这三件事全漏掉 —— 完整性校验恰恰就是先前 ATTACHMENT_CORRUPT 的来源。
+        //
+        // 返回的 `data` 是 **base64 字符串**，必须解码后才能当字节用。
+        const { sessionId, attachmentId } = request.payload
+        const value = await host.sessionController.attachment({ sessionId, attachmentId })
+        const bytes = new Uint8Array(Buffer.from(value.data, 'base64'))
+        return { bytes, mediaType: value.attachment.mediaType }
+      }),
+      readHandoffImage: request => call(async () => {
+        // 纯文本模型下图片被交接成工作区文件（见 handoffImagesForTextOnlyModel）。
+        // 手机端要把它**当图显示**给人看时走这里；路径仍以文本留在消息里给机器读。
+        const { sessionId, name } = request.payload
+        return readHandoffImageFile(host, handoffRoots, imageHandoffDir, sessionId, name)
       }),
       cancel: request => call(() => host.sessionController.cancel(request.payload)),
       rename: request => call(() => host.sessionController.rename(request.payload)),
@@ -1066,11 +1380,15 @@ export function createDsh02ApiProxy(host: Dsh02HostServices): SettingsApiProxy {
         const catalog = await host.sessionController.modelCatalog()
         const baseline = await host.sessionController.projections({ sessionId }, new AbortController().signal)
         const selection = baseline?.values?.['modelSelection'] as
-          | { lastUsed?: unknown; pending?: unknown }
+          | { lastUsed?: unknown; next?: unknown }
           | undefined
         // A pending choice outranks the last used one, which outranks the
         // host-wide default an unconfigured session would run with.
-        const current = selection?.pending ?? selection?.lastUsed ?? catalog.default
+        //
+        // 注意：对外投影是 wire 视图，字段名是 `next`（= pending ?? lastUsed），
+        // 不是内部 state 的 `pending`。读错名字会静默退回 `lastUsed`，
+        // 客户端于是显示「上一次跑过的模型」，与内核实际使用的模型不一致。
+        const current = selection?.next ?? selection?.lastUsed ?? catalog.default
         return {
           current,
           routable: Array.isArray(catalog.routableProviders) && catalog.routableProviders.length > 0,
