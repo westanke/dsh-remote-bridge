@@ -1,5 +1,39 @@
 # 开发日志
 
+## 2026-10-11 · v2.2.2 接住 `user-questions/request`：手机端可显示并回答提问
+
+### 为什么
+
+内核的 `ask_user_question` 有两条路：带 `timeout` 的走 `askTimed`（超时后进投影变成
+`continued`，可迟到补交），这条路早就通了；**不带 `timeout` 的走 `ask()`，唯一入口是
+host 钩子 `user-questions/request`**，此前完全没接。
+
+实测 15 个真实调用样本，参数键**清一色只有 `questions`**（没有一个带 timeout）——
+也就是说绝大多数提问走的是那条没接的路。
+
+### 改了什么
+
+- 新增 `QuestionBridge` 接住钩子；**先委托再竞速**：进入即 `next()` 把卡片交给官方
+  WebUI（电脑端照旧能答），同时留一份给手机端，先答者胜。这样不必抢注册顺序。
+  形状不认识 / 已中止 / 表满一律整条委托，绝不让 agent 拿不到答案。
+- 新增两个端点（已写入 OpenAPI）：`GET /chat/sessions/{id}/questions`、
+  `POST /chat/sessions/{id}/questions/{callId}/answer`。
+- 新增三个 WS 帧：`userQuestions/requested | answered | dismissed`。
+
+### 踩到的坑（详见 RETRO-question-card.md）
+
+1. **`callId` 只在 `wait` 里，而 `wait` 只有 `askTimed` 才加。** 最初的判据「拿不到
+   `wait.callId` 就整条委托」等于**把 plan 模式整条挡在门外** —— 那种 request 直接
+   交给官方界面，于是**电脑端有卡片、手机端一帧收不到**。两个现象同一个原因。
+   现改为缺失时自造 `bridge-<uuid>`。
+2. **`pnpm build` 不查类型。** 清临时诊断时删了构造器参数却漏改调用处，build 一路绿灯，
+   是 `npm publish --dry-run` 的 `prepack → tsc --noEmit` 才抓到。**直接 publish 会失败。**
+
+### 验证
+
+`pnpm check` 全绿：tsc --noEmit · 19 个测试文件 / 113 用例 · docs:check · build。
+**问答卡片经真机端到端验证通过**（内核提问 → 钩子 → 插件推帧 → App 渲染 → 作答 → 答案回到内核）。
+
 ## 2026-10-09 · v2.2.1 README 增加 npm 安装方式
 
 ### 为什么

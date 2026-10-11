@@ -18,6 +18,13 @@
 - 不可逆的架构或协议决定写入 `decisions/ADR-NNNN-*.md`，并加入下方索引。
 - 每次提交前运行 `pnpm docs:check`，把已运行命令追加到 `TESTING.md` 和 `CHANGELOG-DEV.md`。
 - 准备发版、发布 npm 或建双站 Release 时，先读 [RELEASE.md](RELEASE.md) —— 版本号清单、打包器差异、npm 的 2FA 与首次发布暂存审核、发完必做的实测都在那里。
+- 排查「某个功能不工作」之前，先读 [RETRO-question-card.md](RETRO-question-card.md) 的「该记住的」一节。
+
+## 复盘
+
+| 文档 | 记的是 |
+| --- | --- |
+| [RETRO-question-card.md](RETRO-question-card.md) | 问答卡片「一直不显示」的排查复盘：**卡片代码从头到尾都是对的**，错的是排查方法 —— 先解释现象，却没先确认现象真的发生过。另含两个真实技术坑：`wait.callId` 的判据过严（把 plan 模式整条挡在门外）、`pnpm build` 不查类型而 `prepack` 才查。 |
 
 ## ADR 索引
 
