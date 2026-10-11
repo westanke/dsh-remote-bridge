@@ -1,5 +1,49 @@
 # 开发日志
 
+## 2026-10-11 · 交接文案改成人话，并按客户端界面语言分流
+
+> 已发布 **v2.2.4**（npm，`latest`），并双推 GitHub / Gitee。需重启 dsh 生效。
+
+### 为什么改
+
+用户对交接那条消息的反馈是「把提示改为能看懂的」。旧文案第一行写的是
+「当前模型不支持图片输入，已保存到工作目录 …；请先用读图工具打开下面那行的绝对路径，
+看清内容再回答」—— 这是**写给机器看的祈使句**，却挂在用户眼前：术语（「图片输入」「绝对路径」）
+加指代（「下面那行」），双重劝退。
+
+### 现在长什么样
+
+第一行改成两句人话，仍然留在同一行内（客户端按行首标记**整行**摘除，多一行会露在手机上）：
+
+- 中文：`🖼️ 图片 1「shot.png」（当前模型看不到图，已存到 .dsh-images/xxx.png；要看图，请用识图工具打开下面那行的路径）`
+- 英文：`🖼️ Image 1 "shot.png" (this model can't see images, saved to .dsh-images/xxx.png; to view it, open the path below with an image-reading tool)`
+
+第二行 `[Image: source: <绝对路径>]` 是机器契约，跨语言不变。
+
+### 语言从哪来
+
+HTTP `Accept-Language` 一路带下来：`router`（读头）→ `chat.prompt` → `apiProxy.prompt` → 图片交接。
+`locale` 是**我们自己加的字段**，调内核前会被摘掉 —— 内核的 prompt 入参是严格形状，
+多一个字段就可能被拒（这条有测试钉着）。
+
+判不出来就退回中文（既有口径，不猜）。识别规则：按客户端排的优先级取第一个认识的 `zh*` / `en*`。
+
+**要真正跟随英文界面，客户端得把语言带出来**：`dsh-companion` 已在 `DshClient.authenticated()`
+统一加了 `Accept-Language`（取自 App 的语言设置）。**这一项要等下次出包 + 安装才生效**；
+在那之前手机端发图仍是中文文案（插件、WebUI 侧不受影响）。
+
+### 验证
+
+`pnpm typecheck` 通过 · `pnpm test` 20 文件 / **128 用例全绿**（+2）：
+新增「speaks the client interface language, and never leaks our field to the kernel」
+（英文文案 + `locale` 不出现在内核入参里），以及 `handoffLocaleOf` 的取值规则。
+`dsh-companion` 侧 `./gradlew :app:compileDebugKotlin` 通过（仅编译，未出包）。
+
+> 编译要显式指定 JDK：这台机器的 `java` 不在 PATH 上，得给
+> `JAVA_HOME=/media/wangke/OFFICE/workspace/android-toolchain/jdk17`。
+> 另外**不要用 `./gradlew … | tail` 判断成败** —— 管道会把退出码替换成 `tail` 的 0，
+> 第一次就因为这样把「JAVA_HOME 未设置、根本没编译」误读成了「编译通过」。
+
 ## 2026-10-11 · 交接文本追加动作指令：只递路径，模型不一定去读（发布 v2.2.3）
 
 > 真机实测后的补丁。已 publish 到 npmjs，`latest` tag = 2.2.3。DSH 下次自动更新或手动 reinstall 即可拿到。

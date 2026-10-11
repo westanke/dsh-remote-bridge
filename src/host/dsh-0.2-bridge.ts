@@ -1085,10 +1085,47 @@ async function modelIsConfirmedTextOnly(
  *
  * 任何一步抛错都退回原内容：这个功能的失败**不该**把「发消息」本身弄坏。
  */
+/**
+ * 交接文案用哪种语言。
+ *
+ * 判据是**发消息那个客户端的界面语言**，由 HTTP `Accept-Language` 头带进来
+ * （router → chat-adapter → 这里）。拿不到就退回中文 —— 那是这个功能既有的默认口径，
+ * 判断不出来的时候不该突然换语言。
+ */
+export type HandoffLocale = 'zh' | 'en'
+
+/** 从 `Accept-Language` 里挑一个我们支持的语种；认不出来就是中文。 */
+export function handoffLocaleOf(acceptLanguage: string | undefined): HandoffLocale {
+  if (acceptLanguage === undefined) return 'zh'
+  // 形如 `zh-CN,zh;q=0.9,en;q=0.8`：按出现顺序取第一个认识的，尊重客户端排的优先级。
+  for (const tag of acceptLanguage.split(',')) {
+    const language = (tag.split(';')[0] ?? '').trim().toLowerCase()
+    if (language.startsWith('zh')) return 'zh'
+    if (language.startsWith('en')) return 'en'
+  }
+  return 'zh'
+}
+
+/**
+ * 交接说明的第一行（给人看的那行）。
+ *
+ * 写的是**人话**，不是挂在用户眼前的祈使句 —— 早期版本写「请先用读图工具打开下面那行的
+ * 绝对路径」，那是写给机器看的措辞，用户看了的反馈是看不懂。现在一句话说清两件事：
+ * 模型看不到图、图存在哪；要看图该怎么办。语言跟随界面（见 [handoffLocaleOf]）。
+ * 第二行的 `[Image: source: …]` 是机器契约，跨语言不变。
+ */
+function handoffLine(index: number, name: string, relative: string, locale: HandoffLocale): string {
+  if (locale === 'en') {
+    return `🖼️ Image ${index} "${name}" (this model can't see images, saved to ${relative}; to view it, open the path below with an image-reading tool)`
+  }
+  return `🖼️ 图片 ${index}「${name}」（当前模型看不到图，已存到 ${relative}；要看图，请用识图工具打开下面那行的路径）`
+}
+
 async function handoffImagesForTextOnlyModel(
   host: Dsh02HostServices,
   roots: readonly HandoffRoot[],
   fallbackDir: string,
+  locale: HandoffLocale,
   sessionId: string,
   content: readonly PromptContentPartLike[],
 ): Promise<readonly PromptContentPartLike[]> {
@@ -1102,17 +1139,18 @@ async function handoffImagesForTextOnlyModel(
       if (part.type !== 'image') return part
       index += 1
       const { absolute, relative } = writeHandoffFile(dir, workspace, part.mediaType, part.data)
-      const name = typeof part.name === 'string' && part.name.trim() !== '' ? part.name.trim() : `图片 ${index}`
+      const name = typeof part.name === 'string' && part.name.trim() !== ''
+        ? part.name.trim()
+        : (locale === 'en' ? `image ${index}` : `图片 ${index}`)
       const text = [
-        // 第一行有两个读者，所以把动作指令塞进这行**而不另起一行**：
-        // - 给人看：图片序号、原始文件名、工作目录里的短路径；
+        // 第一行有两个读者，所以两句都塞在这一行里**而不另起一行**：
+        // - 给人看：图片序号、原始文件名、存在哪、要看图该怎么办（写人话，见 handoffLine）；
         // - 给模型看：明确要求「先读图再回答」。实测纯文本模型拿到路径后**并不一定会去读** ——
         //   曾经出现过它先去加载界面技能、图放着不看的场面（用户的原话是"你啥都不显示"）。
         //   只递路径是"可以读"，加上这一句才是"被要求读"。
         // 另外，客户端（dsh-companion）按行首 `🖼️ 图片 ` 与 `[Image: source:` 两个标记整行摘除，
-        // **不看括号里的字**，所以在这里追加指令不需要手机端跟着出包。
-        `🖼️ 图片 ${index}「${name}」（当前模型不支持图片输入，已保存到工作目录 ${relative}；` +
-          `请先用读图工具打开下面那行的绝对路径，看清内容再回答）`,
+        // **不看括号里的字**，所以改文案不需要手机端跟着出包。
+        handoffLine(index, name, relative, locale),
         `[Image: source: ${absolute}]`,
       ].join('\n')
       return { type: 'text' as const, text }
@@ -1287,6 +1325,9 @@ export function createDsh02ApiProxy(
       prompt: request => call(async () => {
         // 0.2.x requires a client-minted requestId that the old payload omitted.
         const requestId = randomUUID()
+        // `locale` 是我们自己加的字段（客户端界面语言），**不能**原样递给内核 ——
+        // 内核的 prompt 入参是严格形状，多一个字段就可能被拒。摘出来单独用。
+        const { locale, ...kernelPayload } = request.payload
         const receiptIds = request.payload.content
           .filter((part): part is { type: 'file'; receiptId: string } => part.type === 'file')
           .map(part => part.receiptId)
@@ -1296,7 +1337,9 @@ export function createDsh02ApiProxy(
         // 用户装的识图插件/工具照常接手。判定与落盘都在 helper 里，
         // 任何不确定都退回原样（见 handoffImagesForTextOnlyModel 的三条原则）。
         const content = imageHandoff
-          ? await handoffImagesForTextOnlyModel(host, handoffRoots, imageHandoffDir, request.payload.sessionId, request.payload.content)
+          ? await handoffImagesForTextOnlyModel(
+              host, handoffRoots, imageHandoffDir, locale ?? 'zh', request.payload.sessionId, request.payload.content,
+            )
           : request.payload.content
 
         // 带文件的 prompt 必须先把凭证绑定到这次请求：内核的注释写明凭证
@@ -1315,7 +1358,7 @@ export function createDsh02ApiProxy(
             })()
 
         await host.sessionController.prompt(
-          { requestId, ...request.payload, content },
+          { requestId, ...kernelPayload, content },
           new AbortController().signal,
         )
         binding?.commit()

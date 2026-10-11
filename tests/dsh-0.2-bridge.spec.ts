@@ -2,7 +2,7 @@ import { mkdtemp, readFile, stat } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
-import { createDsh02ApiProxy, type Dsh02HostServices } from '../src/host/dsh-0.2-bridge.ts'
+import { createDsh02ApiProxy, handoffLocaleOf, type Dsh02HostServices } from '../src/host/dsh-0.2-bridge.ts'
 
 /**
  * Contract tests for the DSH 0.2.x bridge.
@@ -741,11 +741,13 @@ describe('dsh 0.2.x bridge: image handoff for text-only models', () => {
     // ② 给人看的那行：图片名 + 工作目录相对路径，不是一串裸路径。
     expect(note).toContain('截图.png')
     expect(note).toContain('.dsh-images/')
-    expect(note).toContain('已保存到工作目录')
-    // ③ 动作指令必须在**同一行**里。只递路径是「可以读」，明确要求才是「被要求读」——
-    //    实测模型会拿着路径先去加载界面技能、把图放着不看。也不能另起一行：
-    //    客户端按行首标记整行摘除，多出来的行会当正文显示在手机上。
-    expect(note).toContain('请先用读图工具打开')
+    expect(note).toContain('已存到')
+    // ③ 两句都在**同一行**里：一句说清「模型看不到图、图在哪」，一句说清「要看图怎么办」。
+    //    后者不能另起一行 —— 客户端按行首标记整行摘除，多出来的行会当正文显示在手机上。
+    //    措辞要**人话**：早期版本写「请先用读图工具打开下面那行的绝对路径」，用户反馈看不懂。
+    expect(note).toContain('当前模型看不到图')
+    expect(note).toContain('要看图，请用识图工具打开下面那行的路径')
+    expect(note).not.toContain('绝对路径')
     expect(note.split('\n')).toHaveLength(2)
     // ④ 零插件依赖：不出现任何插件名。
     expect(note).not.toMatch(/modlens/i)
@@ -753,6 +755,48 @@ describe('dsh 0.2.x bridge: image handoff for text-only models', () => {
     const bytes = await readFile(filePath!)
     expect(Buffer.from(bytes).toString('base64')).toBe(PNG)
     expect((await stat(filePath!)).mode & 0o077).toBe(0)
+  })
+
+  it('speaks the client interface language, and never leaks our field to the kernel', async () => {
+    // 「中文界面中文提示、英文界面英文提示」：语言由 HTTP `Accept-Language` 一路传到这里。
+    const fallback = await mkdtemp(path.join(tmpdir(), 'daw-handoff-en-'))
+    const workspace = await mkdtemp(path.join(tmpdir(), 'daw-handoff-en-ws-'))
+    const { host, api } = await makeBridge({
+      modalities: ['text'],
+      fallbackDir: fallback,
+      roots: [{ id: 'root-1', realPath: workspace }],
+      sessionCwd: workspace,
+    })
+
+    await api.sessions.prompt({
+      rpcId: 'p',
+      payload: {
+        sessionId: 'session-1',
+        mode: 'queue',
+        content: [{ type: 'image', mediaType: 'image/png', data: PNG, name: 'shot.png' }],
+        locale: 'en',
+      },
+    })
+
+    const note = sentContent(host)[0]?.text ?? ''
+    expect(note).toContain("this model can't see images")
+    expect(note).toContain('Image 1 "shot.png"')
+    expect(note).not.toContain('当前模型看不到图')
+    expect(note.split('\n')).toHaveLength(2)
+    // `locale` 是我们自己加的字段：内核的 prompt 入参是严格形状，多一个字段就可能被拒。
+    const kernelRequest = vi.mocked(host.sessionController.prompt).mock.calls[0]?.[0]
+    expect(kernelRequest).not.toHaveProperty('locale')
+    expect(kernelRequest).toMatchObject({ sessionId: 'session-1', mode: 'queue' })
+  })
+
+  it('picks the interface language out of Accept-Language, defaulting to zh', () => {
+    expect(handoffLocaleOf(undefined)).toBe('zh')
+    expect(handoffLocaleOf('zh-CN,zh;q=0.9,en;q=0.8')).toBe('zh')
+    expect(handoffLocaleOf('en-US,en;q=0.9')).toBe('en')
+    // 不认识的语种不猜：退回中文，也就是这个功能原本的口径。
+    expect(handoffLocaleOf('fr-FR,fr;q=0.9')).toBe('zh')
+    // 客户端排了优先级就照它排的走。
+    expect(handoffLocaleOf('fr-FR,en;q=0.5')).toBe('en')
   })
 
   it('hands off right after the user switches to a text-only model', async () => {

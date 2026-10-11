@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { lstat } from 'node:fs/promises'
 import type { Principal, WorkspaceEvent } from '../shared/contracts.ts'
 import type { StoredRoot, WorkspaceDatabase } from './database.ts'
+import type { HandoffLocale } from './dsh-0.2-bridge.ts'
 import { ApiError } from './errors.ts'
 import { resolveAuthorizedPath, wireRelative } from './path-policy.ts'
 
@@ -34,7 +35,13 @@ export interface DshApiProxy {
     list(request: { rpcId: string; payload: { cursor?: string } }): Promise<RpcResponse<{ items: DshSessionSummary[] }>>
     create(request: { rpcId: string; payload: { cwd?: string; workspaceId?: string; sessionId?: string; agentPreset?: string } }): Promise<RpcResponse<{ sessionId: string; agentPreset?: string }>>
     history(request: { rpcId: string; payload: { sessionId: string; beforeSeq?: number; maxMessages?: number } }): Promise<RpcResponse<{ events: unknown[]; hasMore: boolean; projections?: unknown }>>
-    prompt(request: { rpcId: string; payload: { sessionId: string; mode: 'queue' | 'steer'; content: PromptContentPart[]; clientTimeZone?: string } }): Promise<RpcResponse<{ accepted: true; command?: unknown }>>
+    /**
+     * 提交一条 prompt。
+     *
+     * `locale` 不是内核字段，是**我们**加的：告诉图片交接「发消息的客户端界面是什么语言」，
+     * 好让交接说明说用户看得懂的话。它会一直传到 `dsh-0.2-bridge` 并在调内核前被摘掉。
+     */
+    prompt(request: { rpcId: string; payload: { sessionId: string; mode: 'queue' | 'steer'; content: PromptContentPart[]; clientTimeZone?: string; locale?: HandoffLocale } }): Promise<RpcResponse<{ accepted: true; command?: unknown }>>
     /**
      * 上传一个文件，换取 prompt 可引用的凭证（`receiptId`）。
      * `data` 是文件字节的**标准 base64**。
@@ -484,6 +491,7 @@ export class DshChatAdapter {
     parts: PromptContentPart[],
     mode: 'queue' | 'steer',
     clientTimeZone?: string,
+    locale?: HandoffLocale,
   ): Promise<{ accepted: true; command?: unknown }> {
     await this.requireSession(principal, sessionId)
     // 内核要求「至少一个非空白文本部分或附件」。在这里先拦下来，是为了给客户端
@@ -500,6 +508,7 @@ export class DshChatAdapter {
         mode,
         content: parts,
         ...(clientTimeZone === undefined ? {} : { clientTimeZone }),
+        ...(locale === undefined ? {} : { locale }),
       },
     }))
   }
