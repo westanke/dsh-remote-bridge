@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: DeepSeek Harness Mobile API
-  version: 2.2.1
+  version: 2.2.2
   description: Versioned file and chat BFF for mobile and third-party DSH clients. HTTP and HTTPS are both supported.
 servers:
   - url: http://127.0.0.1:3090/api/v1
@@ -582,6 +582,102 @@ paths:
       responses:
         '202': { description: Decision accepted by DSH. }
         '409': { $ref: '#/components/responses/Error' }
+  /chat/sessions/{sessionId}/questions:
+    get:
+      operationId: listUserQuestions
+      description: |
+        Lists questions an agent is waiting on, from two sources merged together:
+        the ones this bridge is holding open (an `ask_user_question` call with no
+        `timeout`, taken over from the host's `user-questions/request` waterfall),
+        and the ones the kernel still accepts a late answer for (`continued`).
+        A question held open is reported first; the same `callId` never appears twice.
+        The `viaBridge` flag distinguishes the two. An unknown or inactive session
+        yields an empty list rather than an error.
+      parameters:
+        - name: sessionId
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Questions the current device may answer.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      type: object
+                      required: [callId, state, questions]
+                      properties:
+                        callId: { type: string }
+                        state: { type: string, enum: [continued] }
+                        viaBridge:
+                          type: boolean
+                          description: True when the bridge is holding this question open, so the agent is blocked on it right now.
+                        questions:
+                          type: array
+                          items:
+                            type: object
+                            required: [id, question]
+                            properties:
+                              id: { type: string }
+                              question: { type: string }
+                              header: { type: string }
+                              detail: { type: string }
+                              multiSelect: { type: boolean }
+                              options:
+                                type: array
+                                items:
+                                  type: object
+                                  required: [label]
+                                  properties:
+                                    label: { type: string }
+                                    description: { type: string }
+        '404': { $ref: '#/components/responses/Error' }
+  /chat/sessions/{sessionId}/questions/{callId}/answer:
+    post:
+      operationId: answerUserQuestion
+      description: |
+        Answers one question set. Answers for a question the bridge holds open are
+        delivered as the return value of the tool call that is waiting; answers for a
+        `continued` question are steered into the session as a new turn. The
+        `selected` array carries option labels and must match the question's own
+        options; use `custom` for free text.
+      parameters:
+        - name: sessionId
+          in: path
+          required: true
+          schema: { type: string }
+        - name: callId
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [answers]
+              properties:
+                answers:
+                  type: array
+                  items:
+                    type: object
+                    required: [id, selected]
+                    properties:
+                      id: { type: string }
+                      selected: { type: array, items: { type: string } }
+                      custom: { type: string }
+      responses:
+        '202': { description: Answer accepted. }
+        '400': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
+        '503': { $ref: '#/components/responses/Error' }
   /chat/sessions/{sessionId}/commands:
     get:
       operationId: listSessionCommands

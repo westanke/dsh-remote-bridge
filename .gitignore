@@ -19,3 +19,4 @@ Thumbs.db
 # Local DSH test harness (isolated DSH_HOME used for 0.2.x verification)
 .testenv/
 .commitmsg
+.cm2

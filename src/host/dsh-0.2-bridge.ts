@@ -666,7 +666,7 @@ class QuestionBridge {
   /** Register the answerer once, during plugin activation. */
   attach(): void {
     const bridge = this
-    // `{ prepend: true }`：**排到官方 WebUI 的 answerer 前面**。
+    // 注册顺序不抢：先调 `next()` 把卡片交给下游（官方 WebUI），
     //
     // 这一条是「先委托再竞速」能否成立的前提 —— 我们必须在链的最外层，
     // 才能自己拿到 `next` 并决定「先把它交出去、同时留一张给 App」。
@@ -768,9 +768,7 @@ class QuestionBridge {
       // delegated 分支里 delegate 已经 fulfilled，await 不会抛；
       // dismissed（中止）分支里把 delegate 原样交出去。
       return await delegate
-      // ⚠️ 实验：`prepend` 让我们排到链最外层。
-      // 若钩子此前从未被调用过，这一行就是原因（或被官方抢先 veto）。
-    }, { prepend: true })
+    })
   }
 
   /**
