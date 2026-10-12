@@ -152,6 +152,40 @@ curl "http://192.168.1.20:3090/api/v1/roots/resolve?path=%2Fmedia%2Fdata%2Fproje
 
 profile 名依次取自 `DSH_PROFILE`、`--profile=<name>`、`--profile <name>`；`DSH_HOME` 缺省为 `~/.dsh`。无法判定时**不猜**，返回 `available: false` 与 `reason`（`PROFILE_UNKNOWN` 或 `MANIFEST_UNREADABLE`）而不是 500。返回值只包含包名、版本与状态，不返回任何文件内容。
 
+## 识图路径与交接图片
+
+纯文本模型收到图片时，内核会以 `MODEL_DOES_NOT_SUPPORT_IMAGES` 拒收整条消息。本插件在发消息前把图片落成工作区文件，消息里只留路径 —— 于是「人看到图、模型看到路径、识图工具按路径读图」三者各取所需。落点规则：
+
+```text
+<会话工作目录>/<识图路径>/<sha256>.<ext>      # 首选；目录 0700、文件 0600、内容寻址去重
+<插件状态目录>/image-handoff/<sha256>.<ext>   # 解析不出会话工作目录时的兜底
+```
+
+「识图路径」默认 `.dsh-images`，可在回环管理面查看与修改：
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| `GET` | `/manage/image` | 返回 `{ subdir, defaultSubdir, fallbackDir }`。`defaultSubdir` 是出厂默认（`.dsh-images`），设置页只读展示 |
+| `PUT` | `/manage/image` | 请求体 `{ "subdir": "imgs" }`；只接受**单段**目录名（1-64 字符，字母/数字/点/下划线/连字符）。非法值返回 `400 IMAGE_SUBDIR_INVALID` |
+
+改动立即生效：交接写盘与读图都按当前值现读，不需要重启。响应里的 `fallbackDir` 就是兜底目录的绝对路径。
+
+设备侧取图（需要 `files.read` 与会话归属）：
+
+```http
+GET /api/v1/image-handoff?sessionId=<sessionId>&name=<sha256>.<ext>
+```
+
+只接受**裸文件名**：目录永远由宿主按会话工作目录推出，客户端给绝对路径也不认（否则这条读文件的口子会变成任意文件读取）。
+
+WebUI 另有**只读**路由供 `<img>` 使用（浏览器不会给图片请求加 `Authorization`，所以它独立于本 REST）：
+
+```http
+GET /plugin/dsh-remote-bridge/raw?sessionId=<sessionId>&name=<sha256>.<ext>
+```
+
+判据：`Host` 必须回环、拒绝跨站请求、文件名必须匹配内容哈希白名单、扩展名声明必须与魔术字节一致、体积上限 32 MiB。取不到一律 `404`，且不区分「会话不存在」与「文件不存在」。
+
 ## 工具审批
 
 `GET /chat/sessions/{sessionId}/approvals` 返回当前授权会话的待审批操作；要求 `chat.read` 及对应 root grant。响应只包含公开 `approvalId`、工具名、风险等级，以及可选的脱敏原因和限长命令预览，不返回 DSH 私有 `rpcId`、原始工具参数或未脱敏正文。

@@ -11,6 +11,7 @@ import type { StoredRoot, WorkspaceDatabase } from './database.ts'
 import { handoffLocaleOf } from './dsh-0.2-bridge.ts'
 import { ApiError, asApiError } from './errors.ts'
 import type { FileService } from './file-service.ts'
+import { imageHandoffView, saveHandoffSubdir } from './image-handoff.ts'
 import {
   DEFAULT_PORT,
   classifyHost,
@@ -57,6 +58,13 @@ interface RouterOptions {
   settings: DshSettingsAdapter
   remote: RemoteControl
   maxUploadBytes: number
+  /**
+   * 解析不出会话工作目录时的图片兜底目录（设置面板里只读展示）。
+   *
+   * 可选：默认按 `database.dataDir` 推出来，测试因此不必每条都补一个字段。
+   * 生产路径由 `index.ts` 传入与交接实际使用**同一个**目录，避免「界面显示 A、落盘在 B」。
+   */
+  imageFallbackDir?: string
 }
 
 export class ApiRouter {
@@ -804,6 +812,22 @@ export class ApiRouter {
       sendJson(res, 200, { items: this.options.database.listAudit(optionalInteger(url.searchParams.get('limit')) ?? 200) })
       return
     }
+    // 识图路径：图片交接落在「会话工作目录 + <目录名>」下，这里读/改那个目录名。
+    //
+    // 面板上「当前默认」那一栏（`.dsh-images`）是**只读**的 —— 它是历史交接消息与识图
+    // 工具共同依赖的契约字面量，不是一个偏好项。可改的是**当前值**，改完立即生效：
+    // 交接写盘与只读图片路由都通过 getter 现读（见 `createDsh02ApiProxy` 的 handoffSubdir）。
+    if (method === 'GET' && pathname === '/manage/image') {
+      sendJson(res, 200, imageHandoffView(this.options.database, this.imageFallbackDir()))
+      return
+    }
+    if (method === 'PUT' && pathname === '/manage/image') {
+      const body = await readJson(req, 16_384) as Record<string, unknown>
+      const subdir = saveHandoffSubdir(this.options.database, body.subdir)
+      this.options.database.audit('admin', 'loopback-admin', 'image.subdir', undefined, undefined, { subdir }, requestId)
+      sendJson(res, 200, imageHandoffView(this.options.database, this.imageFallbackDir()))
+      return
+    }
     const purgeRoute = pathname.match(/^\/manage\/trash\/([^/]+)$/)
     if (method === 'DELETE' && purgeRoute !== null) {
       await this.options.files.purgeTrash(decodeURIComponent(purgeRoute[1] as string))
@@ -924,6 +948,11 @@ export class ApiRouter {
   private authorizedRoots(principal: Principal): StoredRoot[] {
     const roots = this.options.database.listRoots()
     return principal.rootIds === 'all' ? roots : roots.filter(root => principal.rootIds.has(root.id))
+  }
+
+  /** 兜底交接目录：没配就用状态目录下的 `image-handoff`（与 `index.ts` 的默认一致）。 */
+  private imageFallbackDir(): string {
+    return this.options.imageFallbackDir ?? path.join(this.options.database.dataDir, 'image-handoff')
   }
 
   private audit(

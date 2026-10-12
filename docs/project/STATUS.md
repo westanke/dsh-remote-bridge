@@ -1,22 +1,32 @@
 # 当前状态
 
-- 日期：2026-10-09
-- 阶段：`dsh-remote-bridge` v2.2.1（README 增加 npm 安装方式；包自 2.2.0 起已在 npm 上）
-- 当前任务：`REL-005`
+- 日期：2026-10-12
+- 阶段：`dsh-remote-bridge` **v2.3.0**（已发版：npm + 双站 Release + git tag）
+- 当前任务：`IMAGE-001` 已完成并随 v2.3.0 发布；下一轮待用户指派
 - DSH 基线：`master` / `47f943859bef60e4160492346772ded9b24f765a`
 - 插件路径：本仓库（历史上游为 `Hakunm/dsh-workspace`，v1.0.0 保持原样不动）
 - 已完成：Host/Client 外置插件、授权根与回收站、独立 listener、设备授权、聊天/审批/命令/模型 BFF、OpenAPI/AsyncAPI、Kotlin SDK、中英双语和版本展示
-- v2.0.0（DSH 0.2.x 下游适配）：host bridge 从 `apiProxy` 迁到 host services；新增插件清单 `GET /api/v1/settings/plugins`（`PLUGIN-001`）、配置文本 `POST /manage/config/text`（`CFG-001`）、绝对路径解析 `GET /api/v1/roots/resolve`（`FS-003`）、会话附件读取 `GET /api/v1/attachments/:id`
+- 2.2.3 / 2.2.4（纯文本模型发图）：内核以 `MODEL_DOES_NOT_SUPPORT_IMAGES` 拒收纯文本模型会话里的图片，插件按内核自己的 `llm.resolveModelInfo()` 判定并把图片落成工作区文件（`<会话工作目录>/.dsh-images/<sha256>.<ext>`，内容寻址、0700/0600），消息里留两行：第一行给人看（当前值可配置的识图路径），第二行 `[Image: source: <绝对路径>]` 给机器；解析不出工作目录时退回 `<dataDir>/image-handoff`。手机端用 `GET /api/v1/image-handoff` 把图取回去显示，历史图片走 `sessionController.attachment`
+- 2.2.4 实装 + 本轮待发版内容（`IMAGE-001`）：设置页新增「识图」分区 —— 识图路径（交接目录名）可改、存 `settings.image_handoff_subdir`、改完立即生效；「当前默认」`.dsh-images` 与兜底目录为只读栏。dsh-image-paths 0.3.1 的宿主路由与浏览器图集并入本插件：只读路由 `GET /plugin/dsh-remote-bridge/raw?sessionId=…&name=…`（回环 + 同源 + 裸文件名白名单 + 字节自证 + 32 MiB 上限，目录由宿主按会话推出），图集挂在 `conversation.chat.turnTail`，只认用户消息里的交接行首标记
+- **待办**：① 真机验证（重启 dsh + 刷新页面，看七张折叠卡片、默认根「不可删」徽标、权限勾选与中文化）；② 停用独立 `image-paths` 插件那一行 —— 两个插件会把同一张图在 Turn 尾画两遍，本插件已自带该能力；③ 版本 bump 与发布**已完成**（v2.3.0）
+- 2.3.0（设置面板重做 + 识图并入 + 默认根 + 设备清理）：
+  - **设置面板换成 Vision Router 式折叠卡片**：删除顶部分区导航栏，七张卡片平铺、各自折叠、可多张同时展开；配色改挂 DSH 原生 `--dsw-alias-*` 令牌（深浅色自动跟随）；清理文件工作区遗留死样式，样式表 12.6 KB → 6.2 KB
+  - **识图路径并入**（原 dsh-image-paths 0.3.1，ADR-0007）：只读图片路由 `GET /plugin/dsh-remote-bridge/raw?sessionId=…&name=…` + Turn 尾图集；设置页新增「识图」分区，交接目录名可改、存 `settings.image_handoff_subdir`
+  - **默认根**：启动时把 DSH 当前工作区登记为 `builtin = 1` 的授权根（不可删除、可正常访问）；`roots` 表加 `builtin` 列并**移除 `real_path` 的 UNIQUE**（默认根与用户自加的同目录根是两条独立记录）；不劫持用户已有配置，不影响已配对设备
+  - **设备撤销改为真删除**（`DELETE` 而非打标记）：`device_roots` 级联清除，`audit.actor_id` 非外键所以审计保留；启动时 `purgeRevokedDevices()` 清理历史标记行（本机曾堆 32 条）；权限码中文化
+  - **权限可在配对前勾选**：`grantedScopes` state 取代写死的 `[...DEVICE_SCOPES]`，值随 `enableRemote` / `createPairing` 一起发出；配置文本仍固定最小权限不跟随
+  - 六处版本号战场同步（package.json / version.ts / openapi / asyncapi / kotlin-sdk / healthz 断言）
+- 2.0.0（DSH 0.2.x 下游适配）：host bridge 从 `apiProxy` 迁到 host services；新增插件清单 `GET /api/v1/settings/plugins`（`PLUGIN-001`）、配置文本 `POST /manage/config/text`（`CFG-001`）、绝对路径解析 `GET /api/v1/roots/resolve`（`FS-003`）、会话附件读取 `GET /api/v1/attachments/:id`
 - 2.0.1 / 2.0.2 / 2.0.3：**已知有缺陷，不建议安装**。2.0.1 把 cordis 注入属性的读取提前到 `apply` 期间导致插件整个激活失败；2.0.2 只给 `attachments` 加了容错、漏了 `fileUploads`；2.0.3 才把两者一并处理
 - 2.0.4：改名 `dsh-workspace` → `dsh-remote-bridge`（旧名比内容窄）；桌面端入口收敛为**纯设置面板**，文件树与编辑器移出桌面面板、保留在独立页 `/dsh-workspace`
 - 2.1.0–2.1.3（桌面设置）：入口从侧栏齿轮按钮**删除**，改为注册 `settings.section`（`id: dsh-remote-bridge`、`order: 2`，紧跟 pocket-relay 的「📱 手机访问」），面板标题改「手机设置」，**在设置页内联渲染**（2.1.1 修正了 2.1.0 那个「只有一句话」的启动器）；导航改横排并修好白字白底的隐形按钮（2.1.2）；新增「App 下载」页与二维码资产、回收站来路说明（2.1.3）
 - 二维码资产：提交进仓库并由 `tests/app-qr.spec.ts` 解码校验，指向 Releases **列表页**（非具体文件），因此发新版不需重新生成
 - 2.2.0（删独立页 + 瘦身）：删除独立页 `/dsh-workspace`（文件树 + CodeMirror 6 编辑器）及 `src/standalone/`、`assets/workspace.html`、`src/client/editor.tsx`、`workspace.tsx` 中的 `WorkspaceApp`/`DirectoryNode`/`CommandDialog`/`AdminOverlay`、`scripts/test-server.ts`，以及 8 个 `@codemirror/*` 与 `@lezer/highlight` 依赖；同时关闭 tsdown source map（映射本身约 5 MB，而插件发的是预构建 bundle、包内又没有原始 TS 源码，消费者根本用不上）。理由：手机 App 的文件页已原生覆盖同一套能力，桌面端这个页面无人使用。发布包 **1.72 MB → 0.25 MB**；`/dsh-workspace-api` 代理前缀与全部 REST 文件端点未动，App 不受影响
 - 附件能力边界：会话历史图片需要宿主提供 `ctx.attachments` 服务；缺失时插件照常激活，读取接口返回 `ATTACHMENT_STORE_UNAVAILABLE`，附件类上传返回 `FILE_UPLOADS_UNAVAILABLE`
-- 最近验证：`pnpm check` 全绿 —— `tsc --noEmit`、**19 个测试文件 / 113 个用例**、`docs:check` 一致性、两个 entry（host / client）构建完成；另有 **3 个浏览器层用例**（Playwright 用真实浏览器量计算样式），3/3 通过
+- 最近验证：`pnpm typecheck` 通过 · `pnpm test` **30 个测试文件 / 198 个用例全绿** · `pnpm docs:check` 通过 · `pnpm build` 两个 entry（host / client）构建完成并已同步实装目录（含 client.cjs）。另有 **4 个浏览器层用例**（Playwright 用真实浏览器量计算样式），4/4 通过
 - 界面截图：桌面界面截图**已删除**（那是改名前的旧界面，含 v1.0.0 徽章与旧的 1400px 文件树对话框）。重录需要能驱动插件面板的浏览器环境，目前不具备；二维码另有 SVG/PNG 资产。桌面文件工作区界面（独立页）已于 2.2.0 删除，不再有对应截图需求
 - 仓库：`https://github.com/westanke/dsh-remote-bridge`，topic 包含 `dsh-plugin`
-- Release：`https://github.com/westanke/dsh-remote-bridge/releases`（`v2.0.0` / `v2.0.1` 为已知缺陷版，`v2.0.2` / `v2.0.3` 从未发布；两站与 npm 现均为 v2.2.1）
+- Release：`https://github.com/westanke/dsh-remote-bridge/releases`（`v2.0.0` / `v2.0.1` 为已知缺陷版，`v2.0.2` / `v2.0.3` 从未发布；两站与 npm 现均为 **v2.3.0**）
 - 正式产物：`artifacts/dsh-remote-bridge-2.2.1.tgz`，**260,778 字节（约 0.25 MB）**，SHA-256 `9aed753c461135a48f4a1a3daabfd8739e1bf0b0eb0671e50496c3fae1b3a596`
 - 分发：npm [`dsh-remote-bridge`](https://www.npmjs.com/package/dsh-remote-bridge)（官方源 + npmmirror 均有），`dsh plugin --profile web add dsh-remote-bridge` 可用
 - 阻塞项：Android 与 DSH WebUI 的后续完整能力对等仍按 `PARITY-001` 推进

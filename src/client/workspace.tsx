@@ -9,6 +9,7 @@ import {
   FolderOpen,
   FolderPlus,
   HardDrive,
+  Image as ImageIcon,
   RefreshCw,
   Save,
   Settings,
@@ -16,20 +17,21 @@ import {
   Trash2,
   Upload,
 } from 'lucide-react'
+import type { ReactNode } from 'react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import type { DeviceScope, DeviceView, RootView } from '../shared/contracts.ts'
+import type { DeviceScope, DeviceView, ImageHandoffSettings, RootView } from '../shared/contracts.ts'
 import { DEVICE_SCOPES } from '../shared/contracts.ts'
 import { APP_QR_CODES } from './app-qr.ts'
 import { WorkspaceApi, WorkspaceApiError } from './api.ts'
 import type { ConfigTextResult } from './api.ts'
-import { type MessageKey, type Translate, useWorkspaceI18n } from './i18n.tsx'
+import { type MessageKey, scopeLabel, type Translate, useWorkspaceI18n } from './i18n.tsx'
 import { installWorkspaceStyles } from './styles.ts'
 import { PLUGIN_VERSION } from '../shared/version.ts'
 
-export type AdminTab = 'roots' | 'remote' | 'devices' | 'trash' | 'audit' | 'app-download'
+export type AdminTab = 'roots' | 'remote' | 'devices' | 'image' | 'trash' | 'audit' | 'app-download'
 export type PanelSection = AdminTab
 
-export const ADMIN_TABS: readonly AdminTab[] = ['roots', 'remote', 'devices', 'trash', 'audit', 'app-download']
+export const ADMIN_TABS: readonly AdminTab[] = ['roots', 'remote', 'devices', 'image', 'trash', 'audit', 'app-download']
 
 /** What the settings-page launcher opens: authorized roots, the first section. */
 export const DEFAULT_PANEL_SECTION: AdminTab = 'roots'
@@ -43,6 +45,31 @@ export const DEFAULT_PANEL_SECTION: AdminTab = 'roots'
  */
 function tabLabelKey(tab: AdminTab): MessageKey {
   return tab === 'app-download' ? 'appDownloadTab' : `${tab}Tab`
+}
+
+/**
+ * 卡片头部的描述行。与 `tabLabelKey` 同理：唯一含连字符的分区显式映射。
+ *
+ * 键名是 `${tab}TabDesc`（**带 Tab**），不是 `${tab}Desc`。这个中间段不是冗余：它让
+ * 描述键与标题键 `rootsTab` / `rootsTabDesc` 成对，读的人一眼能看出这两个属于同一张卡。
+ *
+ * 踩过的坑：早先这里写成 `${tab}Desc`，`rootsDesc` 之类根本不在字典里 —— `translate` 直接
+ * `dictionaries[locale][key].replace(...)` 抛 TypeError，整个设置面板白屏。`as MessageKey`
+ * 把类型检查骗过去了，所以单测全绿也照样白屏。**键名靠模板拼出来时，类型系统是最后一道
+ * 防线，这里偏偏被断言关掉了。** 现在改成显式查表，见下。
+ */
+const TAB_DESC_KEYS: Record<AdminTab, MessageKey> = {
+  roots: 'rootsTabDesc',
+  remote: 'remoteTabDesc',
+  devices: 'devicesTabDesc',
+  image: 'imageTabDesc',
+  trash: 'trashTabDesc',
+  audit: 'auditTabDesc',
+  'app-download': 'appDownloadTabDesc',
+}
+
+function tabDescKey(tab: AdminTab): MessageKey {
+  return TAB_DESC_KEYS[tab]
 }
 
 /**
@@ -61,33 +88,80 @@ function tabLabelKey(tab: AdminTab): MessageKey {
  * 这就是把弹窗嵌进设置页的代价：入口看起来是空的，因为内容在下一层。
  * 设置页本身就是一层容器，没有任何理由再套一层。
  */
+/**
+ * 设置面板主体：**七张卡片平铺，各自独立开合，没有导航栏**。
+ *
+ * 上一版留了个分区导航栏、一次只显示一张卡。对照 Vision Router 的实际长相才发现差得远：
+ * 它是全部卡片一起列出来、想开哪张开哪张，标题栏自己就是入口。那句提示词写得很直白 ——
+ * 「多张卡可以同时保持展开」。所以导航栏这一层是多余的，用户还得先点导航、再点卡片头，
+ * 两次点击才走一步。
+ *
+ * 抽出来是为了让 DSH 设置页能把它**内联**渲染。
+ *
+ * 早先的版本做不到这一点，于是设置页里只放了一句说明加一个「打开手机设置面板」按钮，
+ * 真正的设置藏在按钮后面的模态框里。用户的反应很直接：「其他的可以设置的东西那去了」——
+ * 这就是把弹窗嵌进设置页的代价：入口看起来是空的，因为内容在下一层。
+ * 设置页本身就是一层容器，没有任何理由再套一层。
+ *
+ * `section` / `onSection` 保留是为了兼容旧调用方，但现在**不再决定显示哪一张卡**，
+ * 只用来决定默认展开哪一张。
+ */
 export function PhoneSettingsBody(props: {
   api: WorkspaceApi
   section: PanelSection
   onSection(section: PanelSection): void
 }): JSX.Element {
+  return <AdminPanel api={props.api} initialOpen={props.section} />
+}
+
+/**
+ * 一个设置分区 = 一张 Vision Router 式折叠卡片。
+ *
+ * 交互模型照搬 dsh-vision-router 的 `vr-card`：外壳是圆角 12px 卡片，展开时加
+ * `daw-card-open`；头部是一个 `aria-expanded` 的按钮，装着图标 + 标题 + 描述 + 旋转箭头；
+ * 展开体是 `daw-card-body`（顶部一条分隔线）。
+ *
+ * 七张卡同时挂在页面上，各张独立开合 —— 导航栏已经删掉了，卡片头自己就是入口。
+ */
+function SettingsCard(props: {
+  tab: AdminTab
+  nameKey: MessageKey
+  descKey: MessageKey
+  open: boolean
+  onToggle(): void
+  children: ReactNode
+}): JSX.Element {
   const { t } = useWorkspaceI18n()
-  return <>
-    <nav className="daw-tabs" aria-label={t('panelNav')}>
-      {ADMIN_TABS.map(name => <button key={name} className={`daw-tab${props.section === name ? ' active' : ''}`} onClick={() => props.onSection(name)}>
-        {tabIcon(name)} {t(tabLabelKey(name))}
-      </button>)}
-    </nav>
-    <div className="daw-panel-body">
-      <div className="daw-panel-pane">
-        <AdminPanel api={props.api} section={props.section} />
-      </div>
-    </div>
-  </>
+  return <section className={`daw-card${props.open ? ' daw-card-open' : ''}`}>
+    <button
+      type="button"
+      className="daw-card-header"
+      aria-expanded={props.open}
+      onClick={props.onToggle}
+    >
+      <span className="daw-card-icon" aria-hidden="true">{tabIcon(props.tab)}</span>
+      <span className="daw-card-headtext">
+        <span className="daw-card-name">{t(props.nameKey)}</span>
+        <span className="daw-card-desc">{t(props.descKey)}</span>
+      </span>
+      <span className={`daw-card-chevron${props.open ? ' daw-card-chevron-open' : ''}`} aria-hidden="true">▾</span>
+    </button>
+    {props.open && <div className="daw-card-body">{props.children}</div>}
+  </section>
 }
 
 /**
  * The settings content of one admin section, extracted from `AdminOverlay` so the unified panel and
  * the standalone `/dsh-workspace` page render exactly the same body.
  */
-export function AdminPanel(props: { api: WorkspaceApi; section: AdminTab }): JSX.Element {
+/**
+ * 设置面板：七张卡片平铺，各自独立开合。
+ *
+ * `initialOpen` 决定进页面时先展开哪一张（默认第一张），之后完全由用户点卡片头控制。
+ * 展开状态存 Set —— 这样「同时展开两张」是自然结果，不需要额外的互斥逻辑。
+ */
+export function AdminPanel(props: { api: WorkspaceApi; initialOpen: AdminTab }): JSX.Element {
   const { locale, t } = useWorkspaceI18n()
-  const tab = props.section
   const [status, setStatus] = useState<Awaited<ReturnType<WorkspaceApi['status']>>>()
   const [trash, setTrash] = useState<Awaited<ReturnType<WorkspaceApi['trashItems']>>['items']>([])
   const [audit, setAudit] = useState<Record<string, unknown>[]>([])
@@ -99,21 +173,46 @@ export function AdminPanel(props: { api: WorkspaceApi; section: AdminTab }): JSX
   const [configText, setConfigText] = useState<ConfigTextResult>()
   const [configEndpoint, setConfigEndpoint] = useState('')
   const [configTextBusy, setConfigTextBusy] = useState(false)
+  const [image, setImage] = useState<ImageHandoffSettings>()
+  const [imageDraft, setImageDraft] = useState('')
+  const [imageBusy, setImageBusy] = useState(false)
+  // 展开的是哪几张卡。Set 而不是单个值：Vision Router 的设定就是「多张卡可以同时保持展开」。
+  const [openCards, setOpenCards] = useState<Set<AdminTab>>(() => new Set([props.initialOpen]))
+  const [imageSaved, setImageSaved] = useState(false)
   const [error, setError] = useState<unknown>()
+
+  const isOpen = useCallback((card: AdminTab) => openCards.has(card), [openCards])
+  const toggleCard = useCallback((card: AdminTab) => {
+    setOpenCards(previous => {
+      const next = new Set(previous)
+      if (!next.delete(card)) next.add(card)
+      return next
+    })
+  }, [])
 
   const refresh = useCallback(async () => {
     try {
       const next = await props.api.status()
       setStatus(next)
-      if (tab === 'trash') setTrash((await props.api.trashItems()).items)
-      if (tab === 'audit') setAudit((await props.api.audit()).items)
+      // 分区数据只在**对应卡片展开时**才拉。全量平铺后七张卡都在 DOM 里，
+      // 无条件全拉等于打开设置页就打七个请求，其中五个用户根本不会点开。
+      if (openCards.has('trash')) setTrash((await props.api.trashItems()).items)
+      if (openCards.has('audit')) setAudit((await props.api.audit()).items)
+      // 识图设置是这一节自己的数据：只在真正打开这一节时取，别让每次状态刷新都多一次往返。
+      if (openCards.has('image')) {
+        const settings = await props.api.imageSettings()
+        setImage(settings)
+        setImageDraft(settings.subdir)
+        setImageSaved(false)
+      }
       setError(undefined)
     } catch (cause) {
       setError(cause)
     }
-  }, [props.api, tab])
+  }, [props.api, openCards])
 
-  // Refresh whenever the section becomes visible: the trash and audit lists are section-local.
+  // Refresh on mount and whenever a card opens: trash, audit and image settings are card-local,
+  // and `refresh` now depends on `openCards`, so expanding a card fetches its data.
   useEffect(() => { void refresh() }, [refresh])
   // The generated config text embeds a device token. This panel unmounts when the dialog closes,
   // which drops it from memory — no explicit teardown effect needed.
@@ -123,6 +222,24 @@ export function AdminPanel(props: { api: WorkspaceApi; section: AdminTab }): JSX
     setListenerPort(String(status.configuredPort))
   }, [status?.configuredHost, status?.configuredPort])
   const roots = status?.roots ?? []
+  // 「启用远程访问」时授予的权限 —— **由用户在这里勾选**。
+  //
+  // 这条链路是：勾权限 → 生成访问码 → APP 输入码 → 权限随设备一起落库。
+  // 所以它必须是可交互的 state，不是展示。早先两版都错在这：
+  //  - 一版写死 `checked readOnly`（全勾且点不动）；
+  //  - 一版改成取「第一台设备的权限」，没设备时七个框全灰 —— 可恰恰**只有没设备时
+  //    才会走到这一步**，那版等于在用户唯一需要它的时刻把它弄坏。
+  //
+  // 默认全选，与既有行为一致（`enablePairing` 原先就是 `[...DEVICE_SCOPES]`）。
+  const [grantedScopes, setGrantedScopes] = useState<DeviceScope[]>([...DEVICE_SCOPES])
+  const toggleScope = useCallback((scope: DeviceScope) => {
+    setGrantedScopes(current => current.includes(scope) ? current.filter(item => item !== scope) : [...current, scope])
+  }, [])
+  const grantNotice = grantedScopes.length === 0
+    ? t('scopeGrantNoticeEmpty')
+    : (status?.devices?.length ?? 0) === 0
+      ? t('scopeGrantNotice')
+      : t('scopeGrantNoticeExisting')
   const parsedListenerPort = Number(listenerPort)
   const listenerPortValid = Number.isInteger(parsedListenerPort) && parsedListenerPort >= 1 && parsedListenerPort <= 65535
   const listenerDirty = status !== undefined && (
@@ -148,17 +265,25 @@ export function AdminPanel(props: { api: WorkspaceApi; section: AdminTab }): JSX
 
   return <main className="daw-admin">
           {error !== undefined && <div className="daw-warning">{messageOf(error, t)}</div>}
-          {tab === 'roots' && <>
-            <h3>{t('authorizedRoots')}</h3>
+          <SettingsCard key="roots" tab="roots" nameKey={tabLabelKey('roots')} descKey={tabDescKey('roots')} open={isOpen('roots')} onToggle={() => toggleCard('roots')}>
             <div className="daw-form-row">
               <input className="daw-input" placeholder={t('absolutePath')} value={path} onChange={event => setPath(event.target.value)} />
               <input className="daw-input" placeholder={t('displayLabel')} value={label} onChange={event => setLabel(event.target.value)} />
               <button className="daw-command primary" onClick={() => { void props.api.addRoot(path, label || undefined).then(() => { setPath(''); setLabel(''); return refresh() }).catch(setError) }}>{t('addRoot')}</button>
             </div>
-            <div className="daw-list">{roots.map(root => <div className="daw-list-row" key={root.id}><div><div className="daw-list-title">{root.label}</div><div className="daw-list-meta">{root.realPath}</div></div><button className="daw-icon danger" title={t('removeRoot')} onClick={() => { void props.api.removeRoot(root.id).then(refresh).catch(setError) }}><Trash2 size={15} /></button></div>)}</div>
-          </>}
-          {tab === 'remote' && <>
-            <h3>{t('remoteAccess')}</h3>
+            <div className="daw-list">{roots.map(root => <div className="daw-list-row" key={root.id}><div><div className="daw-list-title">{root.label}{root.builtin === true && <span className="daw-pill on">{t('builtinRootBadge')}</span>}</div><div className="daw-list-meta">{root.realPath}</div></div>{root.builtin === true
+              // 内置的 DSH 工作区根不给删除按钮：它在服务端也被 `removeRoot` 拦着，
+              // 这里干脆不提供入口，而不是提供一个必然报错的按钮。
+              ? <span className="daw-list-meta daw-builtin-hint">{t('builtinRootHint')}</span>
+              : <button className="daw-icon danger" title={t('removeRoot')} onClick={() => { void props.api.removeRoot(root.id).then(refresh).catch(setError) }}><Trash2 size={15} /></button>}</div>)}</div>
+            {/*
+              `device_roots` 是**配对那一刻的快照**：新登记的内置根默认不发给已配对的手机。
+              这是安全侧的默认（不给等于不给），但不说出来的话，用户会以为功能坏了 ——
+              「设置里明明有，手机里就是看不到」。所以这句必须常驻，不能只在出错时才提。
+            */}
+            {roots.some(root => root.builtin === true) && <div className="daw-list-meta daw-builtin-notice">{t('builtinRootNotice')}</div>}
+          </SettingsCard>
+          <SettingsCard key="remote" tab="remote" nameKey={tabLabelKey('remote')} descKey={tabDescKey('remote')} open={isOpen('remote')} onToggle={() => toggleCard('remote')}>
             <div className="daw-warning">{t('httpWarning')}</div>
             {roots.length === 0 && <div className="daw-warning">{t('addRootBeforeRemote')}</div>}
             <div className="daw-listener-form">
@@ -176,12 +301,13 @@ export function AdminPanel(props: { api: WorkspaceApi; section: AdminTab }): JSX
             {status?.remoteEnabled && <div className="daw-list-meta daw-listener-hint">{t('disableToEditListener')}</div>}
             {!status?.remoteEnabled && listenerDirty && <div className="daw-list-meta daw-listener-hint">{t('saveBeforeEnable')}</div>}
             <p><span className={`daw-pill${status?.remoteEnabled ? ' on' : ''}`}>{status?.remoteEnabled ? t('remoteEnabled') : t('loopbackOnly')}</span></p>
-            <div className="daw-scope-grid">{DEVICE_SCOPES.map(scope => <label className="daw-check" key={scope}><input type="checkbox" checked readOnly /> {scope}</label>)}</div>
+            <div className="daw-scope-grid">{DEVICE_SCOPES.map(scope => <label className="daw-check" key={scope}><input type="checkbox" checked={grantedScopes.includes(scope)} onChange={() => toggleScope(scope)} /> {scopeLabel(locale, scope)}</label>)}</div>
+            <div className="daw-list-meta">{grantNotice}</div>
             {status?.remoteEnabled
               ? <button className="daw-command danger" onClick={() => { void props.api.disableRemote().then(result => poll(result.id)).then(refresh).catch(setError) }}>{t('disableRemote')}</button>
-              : <button className="daw-command primary" disabled={roots.length === 0 || listenerDirty || !listenerPortValid || listenerHost.trim() === ''} onClick={() => { void props.api.enableRemote(roots.map(root => root.id), [...DEVICE_SCOPES]).then(result => poll(result.id)).catch(setError) }}>{t('enablePairing')}</button>}
+              : <button className="daw-command primary" disabled={roots.length === 0 || listenerDirty || !listenerPortValid || listenerHost.trim() === '' || grantedScopes.length === 0} onClick={() => { void props.api.enableRemote(roots.map(root => root.id), grantedScopes).then(result => poll(result.id)).catch(setError) }}>{t('enablePairing')}</button>}
             {status?.remoteEnabled && <>
-              <button className="daw-command daw-inline-command" onClick={() => { void props.api.createPairing(roots.map(root => root.id), [...DEVICE_SCOPES]).then(value => setPairing(value)).catch(setError) }}>{t('newPairingCode')}</button>
+              <button className="daw-command daw-inline-command" disabled={grantedScopes.length === 0} onClick={() => { void props.api.createPairing(roots.map(root => root.id), grantedScopes).then(value => setPairing(value)).catch(setError) }}>{t('newPairingCode')}</button>
               <button className="daw-command daw-inline-command" disabled={configTextBusy} onClick={() => {
                 const manual = configEndpoint.trim()
                 setConfigTextBusy(true)
@@ -194,6 +320,7 @@ export function AdminPanel(props: { api: WorkspaceApi; section: AdminTab }): JSX
                   ...(manual === '' ? {} : { endpoints: [{ label: t('configTextManualLabel'), baseUrl: manual }] }),
                 }).then(value => { setConfigText(value); return refresh() }).catch(setError).finally(() => setConfigTextBusy(false))
               }}>{t('newConfigText')}</button>
+              <div className="daw-list-meta daw-listener-hint">{t('configTextScopeNote')}</div>
             </>}
             {pairing !== undefined && <div className="daw-code">{pairing.code}</div>}
             {status?.remoteEnabled && <div style={{ marginTop: 12, maxWidth: 560 }}>
@@ -201,13 +328,55 @@ export function AdminPanel(props: { api: WorkspaceApi; section: AdminTab }): JSX
               <div className="daw-list-meta" style={{ marginTop: 5 }}>{t('configTextManualHint')}</div>
             </div>}
             {configText !== undefined && <ConfigTextPanel result={configText} />}
-          </>}
-          {tab === 'devices' && <>
-            <h3>{t('pairedDevices')}</h3>
+          </SettingsCard>
+          <SettingsCard key="devices" tab="devices" nameKey={tabLabelKey('devices')} descKey={tabDescKey('devices')} open={isOpen('devices')} onToggle={() => toggleCard('devices')}>
             <div className="daw-list">{(status?.devices ?? []).map(device => <DeviceRow key={device.id} api={props.api} device={device} roots={roots} onChanged={refresh} onError={setError} />)}</div>
-          </>}
-          {tab === 'trash' && <>
-            <h3>{t('pluginTrash')}</h3>
+          </SettingsCard>
+          {/*
+            识图路径：图片交接落在「会话工作目录 + <目录名>」下，识图工具按同一条路径读图。
+
+            上半截可改（当前值，存数据库、改完立即生效，不必重启）；下半截「当前默认」**只读**
+            —— 那是出厂字面量 `.dsh-images`，历史交接消息和下游工具都按它写过路径，它不是一个
+            跟着用户改的偏好项。兜底目录同样只读：它是解析不出会话工作目录时的落点。
+          */}
+          <SettingsCard key="image" tab="image" nameKey={tabLabelKey('image')} descKey={tabDescKey('image')} open={isOpen('image')} onToggle={() => toggleCard('image')}>
+            <p className="daw-list-meta">{t('imageHint')}</p>
+            <label className="daw-field"><span>{t('imageSubdir')}</span>
+              <input
+                className="daw-input"
+                value={imageDraft}
+                spellCheck={false}
+                disabled={imageBusy || image === undefined}
+                onChange={event => { setImageDraft(event.target.value); setImageSaved(false) }}
+              />
+            </label>
+            <div className="daw-list-meta" style={{ marginTop: 5 }}>{t('imageSubdirHint')}</div>
+            <label className="daw-field" style={{ marginTop: 14 }}><span>{t('imageDefault')}</span>
+              <input className="daw-input" value={image?.defaultSubdir ?? ''} readOnly disabled />
+            </label>
+            <div className="daw-list-meta" style={{ marginTop: 5 }}>{t('imageDefaultHint')}</div>
+            <label className="daw-field" style={{ marginTop: 14 }}><span>{t('imageFallback')}</span>
+              <input className="daw-input" value={image?.fallbackDir ?? ''} readOnly disabled />
+            </label>
+            <div className="daw-list-meta" style={{ marginTop: 5 }}>{t('imageFallbackHint')}</div>
+            {image !== undefined && <div className="daw-list-meta" style={{ marginTop: 12 }}>{t('imageExample', { subdir: image.subdir })}</div>}
+            <div className="daw-form-row" style={{ marginTop: 12, gridTemplateColumns: 'auto auto minmax(0,1fr)', alignItems: 'center' }}>
+              <button
+                className="daw-command primary"
+                disabled={imageBusy || image === undefined || imageDraft.trim() === '' || imageDraft.trim() === image.subdir}
+                onClick={() => {
+                  setImageBusy(true)
+                  setError(undefined)
+                  void props.api.saveImageSubdir(imageDraft.trim())
+                    .then(next => { setImage(next); setImageDraft(next.subdir); setImageSaved(true) })
+                    .catch(setError)
+                    .finally(() => setImageBusy(false))
+                }}
+              >{t('save')}</button>
+              {imageSaved && <span className="daw-pill on">{t('imageSaved')}</span>}
+            </div>
+          </SettingsCard>
+          <SettingsCard key="trash" tab="trash" nameKey={tabLabelKey('trash')} descKey={tabDescKey('trash')} open={isOpen('trash')} onToggle={() => toggleCard('trash')}>
             {/*
               用户的原话：「回收站 我一直没找到用途」。
               原因很实在：桌面端这个面板已经不含文件树，从这里删不了任何文件，
@@ -216,12 +385,11 @@ export function AdminPanel(props: { api: WorkspaceApi; section: AdminTab }): JSX
             */}
             <p className="daw-list-meta">{t('pluginTrashHint')}</p>
             <div className="daw-list">{trash.map(item => <div className="daw-list-row" key={item.id}><div><div className="daw-list-title">{item.path}</div><div className="daw-list-meta">{item.kind} · {formatBytes(item.size)} · {new Date(item.createdAt).toLocaleString(locale)}</div></div><div><button className="daw-command" onClick={() => { void props.api.restoreTrash(item.id).then(refresh).catch(setError) }}>{t('restore')}</button><button className="daw-icon danger" title={t('deletePermanently')} onClick={() => { if (confirm(t('purgeConfirm'))) void props.api.purgeTrash(item.id).then(refresh).catch(setError) }}><Trash2 size={15} /></button></div></div>)}</div>
-          </>}
-          {tab === 'audit' && <>
-            <h3>{t('recentAudit')}</h3>
+          </SettingsCard>
+          <SettingsCard key="audit" tab="audit" nameKey={tabLabelKey('audit')} descKey={tabDescKey('audit')} open={isOpen('audit')} onToggle={() => toggleCard('audit')}>
             <div className="daw-list">{audit.map((item, index) => <div className="daw-list-row" key={String(item.id ?? index)}><div><div className="daw-list-title">{String(item.action ?? t('event'))}</div><div className="daw-list-meta">{new Date(Number(item.time ?? 0)).toLocaleString(locale)} · {String(item.actorType ?? '')}:{String(item.actorId ?? '')} · {String(item.relativePath ?? '')}</div></div></div>)}</div>
-          </>}
-          {tab === 'app-download' && <AppDownloadSection />}
+          </SettingsCard>
+          <AppDownloadSection open={isOpen('app-download')} onToggle={() => toggleCard('app-download')} />
         </main>
 }
 
@@ -236,10 +404,9 @@ export function AdminPanel(props: { api: WorkspaceApi; section: AdminTab }): JSX
  * screen, so this page is mostly used by the desktop admin to send a code to someone else. Without
  * the text there would be no way to type the address in by hand when a camera is unavailable.
  */
-function AppDownloadSection(): JSX.Element {
+function AppDownloadSection(props: { open: boolean; onToggle(): void }): JSX.Element {
   const { t } = useWorkspaceI18n()
-  return <>
-    <h3>{t('appDownloadTitle')}</h3>
+  return <SettingsCard tab="app-download" nameKey={tabLabelKey('app-download')} descKey={tabDescKey('app-download')} open={props.open} onToggle={props.onToggle}>
     <p className="daw-list-meta">{t('appDownloadHint')}</p>
     <div className="daw-qr-grid">
       {APP_QR_CODES.map(code => <figure key={code.key} className="daw-qr-card">
@@ -248,7 +415,7 @@ function AppDownloadSection(): JSX.Element {
         <a className="daw-qr-url" href={code.url} target="_blank" rel="noreferrer">{code.url}</a>
       </figure>)}
     </div>
-  </>
+  </SettingsCard>
 }
 
 /**
@@ -331,7 +498,7 @@ function DeviceRow(props: {
   onChanged(): Promise<void>
   onError(error: unknown): void
 }): JSX.Element {
-  const { t } = useWorkspaceI18n()
+  const { locale, t } = useWorkspaceI18n()
   const [editing, setEditing] = useState(false)
   const [scopes, setScopes] = useState<DeviceScope[]>(props.device.scopes)
   const [rootIds, setRootIds] = useState<string[]>(props.device.rootIds)
@@ -339,9 +506,9 @@ function DeviceRow(props: {
   return <div className="daw-list-row">
     <div>
       <div className="daw-list-title">{props.device.name} {props.device.revokedAt !== undefined && <span className="daw-pill">{t('revoked')}</span>}</div>
-      <div className="daw-list-meta">{props.device.id} · {props.device.scopes.join(', ')}</div>
+      <div className="daw-list-meta">{props.device.id} · {(props.device.scopes.length === 0 ? t('noScopes') : props.device.scopes.map(scope => scopeLabel(locale, scope)).join(' · '))}</div>
       {editing && <>
-        <div className="daw-scope-grid">{DEVICE_SCOPES.map(scope => <label className="daw-check" key={scope}><input type="checkbox" checked={scopes.includes(scope)} onChange={() => setScopes(current => toggle(current, scope))} />{scope}</label>)}</div>
+        <div className="daw-scope-grid">{DEVICE_SCOPES.map(scope => <label className="daw-check" key={scope}><input type="checkbox" checked={scopes.includes(scope)} onChange={() => setScopes(current => toggle(current, scope))} />{scopeLabel(locale, scope)}</label>)}</div>
         <div className="daw-scope-grid">{props.roots.map(root => <label className="daw-check" key={root.id}><input type="checkbox" checked={rootIds.includes(root.id)} onChange={() => setRootIds(current => toggle(current, root.id))} />{root.label}</label>)}</div>
       </>}
     </div>
@@ -356,6 +523,7 @@ function DeviceRow(props: {
 function tabIcon(tab: string): JSX.Element {
   if (tab === 'roots') return <HardDrive size={15} />
   if (tab === 'devices') return <Smartphone size={15} />
+  if (tab === 'image') return <ImageIcon size={15} />
   if (tab === 'trash') return <Trash2 size={15} />
   if (tab === 'remote') return <Upload size={15} />
   // A download arrow, not a phone: the phone glyph already belongs to 设备, and this page is about
@@ -387,6 +555,9 @@ function apiErrorKey(error: WorkspaceApiError): MessageKey | undefined {
   if (error.status === 401) return 'errorUnauthorized'
   if (error.status === 429) return 'errorRateLimited'
   if (error.code === 'ROOT_NOT_GRANTED' || error.code === 'ROOT_FORBIDDEN') return 'errorRootDenied'
+  // 服务端拦了内置根的删除。即使界面已经不给这个按钮，API 仍可能被别处调用到，
+  // 报错必须是人话而不是 `ROOT_BUILTIN` 这样的裸码。
+  if (error.code === 'ROOT_BUILTIN') return 'errorRootBuiltin'
   if (error.code === 'ETAG_MISMATCH') return 'errorEtag'
   if (error.code === 'LISTENER_HOST_INVALID') return 'listenerHostInvalid'
   if (error.code === 'LISTENER_PORT_INVALID') return 'listenerPortInvalid'

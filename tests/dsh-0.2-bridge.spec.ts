@@ -674,6 +674,8 @@ describe('dsh 0.2.x bridge: image handoff for text-only models', () => {
     sessionCwd?: string
     /** 覆盖会话投影里的模型选择（wire 形状：`lastUsed` + `next`）。 */
     selection?: { lastUsed?: unknown; next?: unknown }
+    /** 覆盖「识图路径」（交接子目录名）；不给就是出厂默认 `.dsh-images`。 */
+    subdir?: () => string
   }) {
     const { host } = makeHost()
     vi.mocked(host.llm.resolveModelInfo).mockResolvedValue(
@@ -693,6 +695,7 @@ describe('dsh 0.2.x bridge: image handoff for text-only models', () => {
     const api = createDsh02ApiProxy(host, {
       imageHandoffDir: opts.fallbackDir,
       ...(opts.roots === undefined ? {} : { handoffRoots: opts.roots }),
+      ...(opts.subdir === undefined ? {} : { handoffSubdir: opts.subdir }),
     })
     return { host, api }
   }
@@ -839,6 +842,49 @@ describe('dsh 0.2.x bridge: image handoff for text-only models', () => {
     const content = sentContent(host)
     expect(content.some(part => part.type === 'image')).toBe(false)
     expect(sourcePath(content[1]?.text)).toBeTruthy()
+  })
+
+  it('honours the configured 识图路径, and reading follows the same setting', async () => {
+    // 设置页里那栏「识图路径」是可改的（默认 `.dsh-images`，「当前默认」只读）。
+    // 这条用例钉住两头：写盘用**当前值**，读图也用**当前值** —— 否则改完设置，
+    // 新图落到新目录、显示却还在旧目录里找，用户看到的是「图不见了」。
+    const fallback = await mkdtemp(path.join(tmpdir(), 'daw-handoff-fb9-'))
+    const workspace = await mkdtemp(path.join(tmpdir(), 'daw-handoff-ws9-'))
+    let subdir = 'shots'
+    const { host, api } = await makeBridge({
+      modalities: ['text'],
+      fallbackDir: fallback,
+      roots: [{ id: 'root-1', realPath: workspace }],
+      sessionCwd: workspace,
+      subdir: () => subdir,
+    })
+
+    await api.sessions.prompt({
+      rpcId: 'p',
+      payload: {
+        sessionId: 'session-1',
+        mode: 'queue',
+        content: [{ type: 'image', mediaType: 'image/png', data: PNG, name: 'shot.png' }],
+      },
+    })
+
+    const note = sentContent(host)[0]?.text ?? ''
+    const filePath = sourcePath(note)
+    expect(filePath!.startsWith(path.join(workspace, 'shots'))).toBe(true)
+    // 给人看的那行展示的也是当前目录，不是写死的 .dsh-images。
+    expect(note).toContain('shots/')
+
+    const name = path.basename(filePath!)
+    const read = await api.sessions.readHandoffImage({ rpcId: 'r', payload: { sessionId: 'session-1', name } })
+    expect(read.result.ok).toBe(true)
+    if (read.result.ok) expect(Buffer.from(read.result.value.bytes).toString('base64')).toBe(PNG)
+
+    // 把设置改回出厂默认：同一张图就从「找不到」变成「在新目录里找」——
+    // 读路径确实跟着设置走，而不是记住某个旧的落点。
+    subdir = '.dsh-images'
+    const moved = await api.sessions.readHandoffImage({ rpcId: 'r2', payload: { sessionId: 'session-1', name } })
+    expect(moved.result.ok).toBe(false)
+    if (!moved.result.ok) expect(moved.result.error.message).toMatch(/HANDOFF_IMAGE_NOT_FOUND/)
   })
 
   it('falls back to the DSH dir when the session cwd matches no authorized root', async () => {

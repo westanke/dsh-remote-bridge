@@ -14,6 +14,8 @@
 - WebSocket 使用 Upgrade Authorization 或 `bearer.<token>` 子协议，不接受会进入代理日志的 query token。每条事件重新读取设备状态，并同时检查实时 root grant 与 `files.read`/`chat.read` scope。
 - Provider 列表只返回凭据的 `configured/source/writable` 元数据，绝不读取或回传 API 密钥。供应商读取和修改分别要求 `settings.read`、`settings.write`；密钥只通过 DSH credential service 写入或清除，审计不记录正文。
 - 待审批列表要求 `chat.read`，决定要求 `chat.write`，两者还会重新检查会话所属 root grant。插件仅在 Host 内保存 DSH `rpcId`，向设备返回独立审批 ID；工具参数按 API Key、token、密码、Bearer 等常见形式脱敏并限长，审计不记录原因或命令。`danger-full-access` 标记为高风险，Android 必须二次确认且只允许单次授权。
+- 图片交接的**只读**路由（`GET /plugin/dsh-remote-bridge/raw`）不要求设备令牌 —— 浏览器不会给 `<img>` 加 `Authorization`，这条口子也无法进 REST 前缀（那条前缀上的每个请求都需要令牌或回环管理身份）。它的守门条件是：`Host` 必须回环（DNS 重绑定防护）、跨站请求（`Sec-Fetch-Site`）一律 403、文件名必须匹配 `^[0-9a-f]{64}\.(png|jpe?g|webp|gif|heic|heif|bmp|avif)$`、**目录永远由宿主按会话推出**（客户端只递会话与裸文件名，递不进目录或绝对路径）、扩展名声明必须与魔术字节一致、体积上限 32 MiB。取不到一律 404 且不区分「会话不存在」与「文件不存在」。把 GUI 绑到非回环网卡时必须同步放宽 `image-handoff.ts` 的 `loopbackHost`。
+- 识图路径（交接目录名）只接受**单段**目录名：空值、超长、`/`、`\`、NUL、`.`、`..` 一律拒绝（`400 IMAGE_SUBDIR_INVALID`）。因此它无法把图片落点带出会话工作目录。改动进审计（`image.subdir`），记录的是新目录名，不含任何路径正文。
 
 ## HTTP 与 HTTPS
 
