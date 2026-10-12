@@ -30,7 +30,7 @@ The interface is bilingual and defaults to Chinese. Prebuilt packages run on Win
 
 ## What it looks like
 
-The desktop entry lives **inside your DSH settings**: under **📱 Phone access** you will find **📱 Phone settings**, which renders seven collapsible cards inline — no second dialog. It is settings-only and contains **no file tree**: the standalone page `/dsh-workspace` and its file tree and CodeMirror editor were deleted in 2.2.0. The reason and the cost are covered in "No file-management UI on the desktop" below.
+The desktop entry lives **inside your DSH settings**: look for the section titled **📱 Phone settings**, which renders seven collapsible cards inline — no second dialog. It is settings-only and contains **no file tree**: the standalone page `/dsh-workspace` and its file tree and CodeMirror editor were deleted in 2.2.0. The reason and the cost are covered in "No file-management UI on the desktop" below.
 
 Remote access remains disabled until a local administrator chooses a bind address, port, and initial device permissions.
 
@@ -88,7 +88,7 @@ npx @deepseek-ai/dsh web
 > are reading on, but `/releases/download/...` has no relative form. The npm package name is the
 > same as the GitHub repository, so it reads identically on both hosts.
 
-Restart DSH after installation, then open settings — **Phone settings** sits right below **Phone access**. It is settings-only and does **not** contain the file tree. The in-conversation **Files** tab was removed in 2.0.4. **The desktop no longer offers a UI for browsing or editing files**: the standalone page `/dsh-workspace` was deleted in 2.2.0 — use the phone app, or ask the agent to use its tools in a conversation.
+Restart DSH after installation, then open settings — The section is titled **📱 Phone settings**. It is settings-only and does **not** contain the file tree. The in-conversation **Files** tab was removed in 2.0.4. **The desktop no longer offers a UI for browsing or editing files**: the standalone page `/dsh-workspace` was deleted in 2.2.0 — use the phone app, or ask the agent to use its tools in a conversation.
 
 To install a downloaded release archive:
 
@@ -98,7 +98,7 @@ dsh plugin --profile web add ./dsh-remote-bridge-v2.3.0.tgz
 
 ## First connection
 
-1. Open DSH settings and go to **Phone settings** (below **Phone access**; it lands on **Roots**).
+1. Open DSH settings and go to **Phone settings** (it lands on **Roots**).
 2. Add a local directory under **Roots** and give it a recognizable label.
 3. For mobile access, go to **Remote**, enter the bind IP and port, and save them.
 4. Select **Enable and create pairing**, then enter the ten-minute one-time code in the app.
@@ -297,7 +297,7 @@ The user-visible consequence: **if this DSH build provides no attachment store, 
 
 **Phone settings is missing**
 
-The entry is inside DSH settings, right below **Phone access**. If you cannot see it, make sure the plugin was installed into the `web` profile and **restart DSH** — plugins load in-process and a restart is required.
+The entry is inside DSH settings, under the title **📱 Phone settings**. If you cannot see it, make sure the plugin was installed into the `web` profile and **restart DSH** — plugins load in-process and a restart is required.
 
 **There is no UI for browsing or editing files on the desktop**
 
