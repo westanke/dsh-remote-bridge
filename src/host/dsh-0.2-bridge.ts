@@ -25,6 +25,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import type { PromptContentPart, RpcResponse, UserQuestionAnswer, UserQuestionView } from './chat-adapter.ts'
+import { DEFAULT_HANDOFF_SUBDIR, HANDOFF_FILE_NAME, HANDOFF_MEDIA_TYPES } from './image-handoff.ts'
 import { wireRelative } from './path-policy.ts'
 import type { SettingsApiProxy } from './settings-adapter.ts'
 
@@ -911,7 +912,6 @@ function sessionIdOf(summary: unknown): string | undefined {
  * - 解析不出工作目录时退回 DSH 目录（[DEFAULT_IMAGE_HANDOFF_DIR]）——
  *   宁可落到私有目录也不能让「发消息」本身失败。
  */
-const HANDOFF_SUBDIR = '.dsh-images'
 const DEFAULT_IMAGE_HANDOFF_DIR = join(homedir(), '.dsh', 'image-handoff')
 
 const IMAGE_EXTENSIONS: Record<string, string> = {
@@ -964,30 +964,28 @@ function writeHandoffFile(dir: string, workspace: string | undefined, mediaType:
 export type HandoffRoot = { id: string; realPath: string }
 
 /** 交接文件名只允许「内容哈希 + 图片扩展名」：挡住一切路径穿越。 */
-const HANDOFF_NAME = /^[0-9a-f]{64}\.(png|jpe?g|webp|gif|heic|heif|bmp|avif)$/i
-const HANDOFF_MEDIA_TYPES: Record<string, string> = {
-  png: 'image/png',
-  jpg: 'image/jpeg',
-  jpeg: 'image/jpeg',
-  webp: 'image/webp',
-  gif: 'image/gif',
-  heic: 'image/heic',
-  heif: 'image/heif',
-  bmp: 'image/bmp',
-  avif: 'image/avif',
-}
+/**
+ * 交接文件名的白名单与媒体类型表现在住在 `image-handoff.ts` —— 设置面板、只读图片路由
+ * 和这里读的是**同一份**判据，分开写两份迟早漂移。这里只是就近取个别名。
+ */
+const HANDOFF_NAME = HANDOFF_FILE_NAME
 
 /**
  * 读出一张交接图片的字节（供手机端把它**显示**出来）。
  *
- * 只接受裸文件名，目录永远由「会话工作目录 + `.dsh-images`」（或兜底目录）推出，
+ * 只接受裸文件名，目录永远由「会话工作目录 + <识图路径>」（或兜底目录）推出，
  * 客户端给绝对路径也不认 —— 否则这条读文件的口子会变成任意文件读取。
- * 工作目录与 [writeHandoffFile] 用的是同一套解析，保证「写在哪、从哪读」。
+ * 工作目录与 [writeHandoffFile] 用的是同一套解析，保证「写在哪、从哪读」；
+ * `<识图路径>` 也来自同一个地方（设置里的当前值），改设置后写读同步跟着走。
+ *
+ * **导出**是给同源只读图片路由（`image-handoff.ts`）用的：那条路由不校验设备 token，
+ * 所以它更需要「目录不由客户端给」这条约束 —— 直接复用这里，而不是另写一套解析。
  */
-async function readHandoffImageFile(
+export async function readHandoffImageFile(
   host: Dsh02HostServices,
   roots: readonly HandoffRoot[],
   fallbackDir: string,
+  subdir: string,
   sessionId: string,
   name: string,
 ): Promise<{ bytes: Uint8Array; mediaType: string }> {
@@ -998,7 +996,7 @@ async function readHandoffImageFile(
   const mediaType = HANDOFF_MEDIA_TYPES[ext] ?? 'application/octet-stream'
   const workspace = await sessionWorkspaceDir(host, roots, sessionId)
   const candidates = [
-    ...(workspace !== undefined ? [join(workspace, HANDOFF_SUBDIR, fileName)] : []),
+    ...(workspace !== undefined ? [join(workspace, subdir, fileName)] : []),
     join(fallbackDir, fileName),
   ]
   const target = candidates.find(candidate => existsSync(candidate))
@@ -1125,6 +1123,7 @@ async function handoffImagesForTextOnlyModel(
   host: Dsh02HostServices,
   roots: readonly HandoffRoot[],
   fallbackDir: string,
+  subdir: string,
   locale: HandoffLocale,
   sessionId: string,
   content: readonly PromptContentPartLike[],
@@ -1133,7 +1132,7 @@ async function handoffImagesForTextOnlyModel(
   try {
     if (!(await modelIsConfirmedTextOnly(host, sessionId))) return content
     const workspace = await sessionWorkspaceDir(host, roots, sessionId)
-    const dir = workspace !== undefined ? join(workspace, HANDOFF_SUBDIR) : fallbackDir
+    const dir = workspace !== undefined ? join(workspace, subdir) : fallbackDir
     let index = 0
     return content.map(part => {
       if (part.type !== 'image') return part
@@ -1181,17 +1180,32 @@ export function createDsh02ApiProxy(
     /**
      * 授权根（id + realPath），用于把图片落到会话工作目录。
      * 没有 / 匹配不上时退回 [imageHandoffDir]。
+     *
+     * 收数组或 getter：设置页新增授权根之后，同一进程里紧接着发的那张图就该落到新根里，
+     * 快照一份数组会让「刚授权完还是落到旧地方」。getter 每次调用现读，代价是一次数组映射。
      */
-    handoffRoots?: readonly HandoffRoot[]
+    handoffRoots?: readonly HandoffRoot[] | (() => readonly HandoffRoot[])
     /** 解析不出工作目录时的兜底落地目录。默认 `~/.dsh/image-handoff`。 */
     imageHandoffDir?: string
+    /**
+     * 当前的**识图路径**（交接子目录名）。
+     *
+     * 用 getter 而不是字符串：设置面板改完就该立刻生效，不必重启 dsh。默认
+     * [DEFAULT_HANDOFF_SUBDIR]（`.dsh-images`），也就是设置里那栏只读的「当前默认」。
+     */
+    handoffSubdir?: () => string
   } = {},
 ): SettingsApiProxy {
   const mux = new FrameHub()
   const hostFrames = new FrameHub()
   const imageHandoff = options.imageHandoff !== false
-  const handoffRoots = options.handoffRoots ?? []
+  const handoffRootsOf = (): readonly HandoffRoot[] => {
+    const value = options.handoffRoots
+    if (value === undefined) return []
+    return typeof value === 'function' ? value() : value
+  }
   const imageHandoffDir = options.imageHandoffDir ?? DEFAULT_IMAGE_HANDOFF_DIR
+  const handoffSubdirOf = options.handoffSubdir ?? ((): string => DEFAULT_HANDOFF_SUBDIR)
   // cordis 的注入属性是**惰性解析**的：读一个没人提供的服务会抛
   // `cannot get property "x" without inject`，而**这不是**「时机不对」，是「压根没有」。
   //
@@ -1338,7 +1352,8 @@ export function createDsh02ApiProxy(
         // 任何不确定都退回原样（见 handoffImagesForTextOnlyModel 的三条原则）。
         const content = imageHandoff
           ? await handoffImagesForTextOnlyModel(
-              host, handoffRoots, imageHandoffDir, locale ?? 'zh', request.payload.sessionId, request.payload.content,
+              host, handoffRootsOf(), imageHandoffDir, handoffSubdirOf(), locale ?? 'zh',
+              request.payload.sessionId, request.payload.content,
             )
           : request.payload.content
 
@@ -1396,7 +1411,7 @@ export function createDsh02ApiProxy(
         // 纯文本模型下图片被交接成工作区文件（见 handoffImagesForTextOnlyModel）。
         // 手机端要把它**当图显示**给人看时走这里；路径仍以文本留在消息里给机器读。
         const { sessionId, name } = request.payload
-        return readHandoffImageFile(host, handoffRoots, imageHandoffDir, sessionId, name)
+        return readHandoffImageFile(host, handoffRootsOf(), imageHandoffDir, handoffSubdirOf(), sessionId, name)
       }),
       cancel: request => call(() => host.sessionController.cancel(request.payload)),
       rename: request => call(() => host.sessionController.rename(request.payload)),

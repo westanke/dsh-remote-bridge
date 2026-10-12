@@ -1,10 +1,12 @@
 import path from 'node:path'
+import { stat } from 'node:fs/promises'
 import { AuthService } from './host/auth.ts'
 import { DshChatAdapter } from './host/chat-adapter.ts'
 import { WorkspaceDatabase } from './host/database.ts'
-import { createDsh02ApiProxy, type Dsh02HostServices } from './host/dsh-0.2-bridge.ts'
+import { createDsh02ApiProxy, readHandoffImageFile, type Dsh02HostServices } from './host/dsh-0.2-bridge.ts'
 import { WorkspaceEventBus } from './host/event-bus.ts'
 import { FileService } from './host/file-service.ts'
+import { createImageRouteHandler, IMAGE_ROUTE, readHandoffSubdir } from './host/image-handoff.ts'
 import { DEFAULT_REMOTE_HOST, normalizeListenerHost, normalizeListenerPort } from './host/listener-config.ts'
 import { ApiRouter } from './host/router.ts'
 import { attachEmbeddedRoutes, RemoteApiServer } from './host/server.ts'
@@ -84,6 +86,31 @@ export async function apply(ctx: HostContext, config: Config = {}): Promise<void
   if (!Number.isSafeInteger(maxUploadBytes) || maxUploadBytes < 1) throw new Error('dsh-remote-bridge: maxUploadBytes must be positive')
 
   const database = new WorkspaceDatabase(dataDir)
+  // 清掉历史遗留的「标记式」撤销设备。
+  //
+  // 撤销现在是直接删行，但在这之前每次撤销只打 `revoked_at` 标记，于是库越用越臃肿
+  // —— 本机实测堆到 32 条，全是历史测试探针和早已弃用的旧手机，界面上就是一长串灰字。
+  // 用户要求「已撤销的不显示，也自动从数据库中删除」，这里是后一半的落地。
+  //
+  // 幂等，放在启动时最省事：不必关心历史数据长什么样。
+  try {
+    const purged = database.purgeRevokedDevices()
+    if (purged > 0) ctx.logger.info(`dsh-remote-bridge: purged ${purged} revoked device(s)`)
+  } catch (error) {
+    // 清理失败不该拦住插件启动 —— 它只是清理历史数据，不影响新功能。
+    ctx.logger.warn(new Error(`dsh-remote-bridge: could not purge revoked devices: ${String(error)}`))
+  }
+
+  // 把 DSH 自己的工作区登记成一条授权根（不可删除，但可正常访问）。
+  //
+  // 为什么在启动时自动登记、而不是让用户手填：用户要的就是「默认指向当前 DSH 的
+  // 工作目录」，而工作区路径**每个用户、每台机器都不一样**（DSH 用的是系统文档目录
+  // 派生的 `<Documents>/deepseek-harness/default-workspace`）。手填等于让用户去猜一个
+  // 他本来就不该知道的路径。`ensureBuiltinRoot` 幂等，所以每次启动无脑调一次即可。
+  //
+  // 拿不到工作区、或那个目录已经不存在，就什么都不做 —— 留一条指向虚空的授权根只会
+  // 让手机浏览一路报错，比不显示更糟。
+  await registerBuiltinWorkspaceRoot(ctx, database)
   const events = new WorkspaceEventBus()
   const auth = new AuthService(database)
   const files = new FileService(database, event => events.emit(event))
@@ -94,9 +121,17 @@ export async function apply(ctx: HostContext, config: Config = {}): Promise<void
   // 解析出会话 cwd），符合「产物放工作目录、别塞进 DSH 私有目录」；
   // 解析不出工作目录（冷会话 / cwd 不在任何授权根下）时，才退回
   // `<dataDir>/image-handoff` 这个 DSH 目录兜底 —— 无论如何不能让发消息失败。
+  //
+  // 三处都传**函数**而不是快照（2.2.5 起）：
+  // - `handoffRoots`：设置页刚加完授权根，那张图就该落进新根；
+  // - `handoffSubdir`：识图路径改完立即生效（设置面板写数据库，这里现读）；
+  // - `imageHandoffDir`：兜底目录是常量，直接给值。
+  const imageHandoffDir = path.join(dataDir, 'image-handoff')
+  const handoffRootsOf = () => database.listRoots().map(root => ({ id: root.id, realPath: root.realPath }))
   const apiProxy = createDsh02ApiProxy(ctx, {
-    handoffRoots: database.listRoots().map(root => ({ id: root.id, realPath: root.realPath })),
-    imageHandoffDir: path.join(dataDir, 'image-handoff'),
+    handoffRoots: handoffRootsOf,
+    imageHandoffDir,
+    handoffSubdir: () => readHandoffSubdir(database),
   })
   const chat = new DshChatAdapter(apiProxy, database, { agents: ctx.agents, commands: ctx.commands })
   const settings = new DshSettingsAdapter(apiProxy)
@@ -110,7 +145,7 @@ export async function apply(ctx: HostContext, config: Config = {}): Promise<void
     events,
     handle: (req, res) => router.handle(req, res),
   })
-  router = new ApiRouter({ database, auth, files, chat, settings, remote, maxUploadBytes })
+  router = new ApiRouter({ database, auth, files, chat, settings, remote, maxUploadBytes, imageFallbackDir: imageHandoffDir })
 
   try {
     await remote.start()
@@ -118,7 +153,16 @@ export async function apply(ctx: HostContext, config: Config = {}): Promise<void
     database.close()
     throw error
   }
-  const disposeEmbedded = attachEmbeddedRoutes(ctx.webServer, router, remote)
+  // 只读图片路由：WebUI 的 `<img>` 用不了带鉴权的 REST（浏览器不给 `<img>` 加请求头），
+  // 所以它在 `/plugin/dsh-remote-bridge/raw` 上按「回环 + 同源 + 裸文件名 + 字节自证」服务。
+  // 取图实现直接复用交接读盘那一份，目录由宿主按会话推出 —— 客户端连目录都递不进来。
+  const imageRoute = createImageRouteHandler({
+    read: (sessionId, name) =>
+      readHandoffImageFile(ctx, handoffRootsOf(), imageHandoffDir, readHandoffSubdir(database), sessionId, name),
+  })
+  const disposeEmbedded = attachEmbeddedRoutes(ctx.webServer, router, remote, [
+    { kind: 'prefix', path: IMAGE_ROUTE, handler: imageRoute },
+  ])
   ctx.effect(() => async () => {
     disposeEmbedded()
     await remote.stop()
@@ -129,3 +173,40 @@ export async function apply(ctx: HostContext, config: Config = {}): Promise<void
 }
 
 export default apply
+
+/**
+ * 登记「DSH 工作区」为内置授权根。
+ *
+ * 取 `ctx.workspaceRegistry.list()` 的**第一个**工作区（用户明确要「只显示第一个」），
+ * 登记成一条 `builtin` 根。四个必须静默失败的情形 —— 插件启动不该因为一个「锦上添花的
+ * 默认根」而整个起不来：
+ *
+ * - 没有工作区（用户从没建过）：什么都不做；
+ * - 第一个工作区的路径已经不存在（用户把它删了）：什么都不做，否则留下一条指向虚空的
+ *   授权根，手机浏览时一路报错，比不显示更糟；
+ * - 注册表自己抛了：同上，记一条 warn 就走。
+ *
+ * 目录存在性用 `stat` 判，且必须是**目录**而不是文件 —— `canonicalRoot` 之后如果指向一个
+ * 普通文件，后续列目录会一路报错。
+ */
+async function registerBuiltinWorkspaceRoot(ctx: HostContext, database: WorkspaceDatabase): Promise<void> {
+  try {
+    const registry = ctx.workspaceRegistry
+    // cordis 的注入属性只在 apply 期间可读（见 dsh-0.2-bridge 里的说明），
+    // 所以这里立刻取值，不把 registry 对象存起来再用。
+    const workspace = registry.list()[0]
+    if (workspace === undefined) return
+    const target = workspace.path?.trim()
+    if (target === undefined || target === '') return
+
+    const info = await stat(target)
+    if (!info.isDirectory()) return
+
+    const root = await database.ensureBuiltinRoot(target, workspace.title?.trim() || 'DSH 工作区')
+    if (root !== undefined) {
+      ctx.logger.info(`dsh-remote-bridge: registered the DSH workspace as a built-in root: ${root.realPath}`)
+    }
+  } catch (error) {
+    ctx.logger.warn(new Error(`dsh-remote-bridge: could not register the DSH workspace root: ${String(error)}`))
+  }
+}

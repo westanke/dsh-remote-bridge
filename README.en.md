@@ -9,13 +9,13 @@
 </p>
 
 <p align="center">
-  <img alt="Version" src="https://img.shields.io/badge/version-v2.2.4-087f8c">
+  <img alt="Version" src="https://img.shields.io/badge/version-v2.3.0-087f8c">
   <img alt="DSH plugin" src="https://img.shields.io/badge/DeepSeek_Harness-plugin-1f2328">
   <img alt="Platforms" src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-586069">
   <img alt="License" src="https://img.shields.io/badge/license-AGPL--3.0-2da44e">
 </p>
 
-`dsh-remote-bridge` is the remote-access bridge plugin for DeepSeek Harness (DSH). It translates DSH's private remote protocol into a versioned REST API so dsh-companion ([GitHub](https://github.com/westanke/dsh-companion) · [Gitee](https://gitee.com/westanke/dsh-companion)) and other trusted clients can keep using the same chat, workspace, and file capabilities while away from the machine. On the desktop it provides a **Phone settings** section inside your DSH settings, rendering six tabs inline (Roots / Remote / Devices / Trash / Audit / App download). **The desktop no longer offers a file-management UI**: the file tree and editor were deleted in 2.2.0 — manage files from the phone app, or ask the agent to use its tools in a conversation (see "No file-management UI on the desktop").
+`dsh-remote-bridge` is the remote-access bridge plugin for DeepSeek Harness (DSH). It translates DSH's private remote protocol into a versioned REST API so dsh-companion ([GitHub](https://github.com/westanke/dsh-companion) · [Gitee](https://gitee.com/westanke/dsh-companion)) and other trusted clients can keep using the same chat, workspace, and file capabilities while away from the machine. On the desktop it provides a **Phone settings** section inside your DSH settings, rendering seven collapsible cards inline (Roots / Remote / Devices / Image reading / Trash / Audit / App download), each folding on its own and several may stay open at once. **The desktop no longer offers a file-management UI**: the file tree and editor were deleted in 2.2.0 — manage files from the phone app, or ask the agent to use its tools in a conversation (see "No file-management UI on the desktop").
 
 The interface is bilingual and defaults to Chinese. Prebuilt packages run on Windows, macOS, and Linux without compiling on the target server.
 
@@ -30,7 +30,7 @@ The interface is bilingual and defaults to Chinese. Prebuilt packages run on Win
 
 ## What it looks like
 
-The desktop entry lives **inside your DSH settings**: under **📱 Phone access** you will find **📱 Phone settings**, which renders six tabs inline — no second dialog. It is settings-only and contains **no file tree**: the standalone page `/dsh-workspace` and its file tree and CodeMirror editor were deleted in 2.2.0. The reason and the cost are covered in "No file-management UI on the desktop" below.
+The desktop entry lives **inside your DSH settings**: under **📱 Phone access** you will find **📱 Phone settings**, which renders seven collapsible cards inline — no second dialog. It is settings-only and contains **no file tree**: the standalone page `/dsh-workspace` and its file tree and CodeMirror editor were deleted in 2.2.0. The reason and the cost are covered in "No file-management UI on the desktop" below.
 
 Remote access remains disabled until a local administrator chooses a bind address, port, and initial device permissions.
 
@@ -73,10 +73,10 @@ dsh plugin --profile web add dsh-remote-bridge
 dsh plugin --profile web add dsh-remote-bridge --registry https://registry.npmmirror.com
 
 # 2. tarball from the GitHub release
-dsh plugin --profile web add https://github.com/westanke/dsh-remote-bridge/releases/download/v2.2.4/dsh-remote-bridge-2.2.4.tgz
+dsh plugin --profile web add https://github.com/westanke/dsh-remote-bridge/releases/download/v2.3.0/dsh-remote-bridge-v2.3.0.tgz
 
 # 3. tarball from the Gitee release (faster from mainland China)
-dsh plugin --profile web add https://gitee.com/westanke/dsh-remote-bridge/releases/download/v2.2.4/dsh-remote-bridge-2.2.4.tgz
+dsh plugin --profile web add https://gitee.com/westanke/dsh-remote-bridge/releases/download/v2.3.0/dsh-remote-bridge-v2.3.0.tgz
 
 npx @deepseek-ai/dsh web
 ```
@@ -93,7 +93,7 @@ Restart DSH after installation, then open settings — **Phone settings** sits r
 To install a downloaded release archive:
 
 ```sh
-dsh plugin --profile web add ./dsh-remote-bridge-2.2.4.tgz
+dsh plugin --profile web add ./dsh-remote-bridge-v2.3.0.tgz
 ```
 
 ## First connection
@@ -121,18 +121,31 @@ Mobile is unaffected: the app's file page still works against the same REST file
 
 ### Desktop settings panel
 
-The entry lives in DSH settings under the title **Phone settings**. It renders its rail and content **inline** — no pop-up — with a horizontal rail, landing on **Roots**:
+The entry lives in DSH settings under the title **Phone settings**. It renders seven cards stacked inline — no pop-up, no navigation rail — landing on **Roots** expanded:
 
 | Section | Purpose |
 | --- | --- |
-| Roots | Add or remove authorized directories and set display labels |
+| Roots | Add or remove authorized directories and set display labels. The current DSH workspace is registered automatically as a **default root** — it cannot be removed, but it stays fully accessible |
 | Remote | Set bind IP/port, enable remote access, and create pairing codes |
 | Devices | Inspect and revoke device scopes and per-root grants |
+| Image reading | Set the handoff directory (the image-reading path); shows the read-only factory default `.dsh-images` and the fallback directory |
 | Trash | View and restore deleted entries (only deletions made from the phone app appear here) |
 | Audit | Operation type and target audit records |
 | App download | Scan to install the Android client; the codes point at both hosts' Releases list pages |
 
 The sidebar gear button was **removed**: having the entry in both the sidebar and the settings page gave one thing two starting points. The in-conversation **Files** tab is gone too, so the desktop now has exactly one entry point.
+
+### Image handoff: a picture sent from the phone, visible on the desktop
+
+When the active model cannot see images (a text-only model), this plugin saves the picture as a workspace file **before the message is sent**, and the message keeps exactly two things: one plain-language line (where the file went, and what to do to view it) plus one absolute path for an image-reading tool.
+
+**The DSH WebUI now renders that picture at the end of the turn** — click for the full image, `Escape` or click anywhere to close — while the path stays underneath it. The phone app could already show it; the desktop previously showed only text. Both now agree.
+
+- **Where it lands**: `<session working directory>/<image path>/<sha256>.<ext>`. The file name is a content hash, so sending the same picture twice never piles up copies (directory `0700`, file `0600`).
+- **Image path** defaults to `.dsh-images` and is editable under the **Image reading** section of the settings panel; changes take effect immediately, with no restart. The **Current default** field is **read-only** — past handoff messages and image-reading tools wrote their paths against it, so it does not follow your edit. The section also shows the fallback directory used when a session working directory cannot be resolved.
+- **Only the handoff sentence is parsed**, and only in **your own message**: `.dsh-images/…` references inside assistant prose, context injections, or tool output are never turned into pictures (they are everywhere, and rendering them just shreds other people's words).
+
+> If you previously installed `dsh-image-paths`, **disable** that row: both plugins attach their gallery to the same seat, so one picture would be drawn twice. This plugin already carries the capability.
 
 ### Stable client API
 
@@ -253,6 +266,10 @@ Errors use one envelope:
 
 A device also needs an explicit grant for every `rootId`. Local administrators may change or revoke both scopes and root grants at any time.
 
+**New scopes are picked before pairing, in Remote access**: whatever you tick is what the generated pairing code carries, and those scopes take effect once the app enters the code. For a device that is already paired, open **Devices** and use its **Permissions** button.
+
+**Revoking a device deletes it from the database** rather than leaving a marker row behind. Its grants go with it, while the audit trail (who revoked which device, and when) is kept.
+
 ## Upgrade and uninstall
 
 Stop DSH WebUI before upgrading, install the new package, then restart it. To uninstall:
@@ -310,11 +327,11 @@ pnpm pack
 
 `npm pack` produces roughly a **0.25 MB** archive: 2.2.0 dropped the standalone page and its editor dependencies and turned source maps off, down from 1.72 MB.
 
-v2.2.4 was developed against DSH `master@47f943859bef60e4160492346772ded9b24f765a`. CI covers Windows, Ubuntu, and macOS.
+v2.3.0 was developed against DSH `master@47f943859bef60e4160492346772ded9b24f765a`. CI covers Windows, Ubuntu, and macOS.
 
 ## Project
 
-- Version: `v2.2.4`
+- Version: `v2.3.0`
 - Author: upstream [Hakunm](https://github.com/Hakunm); this fork maintained by [westanke](https://github.com/westanke)
 - Repository: [GitHub](https://github.com/westanke/dsh-remote-bridge) · [Gitee](https://gitee.com/westanke/dsh-remote-bridge)
 - npm: [`dsh-remote-bridge`](https://www.npmjs.com/package/dsh-remote-bridge) ([mainland-China mirror](https://registry.npmmirror.com/dsh-remote-bridge))

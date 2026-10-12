@@ -297,22 +297,35 @@ export class RemoteApiServer implements RemoteControl {
   }
 }
 
+/** 一条挂在 DSH webserver 上的插件自有路由。 */
+export interface EmbeddedRoute {
+  kind: 'exact' | 'prefix'
+  path: string
+  handler: (req: IncomingMessage, res: ServerResponse) => void | Promise<void>
+}
+
 export function attachEmbeddedRoutes(
   webServer: {
     register(route: { kind: 'exact' | 'prefix'; path: string; handler: (req: IncomingMessage, res: ServerResponse) => void | Promise<void> }): () => void
   },
   router: ApiRouter,
   remote: RemoteApiServer,
+  extraRoutes: readonly EmbeddedRoute[] = [],
 ): () => void {
   // Only the API proxy is registered. The `/dsh-workspace` **page** was removed in 2.2.0 — but the
   // `/dsh-workspace-api` prefix stays: released apps hard-code it, so dropping the page must not
   // drop the prefix. Removing the web entry point is not removing the server-side capability.
+  //
+  // `extraRoutes` 是 2.2.5 加的第二个座位：只读图片路由（`/plugin/dsh-remote-bridge/raw`）。
+  // 它不能并进 `/dsh-workspace-api` —— 那条前缀上的每个请求都要设备 token 或 loopback admin
+  // 头，而浏览器 `<img src>` 一个头都带不了。分开注册，各自守各自的信任模型。
   const disposers = [
     webServer.register({
       kind: 'prefix',
       path: '/dsh-workspace-api',
       handler: (req, res) => router.handle(req, res, '/dsh-workspace-api'),
     }),
+    ...extraRoutes.map(route => webServer.register(route)),
   ]
   return () => { for (const dispose of disposers.reverse()) dispose() }
 }

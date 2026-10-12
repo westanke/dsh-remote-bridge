@@ -36,7 +36,8 @@
 | [ADR-0004](decisions/ADR-0004-configurable-listener-endpoint.md) | accepted | 远程绑定 IP/端口由回环管理面配置并失败回滚 |
 | [ADR-0005](decisions/ADR-0005-android-app.md) | accepted | 独立开发原生 Compose Android App，并以版本化 BFF 逐项实现 WebUI 功能对等 |
 | [ADR-0006](decisions/ADR-0006-final-project-split.md) | accepted | 正式版拆分为 `dsh-workspace` 与 `dsh-android-app` 两个独立项目，并从 v1.0.0 开始发布 |
+| [ADR-0007](decisions/ADR-0007-image-handoff-route.md) | accepted | 图片交接的显示链路并入本插件，只读路由改收「会话 + 裸文件名」，识图路径成为可改设置、出厂默认只读 |
 
 ## 稳定任务 ID
 
-任务 ID 采用 `<AREA>-NNN`。当前区域为 `BOOT`、`DOC`、`BRAND`、`LICENSE`、`FS`、`AUTH`、`NET`、`CHAT`、`APPROVAL`、`UI`、`SDK`、`APP`、`PARITY`、`TEST` 和 `REL`。
+任务 ID 采用 `<AREA>-NNN`。当前区域为 `BOOT`、`DOC`、`BRAND`、`LICENSE`、`FS`、`AUTH`、`NET`、`CHAT`、`APPROVAL`、`MODEL`、`IMAGE`、`UI`、`SDK`、`APP`、`PARITY`、`TEST` 和 `REL`。

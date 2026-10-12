@@ -67,11 +67,53 @@ const zh = {
   devicesTab: '设备',
   trashTab: '回收站',
   auditTab: '审计',
+  imageTab: '识图',
+  // 折叠卡片头部的描述行：每张卡片一句，取代旧的内联 <h3> 标题。
+  rootsTabDesc: '授权手机访问这台机器上的哪些目录。新增、命名、移除都在这里。',
+  remoteTabDesc: '绑定 IP 与端口、开关远程访问、生成配对码与配置文本。',
+  devicesTabDesc: '查看已配对的手机，修改它们的权限范围与可访问目录，或吊销设备。',
+  imageTabDesc: '设置图片交给识图工具的落盘目录名。',
+  trashTabDesc: '经手机端删除的文件留在这里，可恢复或彻底清理。',
+  auditTabDesc: '最近的操作记录：谁、在什么时间、动了哪个路径。',
+  appDownloadTabDesc: '手机客户端的下载二维码与地址。',
+  imageTitle: '识图路径',
+  imageHint: '纯文本模型收到图片时，图片会落在这个目录里，消息里只留路径给识图工具读。这里改的就是那个目录。',
+  imageSubdir: '识图路径（目录名）',
+  imageSubdirHint: '相对于每个会话自己的工作目录。只填单段目录名：字母、数字、点、下划线、连字符（1-64 个字符），不能用 “.” 或 “..”。',
+  imageDefault: '当前默认（不能改）',
+  imageDefaultHint: '出厂默认值，只读展示：历史交接消息与识图工具都按它写过路径，所以它不跟着上面的设置走。',
+  imageFallback: '兜底目录（只读）',
+  imageFallbackHint: '解析不出会话工作目录时（冷会话，或会话目录不在任何授权根下）才会用到的落点。',
+  imageExample: '实际落点：<会话工作目录>/{subdir}/<内容哈希>.<扩展名>',
+  imageSaved: '识图路径已保存',
   authorizedRoots: '授权根目录',
   absolutePath: '绝对目录路径',
   displayLabel: '显示名称',
   addRoot: '添加根目录',
   removeRoot: '移除根目录',
+  // 内置根（插件自动登记的 DSH 工作区）：显示出来、可以访问，但不给删。
+  builtinRootBadge: '默认',
+  builtinRootHint: '默认目录 · 不可删除',
+  builtinRootNotice: '新加的根目录默认不发给已配对的手机。需要的话，到「设备」里给对应手机勾上这个目录的访问权。',
+  errorRootBuiltin: '这是 DSH 当前的工作目录，不能删除。你仍然可以在上面添加别的根目录。',
+  // 七个权限码的人话。设备列表和权限勾选都用它，中文界面不再露出 chat.read 这种协议码。
+  scopeChatRead: '读聊天',
+  scopeChatWrite: '发聊天',
+  scopeFilesRead: '读文件',
+  scopeFilesWrite: '写文件',
+  scopeFilesDelete: '删文件',
+  scopeSettingsRead: '读设置',
+  scopeSettingsWrite: '改设置',
+  noScopes: '没有任何权限',
+  // 远程访问那排勾选框：**选权限用**，不是展示。
+  // 链路：勾权限 → 生成访问码 → APP 输入码 → 权限随设备落库。
+  scopeGrantNotice: '勾选要授予的权限，然后点「启用并创建配对」。APP 输入配对码后，这些权限会跟着设备一起生效。',
+  scopeGrantNoticeEmpty: '还没选任何权限。至少勾一项，否则生成的访问码不会带上任何权限。',
+  scopeGrantNoticeExisting: '改这里只影响**新生成**的配对码。已在用的设备要改权限，请到「设备」里点对应手机的「权限」。',
+  // 配置文本刻意**不**跟随上面勾选：它发出去是给别人扫的，服务端会给一组不含
+  // files.delete / settings.write 的最小权限。这是有意的最小权限默认，得说清楚，
+  // 否则用户会以为「我勾了删除怎么没生效」。
+  configTextScopeNote: '配置文本固定使用最小权限（不含删除文件、修改设置），不跟随上面勾选 —— 它是发给别人扫的。要完整权限请改用配对码。',
   remoteAccess: '远程访问',
   bindIp: '绑定 IP',
   bindPort: '端口',
@@ -199,11 +241,46 @@ const en: Messages = {
   devicesTab: 'Devices',
   trashTab: 'Trash',
   auditTab: 'Audit',
+  imageTab: 'Image reading',
+  // Disclosure-card header descriptions, mirroring the zh block above.
+  rootsTabDesc: 'Which directories on this machine phones may reach. Add, rename and remove them here.',
+  remoteTabDesc: 'Bind address and port, switch remote access on or off, mint pairing codes and config texts.',
+  devicesTabDesc: 'Paired phones, their permission scopes and reachable roots — or revoke them outright.',
+  imageTabDesc: 'Choose the directory name where images land for the image-reading tool.',
+  trashTabDesc: 'Files deleted from a phone land here. Restore them, or purge them for good.',
+  auditTabDesc: 'Recent activity: who, when, and which path was touched.',
+  appDownloadTabDesc: 'QR codes and addresses for the phone app download.',
+  imageTitle: 'Image-reading path',
+  imageHint: 'When a text-only model receives a picture, the file lands in this directory and the message keeps only its path for the image-reading tool. This setting is that directory.',
+  imageSubdir: 'Image path (directory name)',
+  imageSubdirHint: 'Relative to each session’s own working directory. A single directory name only: letters, digits, dots, underscores, hyphens (1-64 characters); "." and ".." are refused.',
+  imageDefault: 'Current default (read-only)',
+  imageDefaultHint: 'The factory default, shown read-only: past handoff messages and image-reading tools wrote their paths against it, so it does not follow the setting above.',
+  imageFallback: 'Fallback directory (read-only)',
+  imageFallbackHint: 'Used only when the session working directory cannot be resolved (a cold session, or a directory outside every authorized root).',
+  imageExample: 'Where files actually land: <session working directory>/{subdir}/<content hash>.<extension>',
+  imageSaved: 'Image path saved',
   authorizedRoots: 'Authorized roots',
   absolutePath: 'Absolute directory path',
   displayLabel: 'Display label',
   addRoot: 'Add root',
   removeRoot: 'Remove root',
+  builtinRootBadge: 'Default',
+  builtinRootHint: 'Default directory · cannot be removed',
+  builtinRootNotice: 'New roots are not granted to already paired phones by default. To share one, open 「设备」 and tick that directory for the phone in question.',
+  errorRootBuiltin: 'This is the current DSH working directory, so it cannot be removed. You can still add other roots above.',
+  scopeChatRead: 'Read chat',
+  scopeChatWrite: 'Send chat',
+  scopeFilesRead: 'Read files',
+  scopeFilesWrite: 'Write files',
+  scopeFilesDelete: 'Delete files',
+  scopeSettingsRead: 'Read settings',
+  scopeSettingsWrite: 'Change settings',
+  noScopes: 'No permissions',
+  scopeGrantNotice: 'Tick the permissions to grant, then press "Enable and pair". Once the app enters the pairing code, these scopes take effect with the device.',
+  scopeGrantNoticeEmpty: 'No permission selected yet. Tick at least one, otherwise the pairing code will carry no scopes at all.',
+  scopeGrantNoticeExisting: 'Changing this only affects new pairing codes. To change an already paired device, open Devices and use its Permissions button.',
+  configTextScopeNote: 'Config texts always carry a minimal set of scopes (no file deletion, no settings write) and ignore the ticks above — they are meant to be shared. Use a pairing code when you want the full set.',
   remoteAccess: 'Remote access',
   bindIp: 'Bind IP',
   bindPort: 'Port',
@@ -291,8 +368,53 @@ export function subscribeWorkspaceLocale(listener: () => void): () => void {
   return () => listeners.delete(listener)
 }
 
+/**
+ * 取一条文案并填占位符。
+ *
+ * **缺键不抛异常**。原来这里是 `dictionaries[locale][key].replace(...)`：任何一个不存在的键
+ * 都会抛 TypeError，而它在 React 渲染路径上 —— 结果不是那一行显示不出原文，而是**整个设置
+ * 面板白屏**。缺一个描述行就把七张卡里的全部设置都搭进去，代价和收益完全不成比例。
+ *
+ * 降级成「回退到另一种语言 → 再回退成键名本身」：最坏情况是某一行露出 `rootsTabDesc`
+ * 这样的字面量，一眼能看出该补哪条，而不是面对一个空白面板。
+ */
 export function translate(locale: WorkspaceLocale, key: MessageKey, values: Record<string, string | number> = {}): string {
-  return dictionaries[locale][key].replace(/\{(\w+)\}/g, (_, name: string) => String(values[name] ?? `{${name}}`))
+  const fill = (template: string | undefined): string | undefined =>
+    template?.replace(/\{(\w+)\}/g, (_, name: string) => String(values[name] ?? `{${name}}`))
+  const primary = fill(dictionaries[locale][key])
+  if (primary !== undefined) return primary
+  const text = fill(dictionaries['zh-CN'][key]) ?? key
+  // 控制台留痕：界面上露出键名已经是降级，真要修得从这里看。
+  console.warn(`[dsh-remote-bridge] 缺少文案键 ${String(key)}（locale=${locale}），已降级显示键名`)
+  return text
+}
+
+/**
+ * 权限码 → 人话。
+ *
+ * 用户要求「中文状态下显示中文，英文显示英文」。文案刻意**用人话而不是协议码**：
+ * `读文件` / `写文件` / `删文件` 自己就看得懂，而 `files.read` 要对照文档才知道指什么 ——
+ * 出问题时用户把屏幕上的字念出来，比报一串码有用得多。
+ *
+ * 键名 `scope${码}`（`chat.read` → `scopeChatRead`）：与既有 `rootsTab` 一致的拼法。
+ * 用**显式查表**而不是模板拼 —— 拼错会查不到键，而键查不到时 `translate` 会静默降级成
+ * 露出键名（见上面），界面上会突然冒出一行 `scopeChatread`。白屏那次就是这么来的。
+ */
+const SCOPE_LABEL_KEYS: Record<string, MessageKey> = {
+  'chat.read': 'scopeChatRead',
+  'chat.write': 'scopeChatWrite',
+  'files.read': 'scopeFilesRead',
+  'files.write': 'scopeFilesWrite',
+  'files.delete': 'scopeFilesDelete',
+  'settings.read': 'scopeSettingsRead',
+  'settings.write': 'scopeSettingsWrite',
+}
+
+export function scopeLabel(locale: WorkspaceLocale, scope: string): string {
+  const key = SCOPE_LABEL_KEYS[scope]
+  // 未知码（老库里可能有已废弃的权限）直接显示原值：宁可难看也不要空白或键名。
+  if (key === undefined) return scope
+  return translate(locale, key)
 }
 
 export function useWorkspaceI18n(): { locale: WorkspaceLocale; t: Translate; toggle(): void } {

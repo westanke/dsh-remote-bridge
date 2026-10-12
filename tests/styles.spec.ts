@@ -44,10 +44,24 @@ describe('样式的不变量', () => {
     expect(undefinedVariables).toEqual([])
   })
 
-  it('内联容器里的导航是横排，不是原来的竖排侧栏', () => {
-    // 内联进设置页后，170px 的竖排侧栏会把内容挤到很下面；用户明确要求改横排。
-    expect(WORKSPACE_CSS).toContain('.daw-settings-section .daw-tabs{display:flex')
-    // 选中态也要跟着从「左侧竖条」改成「底部横条」
-    expect(WORKSPACE_CSS).toContain('.daw-settings-section .daw-tab.active')
+  it('折叠卡片三件套齐全：外壳 / 头部 / 展开体', () => {
+    // 少了任何一个，卡片就会退化成一块没有边界的文字，或者点了没反应。
+    expect(WORKSPACE_CSS).toContain('.daw-card{')
+    expect(WORKSPACE_CSS).toContain('.daw-card-header{')
+    expect(WORKSPACE_CSS).toContain('.daw-card-body{')
+    // 展开态要能换背景色，否则用户看不出自己点开了没有
+    expect(WORKSPACE_CSS).toContain('.daw-card-open{')
+  })
+
+  it('七张卡竖向平铺：容器是纵向 flex 且留了间距', () => {
+    // 曾经有一版把卡片塞进普通流里，七张卡会黏成一坨；flex column + gap 才有 VR 那个间距。
+    expect(WORKSPACE_CSS).toContain('.daw-admin{overflow:auto;padding:18px;display:flex;flex-direction:column;gap:10px')
+  })
+
+  it('卡片颜色一律走 DSH 令牌，深浅色才不会各写一套', () => {
+    // 参照 dsh-vision-router 的 vr-card：底色/描边/文字全部引用 --dsw-alias-*。
+    // 写死 #fff / #dfe4e8 会让深色模式下变成一块白斑。
+    const cardRules = WORKSPACE_CSS.slice(WORKSPACE_CSS.indexOf('.daw-card{'), WORKSPACE_CSS.indexOf('.daw-card-body{'))
+    expect(cardRules).not.toMatch(/#[0-9a-f]{3,6}/i)
   })
 })

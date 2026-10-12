@@ -1,4 +1,4 @@
-import type { DeviceScope, DeviceView, FileEntryView, RootView } from '../shared/contracts.ts'
+import type { DeviceScope, DeviceView, FileEntryView, ImageHandoffSettings, RootView } from '../shared/contracts.ts'
 
 export interface DirectoryPage {
   path: string
@@ -199,6 +199,21 @@ export class WorkspaceApi {
 
   async audit(): Promise<{ items: Record<string, unknown>[] }> {
     return this.manageJson('/audit?limit=200')
+  }
+
+  /** 识图路径：当前值 + 出厂默认（只读）+ 兜底目录（只读）。 */
+  async imageSettings(): Promise<ImageHandoffSettings> {
+    return this.manageJson('/image')
+  }
+
+  /**
+   * 改「识图路径」的当前值。
+   *
+   * 改动立即生效：宿主的交接写盘与只读图片路由都通过 getter 现读这份设置，
+   * 不需要重启 dsh，也不需要重装插件。
+   */
+  async saveImageSubdir(subdir: string): Promise<ImageHandoffSettings> {
+    return this.manageJson('/image', { method: 'PUT', body: JSON.stringify({ subdir }) })
   }
 
   private async json<T>(path: string, init: RequestInit = {}): Promise<T> {

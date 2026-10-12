@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { WorkspaceApi } from './api.ts'
+import { HandoffTurnTail, handoffDefinition } from './handoff.tsx'
 import { getWorkspaceLocale, subscribeWorkspaceLocale, translate, useWorkspaceI18n, type MessageKey } from './i18n.tsx'
 import { installWorkspaceStyles } from './styles.ts'
 import { DEFAULT_PANEL_SECTION, PhoneSettingsBody, type PanelSection } from './workspace.tsx'
@@ -10,15 +11,33 @@ interface ClientContext {
     inject(name: string, register: () => (() => void)): () => void
     register(options: Record<string, unknown>, component: (props: any) => JSX.Element | null): () => void
   }
+  /** Conversation 节点注册表：把「图片交接消息」变成 Chat store 里的一个节点。 */
+  uiConversation: {
+    events: {
+      register(definition: unknown): void
+    }
+  }
 }
 
 const DEFAULT_SECTION: PanelSection = DEFAULT_PANEL_SECTION
 const api = new WorkspaceApi('/dsh-workspace-api/api/v1', '/dsh-workspace-api/manage', undefined, true)
 
-export const inject = ['slots']
+export const inject = ['slots', 'uiConversation']
 
 export function apply(ctx: ClientContext): void {
   installWorkspaceStyles()
+
+  // 图片交接的图集：节点长在用户消息上，显示挂在 Turn 尾部。
+  //
+  // 两截都必须有：Definition 把「那条交接消息」变成 Chat store 里的一个节点（没有它，
+  // Turn 尾读不到任何东西）；座位负责把图**画出来**。座位挑 Turn 尾而不是 Chat 节点，
+  // 是因为后者会把这个 kind 收进过程分组、standard 模式下折叠 —— DOM 有、肉眼无。
+  ctx.effect(() => {
+    ctx.uiConversation.events.register(handoffDefinition)
+    return ctx.slots.inject('conversation.chat.turnTail', () => ctx.slots.register({
+      name: 'conversation.chat.turnTail', id: 'dsh-remote-bridge-handoff', order: 40,
+    }, HandoffTurnTail))
+  }, 'dsh remote bridge handoff gallery')
 
   // The panel's ONLY entry, and it lives inside DSH's own settings page.
   //

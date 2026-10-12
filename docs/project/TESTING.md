@@ -81,6 +81,8 @@ CI 在 Windows、Ubuntu 和 macOS 执行相同核心门禁。Playwright 另外�
 | 2026-08-14 | ARM64 Oracle / Node 24.19.0 / DSH 0.1.0-rc.6 | 有序流式 tarball 更新 root `web` profile、重载并执行真实 REST/WebSocket 探针 | 通过；部署包 SHA-256 `60F17EC1CB273DBFD936B88D4DF39DD76D3F6F35F677E43C5C9C1BD62BD99538`，`3080/3090` 正常；会话返回 24 个 `chat.message.delta`，事件次序严格递增且拼接正文等于持久消息 `STREAMING-ORDER-OK`；空白会话切换 `code` 成功，开始后返回 `409 AGENT_PRESET_LOCKED`，临时设备随后撤销 |
 | 2026-08-14 | Windows / Node 24.18.0 + Temurin 17 | `pnpm check`、`kotlin-sdk/gradlew.bat clean test`、`pnpm pack` | 通过；11 个文件/22 个 Vitest 覆盖审批缓存、脱敏、单次决定、REST 合约与内部 RPC 隔离，OpenAPI/AsyncAPI/Kotlin SDK/三份 bundle 同步；tarball 2,475,534 字节，SHA-256 `51B540218E6303B718E5E7B16353B137285FA8CC938025424DCAAF3B54979E8E` |
 | 2026-08-14 | ARM64 Oracle / DSH 活动会话保护 | 上传审批 tarball并核对 SHA-256、`/healthz` 与 PID | 通过；包仅暂存为 `/tmp/dsh-android-app-workspace-approval-0.1.0.tgz`，活动 DSH PID `3574165` 与 `3090` 保持健康，未安装、未重启、未替用户决定当前高权限审批 |
+| 2026-10-12 | Linux / Node 24 / DSH 0.2.x | `pnpm typecheck && pnpm test && pnpm build` | 通过；**22 个文件 / 163 个 Vitest**（+35：识图设置与只读图片路由、交接句式解析与图集、识图路径改完写读同步），两个 entry（host 200.5 kB / client 680 kB）构建完成 |
+| 2026-10-12 | Linux / DSH 0.2.x 实装 | 同步 `lib/` 到 `~/.dsh/profiles/web/node_modules/dsh-remote-bridge/` | 通过；**本次含 client.cjs**（上一轮只同步 host 产物）。真机核验（重启 + 刷新 → 发图 → 看图与路径同在）**待做** |
 
 尚待远程仓库创建后运行 GitHub Actions 的 `windows-latest`、`ubuntu-latest`、`macos-latest` hosted 矩阵；这也是 `TEST-001` 仍为 `in-progress` 的唯一测试项。
 

@@ -4,7 +4,7 @@ plugins {
 }
 
 group = "ai.deepseek.dsh"
-version = "2.2.1"
+version = "2.3.0"
 
 repositories { mavenCentral() }
 

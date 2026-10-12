@@ -12,6 +12,8 @@ interface RootRow {
   label: string
   real_path: string
   created_at: number
+  /** 迁移前的库没有这一列，读出来是 undefined，按「非内置」处理。 */
+  builtin?: number
 }
 
 interface DeviceRow {
@@ -62,6 +64,19 @@ export class WorkspaceDatabase {
     this.db.close()
   }
 
+  /**
+   * 导出 `roots` 的建表语句（只读，诊断与迁移测试用）。
+   *
+   * 存在的理由：迁移要判断「UNIQUE 还在不在」，单看 `PRAGMA table_info` 看不出来 ——
+   * 表结构读出来一模一样，区别在约束上。这个方法让「重建真的发生了」可以被断言，
+   * 而不是靠迁移没报错来推测。
+   */
+  dumpSchema(): string {
+    const row = this.db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'roots'")
+      .get() as { sql?: string } | undefined
+    return row?.sql ?? ''
+  }
+
   getSetting(key: string): string | undefined {
     const row = this.db.prepare('SELECT value FROM settings WHERE key = ?').get(key) as { value: string } | undefined
     return row?.value
@@ -72,21 +87,26 @@ export class WorkspaceDatabase {
       .run(key, value)
   }
 
-  async addRoot(inputPath: string, label?: string): Promise<StoredRoot> {
+  async addRoot(inputPath: string, label?: string, options?: { allowDuplicate?: boolean }): Promise<StoredRoot> {
     const realPath = await canonicalRoot(inputPath)
-    const duplicate = this.db.prepare('SELECT * FROM roots WHERE real_path = ?').get(realPath) as RootRow | undefined
-    if (duplicate !== undefined) return rootFromRow(duplicate)
+    // 默认按 real_path 去重（用户手动加目录时不该冒出两条一样的）。
+    // `allowDuplicate` 只给 `ensureBuiltinRoot` 用：它需要为「同目录但权限不同」插一条
+    // 独立记录 —— 用户自己加的那条得保持可删，内置那条不可删，两条并存。
+    if (options?.allowDuplicate !== true) {
+      const duplicate = this.db.prepare('SELECT * FROM roots WHERE real_path = ?').get(realPath) as RootRow | undefined
+      if (duplicate !== undefined) return rootFromRow(duplicate)
+    }
     const id = randomUUID()
     const createdAt = Date.now()
     const resolvedLabel = label?.trim() || path.basename(realPath) || realPath
-    this.db.prepare('INSERT INTO roots(id,label,real_path,created_at) VALUES(?,?,?,?)')
+    this.db.prepare('INSERT INTO roots(id,label,real_path,created_at,builtin) VALUES(?,?,?,?,0)')
       .run(id, resolvedLabel, realPath, createdAt)
     this.audit('admin', 'loopback-admin', 'root.add', id, undefined, { label: resolvedLabel })
     return { id, label: resolvedLabel, realPath, createdAt }
   }
 
   listRoots(): StoredRoot[] {
-    return (this.db.prepare('SELECT * FROM roots ORDER BY created_at, id').all() as unknown as RootRow[]).map(rootFromRow)
+    return (this.db.prepare('SELECT * FROM roots ORDER BY builtin DESC, created_at, id').all() as unknown as RootRow[]).map(rootFromRow)
   }
 
   getRoot(id: string): StoredRoot | undefined {
@@ -94,7 +114,51 @@ export class WorkspaceDatabase {
     return row === undefined ? undefined : rootFromRow(row)
   }
 
+  /**
+   * 登记「DSH 工作区」根 —— **幂等**。
+   *
+   * 用户要求：当前 DSH 的工作目录要显示成一个授权根，**不可删除、但可以正常访问**。
+   * 它不是另起一张表，而是**一条普通的根**加一个 `builtin` 标记：配对、`files.*`
+   * 授权、回收站、写盘全走现成逻辑，少一套需要同步维护的规则。
+   *
+   * ## 同目录已有一条普通根时，另起一条而不是复用它
+   *
+   * 这是实测踩到的现实情况：用户早于这个功能**自己**加过同一条目录（本机那条是
+   * 10-08 手工加的），路径和 DSH 工作区一模一样。
+   *
+   * 初版在这里「尊重用户选择」直接返回，结果就是**内置项永远登记不上** —— 因为它
+   * 每次都撞上那条已有的普通根然后什么都不做。界面上那个「不可删除」也就永远出不来。
+   * 用户的选择和功能的正确性在这里是冲突的：用户要的是「这条要不可删」，不是
+   * 「这条不能变」。
+   *
+   * 所以改成**另起一条**：用户原来那条保持可删（那是他的目录，他有权删），内置那条
+   * 独立存在。代价是列表里同一个路径出现两行 —— 这是「两条记录、两种权限」的必然
+   * 结果，比让功能失效或擅自改他的配置都更可接受。
+   *
+   * 幂等不再靠 UNIQUE（它已经被去掉了），而是靠「已存在 `builtin = 1` 的同路径就
+   * 直接返回」。插件**每次启动都可以无脑调一次**。
+   *
+   * 只有传入路径确实存在才登记：工作区可能被用户删掉，这时留一条指向虚空的授权根，
+   * 手机浏览时会一路报错，比不显示更糟。
+   */
+  async ensureBuiltinRoot(realPath: string, label: string): Promise<StoredRoot | undefined> {
+    const builtin = this.db.prepare('SELECT * FROM roots WHERE real_path = ? AND builtin = 1').get(realPath) as RootRow | undefined
+    if (builtin !== undefined) return rootFromRow(builtin)
+
+    // 不走 `addRoot`：它会按 real_path 去重，而那个去重正是这里要绕开的行为。
+    const created = await this.addRoot(realPath, label, { allowDuplicate: true })
+    this.db.prepare('UPDATE roots SET builtin = 1 WHERE id = ?').run(created.id)
+    this.audit('admin', 'loopback-admin', 'root.builtin', created.id, undefined, { label })
+    return { ...created, builtin: true }
+  }
+
   removeRoot(id: string): void {
+    const root = this.getRoot(id)
+    // 内置根不删：它是 DSH 工作区，用户无法在设置里删它，这里是唯一的一道闸。
+    // 拦在数据库层而不是路由层 —— 任何走到这里的路径都不该把它删掉。
+    if (root?.builtin === true) {
+      throw new ApiError(403, 'ROOT_BUILTIN', 'The DSH workspace root cannot be removed.')
+    }
     const result = this.db.prepare('DELETE FROM roots WHERE id = ?').run(id)
     if (result.changes === 0) throw new ApiError(404, 'ROOT_NOT_FOUND', 'The authorized root does not exist.')
     this.audit('admin', 'loopback-admin', 'root.remove', id)
@@ -181,7 +245,10 @@ export class WorkspaceDatabase {
   }
 
   listDevices(): DeviceView[] {
-    const rows = this.db.prepare('SELECT * FROM devices ORDER BY created_at DESC').all() as unknown as DeviceRow[]
+    // 只列活跃设备：用户明确要求「已撤销的不显示」。撤销本身已经会删行，这里再过滤一次
+    // 是为了兜住别处可能留下的标记行 —— 它们不该出现在界面上。
+    const rows = this.db.prepare('SELECT * FROM devices WHERE revoked_at IS NULL ORDER BY created_at DESC')
+      .all() as unknown as DeviceRow[]
     const rootQuery = this.db.prepare('SELECT root_id FROM device_roots WHERE device_id = ? ORDER BY root_id')
     return rows.map(row => ({
       id: row.id,
@@ -222,10 +289,68 @@ export class WorkspaceDatabase {
     return device
   }
 
-  revokeDevice(id: string): void {
-    const result = this.db.prepare('UPDATE devices SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL').run(Date.now(), id)
+  /**
+ * 撤销设备 = **直接删除这一行**（用户要求：已撤销的不显示，并自动从数据库中删除）。
+ *
+ * 原先是打 `revoked_at` 标记保留行，两处都不好：
+ * - 界面上会出现一长串灰掉的「已撤销」，本机实测堆到了 32 条，全是历史测试与旧设备；
+ * - 行留着就等于凭据的哈希还在库里，是个长期负担 —— 令牌已经没用了，留着没有意义。
+ *
+ * 删除是安全的，因为：
+ * - `device_roots` 是 `ON DELETE CASCADE`，授权行自动清掉；
+ * - `audit.actor_id` 是**普通字符串不是外键**，审计留痕（谁在什么时候撤了谁）一条不少；
+ * - `authenticate` 仍保留 `revoked_at IS NULL` 作为兜底，万一有别处留下的标记行，
+ *   它们依然登不进来 —— 两层保险不冲突。
+ */
+revokeDevice(id: string): void {
+    const active = this.getActiveDevice(id)
+    if (active === undefined) {
+      // 已经删掉了，或者本来就是标记行（历史数据）。两种都算「没什么可撤销的」，
+      // 但仍按 404 回给调用方 —— 与原语义一致：撤销一个不存在的设备是调用方的问题。
+      throw new ApiError(404, 'DEVICE_NOT_FOUND', 'The active device does not exist.')
+    }
+    // 先写审计再删：审计的 actor_id 不带外键，删设备不会把它带走，但顺序上
+    // 「先留痕再删」更符合「记录发生了什么」的直觉。
+    this.audit('admin', 'loopback-admin', 'device.revoke', undefined, undefined, { deviceId: id, name: active.name })
+    const result = this.db.prepare('DELETE FROM devices WHERE id = ?').run(id)
     if (result.changes === 0) throw new ApiError(404, 'DEVICE_NOT_FOUND', 'The active device does not exist.')
-    this.audit('admin', 'loopback-admin', 'device.revoke', undefined, undefined, { deviceId: id })
+  }
+
+  /**
+ * 一次性清理历史遗留的「标记式」撤销设备（`revoked_at IS NOT NULL` 的行）。
+ *
+ * 撤销改成直接删除之前，每次撤销都只是打个标记，于是库越用越臃肿 —— 本机实测堆到
+ * **32 条**，全是历史测试探针和早已弃用的旧手机，界面上就是一长串灰字。
+ *
+ * 幂等：没有这种行时返回 0，不报错。插件每次启动调一次即可。
+ * 走 `revokeDevice` 的删除语义，但**不能**借它写 `device.revoke` 审计 ——
+ * 那会把「系统清理」记成管理员逐个撤销，审计会失真。清理本身只写一条汇总。
+ */
+/**
+   * 仅供测试：造一行「撤销改成删除之前」的标记式撤销数据。
+   *
+   * 真实场景来自历史库（每次撤销只打 `revoked_at` 标记，于是越积越多）。测试需要个
+   * 干净的办法制造这种行，而它不该走生产代码路径 —— 所以显式开一个测试专用入口，
+   * 并起一个自见其明的名字，免得有人把它当成正常 API。
+   */
+  markRevokedForTest(id: string): void {
+    this.db.prepare('UPDATE devices SET revoked_at = ? WHERE id = ?').run(Date.now(), id)
+  }
+
+  purgeRevokedDevices(): number {
+    const stale = this.db.prepare('SELECT id FROM devices WHERE revoked_at IS NOT NULL').all() as { id: string }[]
+    if (stale.length === 0) return 0
+    this.db.exec('BEGIN IMMEDIATE')
+    try {
+      // device_roots 是 ON DELETE CASCADE，授权行跟着走。
+      const result = this.db.prepare('DELETE FROM devices WHERE revoked_at IS NOT NULL').run()
+      this.db.exec('COMMIT')
+      this.audit('admin', 'loopback-admin', 'device.purge', undefined, undefined, { purged: result.changes })
+      return Number(result.changes)
+    } catch (error) {
+      this.db.exec('ROLLBACK')
+      throw error
+    }
   }
 
   insertTrash(record: TrashRecord): void {
@@ -298,7 +423,7 @@ export class WorkspaceDatabase {
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY, value TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS roots(
-        id TEXT PRIMARY KEY, label TEXT NOT NULL, real_path TEXT NOT NULL UNIQUE, created_at INTEGER NOT NULL
+        id TEXT PRIMARY KEY, label TEXT NOT NULL, real_path TEXT NOT NULL, created_at INTEGER NOT NULL
       );
       CREATE TABLE IF NOT EXISTS devices(
         id TEXT PRIMARY KEY, name TEXT NOT NULL, token_hash TEXT NOT NULL UNIQUE,
@@ -329,6 +454,80 @@ export class WorkspaceDatabase {
       CREATE INDEX IF NOT EXISTS audit_time_idx ON audit(time DESC);
       CREATE INDEX IF NOT EXISTS trash_root_idx ON trash(root_id, created_at DESC);
     `)
+    // `roots.builtin`：标记「DSH 工作区」那条自动登记的根（不可删除）。
+    //
+    // SQLite 的 `ADD COLUMN` **不认 `IF NOT EXISTS`**，重复执行会直接报错。所以先查
+    // `PRAGMA table_info` 再决定加不加 —— 这样 migrate() 可以无条件重跑，
+    // 插件每次启动都会经过它一次。
+    //
+    // 加在 `CREATE TABLE` 里不行：已经装过的机器上那张表早就存在，`IF NOT EXISTS`
+    // 会整块跳过，新列永远加不上。这是加列而不是改表的典型理由。
+    if (!this.hasRootColumn('builtin')) {
+      this.db.exec('ALTER TABLE roots ADD COLUMN builtin INTEGER NOT NULL DEFAULT 0')
+    }
+    // 去掉 `real_path` 上的 UNIQUE。
+    //
+    // 起因：用户要求内置的「DSH 工作区」根**不可删除**，但他自己先加的那条同目录根
+    // **保持可删**。两条指向同一个目录，UNIQUE 会让第二条根本插不进去。
+    //
+    // SQLite 没有 `ALTER TABLE … DROP CONSTRAINT`，只能重建表。重建时必须：
+    // - 先关外键检查并在事务里做，否则 `device_roots` 的外键会拦（SQLite 会在
+    //   DROP TABLE 时检查，而它引用的正是我们要删的表）；
+    // - 用新表名而不是原地改，否则中途失败会把原表留在半截状态；
+    // - 迁移**幂等**：靠查 `sqlite_master` 里还有没有 UNIQUE，而不是靠「跑过一次」。
+    if (this.rootsPathIsUnique()) {
+      this.dropRootsUniqueConstraint()
+    }
+  }
+
+  /** `roots.real_path` 上是否还带 UNIQUE 约束。 */
+  private rootsPathIsUnique(): boolean {
+    const row = this.db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'roots'")
+      .get() as { sql?: string } | undefined
+    return /real_path\s+TEXT\s+NOT\s+NULL\s+UNIQUE/i.test(row?.sql ?? '')
+  }
+
+  /**
+   * 重建 `roots` 去掉 UNIQUE。
+   *
+   * 这是一次**有真实数据风险**的操作，所以每一步都写清楚理由：
+   * - `PRAGMA foreign_keys=OFF`：`device_roots.root_id` 引用 `roots(id)`，而重建要
+   *   DROP 掉被引用的那张表。开着外键会直接失败。
+   * - 事务：`new_roots` 建好、数据搬完、**最后**才 DROP 老表并改名。中途失败会整体
+   *   回滚，原表原封不动。
+   * - 搬数据用显式列名而不是 `SELECT *`：老表可能还没有 `builtin` 列（两种迁移顺序
+   *   都可能出现），按列名搬才不会在某一台机器上错位。
+   */
+  private dropRootsUniqueConstraint(): void {
+    const hasBuiltin = this.hasRootColumn('builtin')
+    const columns = hasBuiltin
+      ? 'id, label, real_path, created_at, builtin'
+      : 'id, label, real_path, created_at, 0 AS builtin'
+    this.db.exec('PRAGMA foreign_keys=OFF')
+    try {
+      this.db.exec('BEGIN IMMEDIATE')
+      this.db.exec(`
+        CREATE TABLE roots_migrated(
+          id TEXT PRIMARY KEY, label TEXT NOT NULL, real_path TEXT NOT NULL,
+          created_at INTEGER NOT NULL, builtin INTEGER NOT NULL DEFAULT 0
+        );
+        INSERT INTO roots_migrated(${columns}) SELECT ${columns} FROM roots;
+        DROP TABLE roots;
+        ALTER TABLE roots_migrated RENAME TO roots;
+      `)
+      this.db.exec('COMMIT')
+    } catch (error) {
+      this.db.exec('ROLLBACK')
+      throw error
+    } finally {
+      this.db.exec('PRAGMA foreign_keys=ON')
+    }
+  }
+
+  /** `roots` 表是否已有指定列。 */
+  private hasRootColumn(column: string): boolean {
+    const columns = this.db.prepare('PRAGMA table_info(roots)').all() as { name: string }[]
+    return columns.some(entry => entry.name === column)
   }
 }
 
@@ -353,7 +552,15 @@ function assertScopes(scopes: DeviceScope[]): void {
 }
 
 function rootFromRow(row: RootRow): StoredRoot {
-  return { id: row.id, label: row.label, realPath: row.real_path, createdAt: row.created_at }
+  // `builtin` 只在真的为 1 时才出现在返回值里：字段可选，客户端用 `=== true` 判断，
+  // 少一个 false 比多一个 false 更干净（序列化出去的 JSON 也不会平白多一个键）。
+  return {
+    id: row.id,
+    label: row.label,
+    realPath: row.real_path,
+    createdAt: row.created_at,
+    ...(row.builtin === 1 ? { builtin: true } : {}),
+  }
 }
 
 function trashFromRow(row: Record<string, unknown>): TrashRecord {

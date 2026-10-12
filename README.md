@@ -9,13 +9,13 @@
 </p>
 
 <p align="center">
-  <img alt="Version" src="https://img.shields.io/badge/version-v2.2.4-087f8c">
+  <img alt="Version" src="https://img.shields.io/badge/version-v2.3.0-087f8c">
   <img alt="DSH plugin" src="https://img.shields.io/badge/DeepSeek_Harness-plugin-1f2328">
   <img alt="Platforms" src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-586069">
   <img alt="License" src="https://img.shields.io/badge/license-AGPL--3.0-2da44e">
 </p>
 
-`dsh-remote-bridge` 是 DeepSeek Harness（DSH）的远程访问桥接插件：它把 DSH 内核的私有 remote 协议翻译成版本化的 REST 接口，让 dsh-companion（[GitHub](https://github.com/westanke/dsh-companion) · [Gitee](https://gitee.com/westanke/dsh-companion)）等受信任客户端在离开电脑后仍能使用同一套聊天、工作区与文件能力；桌面端在你的 DSH 设置里提供一个「手机设置」，内联六个分区（根目录 / 远程访问 / 设备 / 回收站 / 审计 / App 下载）。**桌面端不再提供文件管理界面**：文件树与编辑器已于 2.2.0 删除，电脑上管理文件请走手机 App，或在会话里让 agent 用工具完成（见「桌面端不再有文件管理界面」）。
+`dsh-remote-bridge` 是 DeepSeek Harness（DSH）的远程访问桥接插件：它把 DSH 内核的私有 remote 协议翻译成版本化的 REST 接口，让 dsh-companion（[GitHub](https://github.com/westanke/dsh-companion) · [Gitee](https://gitee.com/westanke/dsh-companion)）等受信任客户端在离开电脑后仍能使用同一套聊天、工作区与文件能力；桌面端在你的 DSH 设置里提供一个「手机设置」，内联七张设置卡片（根目录 / 远程访问 / 设备 / 识图 / 回收站 / 审计 / App 下载），每张卡片各自折叠、可多张同时展开。**桌面端不再提供文件管理界面**：文件树与编辑器已于 2.2.0 删除，电脑上管理文件请走手机 App，或在会话里让 agent 用工具完成（见「桌面端不再有文件管理界面」）。
 
 界面默认中文，可随时切换 English。插件支持 Windows、macOS 和 Linux，安装包已经包含编译产物，不要求用户在服务器上重新构建。
 
@@ -29,7 +29,7 @@
 
 ## 实际效果
 
-桌面端的入口**就在你的 DSH 设置里**：打开设置，在「📱 手机访问」下面就是「📱 手机设置」，点进去直接内联渲染六个分区，不再另开弹窗。它只做设置，**不含文件树**——独立页 `/dsh-workspace` 以及其中的文件树、CodeMirror 编辑器已于 2.2.0 一并删除，理由与代价见下文「桌面端不再有文件管理界面」。
+桌面端的入口**就在你的 DSH 设置里**：打开设置，在「📱 手机访问」下面就是「📱 手机设置」，点进去直接内联渲染七张折叠卡片，不再另开弹窗。它只做设置，**不含文件树**——独立页 `/dsh-workspace` 以及其中的文件树、CodeMirror 编辑器已于 2.2.0 一并删除，理由与代价见下文「桌面端不再有文件管理界面」。
 
 远程访问默认关闭。管理员可在本机 WebUI 中设置绑定 IP、端口和新设备的初始权限。
 
@@ -72,10 +72,10 @@ dsh plugin --profile web add dsh-remote-bridge
 dsh plugin --profile web add dsh-remote-bridge --registry https://registry.npmmirror.com
 
 # ② GitHub Release 的 tarball
-dsh plugin --profile web add https://github.com/westanke/dsh-remote-bridge/releases/download/v2.2.4/dsh-remote-bridge-2.2.4.tgz
+dsh plugin --profile web add https://github.com/westanke/dsh-remote-bridge/releases/download/v2.3.0/dsh-remote-bridge-v2.3.0.tgz
 
 # ③ Gitee Release 的 tarball（国内访问更快）
-dsh plugin --profile web add https://gitee.com/westanke/dsh-remote-bridge/releases/download/v2.2.4/dsh-remote-bridge-2.2.4.tgz
+dsh plugin --profile web add https://gitee.com/westanke/dsh-remote-bridge/releases/download/v2.3.0/dsh-remote-bridge-v2.3.0.tgz
 
 npx @deepseek-ai/dsh web
 ```
@@ -91,7 +91,7 @@ npx @deepseek-ai/dsh web
 从 GitHub Release 下载离线安装包时，可直接安装 tarball：
 
 ```sh
-dsh plugin --profile web add ./dsh-remote-bridge-2.2.4.tgz
+dsh plugin --profile web add ./dsh-remote-bridge-v2.3.0.tgz
 ```
 
 ## 第一次使用
@@ -119,18 +119,31 @@ dsh plugin --profile web add ./dsh-remote-bridge-2.2.4.tgz
 
 ### 桌面端设置面板
 
-入口在 DSH 设置里，标题为「手机设置」。设置区**内联渲染**导航与内容，不另开弹窗；导航横排，默认落在「根目录」：
+入口在 DSH 设置里，标题为「手机设置」。设置区**内联渲染**，不另开弹窗；七张折叠卡片平铺，可多张同时展开，默认展开「根目录」：
 
 | 分区 | 用途 |
 | --- | --- |
-| 根目录 | 添加、移除授权目录并设置显示名称 |
+| 根目录 | 添加、移除授权目录并设置显示名称；DSH 当前的工作区会作为**默认根**自动登记（不可删除，但可正常访问） |
 | 远程访问 | 设置绑定 IP / 端口，启用远程访问并创建配对码 |
 | 设备 | 查看设备权限与根目录授权，随时撤销 |
+| 识图 | 设置图片交接目录（识图路径），并只读展示出厂默认 `.dsh-images` 与兜底目录 |
 | 回收站 | 查看与恢复被删除的条目（只列出来自手机 App 的删除记录） |
 | 审计 | 查看操作类型与对象的审计记录 |
 | App 下载 | 扫码下载 Android 客户端，二维码指向两个站点的 Releases 列表页 |
 
 侧栏那个齿轮按钮**已移除**：入口分散在侧栏图标和设置页两处，会让同一件事有两个起点。会话视图中工具轨迹旁的「文件」标签页也早已移除，桌面端现在只有这一个入口。
+
+### 图片交接：手机发的图，桌面也看得见
+
+模型看不到图时（纯文本模型），本插件会在**发消息之前**把图存成工作区文件，消息里只留两样东西：一句人话（图存在哪、要看图怎么办）+ 一行给识图工具读的绝对路径。
+
+现在 **DSH WebUI 也会在该轮末尾把这张图画出来** —— 点击看原图、`Escape` 或点任意处关闭，图下面仍然保留那条路径。手机 App 那边一直可以显示，桌面这边此前只有一段文字；两边现在一致了。
+
+- **落点**：`<会话工作目录>/<识图路径>/<sha256>.<ext>`，文件名是内容哈希，所以同一张图反复发不会堆副本（目录 0700、文件 0600）。
+- **识图路径**默认 `.dsh-images`，在设置页「识图」里可以改，改完立即生效、不需要重启；**「当前默认」那一栏是只读的** —— 历史交接消息和识图工具都按它写过路径，它不跟着你的修改走。旁边还列出解析不出会话工作目录时用的兜底目录。
+- **只认交接句式**，而且只认**你自己发的那条消息**：助手正文、上下文注入、工具输出里出现的 `.dsh-images/…` 不会被渲染成图（对话里到处都是这种引用，读它们只会把别人的话切成碎图）。
+
+> 如果你此前装过 `dsh-image-paths`，请把它那一行**停用**：两个插件的图集会挂在同一个位置，同一张图会被画两遍。本插件已自带这套能力。
 
 ### 连接 Android App 或其他客户端
 
@@ -248,7 +261,11 @@ Authorization: Bearer DEVICE_TOKEN
 | `settings.read` | 查看供应商有效配置和凭据是否已配置 |
 | `settings.write` | 修改供应商、写入凭据和创建自定义供应商 |
 
-设备还必须获得相应 `rootId` 的授权。权限和根目录授权都可以在本机 WebUI 的“设备”页随时修改或撤销。
+设备还必须获得相应 `rootId` 的授权。权限和根目录授权都可以在本机 WebUI 的“设备”页随时修改。
+
+**新增的权限是配对前在「远程访问」里勾选的**：勾什么，生成的配对码就带什么；APP 输入配对码后这些权限随设备一起生效。已在用的设备则到「设备」里点它的「权限」修改。
+
+**撤销一台设备会直接把它从数据库里删除**，不是打个标记留着；它的授权随之清除，但审计记录（谁在什么时候撤了谁）会保留。
 
 ## 升级与卸载
 
@@ -307,11 +324,11 @@ pnpm pack
 
 `npm pack` 的产物约 **0.25 MB**：2.2.0 删除独立页及其编辑器依赖、并关闭 source map 之后，从 1.72 MB 降下来。
 
-v2.2.4 基于 DSH `master@47f943859bef60e4160492346772ded9b24f765a` 开发，CI 覆盖 Windows、Ubuntu 和 macOS。
+v2.3.0 基于 DSH `master@47f943859bef60e4160492346772ded9b24f765a` 开发，CI 覆盖 Windows、Ubuntu 和 macOS。
 
 ## 项目信息
 
-- 当前版本：`v2.2.4`
+- 当前版本：`v2.3.0`
 - 作者：上游 [Hakunm](https://github.com/Hakunm)，本 fork 维护 [westanke](https://github.com/westanke)
 - 仓库：[GitHub](https://github.com/westanke/dsh-remote-bridge) · [Gitee](https://gitee.com/westanke/dsh-remote-bridge)
 - npm：[`dsh-remote-bridge`](https://www.npmjs.com/package/dsh-remote-bridge)（[国内镜像](https://registry.npmmirror.com/dsh-remote-bridge)）
