@@ -50,8 +50,9 @@
 - 最近验证：`pnpm typecheck` 通过 · `pnpm test` **30 个测试文件 / 220 个用例全绿** · `pnpm docs:check` 通过 · `pnpm build` 两个 entry（host / client）构建完成。**本轮按用户指示未同步实装目录**。另有 **4 个浏览器层用例**（Playwright 用真实浏览器量计算样式），4/4 通过
 - 界面截图：桌面界面截图**已删除**（那是改名前的旧界面，含 v1.0.0 徽章与旧的 1400px 文件树对话框）。重录需要能驱动插件面板的浏览器环境，目前不具备；二维码另有 SVG/PNG 资产。桌面文件工作区界面（独立页）已于 2.2.0 删除，不再有对应截图需求
 - 仓库：`https://github.com/westanke/dsh-remote-bridge`，topic 包含 `dsh-plugin`
-- Release：GitHub `https://github.com/westanke/dsh-remote-bridge/releases/tag/v2.3.4`（3 资产：tgz + RELEASE_NOTES + SHA256SUMS，逐一核对大小）；Gitee 同名 tag 与 Release 并列（3 资产，下载回读**逐字节一致**）。v2.3.2 未单独发版，其修复已并入 v2.3.3 的 Release notes
-- Release 历史：`v2.0.0` / `v2.0.1` 为已知缺陷版，`v2.0.2` / `v2.0.3` 从未发布；npm 现为 **v2.3.3**，本版待发
+- Release：Gitee `https://gitee.com/westanke/dsh-remote-bridge/releases/tag/v2.3.4`（自传 3 资产 + 平台自动生成的 zip / tar.gz，下载回读**逐字节一致**）；GitHub `https://github.com/westanke/dsh-remote-bridge/releases/tag/v2.3.4`（3 资产，大小逐一核对，tgz 307,859 字节与本地一致）
+- **GitHub 站补建说明**：核对时发现 GitHub 上此前**只有 `v1.0.0` 一个 Release**，`v2.0.4`~`v2.3.3` 的 Release 实际只建在 Gitee（tag 两端都在）—— 旧记载的「双站 Release」与事实不符。**`v2.3.4` 是 GitHub 站的第一个 2.x Release**，本版起两站齐发
+- Release 历史：`v2.0.0` / `v2.0.1` 为已知缺陷版，`v2.0.2` / `v2.0.3` 从未发布；v2.3.2 未单独发版，其修复并入 v2.3.3 的 Release notes；npm 现为 **v2.3.4**
 - 正式产物：`artifacts/dsh-remote-bridge-v2.3.4.tgz`，**307,859 字节（约 0.29 MB）**，SHA-256 `d125f006aa94e7dd26886b1172719721d61dca83d533841e591e3314b667c711`（用 `npm pack` 生成，与 npm 上那份同源）
 - 分发：npm [`dsh-remote-bridge`](https://www.npmjs.com/package/dsh-remote-bridge)（官方源 + npmmirror 均有），`dsh plugin --profile web add dsh-remote-bridge` 可用
 - 阻塞项：Android 与 DSH WebUI 的后续完整能力对等仍按 `PARITY-001` 推进
