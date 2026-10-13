@@ -23,6 +23,37 @@
   不是只列改了哪几个文件。
 - README 中英两份的徽章、版本警告、安装命令、当前版本、构建基线同步。
 
+## 0.5 顺序铁律：**先改文档与版本号，再 build，最后同步**
+
+这一条是踩过坑才写的（2026-10-13 发 v2.3.1 时）：
+
+```
+改代码 → 改文档 → 改版本号 → pnpm check（含 build） → 同步实装目录 → 打包发布
+```
+
+**为什么不能反过来**：`PLUGIN_VERSION` 在 `src/shared/version.ts` 里，**它是会被打进 `lib/index.js`
+的**，`/healthz` 就靠它显示版本。如果先 `pnpm build` + 同步实装目录、之后才改版本号与文档，
+那么：
+
+- 实装目录里躺的是**旧版本号的产物**（`/healthz` 会老老实实报旧版本）；
+- 而你手上用于打包发版的是新产物 —— 两边不是同一份字节，真机验证的东西和发出去的东西不一致。
+
+**同步是最后一道动作，紧邻打包**，且必须逐项对账：
+
+```sh
+SRC=/media/wangke/OFFICE/workspace/dsh-remote-bridge/lib
+DST=~/.dsh/profiles/web/node_modules/dsh-remote-bridge/lib
+cp "$SRC/index.js" "$SRC/index.d.ts" "$SRC/client.cjs" "$DST/"
+for f in index.js index.d.ts client.cjs; do
+  a=$(sha256sum "$SRC/$f" | cut -d' ' -f1); b=$(sha256sum "$DST/$f" | cut -d' ' -f1)
+  [ "$a" = "$b" ] && echo "✓ $f" || echo "✗ $f 不一致"
+done
+curl -s http://127.0.0.1:3090/api/v1/healthz   # 版本号应对得上
+```
+
+> ⚠️ **同步只写文件，不等于生效**：插件是进程内加载的，**必须重启 dsh 进程**。
+> 重启前 `/healthz` 仍会报旧版本 —— 那不是没同步，是没重启。
+
 ## 1. 产出正式产物：用 `npm pack`，不要用 `pnpm pack`
 
 这是**发过一版之后才明白的一条**，代价是两个哈希对不上。
