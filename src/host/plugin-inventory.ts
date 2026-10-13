@@ -93,8 +93,18 @@ export interface ProfileResolutionInput {
 /**
  * 解析当前 profile 名。
  *
- * 依次尝试：`DSH_PROFILE` 环境变量 → `--profile=<name>` → `--profile <name>`。
+ * 依次尝试：`DSH_PROFILE` 环境变量 → `--profile=<name>` → `--profile <name>`
+ * → **子命令简写**（`dsh web` 等价于 `dsh --profile web`）。
  * 都拿不到时返回 null（调用方不要猜，猜错会读到另一个 profile 的清单）。
+ *
+ * 最后那条简写路径是补上的一个真 bug：内核的启动器文档写得很清楚 ——
+ *
+ * > `dsh <name>` abbreviates `dsh --profile <name>`；`dsh web` boots the web
+ * > profile (same as: `dsh --profile web`)
+ *
+ * 而此前这里只认 `--profile` 两种写法。于是**用 `dsh web` 启动的用户会看到
+ * 「服务器判定不出当前使用的插件档案」** —— 明明 profile 就在那儿、插件也正常
+ * 加载着，只有这个页面读不出来。这不是「用户没带参数」，是插件漏了一条启动形式。
  */
 export function resolveProfileName(input: ProfileResolutionInput = {}): string | null {
   const env = input.env ?? process.env
@@ -113,7 +123,47 @@ export function resolveProfileName(input: ProfileResolutionInput = {}): string |
   if (index >= 0) {
     const value = argv[index + 1]?.trim()
     // 防止把下一个选项当成 profile 名（`--profile --port 3080`）。
+    //
+    // 取值非法时**直接返回 null，不再退回子命令简写**：用户明确写了 `--profile`
+    // 只是写错了，这时候去猜「那大概是想用 web 吧」是在替用户做决定 ——
+    // 而猜错的后果是读到另一个 profile 的清单，比老实报错更难排查。
     if (value && !value.startsWith('-')) return value
+    return null
+  }
+  return profileFromSubcommand(argv)
+}
+
+/**
+ * 从子命令简写里取 profile 名（`dsh web` → `web`）。
+ *
+ * 判据照抄内核启动器的解析规则：**跳过所有选项，第一个非选项 token 就是子命令**。
+ * 需要绕开两类 token：
+ *
+ * - 选项本身（以 `-` 开头）—— 例如 `dsh --port 3080 web` 里要先跳过 `--port`；
+ * - **选项的取值** —— 上面那个 `3080` 不是选项也不是子命令，只是 `--port` 的值。
+ *   不跳它的话会把 `3080` 当成 profile 名。内核的选项都是「一个旗标接一个值」的
+ *   单值形式（`--port 3080` / `--patch a.yml`），所以看到选项就把它的下一个 token
+ *   一起跳过，是安全的。
+ *
+ * `plugin` 单独排除：`dsh plugin add xxx` 是管理插件依赖的命令，
+ * 它**不启动任何 profile**，把它当 profile 名会去读一个不存在的目录。
+ */
+function profileFromSubcommand(argv: readonly string[]): string | null {
+  const start = argv.findIndex((arg) => /(^|[/\\])dsh(\.js|\.cjs|\.mjs)?$/.test(arg))
+  let i = start >= 0 ? start + 1 : 0
+  while (i < argv.length) {
+    const arg = argv[i]
+    if (arg === undefined || arg === '') {
+      i += 1
+      continue
+    }
+    if (arg.startsWith('-')) {
+      // `--flag=value` 自带取值；`--flag value` 要连值一起跳。
+      i += arg.includes('=') ? 1 : 2
+      continue
+    }
+    // 第一个真正的非选项 token：这就是子命令。
+    return arg === 'plugin' ? null : arg
   }
   return null
 }
