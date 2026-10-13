@@ -204,6 +204,22 @@ export interface ChatSessionView {
   id: string
   rootId: string
   cwd: string
+  /**
+   * 会话工作目录的**绝对路径**（可选，老客户端会忽略）。
+   *
+   * `cwd` 是**相对授权根**的 wire 路径（列举接口要的正是这个），手机端要往输入框
+   * 里插一条 `@绝对路径` 时却需要绝对路径 —— 而客户端手里没有根的 realPath
+   * （`RootView` 刻意不含它，那是机器信息）。此前 App 拿 `cwd` 去 `/roots/resolve`
+   * 换，可那个端点**要求绝对路径输入**、对相对路径直接 400 —— 于是补全必然失败。
+   *
+   * 这里补的这一个字段就是那条缺失的桥：会话的绝对 cwd 服务端本来就有（`matchRoot`
+   * 的入参就是它），它又一定落在**这台设备已授权**的根内（不匹配的会话压根不会出现在
+   * 列表里），所以给出它不扩大任何可见范围。
+   *
+   * `cwd` 为空字符串是**合法**的：会话工作目录正好就是授权根本身时，
+   * `path.relative(root, root)` 返回空串 —— 客户端必须把它当作「根目录」而不是「没有」。
+   */
+  cwdAbsolute?: string
   updatedAt: number
   running: boolean
   blank: boolean
@@ -334,7 +350,11 @@ export class DshChatAdapter {
     const visible: ChatSessionView[] = []
     for (const session of value.items) {
       if (archivedSessionIds.has(session.sessionId)) continue
-      const match = session.cwd === undefined ? undefined : matchRoot(roots, session.cwd)
+      // 先把绝对 cwd 收进局部变量：下面那句 `continue` 并不能让 TS 窄化 `session.cwd`，
+      // 而 `cwdAbsolute` 与 `matchRoot` 用的必须是同一个值。
+      const absoluteCwd = session.cwd
+      if (absoluteCwd === undefined) continue
+      const match = matchRoot(roots, absoluteCwd)
       if (match === undefined) continue
       const workspace = workspaces.find(item => item.rootId === match.root.id && item.path === match.relative)
       const title = sessionTitle(session)
@@ -342,6 +362,8 @@ export class DshChatAdapter {
         id: session.sessionId,
         rootId: match.root.id,
         cwd: match.relative,
+        // 会话工作目录的绝对路径，给手机端拼 `@绝对路径` 用（见 ChatSessionView 上的说明）。
+        cwdAbsolute: absoluteCwd,
         updatedAt: session.updatedAt,
         running: session.running,
         blank: session.blank,

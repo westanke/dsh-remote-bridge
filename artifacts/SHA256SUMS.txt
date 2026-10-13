@@ -3,3 +3,4 @@
 5b3ae3808470c1556d10e41df65bdb5f0f73ba102d5b80456f9b8b0f091a1c80  dsh-remote-bridge-v2.3.1.tgz
 ec9b180f2ffd21a28ac095319b0d995dc47cfeef939109e102e8303e5ea18774  dsh-remote-bridge-v2.3.3.tgz
 d125f006aa94e7dd26886b1172719721d61dca83d533841e591e3314b667c711  dsh-remote-bridge-v2.3.4.tgz
+592fdac116faec7b9442d7ed67a799b6aacbb2197716ce2f47f24cccd02bf922  dsh-remote-bridge-v2.3.5.tgz

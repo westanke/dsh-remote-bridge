@@ -1,14 +1,22 @@
 # 当前状态
 
 - 日期：2026-10-13
-- 阶段：`dsh-remote-bridge` **v2.3.4**（**已发版**：npm + 双站 Release + git tag。**实装目录按用户指示未同步** —— 本轮只出仓库产物）
-- 当前任务：`v2.3.4` 修桌面版「插件」页读不出清单（根因：`--profile` 拿到的是 profile 目录而非名字）；下一轮待用户指派
+- 阶段：`dsh-remote-bridge` **v2.3.5**（**已发版**：npm + 双站 Release + git tag。**实装目录按用户指示未同步** —— 本轮只出仓库产物）
+- 当前任务：`v2.3.5` 会话补上 `cwdAbsolute`、救活手机端 `@` 补全（根因：会话 `cwd` 是相对授权根，App 却当绝对路径去 resolve）；下一轮待用户指派
 - DSH 基线：`master` / `47f943859bef60e4160492346772ded9b24f765a`
 - 插件路径：本仓库（历史上游为 `Hakunm/dsh-workspace`，v1.0.0 保持原样不动）
 - 已完成：Host/Client 外置插件、授权根与回收站、独立 listener、设备授权、聊天/审批/命令/模型 BFF、OpenAPI/AsyncAPI、Kotlin SDK、中英双语和版本展示
 - 2.2.3 / 2.2.4（纯文本模型发图）：内核以 `MODEL_DOES_NOT_SUPPORT_IMAGES` 拒收纯文本模型会话里的图片，插件按内核自己的 `llm.resolveModelInfo()` 判定并把图片落成工作区文件（`<会话工作目录>/.dsh-images/<sha256>.<ext>`，内容寻址、0700/0600），消息里留两行：第一行给人看（当前值可配置的识图路径），第二行 `[Image: source: <绝对路径>]` 给机器；解析不出工作目录时退回 `<dataDir>/image-handoff`。手机端用 `GET /api/v1/image-handoff` 把图取回去显示，历史图片走 `sessionController.attachment`
 - 2.2.4 实装 + 本轮待发版内容（`IMAGE-001`）：设置页新增「识图」分区 —— 识图路径（交接目录名）可改、存 `settings.image_handoff_subdir`、改完立即生效；「当前默认」`.dsh-images` 与兜底目录为只读栏。dsh-image-paths 0.3.1 的宿主路由与浏览器图集并入本插件：只读路由 `GET /plugin/dsh-remote-bridge/raw?sessionId=…&name=…`（回环 + 同源 + 裸文件名白名单 + 字节自证 + 32 MiB 上限，目录由宿主按会话推出），图集挂在 `conversation.chat.turnTail`，只认用户消息里的交接行首标记
 - **待办**：① 真机验证（重启 dsh 后：会话里「加载更早消息」能否翻出更早记录；「插件」页是否不再报判定不出 profile；**启停一个插件看是否要重启才生效、备份文件是否落地**）；② 停用独立 `image-paths` 插件那一行 —— 两个插件会把同一张图在 Turn 尾画两遍，本插件已自带该能力
+- 2.3.5（会话补 `cwdAbsolute`，救活手机端 `@` 补全）：
+  - **现象**：手机 App 会话里打 `@`，面板只显示「读不到这个会话的工作目录」，一个文件都列不出来。
+  - **根因（三层）**：① 会话工作目录 = 授权根本身时 `wireRelative` 返回**空字符串**（`path.relative(root, root) === ''`），App 把它当成「没有工作目录」；② App 把**相对根**的 `cwd` 当**绝对路径**送去 `/roots/resolve`，而该端点对相对路径硬拒绝（`PATH_NOT_ABSOLUTE`）——**这一步翻译纯属多余**，会话里本来就有 `rootId`；③ App 没有根的 realPath（`RootView` 刻意不含），拼不出绝对路径。**结果是这个补全从实现起从未列出过任何文件。**
+  - **修法（本服务端承担第 ③ 层）**：`ChatSessionView` 新增**可选** `cwdAbsolute`；`listSessions` 把绝对 cwd 收进局部变量供 `matchRoot` 与 `cwdAbsolute` 共用。该值本就在服务端手里，且会话必落在**本设备已授权**的根内（不匹配的会话不会出现在列表里），故不扩大可见范围。
+  - **未做**：不动 `cwd` 语义（改回绝对会破坏已发布客户端并铺开机器路径）；不新增 reason 枚举值（老 App 会掉进更模糊的兜底文案）。
+  - **安全断言**：`chat-adapter.spec.ts` 那条「响应不含根真实路径」的断言**没有拆掉**，只把例外精确摘出去（按 key 过滤 `cwdAbsolute` 再验），防线收窄到一处。
+  - 新增 1 条用例：会话目录 = 授权根本身时 `cwd === ''` 且 `cwdAbsolute` = 根真实路径。
+  - 配套 App 侧（dsh-companion 2.2.33）：去掉 `resolvePath` 改直用 `rootId`+`cwd`；`MentionQuery.absolute` 从「拼接」改为正确的**换前缀**语义；`@` 面板文案分三态（读取中 / 读不到 / 真的是空的）。
 - 2.3.4（修桌面版读不出插件清单）：
   - **现象**：桌面版（官方 Electron 壳）里打开手机 App 的「插件」页，红条报「服务器读不出插件清单：package.json 可能损坏、缺失或没有读取权限」，但 `/home/wangke/.dsh/profiles/desktop/package.json` 存在、`0644` 可读、JSON 合法 —— 提示里的三种可能**一种都不成立**。
   - **根因**：内核接受 `--profile <名>` 与 `--profile <profile 目录>` **两种**写法（启动器文档：`--profile ${basename(profileDir)}`，**内核自己取 basename**），而 `resolveProfileName()` 只认第一种。桌面版用第二种启动内核，于是整条路径被当成 profile 名；`path.join` 不会因后段是绝对路径而重置，拼出 `/home/wangke/.dsh/profiles/home/wangke/.dsh/profiles/desktop`，必然 `ENOENT` → 被 `readJson()` 的 `catch` 吞成 `MANIFEST_UNREADABLE`。
@@ -47,12 +55,12 @@
 - 二维码资产：提交进仓库并由 `tests/app-qr.spec.ts` 解码校验，指向 Releases **列表页**（非具体文件），因此发新版不需重新生成
 - 2.2.0（删独立页 + 瘦身）：删除独立页 `/dsh-workspace`（文件树 + CodeMirror 6 编辑器）及 `src/standalone/`、`assets/workspace.html`、`src/client/editor.tsx`、`workspace.tsx` 中的 `WorkspaceApp`/`DirectoryNode`/`CommandDialog`/`AdminOverlay`、`scripts/test-server.ts`，以及 8 个 `@codemirror/*` 与 `@lezer/highlight` 依赖；同时关闭 tsdown source map（映射本身约 5 MB，而插件发的是预构建 bundle、包内又没有原始 TS 源码，消费者根本用不上）。理由：手机 App 的文件页已原生覆盖同一套能力，桌面端这个页面无人使用。发布包 **1.72 MB → 0.25 MB**；`/dsh-workspace-api` 代理前缀与全部 REST 文件端点未动，App 不受影响
 - 附件能力边界：会话历史图片需要宿主提供 `ctx.attachments` 服务；缺失时插件照常激活，读取接口返回 `ATTACHMENT_STORE_UNAVAILABLE`，附件类上传返回 `FILE_UPLOADS_UNAVAILABLE`
-- 最近验证：`pnpm typecheck` 通过 · `pnpm test` **30 个测试文件 / 220 个用例全绿** · `pnpm docs:check` 通过 · `pnpm build` 两个 entry（host / client）构建完成。**本轮按用户指示未同步实装目录**。另有 **4 个浏览器层用例**（Playwright 用真实浏览器量计算样式），4/4 通过
+- 最近验证：`pnpm typecheck` 通过 · `pnpm test` **30 个测试文件 / 221 个用例全绿** · `pnpm docs:check` 通过 · `pnpm build` 两个 entry（host / client）构建完成。**本轮按用户指示未同步实装目录**。另有 **4 个浏览器层用例**（Playwright 用真实浏览器量计算样式），4/4 通过
 - 界面截图：桌面界面截图**已删除**（那是改名前的旧界面，含 v1.0.0 徽章与旧的 1400px 文件树对话框）。重录需要能驱动插件面板的浏览器环境，目前不具备；二维码另有 SVG/PNG 资产。桌面文件工作区界面（独立页）已于 2.2.0 删除，不再有对应截图需求
 - 仓库：`https://github.com/westanke/dsh-remote-bridge`，topic 包含 `dsh-plugin`
-- Release：Gitee `https://gitee.com/westanke/dsh-remote-bridge/releases/tag/v2.3.4`（自传 3 资产 + 平台自动生成的 zip / tar.gz，下载回读**逐字节一致**）；GitHub `https://github.com/westanke/dsh-remote-bridge/releases/tag/v2.3.4`（3 资产，大小逐一核对，tgz 307,859 字节与本地一致）
-- **GitHub 站补建说明**：核对时发现 GitHub 上此前**只有 `v1.0.0` 一个 Release**，`v2.0.4`~`v2.3.3` 的 Release 实际只建在 Gitee（tag 两端都在）—— 旧记载的「双站 Release」与事实不符。**`v2.3.4` 是 GitHub 站的第一个 2.x Release**，本版起两站齐发
-- Release 历史：`v2.0.0` / `v2.0.1` 为已知缺陷版，`v2.0.2` / `v2.0.3` 从未发布；v2.3.2 未单独发版，其修复并入 v2.3.3 的 Release notes；npm 现为 **v2.3.4**
-- 正式产物：`artifacts/dsh-remote-bridge-v2.3.4.tgz`，**307,859 字节（约 0.29 MB）**，SHA-256 `d125f006aa94e7dd26886b1172719721d61dca83d533841e591e3314b667c711`（用 `npm pack` 生成，与 npm 上那份同源）
+- Release：Gitee `https://gitee.com/westanke/dsh-remote-bridge/releases/tag/v2.3.5`（自传 3 资产 + 平台自动生成的 zip / tar.gz，下载回读**逐字节一致**）；GitHub `https://github.com/westanke/dsh-remote-bridge/releases/tag/v2.3.5`（3 资产，大小逐一核对，tgz 308,510 字节与本地一致）
+- **GitHub 站补建说明**：核对时发现 GitHub 上此前**只有 `v1.0.0` 一个 Release**，`v2.0.4`~`v2.3.3` 的 Release 实际只建在 Gitee（tag 两端都在）—— 旧记载的「双站 Release」与事实不符。`v2.3.4` 起两站齐发
+- Release 历史：`v2.0.0` / `v2.0.1` 为已知缺陷版，`v2.0.2` / `v2.0.3` 从未发布；v2.3.2 未单独发版，其修复并入 v2.3.3 的 Release notes；npm 现为 **v2.3.5**
+- 正式产物：`artifacts/dsh-remote-bridge-v2.3.5.tgz`，**308,510 字节（约 0.29 MB）**，SHA-256 `592fdac116faec7b9442d7ed67a799b6aacbb2197716ce2f47f24cccd02bf922`（用 `npm pack` 生成，与 npm 上那份同源）
 - 分发：npm [`dsh-remote-bridge`](https://www.npmjs.com/package/dsh-remote-bridge)（官方源 + npmmirror 均有），`dsh plugin --profile web add dsh-remote-bridge` 可用
 - 阻塞项：Android 与 DSH WebUI 的后续完整能力对等仍按 `PARITY-001` 推进

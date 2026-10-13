@@ -92,7 +92,16 @@ describe('DSH chat choices', () => {
         cwd: 'mobile-workspace',
       })]))
       expect(sessions).toHaveLength(2)
-      expect(JSON.stringify({ workspaces: await adapter.listWorkspaces(principal), sessions })).not.toContain(base)
+      // 授权根的真实路径**过去完全不外泄**，`cwdAbsolute` 是唯一的有意例外：它只承载
+      // 会话工作目录，而那一定落在本设备已授权（且自己就能浏览）的根内。所以这里把
+      // 例外精确摘出去再验 —— 防线收窄到一处，而不是整条拆掉。
+      expect(JSON.stringify(await adapter.listWorkspaces(principal))).not.toContain(base)
+      const withoutAbsolute = sessions.map(item =>
+        Object.fromEntries(Object.entries(item).filter(([key]) => key !== 'cwdAbsolute')))
+      expect(JSON.stringify(withoutAbsolute)).not.toContain(base)
+      // 例外本身必须是真的：会话的绝对 cwd 就在那儿，手机端靠它拼 `@绝对路径`。
+      expect(sessions.find(item => item.id === 'session-visible')?.cwdAbsolute)
+        .toBe(await realpath(workspacePath))
 
       await expect(adapter.createSessionInWorkspace(principal, 'workspace-visible', { agentPreset: 'standard' }))
         .resolves.toEqual({ id: 'created-session', agentPreset: 'standard' })
@@ -160,6 +169,43 @@ describe('DSH chat choices', () => {
     } finally {
       database.close()
     }
+  })
+
+  it('keeps a session whose cwd IS the authorized root, and hands back its absolute path', async () => {
+    // 线上回归：会话工作目录正好就是授权根本身时，`wireRelative` 返回**空字符串**
+    // （`path.relative(root, root) === ''`）—— 那是合法值，不是「没有工作目录」。
+    // 手机端此前对空串直接放弃，输入框 `@` 于是显示「读不到这个会话的工作目录」。
+    // 顺带钉住 `cwdAbsolute`：客户端靠它拼 `@绝对路径`。
+    const base = await mkdtemp(path.join(os.tmpdir(), 'daw-chat-root-'))
+    cleanup.push(base)
+    const rootPath = await realpath(base)
+    const database = new WorkspaceDatabase(path.join(base, 'state'))
+    const root = await database.addRoot(base, 'Root itself')
+    const adapter = new DshChatAdapter({
+      sessions: {
+        list: async () => ({
+          result: { ok: true, value: { items: [
+            { sessionId: 'session-at-root', updatedAt: 1, running: false, blank: false, cwd: rootPath },
+          ] } },
+        }),
+      },
+      workspace: {
+        list: async () => ({ result: { ok: true, value: { items: [], archivedSessionIds: [] } } }),
+      },
+    } as never, database)
+    const principal: DevicePrincipal = {
+      kind: 'device',
+      id: 'phone',
+      name: 'Phone',
+      scopes: new Set(['chat.read']),
+      rootIds: new Set([root.id]),
+    }
+
+    const sessions = await adapter.listSessions(principal)
+    expect(sessions).toHaveLength(1)
+    // 空 cwd 是「根目录」，客户端必须照此理解，而不是当成缺值丢掉。
+    expect(sessions[0]).toMatchObject({ id: 'session-at-root', rootId: root.id, cwd: '' })
+    expect(sessions[0]?.cwdAbsolute).toBe(rootPath)
   })
 
   it('normalizes token chunks and preset switches into stable mobile events', () => {
