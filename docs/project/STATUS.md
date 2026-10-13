@@ -1,14 +1,21 @@
 # 当前状态
 
-- 日期：2026-10-13
-- 阶段：`dsh-remote-bridge` **v2.3.5**（**已发版**：npm + 双站 Release + git tag。**实装目录按用户指示未同步** —— 本轮只出仓库产物）
-- 当前任务：`v2.3.5` 会话补上 `cwdAbsolute`、救活手机端 `@` 补全（根因：会话 `cwd` 是相对授权根，App 却当绝对路径去 resolve）；下一轮待用户指派
+- 日期：2026-10-14
+- 阶段：`dsh-remote-bridge` **v2.3.6**（**未发版**：按用户指示只走本地发版准备 —— 改文档、升版本号、`pnpm check` 含 build、`npm pack` 归档、本地 git 提交；**不推送、不发 npm、不建 Release**）
+- 当前任务：`v2.3.6` 修「App 会话列表归档点击后实际未归档」——根因是桥接 `workspace.list` 把内核注册表级归档集合硬编码成 `[]`，`listSessions` 的过滤集于是永远为空；下一轮待用户指派
 - DSH 基线：`master` / `47f943859bef60e4160492346772ded9b24f765a`
 - 插件路径：本仓库（历史上游为 `Hakunm/dsh-workspace`，v1.0.0 保持原样不动）
 - 已完成：Host/Client 外置插件、授权根与回收站、独立 listener、设备授权、聊天/审批/命令/模型 BFF、OpenAPI/AsyncAPI、Kotlin SDK、中英双语和版本展示
 - 2.2.3 / 2.2.4（纯文本模型发图）：内核以 `MODEL_DOES_NOT_SUPPORT_IMAGES` 拒收纯文本模型会话里的图片，插件按内核自己的 `llm.resolveModelInfo()` 判定并把图片落成工作区文件（`<会话工作目录>/.dsh-images/<sha256>.<ext>`，内容寻址、0700/0600），消息里留两行：第一行给人看（当前值可配置的识图路径），第二行 `[Image: source: <绝对路径>]` 给机器；解析不出工作目录时退回 `<dataDir>/image-handoff`。手机端用 `GET /api/v1/image-handoff` 把图取回去显示，历史图片走 `sessionController.attachment`
 - 2.2.4 实装 + 本轮待发版内容（`IMAGE-001`）：设置页新增「识图」分区 —— 识图路径（交接目录名）可改、存 `settings.image_handoff_subdir`、改完立即生效；「当前默认」`.dsh-images` 与兜底目录为只读栏。dsh-image-paths 0.3.1 的宿主路由与浏览器图集并入本插件：只读路由 `GET /plugin/dsh-remote-bridge/raw?sessionId=…&name=…`（回环 + 同源 + 裸文件名白名单 + 字节自证 + 32 MiB 上限，目录由宿主按会话推出），图集挂在 `conversation.chat.turnTail`，只认用户消息里的交接行首标记
 - **待办**：① 真机验证（重启 dsh 后：会话里「加载更早消息」能否翻出更早记录；「插件」页是否不再报判定不出 profile；**启停一个插件看是否要重启才生效、备份文件是否落地**）；② 停用独立 `image-paths` 插件那一行 —— 两个插件会把同一张图在 Turn 尾画两遍，本插件已自带该能力
+- 2.3.6（修「App 归档点了没反应」）：
+  - **现象**：手机 App 会话列表里点「归档」→ 确认 → 请求返回 200，但该会话照旧留在列表里，像是什么都没发生。
+  - **根因（写入通、读取断）**：App `POST /chat/sessions/{id}/archive` → router → chat-adapter → 桥接 `workspaceController.archiveSession`，内核确实把会话写进**注册表级**归档集合（`WorkspaceRegistry.archivedSessionIds`，持久化在 workspace state）。但读这一侧，`chat-adapter.listSessions` 靠 `api.workspace.list().archivedSessionIds` 过滤，而桥接 `workspace.list` **把它硬编码成 `[]`**（原注释：「注册表没有插件侧归档的概念」—— 对「插件自建存储」成立，但归档根本不是插件侧状态，`archiveSession` 写的正是注册表本身）。过滤集恒空 → `continue` 一次都不执行 → 归档成功却被自己抹掉。
+  - **修法**：`workspace.list` 改从 `host.workspaceRegistry.archivedSessionIds` 透传真实集合；`WorkspaceRegistryLike` 补声明该 getter；新增 `readArchivedSessionIds()`，getter 缺失（老内核 / 测试替身）时退化成空集合，只让过滤失效、不让列表读崩。
+  - **未做**：不动 App 侧（其调用与重拉列表本就正确）；不引入插件自己的归档存储（内核已有唯一真源）；不自动传 `stopActivity` —— 归档**正在运行**的会话内核会拒绝（`WorkspaceActiveSessionError`，App 显示为错误），是否顺带停会话由用户拍板。
+  - **测**：桥接新增 2 条用例（① 归档集合原样透传 —— 把修复回退成 `[]` 即失败，已实测；② getter 缺失时退化为空集合）；HTTP 端到端新增 1 条断言（`POST /archive` 后同一 `GET /chat/sessions` 不再返回该会话：归档前 2 条、归档后只剩 fork 那条）。
+  - 六处版本号战场同步（package.json / version.ts / openapi / asyncapi / kotlin-sdk / healthz 断言）
 - 2.3.5（会话补 `cwdAbsolute`，救活手机端 `@` 补全）：
   - **现象**：手机 App 会话里打 `@`，面板只显示「读不到这个会话的工作目录」，一个文件都列不出来。
   - **根因（三层）**：① 会话工作目录 = 授权根本身时 `wireRelative` 返回**空字符串**（`path.relative(root, root) === ''`），App 把它当成「没有工作目录」；② App 把**相对根**的 `cwd` 当**绝对路径**送去 `/roots/resolve`，而该端点对相对路径硬拒绝（`PATH_NOT_ABSOLUTE`）——**这一步翻译纯属多余**，会话里本来就有 `rootId`；③ App 没有根的 realPath（`RootView` 刻意不含），拼不出绝对路径。**结果是这个补全从实现起从未列出过任何文件。**
@@ -55,12 +62,12 @@
 - 二维码资产：提交进仓库并由 `tests/app-qr.spec.ts` 解码校验，指向 Releases **列表页**（非具体文件），因此发新版不需重新生成
 - 2.2.0（删独立页 + 瘦身）：删除独立页 `/dsh-workspace`（文件树 + CodeMirror 6 编辑器）及 `src/standalone/`、`assets/workspace.html`、`src/client/editor.tsx`、`workspace.tsx` 中的 `WorkspaceApp`/`DirectoryNode`/`CommandDialog`/`AdminOverlay`、`scripts/test-server.ts`，以及 8 个 `@codemirror/*` 与 `@lezer/highlight` 依赖；同时关闭 tsdown source map（映射本身约 5 MB，而插件发的是预构建 bundle、包内又没有原始 TS 源码，消费者根本用不上）。理由：手机 App 的文件页已原生覆盖同一套能力，桌面端这个页面无人使用。发布包 **1.72 MB → 0.25 MB**；`/dsh-workspace-api` 代理前缀与全部 REST 文件端点未动，App 不受影响
 - 附件能力边界：会话历史图片需要宿主提供 `ctx.attachments` 服务；缺失时插件照常激活，读取接口返回 `ATTACHMENT_STORE_UNAVAILABLE`，附件类上传返回 `FILE_UPLOADS_UNAVAILABLE`
-- 最近验证：`pnpm typecheck` 通过 · `pnpm test` **30 个测试文件 / 221 个用例全绿** · `pnpm docs:check` 通过 · `pnpm build` 两个 entry（host / client）构建完成。**本轮按用户指示未同步实装目录**。另有 **4 个浏览器层用例**（Playwright 用真实浏览器量计算样式），4/4 通过
+- 最近验证：`pnpm typecheck` 通过 · `pnpm test` **30 个测试文件 / 223 个用例全绿** · `pnpm docs:check` 通过 · `pnpm build` 两个 entry（host / client）构建完成。**本轮已按用户指示同步实装目录**（`~/.dsh/profiles/web/node_modules/dsh-remote-bridge/lib`，逐个 sha256 核对；插件为进程内加载，**需重启 dsh 才生效**）。另有 **4 个浏览器层用例**（Playwright 用真实浏览器量计算样式），4/4 通过
 - 界面截图：桌面界面截图**已删除**（那是改名前的旧界面，含 v1.0.0 徽章与旧的 1400px 文件树对话框）。重录需要能驱动插件面板的浏览器环境，目前不具备；二维码另有 SVG/PNG 资产。桌面文件工作区界面（独立页）已于 2.2.0 删除，不再有对应截图需求
 - 仓库：`https://github.com/westanke/dsh-remote-bridge`，topic 包含 `dsh-plugin`
 - Release：Gitee `https://gitee.com/westanke/dsh-remote-bridge/releases/tag/v2.3.5`（自传 3 资产 + 平台自动生成的 zip / tar.gz，下载回读**逐字节一致**）；GitHub `https://github.com/westanke/dsh-remote-bridge/releases/tag/v2.3.5`（3 资产，大小逐一核对，tgz 308,510 字节与本地一致）
 - **GitHub 站补建说明**：核对时发现 GitHub 上此前**只有 `v1.0.0` 一个 Release**，`v2.0.4`~`v2.3.3` 的 Release 实际只建在 Gitee（tag 两端都在）—— 旧记载的「双站 Release」与事实不符。`v2.3.4` 起两站齐发
 - Release 历史：`v2.0.0` / `v2.0.1` 为已知缺陷版，`v2.0.2` / `v2.0.3` 从未发布；v2.3.2 未单独发版，其修复并入 v2.3.3 的 Release notes；npm 现为 **v2.3.5**
-- 正式产物：`artifacts/dsh-remote-bridge-v2.3.5.tgz`，**308,510 字节（约 0.29 MB）**，SHA-256 `592fdac116faec7b9442d7ed67a799b6aacbb2197716ce2f47f24cccd02bf922`（用 `npm pack` 生成，与 npm 上那份同源）
+- 正式产物：`artifacts/dsh-remote-bridge-v2.3.6.tgz`，**309,007 字节（约 0.29 MB）**，SHA-256 `1a07d368569de7072cd8297a2cc58fa2e9439055d58f5a9d6d74de7a5d808e8c`（用 `npm pack` 生成；**尚未推送 npm 与双站 Release** —— 等用户真机验证通过后发话）。上一版 `artifacts/dsh-remote-bridge-v2.3.5.tgz`（308,510 字节，SHA-256 `592fdac116faec7b9442d7ed67a799b6aacbb2197716ce2f47f24cccd02bf922`）已发布，按「发新版 → 上传 → 回读校验 → 再删上一版本地包」的规矩**暂不删除**
 - 分发：npm [`dsh-remote-bridge`](https://www.npmjs.com/package/dsh-remote-bridge)（官方源 + npmmirror 均有），`dsh plugin --profile web add dsh-remote-bridge` 可用
 - 阻塞项：Android 与 DSH WebUI 的后续完整能力对等仍按 `PARITY-001` 推进

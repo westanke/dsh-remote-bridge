@@ -178,6 +178,15 @@ export interface WorkspaceControllerLike {
 
 export interface WorkspaceRegistryLike {
   list(): readonly { id: string; path: string; title: string; createdAt: string; updatedAt: string; sessionIds?: readonly string[] }[]
+  /**
+   * 注册表级（registry-global）归档集合：被归档、应从**所有**分组界面隐藏的会话 id。
+   *
+   * 内核 `dsh-workspace` 的 `WorkspaceRegistry` 用 getter 暴露它
+   * （`lib/types/index.d.ts` 的 `get archivedSessionIds(): readonly SessionId[]`），
+   * 且 `ctx.workspaceRegistry` 就是这个实体。声明成可选：老内核或测试替身可能没有，
+   * 读不到时退化成空集合，只是过滤失效，不该让整条列表读崩掉。
+   */
+  readonly archivedSessionIds?: readonly string[]
 }
 
 export interface SettingsControllerLike {
@@ -1172,6 +1181,22 @@ async function handoffImagesForTextOnlyModel(
   }
 }
 
+/**
+ * 读注册表级归档集合，读不到就返回空数组。
+ *
+ * 让 `workspace.list` 把内核的归档状态透传给上层（chat-adapter 靠它把已归档会话
+ * 从列表里滤掉）。getter 缺失（老内核、测试替身）时退化成空集合：过滤失效，
+ * 但列表本身照常可读 —— 比抛错更接近旧的可用行为。
+ *
+ * @param registry - 内核工作区注册表（`ctx.workspaceRegistry`）。
+ * @returns 归档的会话 id；字段缺失或不是字符串数组时为空数组。
+ */
+function readArchivedSessionIds(registry: WorkspaceRegistryLike): string[] {
+  const value = registry.archivedSessionIds
+  if (!Array.isArray(value)) return []
+  return value.filter((item): item is string => typeof item === 'string')
+}
+
 // ── the rebuilt apiProxy ──────────────────────────────────────────────────
 
 /**
@@ -1181,7 +1206,6 @@ async function handoffImagesForTextOnlyModel(
  * `{ result: { ok, value } }` envelope, because that is the contract
  * `chat-adapter.ts` and `settings-adapter.ts` are written against.
  *
- * @param host - host services resolved from the plugin context.
  * @param host - host services resolved from the plugin context.
  * @returns a `SettingsApiProxy` (i.e. `DshApiProxy` plus the settings surfaces).
  */
@@ -1496,9 +1520,16 @@ export function createDsh02ApiProxy(
           createdAt: row.createdAt,
           updatedAt: row.updatedAt,
         }))
-        // The registry has no notion of plugin-side archived sessions; the
-        // chat adapter unions this with its own store.
-        return { items, archivedSessionIds: [] as string[] }
+        // 归档集合**必须**来自注册表本身。
+        //
+        // 这里曾经硬编码 `[]`，理由是「注册表没有插件侧归档的概念」—— 那句话对
+        // 插件自建的归档存储成立，结论却错得离谱：归档压根不是插件侧状态，
+        // 内核 `workspaceController.archiveSession` 写的就是注册表级的
+        // `WorkspaceRegistry.archivedSessionIds`。写死空数组的后果是
+        // chat-adapter 的 `listSessions` 永远拿到一个空过滤集，
+        // 于是「归档」在 REST 层成功、在界面上毫无动静 —— 手机端点完归档，
+        // 会话照旧留在列表里。见 chat-adapter.listSessions 的过滤处。
+        return { items, archivedSessionIds: readArchivedSessionIds(host.workspaceRegistry) }
       }),
       create: request => call(() => host.workspaceController.create(request.payload) as Promise<never>),
       rename: request => call(() => host.workspaceController.rename(request.payload) as Promise<never>),

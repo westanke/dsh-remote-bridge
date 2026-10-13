@@ -193,7 +193,7 @@ describe('remote HTTP API', () => {
       await remote.start()
       const baseUrl = `http://127.0.0.1:${remote.status().port}/api/v1`
       const health = await (await fetch(`${baseUrl}/healthz`)).json() as { pluginVersion: string }
-      expect(health.pluginVersion).toBe('2.3.5')
+      expect(health.pluginVersion).toBe('2.3.6')
 
       expect((await fetch(`${baseUrl}/chat/workspaces/workspace-1`, {
         method: 'PATCH', headers, body: JSON.stringify({ title: 'Renamed workspace' }),
@@ -206,9 +206,19 @@ describe('remote HTTP API', () => {
       })
       expect(fork.status).toBe(201)
       await expect(fork.json()).resolves.toEqual({ sessionId: 'session-forked' })
+      // 归档前：两条会话都在默认列表里（含刚 fork 出来的那条）。
+      const before = await (await fetch(`${baseUrl}/chat/sessions`, { headers })).json() as { items: { id: string }[] }
+      expect(before.items.map(item => item.id)).toEqual(['session-1', 'session-forked'])
       expect((await fetch(`${baseUrl}/chat/sessions/session-1/archive`, {
         method: 'POST', headers, body: '{}',
       })).status).toBe(200)
+      // 归档后：同一个列表接口必须不再返回被归档的那条。
+      //
+      // 这条断言守的是手机端的「归档」按钮：POST /archive 返回 200 还不够 ——
+      // 只要 workspace 清单里的归档集合没传到 chat-adapter，列表就照旧显示这条会话，
+      // 用户看到的正是「点了归档，实际没归档」。
+      const after = await (await fetch(`${baseUrl}/chat/sessions`, { headers })).json() as { items: { id: string }[] }
+      expect(after.items.map(item => item.id)).toEqual(['session-forked'])
       expect((await fetch(`${baseUrl}/chat/workspaces/workspace-1`, { method: 'DELETE', headers })).status).toBe(200)
       expect(calls.map(call => call.name)).toEqual(['workspace.rename', 'session.rename', 'session.fork', 'session.archive', 'workspace.delete'])
     } finally {

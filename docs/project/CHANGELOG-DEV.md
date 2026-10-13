@@ -1,5 +1,66 @@
 # 开发日志
 
+## v2.3.6 · 归档会话终于会从列表里消失（一处注释把结论带反了）
+
+用户报「App 会话列表 归档点击后 实际未归档」。归档请求一路返回 200，列表纹丝不动，
+看起来像手机端点了个寂寞。
+
+### 根因：链路是通的，过滤集却永远是空的
+
+写入这一侧完全正常：App `POST /chat/sessions/{id}/archive` → router → chat-adapter
+→ 桥接 `workspaceController.archiveSession`，内核把会话写进**注册表级**的归档集合
+（`WorkspaceRegistry.archivedSessionIds`，持久化在 workspace state，`dsh-workspace`
+的 `get archivedSessionIds()` 读的就是它）。
+
+问题在**读**这一侧。`chat-adapter.listSessions` 靠 `api.workspace.list()` 返回的
+`archivedSessionIds` 做过滤：
+
+```ts
+const archivedSessionIds = new Set(workspaceValue.archivedSessionIds)
+...
+if (archivedSessionIds.has(session.sessionId)) continue
+```
+
+而桥接的 `workspace.list` 把这个字段**硬编码成了 `[]`**：
+
+```ts
+// The registry has no notion of plugin-side archived sessions; the
+// chat adapter unions this with its own store.
+return { items, archivedSessionIds: [] as string[] }
+```
+
+那句注释——「注册表没有**插件侧**归档的概念」——对「插件自己建的归档存储」成立，
+结论却错得离谱：**归档压根不是插件侧状态**，`archiveSession` 写的正是注册表本身。
+于是 `listSessions` 拿到一个永远为空的过滤集，那句 `continue` 一次都不执行。
+
+一句话：**归档确实写进去了，读的时候被自己的空数组抹掉了。**
+
+### 改了
+
+- `dsh-0.2-bridge.ts`：`workspace.list` 改从 `host.workspaceRegistry.archivedSessionIds`
+  透传真实集合；`WorkspaceRegistryLike` 补上该 getter 的声明（注释写明它的出处是内核
+  `dsh-workspace` 的 `WorkspaceRegistry`，不是插件自定义的约定）。
+- 新增 `readArchivedSessionIds()`：getter 缺失（老内核 / 测试替身）时退化成空集合 ——
+  过滤失效，但列表本身照常可读，不让一条读路径把整页炸掉。
+
+### 不做什么
+
+- **不动 App 侧**：dsh-companion 的归档调用与「归档后重拉列表」都是对的，
+  问题全在服务端这一侧。
+- **不引入插件自己的归档存储**：内核已有唯一真源，再分出一份只会制造两份互相打架的状态。
+- **不自动传 `stopActivity`**：内核默认拒绝归档**正在运行**的会话
+  （`WorkspaceActiveSessionError`），App 会把这条例外显示成错误。要不要顺手停掉会话
+  该由用户拍板，不该由插件替他决定 —— 本轮只修「明明成功了却看不见」这一段。
+
+### 测了
+
+- 新增桥接用例 2 条：① 注册表报出的归档集合被原样透传（**把这行修复回退成 `[]` 即失败**，
+  已实测复现）；② getter 缺失时退化成空集合、列表仍可读。
+- 新增 HTTP 端到端断言 1 条：`POST /archive` 之后，同一个 `GET /chat/sessions`
+  不再返回被归档的会话（归档前两条，归档后只剩 fork 出来那条）。
+- `pnpm typecheck` 通过 · `pnpm test` **30 个测试文件 / 223 个用例全绿** ·
+  `pnpm docs:check` 通过 · `pnpm build` 两个 entry 构建完成。
+
 ## v2.3.5 · 给会话补上绝对工作目录，救活手机端的 `@` 补全
 
 用户报「APP 会话中使用 `@` 出现问题，可让选插件授权的根目录」。查下去发现，

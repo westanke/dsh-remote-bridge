@@ -59,7 +59,12 @@ function makeHost() {
       delete: vi.fn(async () => ({ deleted: true })),
       archiveSession: vi.fn(async () => ({ archivedSessionIds: [] })),
     },
-    workspaceRegistry: { list: vi.fn(() => []) },
+    workspaceRegistry: {
+      list: vi.fn(() => []),
+      // 内核（`WorkspaceRegistry`）用 getter 暴露注册表级归档集合，chat-adapter
+      // 靠它把已归档会话从列表里滤掉。桩里默认是空集合，与全新安装一致。
+      archivedSessionIds: [] as string[],
+    },
     settingsController: {
       describe: vi.fn(() => ({ writable: true, hasDocument: false, namespaces: [] })),
       mutate: vi.fn(async () => ({})),
@@ -425,6 +430,33 @@ describe('dsh 0.2.x bridge: contract shapes', () => {
     const value = response.result.ok ? response.result.value : undefined
     expect(value?.items).toHaveLength(1)
     expect(value?.items[0]).toMatchObject({ id: 'session-1' })
+  })
+
+  it('forwards the kernel archive set so archived sessions actually disappear', async () => {
+    const { host } = makeHost()
+    host.workspaceRegistry.list = vi.fn(() => [
+      { id: 'workspace-1', path: '/project', title: 'Project', sessionIds: ['session-1'], createdAt: 'c', updatedAt: 'u' },
+    ])
+    Reflect.set(host.workspaceRegistry, 'archivedSessionIds', ['session-1'])
+    const api = createDsh02ApiProxy(host)
+
+    const response = await api.workspace.list({ rpcId: 'r', payload: {} })
+    const value = response.result.ok ? response.result.value : undefined
+    // 回归点：这里曾写死 `[]`。归档集合一旦固定为空，chat-adapter.listSessions
+    // 的过滤集就永远为空 —— 归档在 REST 层「成功」，界面上却毫无变化。
+    expect(value?.archivedSessionIds).toEqual(['session-1'])
+    expect(value?.items).toEqual([expect.objectContaining({ workspaceId: 'workspace-1' })])
+  })
+
+  it('degrades to an empty archive set when the kernel exposes none', async () => {
+    const { host } = makeHost()
+    // 老内核（或替身）没有这个 getter：列表照样可读，只是过滤失效。
+    Reflect.deleteProperty(host.workspaceRegistry, 'archivedSessionIds')
+    const api = createDsh02ApiProxy(host)
+
+    const response = await api.workspace.list({ rpcId: 'r', payload: {} })
+    const value = response.result.ok ? response.result.value : undefined
+    expect(value?.archivedSessionIds).toEqual([])
   })
 
   it('reads history from the follow opening snapshot, not a guessed page cut', async () => {
