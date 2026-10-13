@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: DeepSeek Harness Mobile API
-  version: 2.3.2
+  version: 2.3.3
   description: Versioned file and chat BFF for mobile and third-party DSH clients. HTTP and HTTPS are both supported.
 servers:
   - url: http://127.0.0.1:3090/api/v1
@@ -24,7 +24,7 @@ paths:
                 properties:
                   ok: { type: boolean, const: true }
                   version: { type: string, const: v1 }
-                  pluginVersion: { type: string, const: 2.3.2 }
+                  pluginVersion: { type: string, const: 2.3.3 }
   /pairings/exchange:
     post:
       security: []
@@ -334,6 +334,56 @@ paths:
               schema: { $ref: '#/components/schemas/ProviderSettings' }
         '400': { $ref: '#/components/responses/Error' }
         '409': { $ref: '#/components/responses/Error' }
+  /settings/plugins:
+    get:
+      operationId: listPlugins
+      description: Lists every package the active profile declares or loads, with its resolved state.
+      parameters:
+        - name: checkUpdates
+          in: query
+          required: false
+          schema: { type: string, enum: ['1'] }
+          description: 'When `1`, also queries the npm registry for each installed third-party package. Adds seconds to the response, so it is opt-in.'
+      responses:
+        '200':
+          description: 'Plugin inventory. `available: false` plus a `reason` means the profile could not be resolved or read; the endpoint does not fail for that.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PluginInventory' }
+    patch:
+      operationId: setPluginLoaded
+      description: |
+        Enables or disables a plugin by adding or removing its name in `dsh.profile.bundles`.
+        Dependency declarations are left alone (the package stays on disk and can be re-enabled
+        without downloading), and no package install runs. A backup of the profile manifest is
+        written before any change. **Bundles are read only at startup**, so the running DSH keeps
+        the previous set until it restarts.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, loaded]
+              properties:
+                name: { type: string, examples: [dsh-ffmpeg] }
+                loaded: { type: boolean, description: 'true to enable, false to disable.' }
+      responses:
+        '200':
+          description: 'Applied. The response carries `restartRequired: true`.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PluginToggleResult' }
+        '400':
+          description: 'Bad request, official package, or package not installed. Error codes: REQUEST_INVALID, PLUGIN_NAME_INVALID, PLUGIN_OFFICIAL_IMMUTABLE, PLUGIN_NOT_INSTALLED.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '503':
+          description: 'The profile could not be resolved or its manifest could not be read. Error codes: PROFILE_UNKNOWN, MANIFEST_UNREADABLE.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
   /settings/models:
     get:
       operationId: listModelCatalog
@@ -837,6 +887,64 @@ components:
         application/json:
           schema: { $ref: '#/components/schemas/ErrorEnvelope' }
   schemas:
+    PluginEntry:
+      type: object
+      description: One package the active profile declares or loads. Contents are limited to these fields; the package manifest itself is never forwarded.
+      required: [name, declared, installed, loaded, official, state, description, homepage, updateAvailable, latestVersion, toggleable]
+      properties:
+        name: { type: string, examples: [dsh-ffmpeg, '@liustack/modlens'] }
+        declared:
+          type: [string, 'null']
+          description: Version range declared in `dependencies`, e.g. `^0.4.5`.
+        installed:
+          type: [string, 'null']
+          description: Version actually present in the profile's node_modules.
+        loaded:
+          type: boolean
+          description: Whether the name appears in `dsh.profile.bundles` (the load list; its order is the load order).
+        official: { type: boolean, description: 'True for `@deepseek-ai/` packages, which ship with the runtime.' }
+        state:
+          type: string
+          enum: [loaded, runtime-provided, installed-not-loaded, declared-missing]
+          description: '`runtime-provided` is normal, not a problem: those packages ship with DSH and are not installed under the profile.'
+        description: { type: [string, 'null'] }
+        homepage: { type: [string, 'null'], description: 'Normalized http(s) URL; git+ prefixes and .git suffixes are stripped.' }
+        updateAvailable:
+          type: [boolean, 'null']
+          description: 'Tri-state on purpose: null means not checked, which differs from false ("already latest").'
+        latestVersion: { type: [string, 'null'] }
+        toggleable:
+          type: boolean
+          description: 'False for official packages and for packages not installed in the profile.'
+    PluginInventory:
+      type: object
+      required: [profile, profilePath, available, reason, loadedCount, problemCount, items]
+      properties:
+        profile: { type: [string, 'null'], description: 'Resolved from DSH_PROFILE, `--profile`, or the `dsh <name>` subcommand shorthand.' }
+        profilePath: { type: [string, 'null'] }
+        available: { type: boolean }
+        reason:
+          type: [string, 'null']
+          enum: [PROFILE_UNKNOWN, MANIFEST_UNREADABLE, null]
+        loadedCount: { type: integer }
+        problemCount: { type: integer, description: 'Counts installed-not-loaded and declared-missing; runtime-provided is not counted.' }
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/PluginEntry' }
+    PluginToggleResult:
+      type: object
+      description: Result of enabling or disabling a plugin. Only `dsh.profile.bundles` is rewritten; dependency declarations are never touched and no package install runs.
+      required: [name, loaded, backupName, bundleCount, restartRequired]
+      properties:
+        name: { type: string }
+        loaded: { type: boolean }
+        backupName:
+          type: string
+          description: 'Name of the backup written before the change (empty for a no-op). A broken profile manifest means DSH will not boot, so a backup is mandatory.'
+        bundleCount: { type: integer, description: 'New length of the bundles array.' }
+        restartRequired:
+          type: boolean
+          description: 'Always true: bundles are read only at startup, so the running process keeps the old set until DSH restarts.'
     WirePath:
       type: string
       description: POSIX-style relative path. Absolute paths, backslashes, empty segments, dot segments, drive letters, UNC and null bytes are rejected.

@@ -1,5 +1,84 @@
 # 开发日志
 
+## v2.3.3 · 「插件」页：详情增强 + 手机上直接启停
+
+用户要求「结合官方的插件特点和功能增加对应功能」，选定 A（管理写操作）+ B（详情增强）。
+
+### 先摸清官方那套是怎么运作的
+
+`dsh plugin <任何东西>` 会**原样转发给 pnpm**。实测踩过一次：本想查
+`dsh plugin enable --help`，pnpm 直接进了安装流程（打出 `Packages: +4 -85`）——
+它在**动依赖树**。所幸 `package.json` 与 `node_modules`（310 个包）都没被改动，
+但这条教训决定了后面所有设计。
+
+翻内核源码确认了真正的机制（`profile-boot` 模块注释）：
+
+> stack its patch layers (**bundle layers in `dsh.profile.bundles` order** …)
+
+也就是说 **`dsh.profile.bundles` 数组就是加载清单，而且顺序即加载顺序**。
+启用 = 加一个名字，停用 = 删一个名字 —— **完全不必碰依赖**（包还在 `node_modules` 里，
+随时能再启用，不用重新下载）。这条路比走 pnpm 精准得多，风险也小得多。
+
+顺带一个实测发现：本机 profile 有 15 个第三方插件，其中 **3 个装了但没在 bundles 里**
+（`@liustack/modlens`、`dsh-hyperframes`、`dsh-remotion`）—— 旧版页面虽然能算出
+这个状态，但那正是它读不出清单时最该展示的东西。
+
+### B：详情增强
+
+每个插件多带四样信息（都限制在固定几项，**不转发 manifest 原文**）：
+
+| 字段 | 用途 |
+| --- | --- |
+| `description` | 手机上只有一串 `@scope/name@1.2.3` 时，用户没法判断「这个能不能停用」，描述是主要依据 |
+| `homepage` | 从 `homepage` / `repository`（字符串或对象两种写法）里取，剥掉 `git+` 前缀与 `.git` 后缀 —— 否则点开是 git 协议地址，浏览器打不开 |
+| `updateAvailable` / `latestVersion` | 有没有新版本 |
+| `toggleable` | 能不能在手机上启停（官方包恒为 false） |
+
+**`updateAvailable` 是三态不是布尔**：`null` 表示「没查/查不到」。压成 `false` 会让界面
+在离线时理直气壮地说「已是最新」—— 那是谎话，比什么都不说更糟。
+
+版本检查**默认关闭**，要 `?checkUpdates=1` 显式开：每个包一次 registry 请求，
+十几个包会让清单从毫秒级变成好几秒，而用户点进这页十次里九次只想看「装了啥、哪个没启用」。
+开启时也只查**确实装在 profile 里**的第三方包（官方包用户装不了、缺失包连本地版本都没有），
+并发限 6、超时 5 秒、失败即 null 不重试。
+
+### A：启停写操作（`PATCH /settings/plugins`）
+
+请求 `{ name, loaded }`，需要 `settings.write` 权限。**只改 bundles 数组**。三道安全阀：
+
+1. **拒绝改官方包**（`@deepseek-ai/`）：它们随 DSH 运行时安装、不由 profile 管理，
+   改 bundles 也加载不出来，只会把清单搞成与实际不符。
+2. **写前必备份**：`package.json.bak-<时间戳>` 落在同目录。profile 的 package.json
+   一旦写坏，**dsh 下次起不来**，而用户此刻在手机上、够不着电脑 —— 备份是唯一退路。
+3. **先写临时文件再 rename**：同分区 rename 是原子的。直接写原文件的话，写到一半
+   断电/被杀会留下残缺 JSON，后果同上。
+
+另外两条边界：
+
+- **幂等不产生垃圾**：本来就是目标状态时不动文件、不写备份 —— 重复点不该在磁盘上
+  堆一串备份。
+- **启用一个没装的包会被拒**（`PLUGIN_NOT_INSTALLED`）：那会得到一个「声明加载却找不到」
+  的条目，而用户看到的现象是「插件没了」，说不清哪一步错了。这种情况该走**安装**流程，
+  不该在启停入口放过去。
+
+**必须重启才生效**：bundles 只在启动时读一次。响应里固定带 `restartRequired: true`，
+由界面明确告诉用户 —— 别让人以为点了没反应。
+
+### 测了什么
+
+- `togglePlugin` 新增 8 条用例：启用追加、停用只摘名字（**不碰依赖声明、不打乱其余顺序**）、
+  写前有备份且内容正确、幂等不堆备份、拒官方包、拒未安装、拒畸形包名
+  （`../evil` / `a b` / 空 / `x/y/z` —— 包名会参与拼路径，脏输入不该走到 `path.join`）、
+  profile 判不出时报 `PROFILE_UNKNOWN` 而不是猜。
+- 既有的**字段白名单测试**如期失败了一次（它专门防「顺手把整个 manifest 塞进去」），
+  按新字段同步登记，边界意图不变。
+- `pnpm check` 全绿：**30 文件 / 212 用例**（上轮 204，+8）。
+- OpenAPI 补登了 `/settings/plugins` 的 GET 与 PATCH 及三个 schema ——
+  顺带发现这个端点**此前根本没进 OpenAPI**（旧遗漏）。
+  中途 YAML 报过一次 `mapping values are not allowed here`：行内 description 里
+  写 `restartRequired: true` 的冒号被当成键值分隔，加引号解决。
+- **待真机确认**：重启 dsh 后启停一个插件、看是否要重启才生效、备份文件是否落地。
+
 ## v2.3.2 · 修「插件」页判定不出 profile（`dsh web` 这种启动形式被漏掉）
 
 用户反馈（手机端「插件」页）：

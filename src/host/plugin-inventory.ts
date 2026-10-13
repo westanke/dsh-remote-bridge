@@ -1,4 +1,4 @@
-import { readFile } from 'node:fs/promises'
+import { readFile, rename, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 
@@ -65,6 +65,31 @@ export interface PluginEntry {
   /** 是否 DSH 官方包（`@deepseek-ai/` 前缀）。 */
   official: boolean
   state: PluginState
+  /**
+   * 包自己的 `description`；没有则为 null。
+   *
+   * 手机上的插件列表若只有一串 `@scope/name@1.2.3`，用户没法判断「这个能不能停用」——
+   * 描述是那个判断的主要依据（「哦这是识图插件，我不用，可以关」）。
+   */
+  description: string | null
+  /** 包自己声明的仓库 / 主页地址；没有则为 null。 */
+  homepage: string | null
+  /**
+   * 是否有**更新的版本**可装（`installed` 落后于 npm 上的 latest）；未知则为 null。
+   *
+   * 三态而非布尔：`null` 表示「没查/查不到」。压成 false 会让界面在离线时
+   * 理直气壮地说「已是最新」—— 那是谎话，比什么都不说更糟。
+   */
+  updateAvailable: boolean | null
+  /** npm 上的最新版本号；查不到则为 null。 */
+  latestVersion: string | null
+  /**
+   * 能否在手机上启用 / 停用。
+   *
+   * 官方包（`@deepseek-ai/`）恒为 false：它们随 DSH 运行时安装、不由 profile 管理，
+   * 改 bundles 也加载不出来。其余情况在「包确实装进了 profile」时为 true。
+   */
+  toggleable: boolean
 }
 
 export interface PluginInventory {
@@ -230,10 +255,15 @@ export async function readPluginInventory(input: ProfileResolutionInput = {}): P
 
   const items: PluginEntry[] = []
   for (const name of names) {
-    const installed = await readInstalledVersion(profilePath, name)
+    const pkgManifest = await readPackageManifest(profilePath, name)
+    const installedRaw = pkgManifest?.version
+    const installed = typeof installedRaw === 'string' && installedRaw.trim() ? installedRaw : null
     const loaded = bundles.includes(name)
     const declared = dependencies[name] ?? null
     const official = name.startsWith('@deepseek-ai/')
+    const description = typeof pkgManifest?.description === 'string' && pkgManifest.description.trim()
+      ? pkgManifest.description.trim()
+      : null
     items.push({
       name,
       declared,
@@ -241,6 +271,15 @@ export async function readPluginInventory(input: ProfileResolutionInput = {}): P
       loaded,
       official,
       state: resolveState({ loaded, installed, official }),
+      description,
+      homepage: readHomepage(pkgManifest),
+      // 默认不查更新：查一次要给每个包发一个 registry 请求，十几二十个包的清单
+      // 会从「毫秒级」变成「好几秒」。要查的话由调用方显式开（见 checkUpdates），
+      // 那时只对**真的装在 profile 里**的包查，官方包与缺失包没必要问。
+      updateAvailable: null,
+      latestVersion: null,
+      // 官方包动不了；没装进 profile 的包也不该在手机上「启用」（那该走安装流程）。
+      toggleable: !official && installed !== null,
     })
   }
 
@@ -259,6 +298,72 @@ export async function readPluginInventory(input: ProfileResolutionInput = {}): P
 }
 
 /**
+ * 查 npm registry 上的最新版本（可选功能，默认不开）。
+ *
+ * 为什么默认关：每个包一次 HTTP 请求，清单会从毫秒级变成好几秒，而用户点进
+ * 「插件」页十次里九次只是想看看「装了啥、哪个没启用」。要查更新得显式开。
+ *
+ * 两个刻意的取舍：
+ * - **超时短**（5 秒）：一个包查不动不该拖住整张清单，超时就当「查不到」。
+ * - **失败即 null**，不重试：这是锦上添花的信息，为了它排队重试不值当。
+ *   界面拿到 null 会说「未检查」，而不是谎称「已是最新」。
+ */
+async function fetchLatestVersion(packageName: string): Promise<string | null> {
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), 5_000)
+  try {
+    const response = await fetch(`https://registry.npmjs.org/${packageName.replace('/', '%2F')}/latest`, {
+      signal: controller.signal,
+      headers: { accept: 'application/json' },
+    })
+    if (!response.ok) return null
+    const body = (await response.json()) as { version?: unknown }
+    return typeof body.version === 'string' && body.version.trim() ? body.version.trim() : null
+  } catch {
+    return null
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
+/**
+ * 给清单里的插件补上「有没有新版本」。
+ *
+ * 只查**确实装在 profile 里**的第三方包：官方包随运行时发布、用户装不了（查了也没用），
+ * 缺失包连本地版本都没有（无从比较）。
+ *
+ * 并发度限制在 6：十几个包全放出去对 registry 不礼貌，也容易触发限流 ——
+ * 而限流之后拿到的 null 会被界面显示成「未检查」，白跑一趟。
+ */
+export async function withUpdateCheck(inventory: PluginInventory): Promise<PluginInventory> {
+  const targets = inventory.items.filter((item) => !item.official && item.installed !== null)
+  const latest = new Map<string, string | null>()
+  const queue = [...targets]
+  const workers = Array.from({ length: Math.min(6, queue.length) }, async () => {
+    for (;;) {
+      const next = queue.shift()
+      if (next === undefined) return
+      latest.set(next.name, await fetchLatestVersion(next.name))
+    }
+  })
+  await Promise.all(workers)
+
+  return {
+    ...inventory,
+    items: inventory.items.map((item) => {
+      if (!latest.has(item.name)) return item
+      const newest = latest.get(item.name) ?? null
+      return {
+        ...item,
+        latestVersion: newest,
+        // `newest` 为 null（查不到）时保持 updateAvailable = null，不谎报「已是最新」。
+        updateAvailable: newest === null || item.installed === null ? null : newest !== item.installed,
+      }
+    }),
+  }
+}
+
+/**
  * 判定条目状态。
  *
  * 顺序很重要：**先判「官方包 + 未落盘」**，否则它们会被判成 `declared-missing` ——
@@ -273,10 +378,48 @@ export function resolveState(input: { loaded: boolean; installed: string | null;
 
 /** 读 `node_modules/<name>/package.json` 的 version；包名含 scope 时要按路径展开。 */
 async function readInstalledVersion(profilePath: string, packageName: string): Promise<string | null> {
-  const modulePath = path.join(profilePath, 'node_modules', ...packageName.split('/'))
-  const manifest = await readJson(path.join(modulePath, 'package.json'))
+  const manifest = await readPackageManifest(profilePath, packageName)
   const version = manifest?.version
   return typeof version === 'string' && version.trim() ? version : null
+}
+
+/**
+ * 读 `node_modules/<name>/package.json` 的整份内容。
+ *
+ * 读不到就返回 null（包没装、或装了一半）。刻意不抛：这是展示用的元数据，
+ * 某个包读不出来不该让整张清单失败。
+ */
+async function readPackageManifest(
+  profilePath: string,
+  packageName: string,
+): Promise<Record<string, unknown> | null> {
+  const modulePath = path.join(profilePath, 'node_modules', ...packageName.split('/'))
+  return readJson(path.join(modulePath, 'package.json'))
+}
+
+/**
+ * 从 package.json 里取一个人类可读的主页地址。
+ *
+ * 三种写法都见过：`homepage` 是字符串、`repository` 是字符串、`repository` 是
+ * `{ type, url }` 对象。GitHub 那种 `git+https://…git` 前缀与 `.git` 后缀要剥掉，
+ * 否则直接点开是个 git 协议地址，浏览器打不开。
+ */
+function readHomepage(manifest: Record<string, unknown> | null): string | null {
+  if (!manifest) return null
+  const raw = typeof manifest.homepage === 'string'
+    ? manifest.homepage
+    : (() => {
+        const repo = manifest.repository
+        if (typeof repo === 'string') return repo
+        if (typeof repo === 'object' && repo !== null) {
+          const url = (repo as Record<string, unknown>).url
+          if (typeof url === 'string') return url
+        }
+        return null
+      })()
+  if (!raw) return null
+  const cleaned = raw.trim().replace(/^git\+/, '').replace(/\.git$/, '')
+  return cleaned.startsWith('http') ? cleaned : null
 }
 
 function unavailable(profile: string | null, profilePath: string | null, reason: string): PluginInventory {
@@ -289,4 +432,163 @@ function unavailable(profile: string | null, profilePath: string | null, reason:
     problemCount: 0,
     items: [],
   }
+}
+
+/**
+ * 启用 / 停用插件（「插件」页的写操作）。
+ *
+ * ## 为什么不是调 `dsh plugin`
+ *
+ * `dsh plugin <anything>` 会**原样转发给 pnpm**。实测踩过一次：本想查
+ * `dsh plugin enable --help`，结果 pnpm 直接进入安装流程（打出 `Packages: +4 -85`）——
+ * 它在**动依赖树**。启用/停用插件根本不需要碰依赖（包已经在 `node_modules` 里了），
+ * 走 pnpm 等于为了挪一个字符串去重算整棵依赖，风险与收益完全不成比例。
+ *
+ * ## 真正该改的是什么
+ *
+ * 只改 **`dsh.profile.bundles` 数组**。内核源码注释写明：
+ *
+ * > stack its patch layers (bundle layers in `dsh.profile.bundles` order …)
+ *
+ * 也就是说这个数组**就是加载清单，且顺序即加载顺序**。加一个名字 = 启用，
+ * 删一个名字 = 停用。依赖声明（`dependencies`）原封不动 —— 包仍在磁盘上，
+ * 随时可以再启用，不必重新下载。
+ *
+ * ## 三道安全阀
+ *
+ * 1. **拒绝改官方包**（`@deepseek-ai/` 前缀）：它们随 DSH 主包安装、不由 profile 管理，
+ *    改了 bundles 也加载不出来，反而把清单搞成与实际不符。
+ * 2. **写前必备份**：`package.json.bak-<时间戳>` 落在同目录。profile 的 package.json
+ *    一旦写坏，dsh 下次**起不来**，而用户此刻在手机上、够不着电脑 —— 备份是唯一退路。
+ * 3. **先写临时文件再 rename**：`rename` 在同分区是原子的。直接写原文件的话，
+ *    写到一半断电/被杀会留下一个残缺的 JSON，后果同上。
+ *
+ * ## 必须重启才生效
+ *
+ * bundles 只在**启动时**读一次。改了文件不等于改了运行中的进程 —— 这一点会原样
+ * 回给调用方（`restartRequired: true`），由界面明确告诉用户，别让人以为点了没反应。
+ */
+export interface PluginToggleResult {
+  /** 目标插件名。 */
+  name: string
+  /** 操作后的加载状态。 */
+  loaded: boolean
+  /** 备份文件的**文件名**（不含目录）。 */
+  backupName: string
+  /** bundle 数组的新长度，便于界面显示「17 → 18」。 */
+  bundleCount: number
+  /** 恒为 true：见上文「必须重启才生效」。 */
+  restartRequired: boolean
+}
+
+export class PluginToggleError extends Error {
+  constructor(readonly code: string, message: string) {
+    super(message)
+    this.name = 'PluginToggleError'
+  }
+}
+
+/** 包名合法性白名单：npm 包名允许的字符集，外加 scope 的 `/`。 */
+const PACKAGE_NAME = /^(?:@[a-z0-9][\w.-]*\/)?[a-z0-9][\w.-]*$/i
+
+/**
+ * 启用（`enable=true`）或停用（`enable=false`）一个插件。
+ *
+ * @throws PluginToggleError 带着稳定的 `code`，供路由层映射成 HTTP 状态与错误码。
+ */
+export async function togglePlugin(
+  name: string,
+  enable: boolean,
+  input: ProfileResolutionInput = {},
+): Promise<PluginToggleResult> {
+  const trimmed = name.trim()
+  // 先做形状校验再碰文件系统：包名会参与拼路径，脏输入不该有机会走到 path.join。
+  if (!PACKAGE_NAME.test(trimmed)) {
+    throw new PluginToggleError('PLUGIN_NAME_INVALID', `Not a valid package name: ${name}`)
+  }
+  if (trimmed.startsWith('@deepseek-ai/')) {
+    throw new PluginToggleError(
+      'PLUGIN_OFFICIAL_IMMUTABLE',
+      'Official DSH packages ship with the runtime and are not managed by the profile.',
+    )
+  }
+
+  const profile = resolveProfileName(input)
+  if (!profile) throw new PluginToggleError('PROFILE_UNKNOWN', 'Cannot determine the active profile.')
+
+  const profilePath = path.join(resolveDshHome(input), 'profiles', profile)
+  const manifestPath = path.join(profilePath, 'package.json')
+  const raw = await readFile(manifestPath, 'utf8').catch(() => null)
+  if (raw === null) {
+    throw new PluginToggleError('MANIFEST_UNREADABLE', `Cannot read ${manifestPath}`)
+  }
+
+  let manifest: Record<string, unknown>
+  try {
+    manifest = JSON.parse(raw) as Record<string, unknown>
+  } catch {
+    throw new PluginToggleError('MANIFEST_UNREADABLE', 'The profile manifest is not valid JSON.')
+  }
+
+  const dependencies = stringRecord(manifest.dependencies)
+  const dshSection = typeof manifest.dsh === 'object' && manifest.dsh !== null
+    ? (manifest.dsh as Record<string, unknown>)
+    : {}
+  const profileSection = typeof dshSection.profile === 'object' && dshSection.profile !== null
+    ? (dshSection.profile as Record<string, unknown>)
+    : {}
+  const bundles = stringArray(profileSection.bundles)
+
+  if (enable && dependencies[trimmed] === undefined && !bundles.includes(trimmed)) {
+    // 启用一个 profile 里根本没有的包，会得到一个「声明加载但找不到」的条目，
+    // 而用户看到的现象是「打不开的那个页面/插件没了」—— 说不清是哪一步错了。
+    // 这种情况该走「安装」，不该走「启用」，所以在入口拦下。
+    throw new PluginToggleError(
+      'PLUGIN_NOT_INSTALLED',
+      'This package is not installed in the profile; install it first.',
+    )
+  }
+
+  const next = enable
+    ? (bundles.includes(trimmed) ? bundles : [...bundles, trimmed])
+    : bundles.filter((item) => item !== trimmed)
+
+  if (next.length === bundles.length) {
+    // 幂等：本来就是目标状态，不动文件、不产生备份 —— 重复点不该在磁盘上堆一串备份。
+    return {
+      name: trimmed,
+      loaded: enable,
+      backupName: '',
+      bundleCount: bundles.length,
+      restartRequired: true,
+    }
+  }
+
+  const backupName = `package.json.bak-${timestamp()}`
+  await writeFile(path.join(profilePath, backupName), raw, { mode: 0o600 })
+
+  profileSection.bundles = next
+  dshSection.profile = profileSection
+  manifest.dsh = dshSection
+  const serialized = `${JSON.stringify(manifest, null, 2)}\n`
+
+  // 先写临时文件再 rename：同分区 rename 是原子的，避免留下写到一半的 JSON。
+  const tempPath = path.join(profilePath, `.package.json.tmp-${process.pid}`)
+  await writeFile(tempPath, serialized, { mode: 0o600 })
+  await rename(tempPath, manifestPath)
+
+  return {
+    name: trimmed,
+    loaded: enable,
+    backupName,
+    bundleCount: next.length,
+    restartRequired: true,
+  }
+}
+
+/** 备份文件名用的时间戳：`20261013-133045`，本地时区、可直接读。 */
+function timestamp(): string {
+  const d = new Date()
+  const p = (n: number) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`
 }
