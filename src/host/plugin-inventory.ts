@@ -116,11 +116,49 @@ export interface ProfileResolutionInput {
 }
 
 /**
+ * 把 profile 标识归一化成 profile 名。
+ *
+ * 内核接受**两种**写法，两者都合法：
+ *
+ * - `--profile web` —— profile 名；
+ * - `--profile /home/u/.dsh/profiles/web` —— profile 的绝对目录。内核启动器文档里
+ *   写的正是 `--profile ${basename(profileDir)}`，**内核自己会取 basename**。
+ *
+ * 本插件此前只认第一种，于是把第二种的**整条路径**当成了 profile 名。而 `path.join`
+ * 并不会因为后面一段是绝对路径就重置（那是 `path.resolve` 的行为），于是拼出：
+ *
+ *   /home/u/.dsh/profiles/home/u/.dsh/profiles/desktop
+ *
+ * —— 必然 ENOENT。**官方 Electron 桌面版恰好用第二种启动内核**，所以在桌面版里，
+ * 手机上只会看到「服务器读不出插件清单：package.json 可能损坏、缺失或没有读取权限」，
+ * 而磁盘上的 package.json 完好无损、权限也对。web 版（`dsh web` / `--profile web`）
+ * 走的是名字形式，不受影响 —— 这就是这个 bug 能潜伏到桌面版才暴露的原因。
+ *
+ * 归一化只做一件事：**含路径分隔符时取最后一段**；不含则原样返回。于是
+ * 「名字」「绝对目录」「相对目录」「Windows 反斜杠路径」「末尾带斜杠」五者同归一条规则。
+ */
+export function normalizeProfileName(value: string): string | null {
+  const trimmed = value.trim()
+  if (trimmed === '') return null
+  // 不含分隔符：本来就是名字，原样用（`web`、`desktop`、`rescue`…）。
+  if (!/[/\\]/.test(trimmed)) return trimmed
+  // 含分隔符：按路径取最后一段。末尾分隔符先剥掉，`/profiles/web/` 也要得到 `web`。
+  const withoutTrailing = trimmed.replace(/[/\\]+$/, '')
+  if (withoutTrailing === '') return null
+  const cut = Math.max(withoutTrailing.lastIndexOf('/'), withoutTrailing.lastIndexOf('\\'))
+  const base = withoutTrailing.slice(cut + 1)
+  return base === '' ? null : base
+}
+
+/**
  * 解析当前 profile 名。
  *
  * 依次尝试：`DSH_PROFILE` 环境变量 → `--profile=<name>` → `--profile <name>`
  * → **子命令简写**（`dsh web` 等价于 `dsh --profile web`）。
  * 都拿不到时返回 null（调用方不要猜，猜错会读到另一个 profile 的清单）。
+ *
+ * **四个取值来源一律过 `normalizeProfileName`**：它们都可能装着一个 profile 目录
+ * 而不是名字（官方 Electron 桌面版就是），见该函数的说明。
  *
  * 最后那条简写路径是补上的一个真 bug：内核的启动器文档写得很清楚 ——
  *
@@ -136,12 +174,12 @@ export function resolveProfileName(input: ProfileResolutionInput = {}): string |
   const argv = input.argv ?? process.argv
 
   const fromEnv = env.DSH_PROFILE?.trim()
-  if (fromEnv) return fromEnv
+  if (fromEnv) return normalizeProfileName(fromEnv)
 
   for (const arg of argv) {
     if (arg.startsWith('--profile=')) {
       const value = arg.slice('--profile='.length).trim()
-      if (value) return value
+      if (value) return normalizeProfileName(value)
     }
   }
   const index = argv.indexOf('--profile')
@@ -152,7 +190,7 @@ export function resolveProfileName(input: ProfileResolutionInput = {}): string |
     // 取值非法时**直接返回 null，不再退回子命令简写**：用户明确写了 `--profile`
     // 只是写错了，这时候去猜「那大概是想用 web 吧」是在替用户做决定 ——
     // 而猜错的后果是读到另一个 profile 的清单，比老实报错更难排查。
-    if (value && !value.startsWith('-')) return value
+    if (value && !value.startsWith('-')) return normalizeProfileName(value)
     return null
   }
   return profileFromSubcommand(argv)
@@ -172,6 +210,9 @@ export function resolveProfileName(input: ProfileResolutionInput = {}): string |
  *
  * `plugin` 单独排除：`dsh plugin add xxx` 是管理插件依赖的命令，
  * 它**不启动任何 profile**，把它当 profile 名会去读一个不存在的目录。
+ *
+ * 取到的 token 同样过 `normalizeProfileName`：桌面版可能把这个位置填成 profile
+ * 目录的绝对路径（`--profile <dir>` 的等价位置参数写法）。
  */
 function profileFromSubcommand(argv: readonly string[]): string | null {
   const start = argv.findIndex((arg) => /(^|[/\\])dsh(\.js|\.cjs|\.mjs)?$/.test(arg))
@@ -188,7 +229,7 @@ function profileFromSubcommand(argv: readonly string[]): string | null {
       continue
     }
     // 第一个真正的非选项 token：这就是子命令。
-    return arg === 'plugin' ? null : arg
+    return arg === 'plugin' ? null : normalizeProfileName(arg)
   }
   return null
 }

@@ -1,5 +1,95 @@
 # 开发日志
 
+## v2.3.4 · 桌面版：profile 参数是目录，不是名字
+
+用户反馈「我的 APP 项目，目前使用桌面版本」，手机插件页红条提示：
+
+> 服务器读不出插件清单：package.json 可能损坏、缺失或没有读取权限。
+
+并特别交代「**你要考虑兼容性**」。这条提示把排查方向带偏了 —— 它听起来像文件出了问题。
+
+### 文件明明是好的
+
+先按提示排除了三个嫌疑：`/home/wangke/.dsh/profiles/desktop/package.json`
+**存在**、`0644` 可读、`JSON.parse` 通过。提示里说的三件事一件都不成立。
+
+于是不再猜文件、改为**去问运行中的插件本人**。它监听 `3090`（并内嵌在 WebUI 端口
+`36079` 上），对 `/settings/plugins` 的写操作要 `settings.write`，但只读请求走
+loopback 管理通道即可 —— 拿到的真实响应是：
+
+```json
+{
+  "profile": "/home/wangke/.dsh/profiles/desktop",
+  "profilePath": "/home/wangke/.dsh/profiles/home/wangke/.dsh/profiles/desktop",
+  "available": false,
+  "reason": "MANIFEST_UNREADABLE"
+}
+```
+
+**`profile` 字段本该是 `desktop`，返回的却是一整条绝对路径。** 真相在这里。
+
+### 为什么
+
+内核接受**两种** `--profile` 写法，两者都合法：
+
+- `--profile web` —— profile **名**；
+- `--profile /home/u/.dsh/profiles/web` —— profile **目录**。内核启动器文档里写的正是
+  `--profile ${basename(profileDir)}`，**内核自己会取 basename**。
+
+而 **`resolveProfileName()` 只认第一种**，把整条路径当成了 profile 名。接下来
+`path.join` 又补了一刀：它**不会**因为后面一段是绝对路径就重置（那是 `path.resolve`
+的行为），于是拼出：
+
+```
+path.join('/home/wangke/.dsh', 'profiles', '/home/wangke/.dsh/profiles/desktop')
+= /home/wangke/.dsh/profiles/home/wangke/.dsh/profiles/desktop
+                                    ↑ 多出来的一层
+```
+
+必然 `ENOENT`。`readJson()` 的 `catch` 把异常吞成 `MANIFEST_UNREADABLE`，界面再把
+`MANIFEST_UNREADABLE` 翻译成「package.json 可能损坏、缺失或没有权限」——
+**一条把「路径算错了」说成「文件坏了」的误导性提示**。
+
+### 为什么能潜伏这么久
+
+web 版走的是名字形式（`dsh web` / `--profile web`），永远碰不到这条分支。
+**只有官方 Electron 桌面版用目录形式启动内核** —— 所以这个 bug 一直躺在那儿，
+直到有人在桌面版里打开插件页。
+
+### 改了
+
+- 新增 `normalizeProfileName()`：**含路径分隔符就取最后一段**，不含则原样返回。
+  一条规则同时覆盖名字、绝对目录、相对目录、Windows 反斜杠路径、末尾带斜杠五种输入。
+- `resolveProfileName()` 的 **4 个取值入口**（`DSH_PROFILE`、`--profile=`、
+  `--profile <name>`、子命令简写）**全部**过这道归一化。四者都可能装着一个目录。
+- 连带修好 `togglePlugin()`：它共用同一个 profile 判定，所以手机上点「启用 / 停用」
+  本会试图往那个不存在的多层目录里写 `package.json` —— 用户只会看到又一次失败。
+
+### 兼容性（用户明确要求的那条）
+
+- **字段一个没加、没删、没改语义**。`tests/plugin-inventory.spec.ts` 里那条字段
+  白名单测试（精确断言 `inventory` 只有 7 个键、每个 item 只有 11 个键）**原样通过** ——
+  这是刻意的：老版 App 收到的 JSON 结构与 2.3.3 完全一致，只是 `profile` 从路径变成
+  名字。纯字符串，界面显示只会更正确。
+- **web 版行为不变**：名字形式的四条来源归一化后仍是原值。
+- **不新增 reason 枚举值**：新增值会让老 App 掉进 `else` 分支显示
+  「服务器暂时无法提供插件清单（…）」，比现在更模糊。宁可不加。
+
+### 测了
+
+新增 8 条用例（`resolveProfileName` 5 条 + `readPluginInventory` 2 条 +
+`togglePlugin` 1 条），其中一条直接拿桌面版启动形式做端到端复现：
+
+```ts
+await readPluginInventory({
+  env: { DSH_HOME: dshHome },
+  argv: ['node', '/usr/local/nodejs/bin/dsh', '--profile', profileDir],
+})
+// 修复前必然 available:false + MANIFEST_UNREADABLE（而磁盘上文件好好的）
+```
+
+`pnpm typecheck` 通过 · `pnpm test` **30 个测试文件 / 220 个用例全绿**。
+
 ## v2.3.3 · 「插件」页：详情增强 + 手机上直接启停
 
 用户要求「结合官方的插件特点和功能增加对应功能」，选定 A（管理写操作）+ B（详情增强）。

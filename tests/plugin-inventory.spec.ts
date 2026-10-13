@@ -105,6 +105,47 @@ describe('resolveProfileName', () => {
     // 显式旗标永远优先：内核允许 `dsh --profile tui --resume abc` 这种写法。
     expect(resolveProfileName({ env: {}, argv: ['node', 'dsh', '--profile', 'tui', 'web'] })).toBe('tui')
   })
+
+  // ── profile 目录当参数：官方 Electron 桌面版的启动形式 ──
+  //
+  // 这条是桌面版线上回归的防护。内核接受 `--profile <profileDir>` 并**自己取
+  // basename**（启动器文档：`--profile ${basename(profileDir)}`），而插件此前把整条
+  // 路径当 profile 名用。`path.join` 不会因后段是绝对路径而重置，于是拼出
+  // `<dshHome>/profiles/home/u/.dsh/profiles/desktop` —— 必然 ENOENT，
+  // 手机端表现就是「服务器读不出插件清单」，而磁盘上一切正常。
+  //
+  // 出问题的机器上实测响应：profile 字段 = `/home/wangke/.dsh/profiles/desktop`，
+  // profilePath = `/home/wangke/.dsh/profiles/home/wangke/.dsh/profiles/desktop`。
+
+  it('normalizes a profile directory into its name (desktop launcher form)', () => {
+    const dir = '/home/u/.dsh/profiles/desktop'
+    expect(resolveProfileName({ env: {}, argv: ['node', 'dsh', '--profile', dir] })).toBe('desktop')
+    expect(resolveProfileName({ env: {}, argv: ['node', 'dsh', `--profile=${dir}`] })).toBe('desktop')
+    expect(resolveProfileName({ env: { DSH_PROFILE: dir }, argv: [] })).toBe('desktop')
+  })
+
+  it('normalizes profile directories in the subcommand and on Windows', () => {
+    // 子命令位置也可能被填成目录；Windows 路径用反斜杠。
+    expect(resolveProfileName({ env: {}, argv: ['node', '/usr/local/bin/dsh', '/home/u/.dsh/profiles/web'] }))
+      .toBe('web')
+    expect(resolveProfileName({ env: { DSH_PROFILE: 'C:\\Users\\u\\.dsh\\profiles\\desktop' }, argv: [] }))
+      .toBe('desktop')
+  })
+
+  it('tolerates a trailing separator and relative forms', () => {
+    expect(resolveProfileName({ env: { DSH_PROFILE: '/home/u/.dsh/profiles/web/' }, argv: [] })).toBe('web')
+    expect(resolveProfileName({ env: { DSH_PROFILE: 'profiles/web' }, argv: [] })).toBe('web')
+  })
+
+  it('returns null for a path with no usable last segment', () => {
+    // `/` 归一化后没有名字：宁可老实报「判定不出」，也不去读一个叫 “” 的目录。
+    expect(resolveProfileName({ env: { DSH_PROFILE: '/' }, argv: [] })).toBeNull()
+  })
+
+  it('still treats a bare name as-is (no regression on web form)', () => {
+    expect(resolveProfileName({ env: { DSH_PROFILE: 'desktop' }, argv: [] })).toBe('desktop')
+    expect(resolveProfileName({ env: {}, argv: ['node', 'dsh', 'web'] })).toBe('web')
+  })
 })
 
 describe('resolveDshHome', () => {
@@ -225,6 +266,39 @@ describe('readPluginInventory', () => {
   it('reports PROFILE_UNKNOWN instead of guessing a profile', async () => {
     const inventory = await readPluginInventory({ env: {}, argv: [] })
     expect(inventory).toMatchObject({ available: false, reason: 'PROFILE_UNKNOWN', profile: null, items: [] })
+  })
+
+  it('reads the manifest when the launcher passes a profile directory', async () => {
+    // 桌面版线上回归的端到端复现：只需把 profile 参数从名字换成目录，
+    // 修复前必然得到 available:false + MANIFEST_UNREADABLE（磁盘上文件其实好好的）。
+    const { dshHome, profile } = await makeProfile({
+      dependencies: { 'dsh-ffmpeg': '0.4.5' },
+      bundles: ['dsh-ffmpeg'],
+      installed: { 'dsh-ffmpeg': '0.4.5' },
+    })
+    const profileDir = path.join(dshHome, 'profiles', profile)
+
+    const inventory = await readPluginInventory({
+      env: { DSH_HOME: dshHome },
+      argv: ['node', '/usr/local/nodejs/bin/dsh', '--profile', profileDir],
+    })
+
+    expect(inventory.available).toBe(true)
+    expect(inventory.profile).toBe(profile)
+    expect(inventory.profilePath).toBe(profileDir)
+    expect(inventory.loadedCount).toBe(1)
+  })
+
+  it('reads the manifest when DSH_PROFILE carries a directory', async () => {
+    // 同一个坑的另一条入口：环境变量里放的是目录而不是名字。
+    const { dshHome, profile } = await makeProfile({ bundles: ['dsh-ffmpeg'] })
+    const inventory = await readPluginInventory({
+      env: { DSH_HOME: dshHome, DSH_PROFILE: path.join(dshHome, 'profiles', profile) },
+      argv: [],
+    })
+
+    expect(inventory.available).toBe(true)
+    expect(inventory.profile).toBe(profile)
   })
 
   it('reports MANIFEST_UNREADABLE when the profile has no package.json', async () => {
@@ -379,6 +453,23 @@ describe('togglePlugin', () => {
         togglePlugin(bad, true, { env: { DSH_HOME: dshHome, DSH_PROFILE: profile }, argv: [] }),
       ).rejects.toMatchObject({ code: 'PLUGIN_NAME_INVALID' })
     }
+  })
+
+  it('writes the right manifest when the launcher passes a profile directory', async () => {
+    // 写操作和读操作共用同一个 profile 判定：读不到的那个 bug 同样会让「启停」
+    // 把 package.json 写到一个不存在的多层目录上去。手机上点「启用」只会报错。
+    const { dshHome, profile } = await makeProfile({
+      dependencies: { 'dsh-ffmpeg': '0.4.5' },
+      bundles: [],
+      installed: { 'dsh-ffmpeg': '0.4.5' },
+    })
+
+    await togglePlugin('dsh-ffmpeg', true, {
+      env: { DSH_HOME: dshHome },
+      argv: ['node', 'dsh', '--profile', path.join(dshHome, 'profiles', profile)],
+    })
+
+    expect(bundlesOf(await readManifest(dshHome, profile))).toEqual(['dsh-ffmpeg'])
   })
 
   it('reports PROFILE_UNKNOWN instead of guessing', async () => {

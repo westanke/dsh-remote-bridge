@@ -1,14 +1,21 @@
 # 当前状态
 
 - 日期：2026-10-13
-- 阶段：`dsh-remote-bridge` **v2.3.3**（**已发版**：npm + 双站 Release + git tag；已同步实装目录，用户重启后真机确认 profile 判定与插件页均正常）
-- 当前任务：`v2.3.3` 「插件」页详情增强 + 手机上直接启停（用户选定的 A+B）；下一轮待用户指派
+- 阶段：`dsh-remote-bridge` **v2.3.4**（**已发版**：npm + 双站 Release + git tag。**实装目录按用户指示未同步** —— 本轮只出仓库产物）
+- 当前任务：`v2.3.4` 修桌面版「插件」页读不出清单（根因：`--profile` 拿到的是 profile 目录而非名字）；下一轮待用户指派
 - DSH 基线：`master` / `47f943859bef60e4160492346772ded9b24f765a`
 - 插件路径：本仓库（历史上游为 `Hakunm/dsh-workspace`，v1.0.0 保持原样不动）
 - 已完成：Host/Client 外置插件、授权根与回收站、独立 listener、设备授权、聊天/审批/命令/模型 BFF、OpenAPI/AsyncAPI、Kotlin SDK、中英双语和版本展示
 - 2.2.3 / 2.2.4（纯文本模型发图）：内核以 `MODEL_DOES_NOT_SUPPORT_IMAGES` 拒收纯文本模型会话里的图片，插件按内核自己的 `llm.resolveModelInfo()` 判定并把图片落成工作区文件（`<会话工作目录>/.dsh-images/<sha256>.<ext>`，内容寻址、0700/0600），消息里留两行：第一行给人看（当前值可配置的识图路径），第二行 `[Image: source: <绝对路径>]` 给机器；解析不出工作目录时退回 `<dataDir>/image-handoff`。手机端用 `GET /api/v1/image-handoff` 把图取回去显示，历史图片走 `sessionController.attachment`
 - 2.2.4 实装 + 本轮待发版内容（`IMAGE-001`）：设置页新增「识图」分区 —— 识图路径（交接目录名）可改、存 `settings.image_handoff_subdir`、改完立即生效；「当前默认」`.dsh-images` 与兜底目录为只读栏。dsh-image-paths 0.3.1 的宿主路由与浏览器图集并入本插件：只读路由 `GET /plugin/dsh-remote-bridge/raw?sessionId=…&name=…`（回环 + 同源 + 裸文件名白名单 + 字节自证 + 32 MiB 上限，目录由宿主按会话推出），图集挂在 `conversation.chat.turnTail`，只认用户消息里的交接行首标记
 - **待办**：① 真机验证（重启 dsh 后：会话里「加载更早消息」能否翻出更早记录；「插件」页是否不再报判定不出 profile；**启停一个插件看是否要重启才生效、备份文件是否落地**）；② 停用独立 `image-paths` 插件那一行 —— 两个插件会把同一张图在 Turn 尾画两遍，本插件已自带该能力
+- 2.3.4（修桌面版读不出插件清单）：
+  - **现象**：桌面版（官方 Electron 壳）里打开手机 App 的「插件」页，红条报「服务器读不出插件清单：package.json 可能损坏、缺失或没有读取权限」，但 `/home/wangke/.dsh/profiles/desktop/package.json` 存在、`0644` 可读、JSON 合法 —— 提示里的三种可能**一种都不成立**。
+  - **根因**：内核接受 `--profile <名>` 与 `--profile <profile 目录>` **两种**写法（启动器文档：`--profile ${basename(profileDir)}`，**内核自己取 basename**），而 `resolveProfileName()` 只认第一种。桌面版用第二种启动内核，于是整条路径被当成 profile 名；`path.join` 不会因后段是绝对路径而重置，拼出 `/home/wangke/.dsh/profiles/home/wangke/.dsh/profiles/desktop`，必然 `ENOENT` → 被 `readJson()` 的 `catch` 吞成 `MANIFEST_UNREADABLE`。
+  - **定位手法**：不走「猜文件」，而是读运行中插件的真实响应（`3090` 监听 / `36079` 内嵌，只读请求走 loopback 管理通道）。响应里 `profile` 字段是路径而非 `desktop`，与 `path.join` 公式**逐字吻合**，根因当场坐实。
+  - **修法**：新增 `normalizeProfileName()`（含分隔符取最后一段），`resolveProfileName()` 的 **4 个入口全部归一化**；`togglePlugin()` 共用该判定，手机上「启用 / 停用」写错路径的问题一并修好。
+  - **兼容性**：字段零增删改；字段白名单测试原样通过；web 版（名字形式）行为不变；不新增 reason 枚举值（新增会让老 App 掉进更模糊的 `else` 文案）。
+  - 新增 8 条用例，含「桌面版启动形式」的端到端复现。
 - 2.3.3（「插件」页详情增强 + 手机上直接启停）：
   - **官方机制摸清**：`dsh plugin <x>` 会**原样转发给 pnpm**（实测误触发过一次安装流程，打出 `Packages: +4 -85`，所幸 package.json 与 node_modules 未变）。内核 `profile-boot` 注释确认：**`dsh.profile.bundles` 数组就是加载清单，顺序即加载顺序**。所以启停 = 加/删一个名字，**完全不必碰依赖**。
   - **B 详情增强**：每项新增 `description` / `homepage`（剥 `git+` 与 `.git`）/ `updateAvailable` / `latestVersion` / `toggleable`。`updateAvailable` **是三态**（null = 没查，与 false「已是最新」不同）。版本检查默认关（`?checkUpdates=1` 开），只查确实装在 profile 里的第三方包，并发 6 / 超时 5s / 失败即 null。
@@ -40,11 +47,11 @@
 - 二维码资产：提交进仓库并由 `tests/app-qr.spec.ts` 解码校验，指向 Releases **列表页**（非具体文件），因此发新版不需重新生成
 - 2.2.0（删独立页 + 瘦身）：删除独立页 `/dsh-workspace`（文件树 + CodeMirror 6 编辑器）及 `src/standalone/`、`assets/workspace.html`、`src/client/editor.tsx`、`workspace.tsx` 中的 `WorkspaceApp`/`DirectoryNode`/`CommandDialog`/`AdminOverlay`、`scripts/test-server.ts`，以及 8 个 `@codemirror/*` 与 `@lezer/highlight` 依赖；同时关闭 tsdown source map（映射本身约 5 MB，而插件发的是预构建 bundle、包内又没有原始 TS 源码，消费者根本用不上）。理由：手机 App 的文件页已原生覆盖同一套能力，桌面端这个页面无人使用。发布包 **1.72 MB → 0.25 MB**；`/dsh-workspace-api` 代理前缀与全部 REST 文件端点未动，App 不受影响
 - 附件能力边界：会话历史图片需要宿主提供 `ctx.attachments` 服务；缺失时插件照常激活，读取接口返回 `ATTACHMENT_STORE_UNAVAILABLE`，附件类上传返回 `FILE_UPLOADS_UNAVAILABLE`
-- 最近验证：`pnpm typecheck` 通过 · `pnpm test` **30 个测试文件 / 198 个用例全绿** · `pnpm docs:check` 通过 · `pnpm build` 两个 entry（host / client）构建完成并已同步实装目录（含 client.cjs）。另有 **4 个浏览器层用例**（Playwright 用真实浏览器量计算样式），4/4 通过
+- 最近验证：`pnpm typecheck` 通过 · `pnpm test` **30 个测试文件 / 220 个用例全绿** · `pnpm docs:check` 通过 · `pnpm build` 两个 entry（host / client）构建完成。**本轮按用户指示未同步实装目录**。另有 **4 个浏览器层用例**（Playwright 用真实浏览器量计算样式），4/4 通过
 - 界面截图：桌面界面截图**已删除**（那是改名前的旧界面，含 v1.0.0 徽章与旧的 1400px 文件树对话框）。重录需要能驱动插件面板的浏览器环境，目前不具备；二维码另有 SVG/PNG 资产。桌面文件工作区界面（独立页）已于 2.2.0 删除，不再有对应截图需求
 - 仓库：`https://github.com/westanke/dsh-remote-bridge`，topic 包含 `dsh-plugin`
-- Release：GitHub `https://github.com/westanke/dsh-remote-bridge/releases/tag/v2.3.3`（3 资产：tgz + RELEASE_NOTES + SHA256SUMS，逐一核对大小）；Gitee 同名 tag 与 Release 并列（3 资产，下载回读**逐字节一致**）。v2.3.2 未单独发版，其修复已并入 v2.3.3 的 Release notes
-- Release 历史：`v2.0.0` / `v2.0.1` 为已知缺陷版，`v2.0.2` / `v2.0.3` 从未发布；npm 现为 **v2.3.1**
-- 正式产物：`artifacts/dsh-remote-bridge-v2.3.3.tgz`，**306,971 字节（约 0.30 MB）**，SHA-256 `ec9b180f2ffd21a28ac095319b0d995dc47cfeef939109e102e8303e5ea18774`（用 `npm pack` 生成，与 npm 上那份同源）
+- Release：GitHub `https://github.com/westanke/dsh-remote-bridge/releases/tag/v2.3.4`（3 资产：tgz + RELEASE_NOTES + SHA256SUMS，逐一核对大小）；Gitee 同名 tag 与 Release 并列（3 资产，下载回读**逐字节一致**）。v2.3.2 未单独发版，其修复已并入 v2.3.3 的 Release notes
+- Release 历史：`v2.0.0` / `v2.0.1` 为已知缺陷版，`v2.0.2` / `v2.0.3` 从未发布；npm 现为 **v2.3.3**，本版待发
+- 正式产物：`artifacts/dsh-remote-bridge-v2.3.4.tgz`，**307,859 字节（约 0.29 MB）**，SHA-256 `d125f006aa94e7dd26886b1172719721d61dca83d533841e591e3314b667c711`（用 `npm pack` 生成，与 npm 上那份同源）
 - 分发：npm [`dsh-remote-bridge`](https://www.npmjs.com/package/dsh-remote-bridge)（官方源 + npmmirror 均有），`dsh plugin --profile web add dsh-remote-bridge` 可用
 - 阻塞项：Android 与 DSH WebUI 的后续完整能力对等仍按 `PARITY-001` 推进
