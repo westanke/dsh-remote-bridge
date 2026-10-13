@@ -136,8 +136,11 @@ describe('dsh 0.2.x bridge: approval answerer', () => {
       return 'unavailable'
     }
     // The waterfall listener is the host's way of asking this plugin to answer.
+    // 内核真实形状：`Agent.id` 就是 SessionId（`dsh-agent-loop` 的 `this.id = id`）。
+    // 这里曾经写成 `{ sessionId: 'session-1' }` —— 内核从不这样传，于是桩比现实宽容，
+    // 把「手机端一张卡都收不到」的 bug 一路放行。
     const [outcomePromise] = emit('approval/request', {
-      agent: { sessionId: 'session-1' },
+      agent: { id: 'session-1' },
       toolName: 'Bash',
       reason: 'needs network',
     }, next)
@@ -176,7 +179,7 @@ describe('dsh 0.2.x bridge: approval answerer', () => {
     }
 
     const [outcomePromise] = emit('approval/request', {
-      agent: { sessionId: 'session-1' },
+      agent: { id: 'session-1' },
       toolName: 'Bash',
       signal,
     }, next)
@@ -206,6 +209,81 @@ describe('dsh 0.2.x bridge: approval answerer', () => {
     }
     const [outcomePromise] = emit('approval/request', { toolName: 'Bash' }, next)
     expect(await outcomePromise).toBe('unavailable')
+    expect(delegated).toBe(true)
+  })
+})
+
+describe('dsh 0.2.x bridge: user question answerer', () => {
+  it('claims a front-of-house question using the kernel Agent id', async () => {
+    const { host, emit, listenerCount } = makeHost()
+    const api = createDsh02ApiProxy(host)
+    expect(listenerCount('user-questions/request')).toBe(1)
+
+    const controller = new AbortController()
+    const stream = api.events.mux({ rpcId: 'r', payload: {} }, controller.signal)
+
+    let delegated = false
+    // 电脑端那张卡**挂在那里等人答**：不立刻给答案，App 才有机会赢这场竞速。
+    // 若这里直接 resolve，race 会判「电脑端先答」，挂起项随即摘除 —— 那样测的就是
+    // 「迟到作答得 not-pending」，而不是「手机端能答」。
+    const next = async (): Promise<unknown> => {
+      delegated = true
+      return await new Promise<never>(() => {})
+    }
+    const questions = [{ id: 'q1', question: '继续吗？', options: [{ label: '继续' }] }]
+    // 内核真实形状：Agent.id 就是 SessionId —— 这是手机端能看到提问卡的唯一前提。
+    const [outcomePromise] = emit('user-questions/request', {
+      agent: { id: 'session-1' },
+      questions,
+    }, next)
+
+    const frame = await nextFrame(stream)
+    expect(frame).toMatchObject({ type: 'userQuestions/requested', sessionId: 'session-1', questions })
+    // 先委托再竞速：进链那一刻就把这张卡交给下游，电脑端官方界面照旧能答。
+    expect(delegated).toBe(true)
+
+    const answer = { answers: [{ id: 'q1', selected: ['继续'] }] }
+    const accepted = await api.userQuestions.answer({
+      rpcId: 'r2',
+      payload: { sessionId: 'session-1', callId: frame.callId as string, answer },
+    })
+    const value = accepted.result.ok ? accepted.result.value : undefined
+    expect(value).toEqual({ accepted: true })
+    // App 先答：交回内核的就是这次工具调用的返回值本体。
+    expect(await outcomePromise).toEqual(answer)
+    controller.abort()
+  })
+
+  it('honours session.header.id when the Agent only exposes a Session', async () => {
+    const { host, emit } = makeHost()
+    const api = createDsh02ApiProxy(host)
+    const controller = new AbortController()
+    const stream = api.events.mux({ rpcId: 'r', payload: {} }, controller.signal)
+
+    const next = async (): Promise<unknown> => 'answered-on-the-desktop'
+    // `dsh-session` 的 Session 是 class：id 挂在 header.id，类上**没有** id 属性。
+    const [outcomePromise] = emit('user-questions/request', {
+      agent: { session: { header: { id: 'session-header-1' } } },
+      questions: [{ id: 'q1', question: '?' }],
+    }, next)
+
+    const frame = await nextFrame(stream)
+    expect(frame).toMatchObject({ type: 'userQuestions/requested', sessionId: 'session-header-1' })
+    void outcomePromise
+    controller.abort()
+  })
+
+  it('hands the question downstream when the session cannot be identified', async () => {
+    const { host, emit } = makeHost()
+    createDsh02ApiProxy(host)
+    let delegated = false
+    const next = async (): Promise<unknown> => {
+      delegated = true
+      return 'answered-on-the-desktop'
+    }
+    // 没有 agent 就定位不到会话，此时唯一的正确动作是原样交给下游。
+    const [outcomePromise] = emit('user-questions/request', { questions: [{ id: 'q1', question: '?' }] }, next)
+    expect(await outcomePromise).toBe('answered-on-the-desktop')
     expect(delegated).toBe(true)
   })
 })

@@ -323,7 +323,7 @@ pnpm check
 pnpm pack
 ```
 
-`pnpm check` covers type-checking, documentation consistency, and tests. It currently passes **30 test files / 223 cases**, plus **4 browser-layer cases** (Playwright measuring real computed styles).
+`pnpm check` covers type-checking, documentation consistency, and tests. It currently passes **30 test files / 226 cases**, plus **4 browser-layer cases** (Playwright measuring real computed styles).
 
 `npm pack` produces roughly a **0.29 MB** archive: 2.2.0 dropped the standalone page and its editor dependencies and turned source maps off, down from 1.72 MB.
 

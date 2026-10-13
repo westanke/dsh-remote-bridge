@@ -1,6 +1,6 @@
 # 开发日志
 
-## v2.3.6 · 归档会话终于会从列表里消失（一处注释把结论带反了）
+## v2.3.6 · 归档不消失 + 手机端交互卡片全灭（两处「想当然」）
 
 用户报「App 会话列表 归档点击后 实际未归档」。归档请求一路返回 200，列表纹丝不动，
 看起来像手机端点了个寂寞。
@@ -58,8 +58,62 @@ return { items, archivedSessionIds: [] as string[] }
   已实测复现）；② getter 缺失时退化成空集合、列表仍可读。
 - 新增 HTTP 端到端断言 1 条：`POST /archive` 之后，同一个 `GET /chat/sessions`
   不再返回被归档的会话（归档前两条，归档后只剩 fork 出来那条）。
-- `pnpm typecheck` 通过 · `pnpm test` **30 个测试文件 / 223 个用例全绿** ·
+- `pnpm typecheck` 通过 · `pnpm test` **30 个测试文件 / 226 个用例全绿** ·
   `pnpm docs:check` 通过 · `pnpm build` 两个 entry 构建完成。
+
+### 同一个版本里的第二处：手机端**所有**交互卡片全灭
+
+归档修完，用户又报「手机上看不到问题卡片」。追问一句才发现更严重：
+**审批卡片也没看到，那次是在电脑端操作的** —— 手机端两类交互（审批 + 提问）一张卡都没有。
+
+#### 逻辑闭环：电脑端都正常，手机端都空白
+
+这本身就把矛头指向「插件到底有没有接住」。**审批那条尤其关键**：`ApprovalBridge` 是
+「接管＝否决下游」（不调 `next()`，官方界面就没机会渲染）。插件真接住了的话，
+**电脑端反而不会出现卡片**。可电脑端明明弹了 —— 于是只剩一个解释：
+**插件的监听器压根没进链**，`sessionId` 没解析出来，直接 `return next()` 让给了官方界面。
+
+#### 根因：一处字段名想当然，两类交互一起废
+
+两个桥的入场判断是同一句：
+
+```ts
+const sessionId = sessionIdOfAgent(req.agent)
+if (sessionId === undefined) return next()   // 放弃接管
+```
+
+而 `sessionIdOfAgent` 当时只查两条：
+
+```ts
+if (typeof candidate.sessionId === 'string') return candidate.sessionId
+if (candidate.session && typeof candidate.session.id === 'string') return candidate.session.id
+```
+
+**这两条在内核里都不存在**：
+
+- 内核 `Agent` 的身份字段就是 `id` —— `dsh-agent/lib/types/types.d.ts:11-14` 的
+  `readonly id: SessionId`，运行时由 `dsh-agent-loop/lib/index.js:773` 的 `this.id = id` 赋值；
+- `agent.session` 是 `dsh-session` 的 **class** `Session`，**没有** `id` 属性 ——
+  session id 挂在 `header.id`（`SessionHeader.id`）。
+
+函数签名里明明声明了 `id?: unknown`，代码却一次都没用。于是**每一个**审批、
+**每一个**提问都在第一行被判成「定位不到会话」，然后静默让给电脑端。
+
+#### 改了
+
+- `sessionIdOfAgent` 补齐两条真实来源，顺序为
+  `sessionId → id → session.id → session.header.id`；
+- 审批测试桩从 `{ sessionId: 'session-1' }` 改成内核真实形状 `{ id: 'session-1' }` ——
+  **桩比现实宽容，正是这个缺陷被放行的原因**；另补两条：只有 `session.header.id` 时能认、
+  完全定位不到时必须交还下游；
+- 新增提问桥用例 3 条 —— 此前**提问桥一条测试都没有**。回退这两条解析，两个 describe
+  共 3 条用例如期失败（已实测）。
+
+#### 不做什么
+
+- **没有改 App**：故障全在服务端这一侧，App 的订阅、拉取、卡片渲染都是对的；
+- **没有加「从会话历史里猜提问」的兜底**：根因修好后实时链路即恢复，
+  再加一层猜测只会多一条会过期、还会重复弹卡的路径。
 
 ## v2.3.5 · 给会话补上绝对工作目录，救活手机端的 `@` 补全
 

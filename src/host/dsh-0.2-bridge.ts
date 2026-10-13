@@ -894,12 +894,34 @@ function isUserQuestionAnswerLike(value: unknown): value is UserQuestionAnswer {
   })
 }
 
-/** Best-effort projection of an Agent identity to its session id. */
+/**
+ * Best-effort projection of an Agent identity to its session id.
+ *
+ * 内核侧有两个真相来源，顺序不能反：
+ * - `Agent.id` **就是** `SessionId`（`dsh-agent/lib/types/types.d.ts:11-14` 的
+ *   `readonly id: SessionId`，运行时由 `dsh-agent-loop/lib/index.js:773` 的
+ *   `this.id = id` 赋值）。这是直给的那个，必须第一个查；
+ * - `agent.session` 是 `dsh-session` 的 **class** `Session`，它**没有** `id` 属性 ——
+ *   session id 挂在 `header.id`（`SessionHeader.id`）。只查 `session.id` 永远落空。
+ *
+ * 这两条都曾经被漏掉，代价极大：审批与提问两个 waterfall 监听都以
+ * 「`sessionId === undefined` → 原样交给下游」收场，于是**电脑端一切正常、手机端
+ * 一张卡都没有** —— 而且失败是静默的，两侧日志都不会说一句话。
+ */
 function sessionIdOfAgent(agent: unknown): string | undefined {
   if (!agent || typeof agent !== 'object') return undefined
-  const candidate = agent as { sessionId?: unknown; session?: { id?: unknown }; id?: unknown }
+  const candidate = agent as {
+    sessionId?: unknown
+    id?: unknown
+    session?: { id?: unknown; header?: { id?: unknown } }
+  }
   if (typeof candidate.sessionId === 'string') return candidate.sessionId
-  if (candidate.session && typeof candidate.session === 'object' && typeof candidate.session.id === 'string') return candidate.session.id
+  if (typeof candidate.id === 'string') return candidate.id
+  const session = candidate.session
+  if (session && typeof session === 'object') {
+    if (typeof session.id === 'string') return session.id
+    if (session.header && typeof session.header.id === 'string') return session.header.id
+  }
   return undefined
 }
 

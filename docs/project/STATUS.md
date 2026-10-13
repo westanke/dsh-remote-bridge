@@ -9,12 +9,16 @@
 - 2.2.3 / 2.2.4（纯文本模型发图）：内核以 `MODEL_DOES_NOT_SUPPORT_IMAGES` 拒收纯文本模型会话里的图片，插件按内核自己的 `llm.resolveModelInfo()` 判定并把图片落成工作区文件（`<会话工作目录>/.dsh-images/<sha256>.<ext>`，内容寻址、0700/0600），消息里留两行：第一行给人看（当前值可配置的识图路径），第二行 `[Image: source: <绝对路径>]` 给机器；解析不出工作目录时退回 `<dataDir>/image-handoff`。手机端用 `GET /api/v1/image-handoff` 把图取回去显示，历史图片走 `sessionController.attachment`
 - 2.2.4 实装 + 本轮待发版内容（`IMAGE-001`）：设置页新增「识图」分区 —— 识图路径（交接目录名）可改、存 `settings.image_handoff_subdir`、改完立即生效；「当前默认」`.dsh-images` 与兜底目录为只读栏。dsh-image-paths 0.3.1 的宿主路由与浏览器图集并入本插件：只读路由 `GET /plugin/dsh-remote-bridge/raw?sessionId=…&name=…`（回环 + 同源 + 裸文件名白名单 + 字节自证 + 32 MiB 上限，目录由宿主按会话推出），图集挂在 `conversation.chat.turnTail`，只认用户消息里的交接行首标记
 - **待办**：① 真机验证（重启 dsh 后：会话里「加载更早消息」能否翻出更早记录；「插件」页是否不再报判定不出 profile；**启停一个插件看是否要重启才生效、备份文件是否落地**）；② 停用独立 `image-paths` 插件那一行 —— 两个插件会把同一张图在 Turn 尾画两遍，本插件已自带该能力
-- 2.3.6（修「App 归档点了没反应」）：
+- 2.3.6（归档点了没反应 + 手机端交互卡片全灭）：
   - **现象**：手机 App 会话列表里点「归档」→ 确认 → 请求返回 200，但该会话照旧留在列表里，像是什么都没发生。
   - **根因（写入通、读取断）**：App `POST /chat/sessions/{id}/archive` → router → chat-adapter → 桥接 `workspaceController.archiveSession`，内核确实把会话写进**注册表级**归档集合（`WorkspaceRegistry.archivedSessionIds`，持久化在 workspace state）。但读这一侧，`chat-adapter.listSessions` 靠 `api.workspace.list().archivedSessionIds` 过滤，而桥接 `workspace.list` **把它硬编码成 `[]`**（原注释：「注册表没有插件侧归档的概念」—— 对「插件自建存储」成立，但归档根本不是插件侧状态，`archiveSession` 写的正是注册表本身）。过滤集恒空 → `continue` 一次都不执行 → 归档成功却被自己抹掉。
   - **修法**：`workspace.list` 改从 `host.workspaceRegistry.archivedSessionIds` 透传真实集合；`WorkspaceRegistryLike` 补声明该 getter；新增 `readArchivedSessionIds()`，getter 缺失（老内核 / 测试替身）时退化成空集合，只让过滤失效、不让列表读崩。
   - **未做**：不动 App 侧（其调用与重拉列表本就正确）；不引入插件自己的归档存储（内核已有唯一真源）；不自动传 `stopActivity` —— 归档**正在运行**的会话内核会拒绝（`WorkspaceActiveSessionError`，App 显示为错误），是否顺带停会话由用户拍板。
   - **测**：桥接新增 2 条用例（① 归档集合原样透传 —— 把修复回退成 `[]` 即失败，已实测；② getter 缺失时退化为空集合）；HTTP 端到端新增 1 条断言（`POST /archive` 后同一 `GET /chat/sessions` 不再返回该会话：归档前 2 条、归档后只剩 fork 那条）。
+  - **同版的第二个缺陷：手机端审批与提问卡片一张都不显示**（用户报「这个又没显示」，追问后确认审批也没看到、那次是在电脑端操作的）。逻辑闭环：两类在电脑端都正常、手机端都空白，而 `ApprovalBridge` 是「接管＝否决下游」——它真接住了电脑端反而不会有卡片。故只剩一个解释：**监听器压根没进链**。
+  - **根因**：两个桥共用 `sessionIdOfAgent()`，它只查 `agent.sessionId` 与 `agent.session.id`，而内核里这两条都不存在 —— `Agent` 的身份字段就是 `id`（`dsh-agent/lib/types/types.d.ts:11-14`，运行时 `this.id = id`），`agent.session` 是 class `Session`、id 挂在 `header.id`。签名里声明了 `id?: unknown` 却从未使用，于是每条审批/提问都在第一行被判「定位不到会话」后**静默让给电脑端**。
+  - **修法**：`sessionIdOfAgent` 补齐 `id` 与 `session.header.id`（顺序 `sessionId → id → session.id → session.header.id`）；审批测试桩从 `{ sessionId }` 改为内核真实形状 `{ id }`（桩比现实宽容正是漏网原因）；新增提问桥用例 3 条（此前该桥零测试）。回退这两条解析，3 条用例如期失败（已实测）。
+  - **未做**：不改 App（App 订阅/拉取/渲染都对）；不加「从历史猜提问」的兜底（根因修好后实时链路即恢复，加猜测只会多一条会过期的路径）。
   - 六处版本号战场同步（package.json / version.ts / openapi / asyncapi / kotlin-sdk / healthz 断言）
 - 2.3.5（会话补 `cwdAbsolute`，救活手机端 `@` 补全）：
   - **现象**：手机 App 会话里打 `@`，面板只显示「读不到这个会话的工作目录」，一个文件都列不出来。
@@ -68,6 +72,6 @@
 - Release：Gitee `https://gitee.com/westanke/dsh-remote-bridge/releases/tag/v2.3.5`（自传 3 资产 + 平台自动生成的 zip / tar.gz，下载回读**逐字节一致**）；GitHub `https://github.com/westanke/dsh-remote-bridge/releases/tag/v2.3.5`（3 资产，大小逐一核对，tgz 308,510 字节与本地一致）
 - **GitHub 站补建说明**：核对时发现 GitHub 上此前**只有 `v1.0.0` 一个 Release**，`v2.0.4`~`v2.3.3` 的 Release 实际只建在 Gitee（tag 两端都在）—— 旧记载的「双站 Release」与事实不符。`v2.3.4` 起两站齐发
 - Release 历史：`v2.0.0` / `v2.0.1` 为已知缺陷版，`v2.0.2` / `v2.0.3` 从未发布；v2.3.2 未单独发版，其修复并入 v2.3.3 的 Release notes；npm 现为 **v2.3.5**
-- 正式产物：`artifacts/dsh-remote-bridge-v2.3.6.tgz`，**309,007 字节（约 0.29 MB）**，SHA-256 `1a07d368569de7072cd8297a2cc58fa2e9439055d58f5a9d6d74de7a5d808e8c`（用 `npm pack` 生成；**尚未推送 npm 与双站 Release** —— 等用户真机验证通过后发话）。上一版 `artifacts/dsh-remote-bridge-v2.3.5.tgz`（308,510 字节，SHA-256 `592fdac116faec7b9442d7ed67a799b6aacbb2197716ce2f47f24cccd02bf922`）已发布，按「发新版 → 上传 → 回读校验 → 再删上一版本地包」的规矩**暂不删除**
+- 正式产物：`artifacts/dsh-remote-bridge-v2.3.6.tgz`，**309,399 字节（约 0.29 MB）**，SHA-256 `d2ead6c256cdfc116caaa499c24155afee3a358b18c0cdd52687f725262d3a5e`（用 `npm pack` 生成；**尚未推送 npm 与双站 Release** —— 等用户真机验证通过后发话）。上一版 `artifacts/dsh-remote-bridge-v2.3.5.tgz`（308,510 字节，SHA-256 `592fdac116faec7b9442d7ed67a799b6aacbb2197716ce2f47f24cccd02bf922`）已发布，按「发新版 → 上传 → 回读校验 → 再删上一版本地包」的规矩**暂不删除**
 - 分发：npm [`dsh-remote-bridge`](https://www.npmjs.com/package/dsh-remote-bridge)（官方源 + npmmirror 均有），`dsh plugin --profile web add dsh-remote-bridge` 可用
 - 阻塞项：Android 与 DSH WebUI 的后续完整能力对等仍按 `PARITY-001` 推进
