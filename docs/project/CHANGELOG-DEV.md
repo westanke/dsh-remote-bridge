@@ -1,5 +1,48 @@
 # 开发日志
 
+## v2.3.1 · 修「加载更早消息」点了没反应（2026-10-13 发布）
+
+手机端会话里点「加载更早消息」，界面纹丝不动。一行修复，但根因值得记下来。
+
+### 根因：`history()` 从来没有分页过
+
+`GET /chat/sessions/:id/messages` 的实现（`src/host/dsh-0.2-bridge.ts`）是**只用 `follow()`
+的开场帧**取历史的：拿到第一帧 `snapshot` 就把流 abort 掉，返回 `snapshot.records`。
+
+问题在于它**把 `beforeSeq` 参数整个忽略了** —— 客户端传不传、传什么值，返回的都是同一窗
+（最近 N 条）。于是客户端把「更早的记录」和「已有的记录」一合并，`distinctBy { seq }` 一
+过滤，结果就是**什么都没多出来**：按钮点了像没反应。
+
+### 修法：走内核 `page()`
+
+`SessionPageRequest` 需要 `throughSeq`，而它的文档写得很明白 —— 必须**取自对应的
+`follow()` 开场帧**，硬编码一个（比如 `-1`）会返回 HTTP 200 + 空页，是一种「不报错的
+静默失败」。所以现在的分支是：
+
+- **不带 `beforeSeq`**：照旧走 `follow()` 开场帧（行为不变）；
+- **带 `beforeSeq`**：先取开场帧的 `cursor` 当 `throughSeq`，再调
+  `host.sessionController.page({ address, throughSeq: snapshot.cursor, beforeSeq, maxMessages })`，
+  返回 `page.records`。
+
+`SessionControllerLike` 接口相应补上 `page()` 声明。
+
+### 真机效果（实测）
+
+同一个会话：
+
+```
+第一页            → 261 事件，seq 104~364，hasMore: true
+带 beforeSeq=104  → 104 事件，seq 0~103，  hasMore: false
+```
+
+修复前两次返回的都是 104~364 那一窗；修复后第二次真正取回了 0~103 的更早记录。
+
+### 升级须知
+
+插件是进程内加载的，替换文件后**必须重启 dsh 进程**新代码才生效。
+
+---
+
 ## v2.3.0 · 设置面板重做为折叠卡片；识图路径并入；默认根与设备清理（2026-10-12 发布）
 
 本轮把几件事一次做完，用户视角的变化按下面顺序排：
