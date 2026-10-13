@@ -2,7 +2,12 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
-import { readPluginInventory, resolveDshHome, resolveProfileName } from '../src/host/plugin-inventory.ts'
+import {
+  readPluginInventory,
+  resolveDshHome,
+  resolveProfileName,
+  togglePlugin,
+} from '../src/host/plugin-inventory.ts'
 
 const cleanup: string[] = []
 
@@ -264,11 +269,122 @@ describe('readPluginInventory', () => {
     const inventory = await readPluginInventory({ env: { DSH_HOME: dshHome, DSH_PROFILE: profile }, argv: [] })
 
     // 返回字段被限制在已知集合内，避免将来有人顺手把整个 manifest 塞进去。
+    //
+    // v2.3.2 扩了详情字段（description / homepage / updateAvailable / latestVersion /
+    // toggleable），都是**展示用**的固定几项、不转发 manifest 原文 —— 白名单照旧成立，
+    // 这里同步登记，防止下次有人「顺手」再加一个字段而不更新这条边界。
     for (const item of inventory.items) {
-      expect(Object.keys(item).sort()).toEqual(['declared', 'installed', 'loaded', 'name', 'official', 'state'])
+      expect(Object.keys(item).sort()).toEqual([
+        'declared', 'description', 'homepage', 'installed', 'latestVersion',
+        'loaded', 'name', 'official', 'state', 'toggleable', 'updateAvailable',
+      ])
     }
     expect(Object.keys(inventory).sort()).toEqual([
       'available', 'items', 'loadedCount', 'problemCount', 'profile', 'profilePath', 'reason',
     ])
+  })
+})
+
+describe('togglePlugin', () => {
+  /** 读回 profile 的 package.json，方便断言磁盘上的真实状态。 */
+  async function readManifest(dshHome: string, profile: string): Promise<Record<string, unknown>> {
+    const { readFile } = await import('node:fs/promises')
+    const raw = await readFile(path.join(dshHome, 'profiles', profile, 'package.json'), 'utf8')
+    return JSON.parse(raw) as Record<string, unknown>
+  }
+
+  function bundlesOf(manifest: Record<string, unknown>): string[] {
+    const dsh = manifest.dsh as { profile?: { bundles?: string[] } } | undefined
+    return dsh?.profile?.bundles ?? []
+  }
+
+  it('enables a plugin by appending it to bundles', async () => {
+    const { dshHome, profile } = await makeProfile({
+      dependencies: { 'dsh-ffmpeg': '0.4.5' },
+      bundles: [],
+      installed: { 'dsh-ffmpeg': '0.4.5' },
+    })
+    const result = await togglePlugin('dsh-ffmpeg', true, { env: { DSH_HOME: dshHome, DSH_PROFILE: profile }, argv: [] })
+
+    expect(result.loaded).toBe(true)
+    expect(result.restartRequired).toBe(true)
+    expect(result.bundleCount).toBe(1)
+    expect(bundlesOf(await readManifest(dshHome, profile))).toEqual(['dsh-ffmpeg'])
+  })
+
+  it('disables a plugin by removing it from bundles', async () => {
+    const { dshHome, profile } = await makeProfile({
+      dependencies: { 'dsh-ffmpeg': '0.4.5' },
+      bundles: ['dsh-ffmpeg', 'dsh-vision-router'],
+      installed: { 'dsh-ffmpeg': '0.4.5' },
+    })
+    await togglePlugin('dsh-ffmpeg', false, { env: { DSH_HOME: dshHome, DSH_PROFILE: profile }, argv: [] })
+
+    // 关键：只摘名字，**别的 bundle 与依赖声明一律不动**（顺序也是加载顺序）。
+    const manifest = await readManifest(dshHome, profile)
+    expect(bundlesOf(manifest)).toEqual(['dsh-vision-router'])
+    expect((manifest.dependencies as Record<string, string>)['dsh-ffmpeg']).toBe('0.4.5')
+  })
+
+  it('writes a backup before touching the manifest', async () => {
+    const { dshHome, profile } = await makeProfile({
+      dependencies: { 'dsh-ffmpeg': '0.4.5' },
+      bundles: [],
+      installed: { 'dsh-ffmpeg': '0.4.5' },
+    })
+    const result = await togglePlugin('dsh-ffmpeg', true, { env: { DSH_HOME: dshHome, DSH_PROFILE: profile }, argv: [] })
+
+    // 备份是唯一退路：package.json 写坏了 dsh 下次起不来，而用户此刻在手机上。
+    expect(result.backupName).not.toBe('')
+    const { readFile } = await import('node:fs/promises')
+    const backup = await readFile(path.join(dshHome, 'profiles', profile, result.backupName), 'utf8')
+    expect(JSON.parse(backup).dsh.profile.bundles).toEqual([])
+  })
+
+  it('is idempotent and does not pile up backups', async () => {
+    const { dshHome, profile } = await makeProfile({
+      dependencies: { 'dsh-ffmpeg': '0.4.5' },
+      bundles: ['dsh-ffmpeg'],
+      installed: { 'dsh-ffmpeg': '0.4.5' },
+    })
+    const result = await togglePlugin('dsh-ffmpeg', true, { env: { DSH_HOME: dshHome, DSH_PROFILE: profile }, argv: [] })
+
+    // 本来就是目标状态：不动文件、不产生备份 —— 重复点不该在磁盘上堆一串备份。
+    expect(result.backupName).toBe('')
+    const { readdir } = await import('node:fs/promises')
+    const files = await readdir(path.join(dshHome, 'profiles', profile))
+    expect(files.filter((f) => f.startsWith('package.json.bak-'))).toEqual([])
+  })
+
+  it('refuses to toggle official packages', async () => {
+    const { dshHome, profile } = await makeProfile({ bundles: ['@deepseek-ai/dsh-base'] })
+    await expect(
+      togglePlugin('@deepseek-ai/dsh-base', false, { env: { DSH_HOME: dshHome, DSH_PROFILE: profile }, argv: [] }),
+    ).rejects.toMatchObject({ code: 'PLUGIN_OFFICIAL_IMMUTABLE' })
+  })
+
+  it('refuses a package that is not installed in the profile', async () => {
+    const { dshHome, profile } = await makeProfile({ bundles: [] })
+    // 启用一个不存在的包会得到「声明加载却找不到」，而用户看到的是「插件没了」，
+    // 说不清哪一步错了 —— 该走安装流程，不该在入口放过去。
+    await expect(
+      togglePlugin('dsh-nonexistent', true, { env: { DSH_HOME: dshHome, DSH_PROFILE: profile }, argv: [] }),
+    ).rejects.toMatchObject({ code: 'PLUGIN_NOT_INSTALLED' })
+  })
+
+  it('rejects malformed package names before touching the filesystem', async () => {
+    const { dshHome, profile } = await makeProfile({ bundles: [] })
+    for (const bad of ['../evil', 'a b', '', 'x/y/z']) {
+      await expect(
+        togglePlugin(bad, true, { env: { DSH_HOME: dshHome, DSH_PROFILE: profile }, argv: [] }),
+      ).rejects.toMatchObject({ code: 'PLUGIN_NAME_INVALID' })
+    }
+  })
+
+  it('reports PROFILE_UNKNOWN instead of guessing', async () => {
+    const { dshHome } = await makeProfile({ bundles: [] })
+    await expect(
+      togglePlugin('dsh-ffmpeg', true, { env: { DSH_HOME: dshHome }, argv: ['node', 'dsh'] }),
+    ).rejects.toMatchObject({ code: 'PROFILE_UNKNOWN' })
   })
 })
