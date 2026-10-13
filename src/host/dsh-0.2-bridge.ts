@@ -114,6 +114,19 @@ export interface SessionControllerLike {
   rename(request: { sessionId: string; title: string }): Promise<{ title: string; seq: number }>
   fork(request: { sessionId: string; atSeq?: number }): Promise<{ sessionId: string }>
   /**
+   * Read one message-aligned history page without activating an Agent.
+   *
+   * `throughSeq` must be obtained from the corresponding follow opening frame's
+   * `cursor`; hard-coding one returns a well-formed but empty page.
+   * `beforeSeq` is optional and acts as an earlier boundary.
+   */
+  page(request: {
+    address: { kind: 'session'; sessionId: string }
+    throughSeq: number
+    beforeSeq?: number
+    maxMessages?: number
+  }, signal: AbortSignal): Promise<{ records: readonly unknown[]; hasMore: boolean }>
+  /**
    * 取一张**被这个会话引用过**的图片字节（内核主机端方法，名字就叫 `attachment`）。
    *
    * 这是取历史图片的**正路**，它内部一次做完三件事：校验会话确实引用了这张图、
@@ -1310,12 +1323,7 @@ export function createDsh02ApiProxy(
       }),
       create: request => call(() => host.sessionController.create(request.payload)),
       history: request => call(async () => {
-        const { sessionId, maxMessages } = request.payload
-        // Read history from the follow stream's opening snapshot. `page()` would
-        // need a `throughSeq` cut taken from this very frame; hard-coding one
-        // returns an empty page with HTTP 200, which looks like "no messages"
-        // rather than a bug. The snapshot carries the same opening window, so
-        // take it and drop the live subscription immediately.
+        const { sessionId, maxMessages, beforeSeq } = request.payload
         const controller = new AbortController()
         try {
           const stream = host.sessionController.follow(
@@ -1327,10 +1335,26 @@ export function createDsh02ApiProxy(
           if (snapshot === undefined || snapshot.type !== 'snapshot') {
             return { events: [], hasMore: false } as never
           }
-          // 0.2.x names the durable event array `records`; the plugin reads `events`.
+          // When beforeSeq is not provided, return the follow snapshot (current behavior)
+          if (beforeSeq === undefined) {
+            // 0.2.x names the durable event array `records`; the plugin reads `events`.
+            return {
+              events: Array.isArray(snapshot.records) ? [...snapshot.records] : [],
+              hasMore: snapshot.hasMore === true,
+            } as never
+          }
+          // When beforeSeq is provided, use page() to get older messages.
+          // throughSeq must come from the follow snapshot's cursor — hard-coding
+          // one returns a well-formed but empty page (a silent failure).
+          const page = await host.sessionController.page({
+            address: { kind: 'session', sessionId },
+            throughSeq: snapshot.cursor,
+            beforeSeq,
+            ...(maxMessages === undefined ? {} : { maxMessages }),
+          }, controller.signal)
           return {
-            events: Array.isArray(snapshot.records) ? [...snapshot.records] : [],
-            hasMore: snapshot.hasMore === true,
+            events: Array.isArray(page.records) ? [...page.records] : [],
+            hasMore: page.hasMore === true,
           } as never
         } finally {
           controller.abort()

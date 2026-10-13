@@ -1,14 +1,19 @@
 # 当前状态
 
-- 日期：2026-10-12
-- 阶段：`dsh-remote-bridge` **v2.3.0**（已发版：npm + 双站 Release + git tag）
-- 当前任务：`IMAGE-001` 已完成并随 v2.3.0 发布；下一轮待用户指派
+- 日期：2026-10-13
+- 阶段：`dsh-remote-bridge` **v2.3.1**（已发版：npm + 双站 Release + git tag）
+- 当前任务：`v2.3.1` 修完手机端「加载更早消息」无反应；下一轮待用户指派
 - DSH 基线：`master` / `47f943859bef60e4160492346772ded9b24f765a`
 - 插件路径：本仓库（历史上游为 `Hakunm/dsh-workspace`，v1.0.0 保持原样不动）
 - 已完成：Host/Client 外置插件、授权根与回收站、独立 listener、设备授权、聊天/审批/命令/模型 BFF、OpenAPI/AsyncAPI、Kotlin SDK、中英双语和版本展示
 - 2.2.3 / 2.2.4（纯文本模型发图）：内核以 `MODEL_DOES_NOT_SUPPORT_IMAGES` 拒收纯文本模型会话里的图片，插件按内核自己的 `llm.resolveModelInfo()` 判定并把图片落成工作区文件（`<会话工作目录>/.dsh-images/<sha256>.<ext>`，内容寻址、0700/0600），消息里留两行：第一行给人看（当前值可配置的识图路径），第二行 `[Image: source: <绝对路径>]` 给机器；解析不出工作目录时退回 `<dataDir>/image-handoff`。手机端用 `GET /api/v1/image-handoff` 把图取回去显示，历史图片走 `sessionController.attachment`
 - 2.2.4 实装 + 本轮待发版内容（`IMAGE-001`）：设置页新增「识图」分区 —— 识图路径（交接目录名）可改、存 `settings.image_handoff_subdir`、改完立即生效；「当前默认」`.dsh-images` 与兜底目录为只读栏。dsh-image-paths 0.3.1 的宿主路由与浏览器图集并入本插件：只读路由 `GET /plugin/dsh-remote-bridge/raw?sessionId=…&name=…`（回环 + 同源 + 裸文件名白名单 + 字节自证 + 32 MiB 上限，目录由宿主按会话推出），图集挂在 `conversation.chat.turnTail`，只认用户消息里的交接行首标记
-- **待办**：① 真机验证（重启 dsh + 刷新页面，看七张折叠卡片、默认根「不可删」徽标、权限勾选与中文化）；② 停用独立 `image-paths` 插件那一行 —— 两个插件会把同一张图在 Turn 尾画两遍，本插件已自带该能力；③ 版本 bump 与发布**已完成**（v2.3.0）
+- **待办**：① 真机验证（重启 dsh 后点会话里的「加载更早消息」，看是否能翻出更早记录）；② 停用独立 `image-paths` 插件那一行 —— 两个插件会把同一张图在 Turn 尾画两遍，本插件已自带该能力
+- 2.3.1（修「加载更早消息」无反应）：
+  - **根因**：`history()`（`src/host/dsh-0.2-bridge.ts`）从来只用 `follow()` 开场帧取历史，**把 `beforeSeq` 整个忽略** —— 客户端传不传都返回同一窗，合并去重后自然「什么都没多出来」
+  - **修法**：带 `beforeSeq` 时改走内核 `page()` —— 先取开场帧的 `cursor` 当 `throughSeq`（内核要求该值必须取自对应 follow 开场帧，硬编码会返回 HTTP 200 + 空页这种静默失败），再调 `sessionController.page({ address, throughSeq, beforeSeq, maxMessages })`；`SessionControllerLike` 补 `page()` 声明
+  - **实测**：第一页 261 事件（seq 104~364，hasMore: true）→ 带 `beforeSeq=104` 返回 104 事件（seq 0~103，hasMore: false），修复前两次都是同一窗
+  - 六处版本号战场同步（package.json / version.ts / openapi / asyncapi / kotlin-sdk / healthz 断言）
 - 2.3.0（设置面板重做 + 识图并入 + 默认根 + 设备清理）：
   - **设置面板换成 Vision Router 式折叠卡片**：删除顶部分区导航栏，七张卡片平铺、各自折叠、可多张同时展开；配色改挂 DSH 原生 `--dsw-alias-*` 令牌（深浅色自动跟随）；清理文件工作区遗留死样式，样式表 12.6 KB → 6.2 KB
   - **识图路径并入**（原 dsh-image-paths 0.3.1，ADR-0007）：只读图片路由 `GET /plugin/dsh-remote-bridge/raw?sessionId=…&name=…` + Turn 尾图集；设置页新增「识图」分区，交接目录名可改、存 `settings.image_handoff_subdir`
@@ -26,8 +31,8 @@
 - 最近验证：`pnpm typecheck` 通过 · `pnpm test` **30 个测试文件 / 198 个用例全绿** · `pnpm docs:check` 通过 · `pnpm build` 两个 entry（host / client）构建完成并已同步实装目录（含 client.cjs）。另有 **4 个浏览器层用例**（Playwright 用真实浏览器量计算样式），4/4 通过
 - 界面截图：桌面界面截图**已删除**（那是改名前的旧界面，含 v1.0.0 徽章与旧的 1400px 文件树对话框）。重录需要能驱动插件面板的浏览器环境，目前不具备；二维码另有 SVG/PNG 资产。桌面文件工作区界面（独立页）已于 2.2.0 删除，不再有对应截图需求
 - 仓库：`https://github.com/westanke/dsh-remote-bridge`，topic 包含 `dsh-plugin`
-- Release：GitHub `https://github.com/westanke/dsh-remote-bridge/releases/tag/v2.3.0`（3 个资产已上传并逐一核对大小）；**Gitee Release 待建**（本机无 Gitee 令牌）
-- Release 历史：`v2.0.0` / `v2.0.1` 为已知缺陷版，`v2.0.2` / `v2.0.3` 从未发布；npm 现为 **v2.3.0**
-- 正式产物：`artifacts/dsh-remote-bridge-v2.3.0.tgz`，**301,580 字节（约 0.30 MB）**，SHA-256 `46a72d0f039eaa5b8a17ad3f5e4efdd620199a6aa43b197cf56c1b3dd1e645ba`
+- Release：GitHub `https://github.com/westanke/dsh-remote-bridge/releases/tag/v2.3.1`（`dsh-remote-bridge-v2.3.1.tgz` + `RELEASE_NOTES_v2.3.1.md` + `SHA256SUMS.txt`）；Gitee 同名 tag 与 Release 并列
+- Release 历史：`v2.0.0` / `v2.0.1` 为已知缺陷版，`v2.0.2` / `v2.0.3` 从未发布；npm 现为 **v2.3.1**
+- 正式产物：`artifacts/dsh-remote-bridge-v2.3.1.tgz`，**301,802 字节（约 0.30 MB）**，SHA-256 `5b3ae3808470c1556d10e41df65bdb5f0f73ba102d5b80456f9b8b0f091a1c80`
 - 分发：npm [`dsh-remote-bridge`](https://www.npmjs.com/package/dsh-remote-bridge)（官方源 + npmmirror 均有），`dsh plugin --profile web add dsh-remote-bridge` 可用
 - 阻塞项：Android 与 DSH WebUI 的后续完整能力对等仍按 `PARITY-001` 推进
