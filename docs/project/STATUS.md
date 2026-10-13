@@ -1,8 +1,8 @@
 # 当前状态
 
 - 日期：2026-10-14
-- 阶段：`dsh-remote-bridge` **v2.3.6**（**未发版**：按用户指示只走本地发版准备 —— 改文档、升版本号、`pnpm check` 含 build、`npm pack` 归档、本地 git 提交；**不推送、不发 npm、不建 Release**）
-- 当前任务：`v2.3.6` 修「App 会话列表归档点击后实际未归档」——根因是桥接 `workspace.list` 把内核注册表级归档集合硬编码成 `[]`，`listSessions` 的过滤集于是永远为空；下一轮待用户指派
+- 阶段：`dsh-remote-bridge` **v2.3.6**（**已发版**：npm 官方源 + npmmirror + 双站 Release + git tag `v2.3.6`。**实装目录未同步** —— 该目录在本机工作区之外且为只读挂载，助手写入被拒，需用户手动执行后再重启 dsh）
+- 当前任务：`v2.3.6` 两处修复 —— ① 桥接 `workspace.list` 把内核注册表级归档集合硬编码成 `[]`，导致「归档点了没反应」；② `sessionIdOfAgent` 漏了内核 `Agent.id`（与 `session.header.id`），导致审批与提问**两类**交互卡片在手机端全灭；下一轮待用户指派
 - DSH 基线：`master` / `47f943859bef60e4160492346772ded9b24f765a`
 - 插件路径：本仓库（历史上游为 `Hakunm/dsh-workspace`，v1.0.0 保持原样不动）
 - 已完成：Host/Client 外置插件、授权根与回收站、独立 listener、设备授权、聊天/审批/命令/模型 BFF、OpenAPI/AsyncAPI、Kotlin SDK、中英双语和版本展示
@@ -66,12 +66,12 @@
 - 二维码资产：提交进仓库并由 `tests/app-qr.spec.ts` 解码校验，指向 Releases **列表页**（非具体文件），因此发新版不需重新生成
 - 2.2.0（删独立页 + 瘦身）：删除独立页 `/dsh-workspace`（文件树 + CodeMirror 6 编辑器）及 `src/standalone/`、`assets/workspace.html`、`src/client/editor.tsx`、`workspace.tsx` 中的 `WorkspaceApp`/`DirectoryNode`/`CommandDialog`/`AdminOverlay`、`scripts/test-server.ts`，以及 8 个 `@codemirror/*` 与 `@lezer/highlight` 依赖；同时关闭 tsdown source map（映射本身约 5 MB，而插件发的是预构建 bundle、包内又没有原始 TS 源码，消费者根本用不上）。理由：手机 App 的文件页已原生覆盖同一套能力，桌面端这个页面无人使用。发布包 **1.72 MB → 0.25 MB**；`/dsh-workspace-api` 代理前缀与全部 REST 文件端点未动，App 不受影响
 - 附件能力边界：会话历史图片需要宿主提供 `ctx.attachments` 服务；缺失时插件照常激活，读取接口返回 `ATTACHMENT_STORE_UNAVAILABLE`，附件类上传返回 `FILE_UPLOADS_UNAVAILABLE`
-- 最近验证：`pnpm typecheck` 通过 · `pnpm test` **30 个测试文件 / 223 个用例全绿** · `pnpm docs:check` 通过 · `pnpm build` 两个 entry（host / client）构建完成。**本轮已按用户指示同步实装目录**（`~/.dsh/profiles/web/node_modules/dsh-remote-bridge/lib`，逐个 sha256 核对；插件为进程内加载，**需重启 dsh 才生效**）。另有 **4 个浏览器层用例**（Playwright 用真实浏览器量计算样式），4/4 通过
+- 最近验证：`pnpm typecheck` 通过 · `pnpm test` **30 个测试文件 / 226 个用例全绿** · `pnpm docs:check` 通过 · `pnpm build` 两个 entry（host / client）构建完成。**实装目录本轮未同步**（其路径在工作区之外、属只读挂载，助手提权被拒后按规矩停手）：需用户手动把 `lib/` 三个文件拷入真正被加载的 profile 目录，再**重启 dsh**（插件为进程内加载）。另有 **4 个浏览器层用例**（Playwright 用真实浏览器量计算样式），4/4 通过
 - 界面截图：桌面界面截图**已删除**（那是改名前的旧界面，含 v1.0.0 徽章与旧的 1400px 文件树对话框）。重录需要能驱动插件面板的浏览器环境，目前不具备；二维码另有 SVG/PNG 资产。桌面文件工作区界面（独立页）已于 2.2.0 删除，不再有对应截图需求
 - 仓库：`https://github.com/westanke/dsh-remote-bridge`，topic 包含 `dsh-plugin`
-- Release：Gitee `https://gitee.com/westanke/dsh-remote-bridge/releases/tag/v2.3.5`（自传 3 资产 + 平台自动生成的 zip / tar.gz，下载回读**逐字节一致**）；GitHub `https://github.com/westanke/dsh-remote-bridge/releases/tag/v2.3.5`（3 资产，大小逐一核对，tgz 308,510 字节与本地一致）
+- Release：**v2.3.6** —— Gitee `https://gitee.com/westanke/dsh-remote-bridge/releases/tag/v2.3.6`（自传 3 资产 + 平台自动生成的 zip / tar.gz，下载回读**逐字节一致**）；GitHub `https://github.com/westanke/dsh-remote-bridge/releases/tag/v2.3.6`（3 资产，tgz 309,399 字节与本地一致）。上一版为 v2.3.5
 - **GitHub 站补建说明**：核对时发现 GitHub 上此前**只有 `v1.0.0` 一个 Release**，`v2.0.4`~`v2.3.3` 的 Release 实际只建在 Gitee（tag 两端都在）—— 旧记载的「双站 Release」与事实不符。`v2.3.4` 起两站齐发
-- Release 历史：`v2.0.0` / `v2.0.1` 为已知缺陷版，`v2.0.2` / `v2.0.3` 从未发布；v2.3.2 未单独发版，其修复并入 v2.3.3 的 Release notes；npm 现为 **v2.3.5**
-- 正式产物：`artifacts/dsh-remote-bridge-v2.3.6.tgz`，**309,399 字节（约 0.29 MB）**，SHA-256 `d2ead6c256cdfc116caaa499c24155afee3a358b18c0cdd52687f725262d3a5e`（用 `npm pack` 生成；**尚未推送 npm 与双站 Release** —— 等用户真机验证通过后发话）。上一版 `artifacts/dsh-remote-bridge-v2.3.5.tgz`（308,510 字节，SHA-256 `592fdac116faec7b9442d7ed67a799b6aacbb2197716ce2f47f24cccd02bf922`）已发布，按「发新版 → 上传 → 回读校验 → 再删上一版本地包」的规矩**暂不删除**
+- Release 历史：`v2.0.0` / `v2.0.1` 为已知缺陷版，`v2.0.2` / `v2.0.3` 从未发布；v2.3.2 未单独发版，其修复并入 v2.3.3 的 Release notes；npm 现为 **v2.3.6**
+- 正式产物：`artifacts/dsh-remote-bridge-v2.3.6.tgz`，**309,399 字节（约 0.29 MB）**，SHA-256 `d2ead6c256cdfc116caaa499c24155afee3a358b18c0cdd52687f725262d3a5e`（`npm pack` 生成，**已发布**：npm 与双站 Release 均上传完成，Gitee 侧下载回读哈希与本地一致）。上一版 `artifacts/dsh-remote-bridge-v2.3.5.tgz`（308,510 字节，SHA-256 `592fdac116faec7b9442d7ed67a799b6aacbb2197716ce2f47f24cccd02bf922`）已发布，按「发新版 → 上传 → 回读校验 → 再删上一版本地包」的规矩**暂不删除**
 - 分发：npm [`dsh-remote-bridge`](https://www.npmjs.com/package/dsh-remote-bridge)（官方源 + npmmirror 均有），`dsh plugin --profile web add dsh-remote-bridge` 可用
 - 阻塞项：Android 与 DSH WebUI 的后续完整能力对等仍按 `PARITY-001` 推进
