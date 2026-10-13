@@ -64,6 +64,42 @@ describe('resolveProfileName', () => {
   it('ignores a blank environment value', () => {
     expect(resolveProfileName({ env: { DSH_PROFILE: '   ' }, argv: [] })).toBeNull()
   })
+
+  // ── 子命令简写 `dsh <name>` ≡ `dsh --profile <name>` ──
+  //
+  // 这组是一条真 bug 的回归防护：内核启动器文档写明 `dsh web` 等价于
+  // `dsh --profile web`，而此前只认 `--profile` 两种写法 —— 于是**用 `dsh web`
+  // 启动的用户会看到「服务器判定不出当前使用的插件档案」**，明明 profile 就在那儿。
+  // 出问题的机器上实测 argv 就是 `['node', '/usr/local/nodejs/bin/dsh', 'web']`。
+
+  it('reads the profile from the `dsh <name>` subcommand shorthand', () => {
+    expect(resolveProfileName({ env: {}, argv: ['node', '/usr/local/nodejs/bin/dsh', 'web'] })).toBe('web')
+  })
+
+  it('reads the shorthand even with a bare `dsh` token', () => {
+    expect(resolveProfileName({ env: {}, argv: ['node', 'dsh', 'rescue'] })).toBe('rescue')
+  })
+
+  it('skips launcher flags before the subcommand', () => {
+    // `dsh --port 3080 web`：要跳过 `--port` **和它的取值** `3080`，
+    // 否则会把 `3080` 当成 profile 名，去读一个叫 “3080” 的目录。
+    expect(resolveProfileName({ env: {}, argv: ['node', 'dsh', '--port', '3080', 'web'] })).toBe('web')
+  })
+
+  it('skips `--flag=value` before the subcommand', () => {
+    expect(resolveProfileName({ env: {}, argv: ['node', 'dsh', '--patch=a.yml', 'web'] })).toBe('web')
+  })
+
+  it('does not treat the `plugin` subcommand as a profile', () => {
+    // `dsh plugin add xxx` 管理依赖、**不启动 profile**，把它当 profile 名
+    // 会去读一个不存在的目录，比返回 null 更糟（null 至少会老实报错）。
+    expect(resolveProfileName({ env: {}, argv: ['node', 'dsh', 'plugin', 'add', 'foo'] })).toBeNull()
+  })
+
+  it('lets an explicit --profile win over the subcommand', () => {
+    // 显式旗标永远优先：内核允许 `dsh --profile tui --resume abc` 这种写法。
+    expect(resolveProfileName({ env: {}, argv: ['node', 'dsh', '--profile', 'tui', 'web'] })).toBe('tui')
+  })
 })
 
 describe('resolveDshHome', () => {

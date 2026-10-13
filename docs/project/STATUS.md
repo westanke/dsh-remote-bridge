@@ -1,14 +1,20 @@
 # 当前状态
 
 - 日期：2026-10-13
-- 阶段：`dsh-remote-bridge` **v2.3.1**（已发版：npm + 双站 Release + git tag）
-- 当前任务：`v2.3.1` 修完手机端「加载更早消息」无反应；下一轮待用户指派
+- 阶段：`dsh-remote-bridge` **v2.3.2**（本轮修复已构建、已同步实装目录；**待重启 dsh 后真机确认**，发版等用户发话）
+- 当前任务：`v2.3.2` 修「插件」页判定不出 profile（`dsh web` 简写被漏掉）；下一轮待用户指派
 - DSH 基线：`master` / `47f943859bef60e4160492346772ded9b24f765a`
 - 插件路径：本仓库（历史上游为 `Hakunm/dsh-workspace`，v1.0.0 保持原样不动）
 - 已完成：Host/Client 外置插件、授权根与回收站、独立 listener、设备授权、聊天/审批/命令/模型 BFF、OpenAPI/AsyncAPI、Kotlin SDK、中英双语和版本展示
 - 2.2.3 / 2.2.4（纯文本模型发图）：内核以 `MODEL_DOES_NOT_SUPPORT_IMAGES` 拒收纯文本模型会话里的图片，插件按内核自己的 `llm.resolveModelInfo()` 判定并把图片落成工作区文件（`<会话工作目录>/.dsh-images/<sha256>.<ext>`，内容寻址、0700/0600），消息里留两行：第一行给人看（当前值可配置的识图路径），第二行 `[Image: source: <绝对路径>]` 给机器；解析不出工作目录时退回 `<dataDir>/image-handoff`。手机端用 `GET /api/v1/image-handoff` 把图取回去显示，历史图片走 `sessionController.attachment`
 - 2.2.4 实装 + 本轮待发版内容（`IMAGE-001`）：设置页新增「识图」分区 —— 识图路径（交接目录名）可改、存 `settings.image_handoff_subdir`、改完立即生效；「当前默认」`.dsh-images` 与兜底目录为只读栏。dsh-image-paths 0.3.1 的宿主路由与浏览器图集并入本插件：只读路由 `GET /plugin/dsh-remote-bridge/raw?sessionId=…&name=…`（回环 + 同源 + 裸文件名白名单 + 字节自证 + 32 MiB 上限，目录由宿主按会话推出），图集挂在 `conversation.chat.turnTail`，只认用户消息里的交接行首标记
-- **待办**：① 真机验证（重启 dsh 后点会话里的「加载更早消息」，看是否能翻出更早记录）；② 停用独立 `image-paths` 插件那一行 —— 两个插件会把同一张图在 Turn 尾画两遍，本插件已自带该能力
+- **待办**：① 真机验证（重启 dsh 后点会话里的「加载更早消息」，看是否能翻出更早记录）；② 停用独立 `image-paths` 插件那一行 —— 两个插件会把同一张图在 Turn 尾画两遍，本插件已自带该能力；③ **重启 dsh 后回「插件」页确认不再报「判定不出当前使用的插件档案」**（v2.3.2 修复）
+- 2.3.2（修「插件」页判定不出 profile）：
+  - **根因**：`resolveProfileName()` 只认 `DSH_PROFILE` / `--profile=` / `--profile <name>` 三种来源，**漏了子命令简写**。用户实际启动命令是 `argv = ["node", "/usr/local/nodejs/bin/dsh", "web"]`（无 `--profile`、无环境变量）→ 返回 null → 页面报「判定不出」。
+  - 而内核启动器文档（`@deepseek-ai/dsh/args`）写明 **`dsh <name>` 就是 `dsh --profile <name>` 的简写**（`dsh web` same as `dsh --profile web`）—— 这是**插件的疏漏**，不是用户没带参数，而 `dsh web` 恰是文档里的第一个示例。
+  - **修法**：补第四条来源「子命令简写」。照抄内核解析规则：跳过所有选项，第一个非选项 token 即子命令；跳 `--flag value` 时**要连取值一起跳**（`--port 3080` 的 `3080` 不是子命令）；`plugin` 子命令单独排除（它管理依赖、不启动 profile）。
+  - 另补一条**明确不猜**的边界：写了 `--profile` 但取值非法时**直接返回 null**，不退回简写 —— 猜错会读到另一个 profile 的清单，比老实报错难排查。
+  - 新增 6 条单测（该 describe 共 12 条），直接复刻出问题机器的真实 argv。
 - 2.3.1（修「加载更早消息」无反应）：
   - **根因**：`history()`（`src/host/dsh-0.2-bridge.ts`）从来只用 `follow()` 开场帧取历史，**把 `beforeSeq` 整个忽略** —— 客户端传不传都返回同一窗，合并去重后自然「什么都没多出来」
   - **修法**：带 `beforeSeq` 时改走内核 `page()` —— 先取开场帧的 `cursor` 当 `throughSeq`（内核要求该值必须取自对应 follow 开场帧，硬编码会返回 HTTP 200 + 空页这种静默失败），再调 `sessionController.page({ address, throughSeq, beforeSeq, maxMessages })`；`SessionControllerLike` 补 `page()` 声明

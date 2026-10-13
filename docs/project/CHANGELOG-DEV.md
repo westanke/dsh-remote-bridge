@@ -1,5 +1,65 @@
 # 开发日志
 
+## v2.3.2 · 修「插件」页判定不出 profile（`dsh web` 这种启动形式被漏掉）
+
+用户反馈（手机端「插件」页）：
+
+> 服务器判定不出当前使用的插件档案，暂时读不到插件清单。请确认 DSH 启动时带有 `--profile` 参数。
+
+**但 profile 就在那儿** —— 插件装在 `~/.dsh/profiles/web/`，加载正常，只有这个页面读不出来。
+
+### 根因：漏了一种启动形式
+
+`resolveProfileName()` 此前只认三种来源：`DSH_PROFILE` 环境变量、
+`--profile=<name>`、`--profile <name>`。而用户实际的启动命令是：
+
+```
+argv = ["node", "/usr/local/nodejs/bin/dsh", "web"]     ← 没有 --profile
+环境变量 = 无 DSH_PROFILE
+```
+
+于是返回 null，页面老实报「判定不出」。
+
+**但内核的启动器文档写得很清楚**（`@deepseek-ai/dsh/args` 模块注释）：
+
+> `dsh <name>` **abbreviates** `dsh --profile <name>`；`dsh web` boots the web
+> profile (**same as: `dsh --profile web`**)
+
+所以 `dsh web` 与 `dsh --profile web` 完全等价，只是 profile 名被写成了子命令。
+**这不是「用户没带参数」，是插件漏了一条启动形式** —— 而 `dsh web` 恰恰是大多数
+人用的写法（文档示例里第一个就是它）。
+
+### 修法
+
+在原有三条来源之后补第四条：**子命令简写**。判据照抄内核启动器的解析规则 ——
+跳过所有选项，第一个非选项 token 就是子命令：
+
+- 跳过 `--flag value` 时**要连取值一起跳**（`dsh --port 3080 web` 里的 `3080`
+  不是子命令，只是 `--port` 的值；不跳它就会去读一个叫 "3080" 的目录）；
+- `--flag=value` 自带取值，只跳一个 token；
+- `plugin` 子命令**单独排除**：`dsh plugin add xxx` 管理依赖、不启动任何 profile，
+  把它当 profile 名会去读不存在的目录 —— 比返回 null 更糟（null 至少老实报错）。
+
+另外补了一条**明确不猜**的边界：写了 `--profile` 但取值非法（`--profile --port 3080`）
+时**直接返回 null**，不再退回子命令简写。用户明确写了 `--profile` 只是写错了，
+这时候猜「大概是想用 web 吧」是在替用户做决定，而猜错的后果是读到另一个 profile 的
+清单 —— 比老实报错难排查得多。
+
+### 测了什么
+
+`resolveProfileName` 新增 6 条用例（该 describe 现共 12 条），其中直接复刻出问题机器
+的真实 argv：
+
+```
+['node', '/usr/local/nodejs/bin/dsh', 'web']      → 'web'
+['node', 'dsh', '--port', '3080', 'web']          → 'web'    （跳过选项与取值）
+['node', 'dsh', '--patch=a.yml', 'web']           → 'web'
+['node', 'dsh', 'plugin', 'add', 'foo']           → null
+['node', 'dsh', '--profile', 'tui', 'web']        → 'tui'    （显式旗标优先）
+```
+
+`pnpm check` 全绿。**待重启 dsh 后在真机确认那个页面能列出插件。**
+
 ## v2.3.1 · 修「加载更早消息」点了没反应（2026-10-13 发布）
 
 手机端会话里点「加载更早消息」，界面纹丝不动。一行修复，但根因值得记下来。
