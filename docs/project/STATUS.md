@@ -1,8 +1,14 @@
 # 当前状态
 
-- 日期：2026-10-14
+- 日期：2026-10-15
 - 阶段：`dsh-remote-bridge` **v2.3.6**（**已发版**：npm 官方源 + npmmirror + 双站 Release + git tag `v2.3.6`。**实装目录未同步** —— 该目录在本机工作区之外且为只读挂载，助手写入被拒，需用户手动执行后再重启 dsh）
-- 当前任务：`v2.3.6` 两处修复 —— ① 桥接 `workspace.list` 把内核注册表级归档集合硬编码成 `[]`，导致「归档点了没反应」；② `sessionIdOfAgent` 漏了内核 `Agent.id`（与 `session.header.id`），导致审批与提问**两类**交互卡片在手机端全灭；下一轮待用户指派
+- 当前任务：`v2.3.6` 两处修复 —— ① 桥接 `workspace.list` 把内核注册表级归档集合硬编码成 `[]`，导致「归档点了没反应」；② `sessionIdOfAgent` 漏了内核 `Agent.id`（与 `session.header.id`），导致审批与提问**两类**交互卡片在手机端全灭；本轮追加**投稿 awesome-dsh-plugin 收录**（见下节）
+- awesome-dsh-plugin 投稿（2026-10-15，基于 `contributing.md` 逐项整改）：
+  - **收录范围**：只投 `dsh-remote-bridge`。`dsh-companion` 是纯 Kotlin/Gradle 的 Android 工程，仓库内**没有 `package.json`**，因此无法声明 CI 强制要求的 `dsh.bundle` manifest —— 按文档第 2 项检查必然被拒，硬造一个 Node 外壳只会命中「占位仓库」条款。客户端改由 remote-bridge 的 README「连接 Android App 或其他客户端」一节引用（GitHub / Gitee 双链接 + 双二维码）。
+  - **新增 `screenshots.json`**（4 张，市场详情页展示）：`assets/screenshots/panel-roots.png` / `panel-remote.png` / `panel-devices.png` / `panel-app-download.png`。截图由 `scripts/generate-screenshots.ts` 生成，DOM 与 `WORKSPACE_CSS` 均从 `src/client/` 导入，与 `e2e/styles.spec.ts` 同一产出来源（那一层本就在量这些样式的计算值），**不是手工画的示意图**。未连接真实内核，故面板呈现「刚装好、远程访问未启用」的自然状态。
+  - **条目 YAML**（`data/plugins/westanke__dsh-remote-bridge.yml`，投稿侧）：`category: remote`；`tarball` 指向 GitHub Release 的 v2.3.6 资产（钉版本 tag，不用 `latest/download/` —— 文档明确警告带版本名的资产名会在下次发版时 404）；描述中英双语，只陈述功能不带营销词，数字均经代码核对（七张卡片 = `ADMIN_TABS.length`）。
+  - **本地已验证**：`node scripts/check-submission.mjs --only-list …`（CI 同款）→ `ok: true`、0 failures、0 incomplete；`generate-readme.mjs --check` 一致；README 中英 diff 各 **+1/-0**（不动任何既有条目，符合评审第 6 条）；`pnpm check` 全绿（226 用例）。
+  - **既有 PR**：`awesome-dsh-plugin` PR **#6968**（2026-10-09 创建，CI 两项 success，`mergeable_state: clean`）已在队列中等评审；本轮把 `tarball`、`screenshots.json` 与更克制的描述补进同一分支，**不新开 PR、不 force-push**。
 - DSH 基线：`master` / `47f943859bef60e4160492346772ded9b24f765a`
 - 插件路径：本仓库（历史上游为 `Hakunm/dsh-workspace`，v1.0.0 保持原样不动）
 - 已完成：Host/Client 外置插件、授权根与回收站、独立 listener、设备授权、聊天/审批/命令/模型 BFF、OpenAPI/AsyncAPI、Kotlin SDK、中英双语和版本展示

@@ -1,5 +1,34 @@
 # 开发日志
 
+## 投稿 awesome-dsh-plugin 收录（2026-10-15，未发版，仅文档与资产）
+
+**基于什么**：读 [awesome-dsh-plugin/contributing.md](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin/blob/main/contributing.md) 全文，逐条比对两个仓库的现状。该列表的收录形态是「一个插件一个 YAML 文件」，两个 README 由脚本生成、禁止手改。
+
+**为什么**：让插件进入公共列表，用户从列表页即可安装；同时按文档要求补齐推荐的截图声明（市场详情页会展示 AppStore 式截图）。
+
+**dsh-companion 为什么不一起投**：它是纯 Kotlin/Gradle 的 Android 工程，仓库内**没有 `package.json`**，因此无法声明文档第 2 项 CI 强制检查的 `dsh.bundle` manifest（只声明 `dsh.client` 会被明确拒绝）。硬造一个 Node 插件外壳只会命中「placeholder / name-squat 仓库不予收录」条款。客户端改由本插件 README「连接 Android App 或其他客户端」一节以双站链接 + 双二维码引用。
+
+**干了什么**
+
+- 新增 `screenshots.json`（4 张）与 `assets/screenshots/` 下四张真实截图：根目录（默认展开）/ 远程访问 / 设备 / App 下载。生成脚本 `scripts/generate-screenshots.ts` 复用 `src/client/workspace.tsx` 的 `ADMIN_TABS`、`src/client/styles.ts` 的 `WORKSPACE_CSS` 与 `src/client/app-qr.ts` 的 `APP_QR_CODES` —— 与 `e2e/styles.spec.ts` 同一产出来源，不是另画的示意图；面板呈现「未连接真实内核」的自然状态（刚装好、远程访问未启用）。
+- `package.json` 的 `files` 数组补入 `screenshots.json`（此前只有 `assets/**`，截图进包而声明文件不进）。
+- 新增 `scripts/validate-entry.ts`：条目 YAML 的自检工具，校验必填字段、`category` 合法性、`tarball` 必须是 GitHub 托管的 https `.tgz`、描述无营销词。
+- 投稿侧条目 `data/plugins/westanke__dsh-remote-bridge.yml`：`category: remote`；`tarball` 钉在 `releases/download/v2.3.6/dsh-remote-bridge-v2.3.6.tgz`（**不用 `latest/download/`** —— 文档警告资产名带版本号时该写法会在下次发版后静默 404）；描述中英双语、只陈述功能。
+
+**测了什么**
+
+- `node scripts/check-submission.mjs --only-list …`（CI 同款脚本，带 `GITHUB_TOKEN`）→ `all checked entries pass`，JSON `ok: true`、`checked: 1`、`failures: []`、`incomplete: []`。
+- `node scripts/generate-readme.mjs --check` 一致；与上游 `main` 的 README 中英 diff 各 **+1 行 / -0 行**，未触碰任何既有条目（对应评审标准第 6 条）。
+- fork 原先落后上游 6 天（10-08 的 base），已 `gh repo sync` 到上游最新 `575ea0b8` 后重跑，避免 PR 大面积删除他人条目。
+- `pnpm check`：typecheck + **30 个测试文件 / 226 个用例** + docs:check + build 全绿。
+- 截图经逐张目视核对：七张卡片平铺、默认只展开一张、按钮非白字白底、二维码正常解码（与 e2e 四条断言一致）。
+
+**未做**
+
+- 未新开 PR：fork 分支 `add-dsh-remote-bridge` 对应上游 **PR #6968**（2026-10-09 创建，CI 两项 success，`mergeable_state: clean`）本就在队列中等评审；本轮只往同一分支追加改动，不制造重复投稿。
+- 未改动 dsh-companion 仓库（不满足收录硬门槛，且在 remote-bridge README 中已被引用）。
+- 未发布新版本：本轮无运行时行为变更，仅新增静态资产与文档。
+
 ## v2.3.6 · 归档不消失 + 手机端交互卡片全灭（两处「想当然」）
 
 用户报「App 会话列表 归档点击后 实际未归档」。归档请求一路返回 200，列表纹丝不动，

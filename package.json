@@ -29,6 +29,7 @@
     "kotlin-sdk/src/**",
     "kotlin-sdk/README.md",
     "cordis.patch.yml",
+    "screenshots.json",
     "README.md",
     "README.en.md",
     "LICENSE"
