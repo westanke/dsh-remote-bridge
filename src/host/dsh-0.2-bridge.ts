@@ -543,7 +543,34 @@ class SessionEventRelay {
       const frame = rawFrame as {
         type?: string
         event?: unknown
+        cursor?: unknown
+        records?: unknown
+        hasMore?: unknown
         frame?: { type?: string; index?: unknown; time?: unknown; chunk?: unknown; turn?: unknown; step?: unknown }
+      }
+      if (frame.type === 'snapshot') {
+        // `follow()` 的**第一帧永远是 snapshot**（见本类顶部注释；history 路径也一直在用
+        // 它的 `records` / `hasMore` / `cursor`）。此前它落进下面那句
+        // `frame.type !== 'assistant-stream'` 的 continue 里**被直接丢掉** ——
+        // 于是「REST 拉历史」与「WS 订阅」之间的窗口期事件永远补不回来。
+        //
+        // 只透出 cursor / hasMore / records **数量**，不透传 records 正文：
+        // 本仓是 REST + WS 双通道，把历史正文也灌进 WS 会造出**两份基线**，
+        // 而它们的先后顺序无法保证（竞品的教训清单里正有「不得用迟到的 history
+        // 响应覆盖订阅基线」这一条）。客户端拿到 cursor 就能做**断档检测**，
+        // 正文继续由 REST 单一来源提供。
+        //
+        // 其余字段（例如某些版本里的 `assistantStream.activeAttempt`）**不透出**：
+        // 在我方 0.2.x 上它们不可证（本仓 node_modules 下没有内核包）。
+        // 按 `PITFALLS.md` §空结果的来源要验证，宁可不给，也不按想象给。
+        this.mux.push({
+          type: 'session/snapshot',
+          sessionId,
+          ...(typeof frame.cursor === 'number' ? { cursor: frame.cursor } : {}),
+          ...(typeof frame.hasMore === 'boolean' ? { hasMore: frame.hasMore } : {}),
+          recordCount: Array.isArray(frame.records) ? frame.records.length : 0,
+        })
+        continue
       }
       if (frame.type === 'event') {
         // Durable session event: the plugin's normalizer reads `event.type` and,
@@ -560,12 +587,19 @@ class SessionEventRelay {
         continue
       }
       if (inner.type !== 'chunk') continue
+      // `seq` **刻意不设**（ADR-0008）：它表示「会话持久事件序号」，而这里是流式 chunk ——
+      // `inner.index` 是 chunk 在**本次流**里的序号（每轮从 0 重新开始），两者语义无关。
+      // 以前用它冒充 seq 造成静默污染：按 seq 排序 / 去重 / 分页的消费者会把
+      // 「流式片段的 0,1,2…」与「持久事件的 0,1,2…」当成同一序列；把它当 `beforeSeq`
+      // 游标或 `atSeq` 分叉点更会指向完全不相干的历史位置。
+      // 动手前逐个核过消费者：本仓 kotlin-sdk 未建模 delta、chat.html 不读 seq、
+      // 姊妹 App 的 `ChatDelta` 里没有 seq 字段（`chatDelta()` 只读 index），
+      // 且 AsyncAPI 里该字段本就不是必填 —— 所以「不再输出」对现有实现零影响。
       this.mux.push({
         type: 'session/event',
         sessionId,
         event: {
           type: 'assistant/chunk',
-          seq: typeof inner.index === 'number' ? inner.index : 0,
           time: typeof inner.time === 'number' ? inner.time : Date.now(),
           data: {
             chunk: inner.chunk,
@@ -903,6 +937,23 @@ class QuestionBridge {
       })
     }
     return out
+  }
+
+  /**
+   * **全部会话**挂起中的提问（连接重放用）。
+   *
+   * 与 `pendingFor` 的唯一区别是「不过滤会话」：重放要遍历所有会话，
+   * 再按每条连接的授权逐条过滤 —— 授权判断在 chat-adapter 侧做，这里只给事实。
+   * 带上 `rpcId` 是为了让重放事件与实时事件**字段集一致**：
+   * 客户端按 `callId` 回答，但字段对齐能避免两条路径悄悄漂移（见 chat-adapter 的契约钉子测试）。
+   */
+  pendingAll(): Array<{ rpcId: string; sessionId: string; callId: string; questions: unknown[] }> {
+    return [...this.pending.entries()].map(([rpcId, entry]) => ({
+      rpcId,
+      sessionId: entry.sessionId,
+      callId: entry.callId,
+      questions: [...entry.questions],
+    }))
   }
 }
 
@@ -1625,6 +1676,8 @@ export function createDsh02ApiProxy(
     },
 
     userQuestions: {
+      // 连接重放用：全部会话的挂起提问（授权过滤由 chat-adapter 逐条做）。
+      pendingAll: () => questions.pendingAll(),
       list: request => call(async () => {
         const { sessionId } = request.payload
         // **两个来源合流**：本插件接管的前台提问（此刻真的在等）+ 内核的 continued

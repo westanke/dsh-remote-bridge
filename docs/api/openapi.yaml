@@ -457,6 +457,17 @@ paths:
   /chat/sessions:
     get:
       operationId: listChatSessions
+      parameters:
+        - name: archived
+          in: query
+          schema: { type: boolean, default: false }
+          description: |
+            When true, return the **archived** sessions instead of the active ones.
+            Archiving hides a session from every grouped surface (kernel semantics), so
+            without this parameter a mobile client that archives a session could never see it
+            again. Un-archiving is NOT part of this bridge: the adapter only wraps the kernel's
+            `archiveSession`, and whether the kernel exposes an unarchive call is not verifiable
+            from this repository.
       responses:
         '200':
           description: Sessions whose cwd is within a granted root.
@@ -566,7 +577,29 @@ paths:
           in: query
           schema: { type: integer, minimum: 1 }
       responses:
-        '200': { description: DSH history events and continuation state. }
+        '200':
+          description: |
+            DSH history events and continuation state. Subject to a byte budget
+            (2 MiB per response, 512 KiB per event): the oldest events may be dropped
+            (with `hasMore` forced to true) and oversized strings inside one event may be
+            head/tail clamped (that element then carries `bridgeTruncated`). `truncated`
+            and `bytes` appear only when something was actually clamped -- otherwise the
+            payload is byte-for-byte what it was before the budget existed.
+            `historyFormatVersion` is always present and describes the shape of `events`.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [events, hasMore]
+                properties:
+                  events:
+                    type: array
+                    items: { type: object, additionalProperties: true }
+                  hasMore: { type: boolean }
+                  projections: { type: object, additionalProperties: true }
+                  bytes: { type: integer, minimum: 0 }
+                  truncated: { type: boolean }
+                  historyFormatVersion: { type: integer, minimum: 1 }
         '404': { $ref: '#/components/responses/Error' }
     post:
       operationId: sendMessage

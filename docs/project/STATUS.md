@@ -1,6 +1,62 @@
 # 当前状态
 
-- 日期：2026-10-16
+- 日期：2026-10-17
+- **在途（未发版、无版本号变更）**：三项（两项传输层加固 + 一项交互可靠性）——
+  ① **出网 JSON 消毒**：新增 `src/host/wire-json.ts`（孤立 UTF-16 代理项 → U+FFFD），
+  接入两个出网口（WS 的 `connection.ready`/`broadcast`、HTTP 的 `sendJson`）。
+  动因是内核按字符数截断会留下半个代理项，`JSON.stringify` 照样转义，
+  而 **Swift/Foundation 拒绝整帧** —— 一个坏字符就能静默打死一条连接
+  （对标第三方网关的 `lib/wire-json.mjs`，见 `PITFALLS.md` §孤立代理项打死整条连接）。
+  ② **历史响应字节预算**：新增 `src/host/history-budget.ts`（单次 2 MiB / 单条 512 KiB；
+  整份超限从最旧端丢并置 `hasMore`，单条超限对超长字符串首尾保留并标 `bridgeTruncated`；
+  真动手才追加 `truncated` + `bytes`），`chat-adapter.history()` 出网前调用；
+  契约面同步到 `API.md` 的「历史与分页」与 OpenAPI 的 `listMessages` 200。
+  ③ **连接即重放（待处理审批）**：WS 升级成功后把仍待处理的审批**只补推给这一条连接**
+  （`chat-adapter.replayPendingApprovals` + `server.ts`，逐会话授权过滤、不 await、失败静默，
+  事件带 `data.replayed = true`）。动因是「连接后主动刷新」属于**客户端的选择**，
+  协议不该依赖它：客户端若只在收到事件时刷新，重连窗口里的审批会静默消失，
+  而内核一直阻塞着等。重放把它变成服务端保证（对我方 App 是幂等冗余）。
+  契约面同步 AsyncAPI 与 `API.md`。
+  **提问侧同日一并重放**（走既有事件类型 `chat.userQuestions/requested`，字段与实时一致）。
+  ④ **能力发现 + 历史格式版本**：`connection.ready` 带上 `bridgeVersion` 与 **26 项能力位**（2026-10-17 依次补 `session-archive-list-v1`、`session-snapshot-v1`）
+  （`src/host/capabilities.ts`，每项都能指出契约依据；`tests/capabilities.spec.ts` 逐条核对）；
+  `GET …/messages` 总是带 `historyFormatVersion`（**只声明不校验**，强制会打断已发布客户端的
+  `beforeSeq` 分页）。**客户端尚未接入**（仍在硬比版本号）。
+  ⑤ **已归档会话可列**：`GET /chat/sessions?archived=true` 只列已归档的那批（默认行为不变），
+  能力位新增 `session-archive-list-v1`。**恢复（取消归档）不做** —— 内核是否提供 unarchive
+  **从本仓不可证**（`node_modules` 下没有 `@deepseek-ai/*`），按 §空结果的来源要验证 只写「不可证」。
+  ⑥ **`seq` 语义单一化**（ADR-0008）：`assistant-stream` 路径推 mux 的 `assistant/chunk`
+  **不再带 `seq`**（它是会话持久事件序号，而 chunk 只有流内 `index`）。动手前逐个核过消费者
+  （kotlin-sdk 未建模 delta / chat.html 不读 / App 的 `ChatDelta` 无 seq 字段 / AsyncAPI 中非必填），
+  故「不再输出」对现有实现零影响。AsyncAPI 标 deprecated 而非删除。**不加能力位**（无需分支）。
+  门验：**34 文件 / 264 用例全绿**、`docs:check`（10 文档 / 39 任务 / **8 ADR**）。
+  ⑦ **订阅基线不再丢弃**（`chat.session.snapshot`）：`SessionEventRelay.pump` 接出
+  `snapshot` 分支，`cursor` 是这条订阅接增量的起点 —— 客户端据此可判断「REST 拉取」与
+  「WS 订阅」之间有没有漏事件（此前那一帧被 `continue` 丢掉，手机端**无从判断**）。
+  **正文刻意不发**（双通道会造出两份基线，先后无法保证）；不可证字段不给。
+  能力位新增 `session-snapshot-v1`。门验：**35 文件 / 269 用例**、`docs:check`（8 ADR）。
+  客户端消费归入下一项「断档检测与 resync」。
+  ⑧ **单胜方交互的核账**（ADR-0009，状态 **proposed**）：报告拆出的四件事里，
+  我方**已有两件**（②身份比对、④迟到响应 `not-pending`，且都有测试钉住），
+  另两件（①并行下发、③abort 下游收起 WebUI 弹窗）**待拍板** —— 其中 ③ 依赖
+  `req.signal` 的可写性与宿主 fan-out，**本仓不可证**。**未改代码**：串行 vs 并行是产品行为，
+  且硬做可能留下「永远挂着的弹窗」。附一个低成本验证实验（让一次审批的 `req.signal` abort，
+  看官方 WebUI 弹窗是否自行收起）。
+  ⑨ **文件卡片实时事件**（`chat.deliverables.presented`）：内核 `present` 工具的
+  `deliverables/presented` 在**历史**里一直原样透传（客户端文件卡片早已在读），
+  但实时那一路此前落进默认分支、被规范化成客户端不认识的名字 —— 新交付物要等下次消息完成
+  才出现。现已给它正式事件名，`files` 原样透传。**不加能力位**（客户端只是"收到就刷新"，
+  没有它仅晚一点，不是分支关系）。
+  ⑩ **能力位消费者审计**：26 项里**只有 3 项**是我方客户端的分支判据
+  （`approvals-v1`/`questions-v1`/`session-archive-list-v1`），其余 23 项是**对外声明**
+  （服务任何客户端，含第三方）—— 「某个客户端没用到」≠「没人用」，删掉等于撤回对外承诺。
+  新增跨仓钉子：能力位清单必须保留客户端必需的两个名字。
+  见 `CHANGELOG-DEV.md` 2026-10-17 十条。见 `CHANGELOG-DEV.md` 2026-10-17 七条。
+  门验：`tsc --noEmit` exit 0、**34 文件 / 264 用例全绿**、`docs:check`（10 文档 / 39 任务 / 9 ADR）、
+  `tsdown` build 通过。
+  - ⚠️ **本机 `pnpm` 已坏**（`unable to open database file`，换 store/state 目录无效），
+    上述四道门是**逐条等价执行**（`node_modules/.bin/` 下的 tsc/vitest/tsx/tsdown），
+    不是一条 `pnpm check`。环境修复后必须补跑完整 `pnpm check`（`prepack` 只有它能触发）。
 - 阶段：`dsh-remote-bridge` **v2.3.7**（**已提交，未推送未发版**）
 - 当前任务：**v2.3.7 = 审批与提问卡片在手机端全灭的第二个病根**
   （即 `PITFALLS.md` §waterfall 不 prepend 就等于没注册）。

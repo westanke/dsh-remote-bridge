@@ -59,3 +59,25 @@ Web Client 使用独立的外部语言 store 跨多个 DSH slot React 根同步�
 
 识图路径可在设置页修改（`settings.image_handoff_subdir`），交接写盘与两条读图路由都通过
 getter 现读 —— 改完立即生效，不需要重启 dsh。
+
+## 能力位与事件面（2026-10-17）
+
+**客户端不再比版本号**。每条被接受的 WebSocket 连接，第一帧 `connection.ready` 都会带上
+`bridgeVersion` 与**能力清单**（`src/host/capabilities.ts`，26 项）。这是架构级的取舍：
+
+- 版本号回答的是「这份代码是什么年代的」，而客户端要知道的是「**这台服务端现在能做什么**」——
+  同一个版本完全可能因配置差异关掉某条能力；
+- 能力位是**对外承诺**：只增不撤，语义变更要升 `-v2`，且**每一项都必须能指出契约依据**
+  （一条 OpenAPI 路径+方法，或一个 AsyncAPI 事件）—— `tests/capabilities.spec.ts` 会拿依据
+  逐条去契约文件里核对，防止「文档说支持、契约里没有」；
+- **只在客户端需要据此分支时才加位**。`seq` 语义单一化（ADR-0008）、订阅基线
+  （`chat.session.snapshot`）、交付物事件（`chat.deliverables.presented`）都**没有**加位 ——
+  客户端收到就用、没有就晚一点，不存在分支。
+
+同期补齐的事件面（都在 `API.md` 有专节）：
+
+| 事件 | 作用 |
+|---|---|
+| `chat.session.snapshot` | **订阅基线**：`cursor` 是这条订阅接增量的起点，客户端据此判断「REST 拉取」与「WS 订阅」之间有没有漏事件。**不带正文**（双通道会造出两份基线，先后无法保证） |
+| `chat.deliverables.presented` | 交付物的**实时**通知（历史里它一直原样透传，客户端文件卡片早已在读） |
+| `chat.approval.requested` / `chat.userQuestions/requested` | 连接建立时**只补推给这一条连接**仍待处理的交互，`data.replayed = true` |

@@ -19,11 +19,19 @@
 
 | 文件 | 行数 | 为什么是债 | 清账阶段 |
 |---|---|---|---|
-| `src/host/dsh-0.2-bridge.ts` | 1 730 | **兼容适配层**：重建 0.1.x `apiProxy` 面容，一个文件里装了会话、审批、提问、模型多条链路的重建逻辑。改一条要读 1 700 行 | 按链路拆（session / approval / question / model 各一模块），公共面容抽 `api-proxy-facade.ts` |
-| `src/host/router.ts` | 1 245 | 全部 REST 路由集中一处；新端点往里加，旧端点没人敢删 | 按资源域拆 `routes/*.ts`，router 只做组装 |
-| `src/host/chat-adapter.ts` | 1 233 | 会话链路适配：列表/历史/发送/取消/workspace/agent-preset 全在一个文件 | 按端点族拆 |
+| `src/host/dsh-0.2-bridge.ts` | 1 786 | **兼容适配层**：重建 0.1.x `apiProxy` 面容，一个文件里装了会话、审批、提问、模型多条链路的重建逻辑。改一条要读 1 700 行 | 按链路拆（session / approval / question / model 各一模块），公共面容抽 `api-proxy-facade.ts` |
+| `src/host/router.ts` | 1 250 | 全部 REST 路由集中一处；新端点往里加，旧端点没人敢删 | 按资源域拆 `routes/*.ts`，router 只做组装 |
+| `src/host/chat-adapter.ts` | 1 372 | 会话链路适配：列表/历史/发送/取消/workspace/agent-preset 全在一个文件 | 按端点族拆 |
 
 > 这三个是**已登记的债，不是许可**。新增超预算文件必须先入本表再写码。
+>
+> **2026-10-17 按事实更新行数**（原来是 1 730 / 1 245 / 1 233）：C 批四项改动分别落在
+> `chat-adapter.ts`（连接即重放、归档列表查询、`historyFormatVersion`，+139）、
+> `dsh-0.2-bridge.ts`（能力位核对与 `seq` 隔离的说明注释、`pendingAll`，+56）、
+> `router.ts`（`?archived=true` 与两处注释，+5）。
+> **预算（600 行/文件）未变，清账阶段未变** —— 变的只是「事实数字」。
+> 本文件第 41 行自己写着「旧值会骗人」，这次就是被它抓到：上一轮我引用台账时，
+> 记的还是几个月前的数字。
 
 ## 已知结构性债务
 

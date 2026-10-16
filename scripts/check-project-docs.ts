@@ -48,8 +48,38 @@ for (const file of decisionFiles) {
   const number = file.slice(0, 8)
   if (!index.includes(number)) failures.push(`${file} is missing from the ADR index`)
   const body = await readFile(path.join(decisionsDir, file), 'utf8')
-  if (!body.includes('状态：accepted') && !body.includes('状态：superseded')) failures.push(`${file} has no accepted/superseded status`)
+  // `proposed` 也是 ADR 的标准状态（2026-10-17 加：ADR-0009 是首个「待拍板」的决策 ——
+  // 它的结论正是「先别改代码，等一个实验」。要求它必须是 accepted 会逼人把
+  // 「还没定」写成「已定」，那比没有状态行更坏）。
+  // 门禁没有因此变松：**状态行仍然必须存在**，只是允许的取值多了一个。
+  const decisionStatuses = ['accepted', 'superseded', 'proposed']
+  if (!decisionStatuses.some(status => body.includes(`状态：${status}`))) {
+    failures.push(`${file} has no accepted/superseded/proposed status`)
+  }
 }
+
+// 坑位索引 ↔ PITFALLS 正文：**双向**一致。
+//
+// 索引写的是「触发词」，正文是同名 `###` 标题；漂移时读者照索引翻不到条目，
+// 而这类不一致不会让别的检查变红。三处讲究：
+// - 双向：只查「索引 → 正文」时，索引解析失败（0 条）会永远满足、被判成通过；
+// - 下限：格式变了导致只解析出几条时，双向可能「双双为空而一致」，下限直接对解析失败报警；
+// - 不按编号找小节：本仓索引在 §6、姊妹仓在 §7 —— 写死编号必然有一边解析成空。
+const agentsDoc = await readFile(path.join(root, 'AGENTS.md'), 'utf8')
+// 直接读文件，**不要**从 `contents` 取：那是「必需文档」清单的缓存，而 PITFALLS.md 不在
+// 那 10 份里 —— 用 `?? ''` 的写法会静默变成 0 条，然后被下面的下限断言抓成「解析失败」
+// （第一次跑就撞上了：0 个标题 + 17 条索引全报「正文里没有」）。
+const pitfalls = await readFile(path.join(projectDir, 'PITFALLS.md'), 'utf8')
+const indexSection = /^## \d+\.\s*坑位索引[^\n]*$([\s\S]*?)(?=^## \d+\.)/m.exec(agentsDoc)
+// `indexSection?.[1]` 在 TS 严格模式下是 `string | undefined` —— 解析失败与「小节为空」
+// 在这里是同一件事，一律当空串处理，随后由下面的下限断言报警。
+const indexBody = indexSection?.[1] ?? ''
+const indexed = [...indexBody.matchAll(/^- `([^`]+)`\s*$/gm)].map(match => match[1] as string)
+const titled = [...pitfalls.matchAll(/^### (.+)$/gm)].map(match => (match[1] as string).trim())
+if (indexed.length < 10) failures.push(`AGENTS.md 坑位索引只解析出 ${indexed.length} 条（预期 ≥ 10），小节格式可能变了`)
+if (titled.length < 10) failures.push(`PITFALLS.md 只解析出 ${titled.length} 个 ### 标题（预期 ≥ 10）`)
+for (const name of indexed) if (!titled.includes(name)) failures.push(`AGENTS.md 索引里的「${name}」在 PITFALLS.md 里没有同名标题`)
+for (const name of titled) if (!indexed.includes(name)) failures.push(`PITFALLS.md 的「${name}」没有登记进 AGENTS.md 的坑位索引`)
 
 const packageJson = JSON.parse(await readFile(path.join(root, 'package.json'), 'utf8')) as { version: string; repository?: unknown }
 const openapi = await readFile(path.join(root, 'docs', 'api', 'openapi.yaml'), 'utf8')

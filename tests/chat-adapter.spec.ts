@@ -92,6 +92,10 @@ describe('DSH chat choices', () => {
         cwd: 'mobile-workspace',
       })]))
       expect(sessions).toHaveLength(2)
+      // 归档会话默认不可见（上面那条长度断言已隐含）；`archived: true` 才能把它们列出来 ——
+      // 没有这个参数，「归档」在手机端就是**单向门**：点了之后那条会话再也看不到。
+      const archivedSessions = await adapter.listSessions(principal, { archived: true })
+      expect(archivedSessions.map(item => item.id)).toEqual(['session-archived'])
       // 授权根的真实路径**过去完全不外泄**，`cwdAbsolute` 是唯一的有意例外：它只承载
       // 会话工作目录，而那一定落在本设备已授权（且自己就能浏览）的根内。所以这里把
       // 例外精确摘出去再验 —— 防线收窄到一处，而不是整条拆掉。

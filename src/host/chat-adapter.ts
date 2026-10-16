@@ -4,6 +4,8 @@ import type { Principal, WorkspaceEvent } from '../shared/contracts.ts'
 import type { StoredRoot, WorkspaceDatabase } from './database.ts'
 import type { HandoffLocale } from './dsh-0.2-bridge.ts'
 import { ApiError } from './errors.ts'
+import { HISTORY_FORMAT_VERSION } from './capabilities.ts'
+import { applyHistoryBudget } from './history-budget.ts'
 import { resolveAuthorizedPath, wireRelative } from './path-policy.ts'
 
 export interface RpcResponse<T> {
@@ -109,6 +111,11 @@ export interface DshApiProxy {
      * 没有 live agent、或没有该服务时返回空列表 —— 冷会话是常态，不该报错。
      */
     list(request: { rpcId: string; payload: { sessionId: string } }): Promise<RpcResponse<{ items: UserQuestionView[] }>>
+    /**
+     * 全部会话里**挂起中**的提问（连接重放用）。**可选**：老实现不提供时重放跳过提问，不报错。
+     * 返回项带 `sessionId`，因为重放要按每条连接的授权逐条过滤。
+     */
+    pendingAll?: () => Array<{ rpcId: string; sessionId: string; callId: string; questions: unknown[] }>
     /** 提交答案；失败原因见 [UserQuestionAnswerOutcome]。 */
     answer(request: {
       rpcId: string
@@ -298,7 +305,7 @@ export type UserQuestionAnswerOutcome =
   | { accepted: true }
   | { accepted: false; reason: UserQuestionAnswerFailure }
 
-interface PendingApprovalRecord {
+export interface PendingApprovalRecord {
   rpcId: string
   sessionId: string
   approvalId: string
@@ -337,7 +344,21 @@ export class DshChatAdapter {
     private readonly commandServices?: DshCommandServices,
   ) {}
 
-  async listSessions(principal: Principal): Promise<ChatSessionView[]> {
+  /**
+   * 列出会话。
+   *
+   * `options.archived === true` 时返回**已归档**的那批；默认返回未归档的。
+   *
+   * 为什么需要这个参数：内核把「归档」实现为**从所有分组界面隐藏**，本桥默认照做 ——
+   * 于是用户在手机上一归档，那条会话就**再也看不到**（连找都找不到），
+   * 「归档」变成了单向门。参数化之后客户端至少能提供一个「已归档」入口。
+   *
+   * **恢复（取消归档）不在本桥能力内**：适配层只声明了内核的 `archiveSession`，
+   * 内核是否提供 unarchive 从本仓**不可证** —— `node_modules` 下没有 `@deepseek-ai/*`
+   * （那些包随 DSH 主包安装）。按 `PITFALLS.md` §空结果的来源要验证，
+   * 这里只能写「不可证」，不能写「没有」。
+   */
+  async listSessions(principal: Principal, options: { archived?: boolean } = {}): Promise<ChatSessionView[]> {
     const [sessionsResponse, workspaceResponse] = await Promise.all([
       this.api.sessions.list({ rpcId: randomUUID(), payload: {} }),
       this.api.workspace.list({ rpcId: randomUUID(), payload: {} }),
@@ -349,7 +370,8 @@ export class DshChatAdapter {
     const roots = this.authorizedRoots(principal)
     const visible: ChatSessionView[] = []
     for (const session of value.items) {
-      if (archivedSessionIds.has(session.sessionId)) continue
+      // 默认只列未归档；`archived: true` 时**反过来**只列归档的那批。
+      if (archivedSessionIds.has(session.sessionId) !== (options.archived === true)) continue
       // 先把绝对 cwd 收进局部变量：下面那句 `continue` 并不能让 TS 窄化 `session.cwd`，
       // 而 `cwdAbsolute` 与 `matchRoot` 用的必须是同一个值。
       const absoluteCwd = session.cwd
@@ -497,14 +519,22 @@ export class DshChatAdapter {
     principal: Principal,
     sessionId: string,
     options: { beforeSeq?: number; maxMessages?: number },
-  ): Promise<{ events: unknown[]; hasMore: boolean; projections?: unknown }> {
+  ): Promise<{ events: unknown[]; hasMore: boolean; projections?: unknown; bytes?: number; truncated?: boolean; historyFormatVersion?: number }> {
     await this.requireSession(principal, sessionId)
     const payload = {
       sessionId,
       ...(options.beforeSeq === undefined ? {} : { beforeSeq: options.beforeSeq }),
       ...(options.maxMessages === undefined ? {} : { maxMessages: options.maxMessages }),
     }
-    return unwrapDsh(await this.api.sessions.history({ rpcId: randomUUID(), payload }))
+    const raw = unwrapDsh(await this.api.sessions.history({ rpcId: randomUUID(), payload }))
+    // 出网前的字节预算。手机端必须把整份 JSON 先读进内存才谈得上解析，
+    // 而 history 是原样透传内核事件的（工具输出单条就可能几 MB）——
+    // 不设闸，「翻一次历史」就能变成卡顿甚至 OOM，且服务端毫无察觉。
+    // 细节与「为什么不照抄字段级裁剪」见 history-budget.ts。
+    // 带上**事件形状版本**：客户端可据此判断「这份 events 我能不能解析」。
+    // 本轮只声明、不校验 —— 强制校验会打断已发布客户端的 beforeSeq 分页
+    // （它们不认识这个字段，也就谈不上带对版本）。详见 capabilities.ts 的说明。
+    return { ...applyHistoryBudget(raw), historyFormatVersion: HISTORY_FORMAT_VERSION }
   }
 
   async prompt(
@@ -661,6 +691,57 @@ export class DshChatAdapter {
     return records
       .sort((left, right) => left.requestedAt - right.requestedAt)
       .map(record => publicApproval(record, findToolCallDetail(history, record.callId)))
+  }
+
+  /**
+   * 连接建立时重放的待处理审批事件。
+   *
+   * ## 为什么需要
+   *
+   * 「连接后要不要主动查一次 REST」是**客户端自己的选择**：我方 App 会
+   * （`HarnessViewModel` 的 `connection` 回调里刷新历史/审批/提问/命令），
+   * 但协议不该把「审批不丢」寄托在这一点上 —— 客户端若只在收到事件时才刷新，
+   * 重连窗口里产生的审批就会静默消失：内核阻塞着等决定，手机上却一片安静。
+   * 重放把这件事变成**服务端保证**；对已经在连接后刷新的客户端，它只是一次幂等冗余。
+   *
+   * 对标第三方移动网关：它在**连接建立**与**订阅**两个触发点重发仍待处理的提问/审批，
+   * 客户端按 id 去重。我们这里给事件加 `data.replayed = true`，
+   * 客户端可以据此跳过「新卡片」动画，也可以完全忽略（刷新本身是幂等的）。
+   *
+   * ## 为什么先只做审批
+   *
+   * 审批是**阻塞内核**的那一类：漏掉它，Agent 会一直等；提问不阻塞（Agent 已经继续跑）。
+   * 提问侧的待处理数据在 `dsh-0.2-bridge` 的 `QuestionBridge.pending` 里，
+   * 要重放得先通过 `apiProxy` 暴露一个「全部会话」入口 —— 那是独立的一小步，
+   * 不塞进本次改动里凑数。
+   */
+  async replayPendingApprovals(principal: Principal): Promise<WorkspaceEvent[]> {
+    const allowed: PendingApprovalRecord[] = []
+    for (const record of this.pendingApprovals.values()) {
+      // 逐条按会话授权过滤：重放走的是**这条连接的身份**，
+      // 不能因为「别的设备授权过」就把别人的审批推给这台手机。
+      if (await this.isSessionAuthorized(principal, record.sessionId)) allowed.push(record)
+    }
+    return approvalReplayEvents(allowed)
+  }
+
+  /**
+   * 连接建立时重放的**挂起提问**事件。
+   *
+   * 与 [replayPendingApprovals] 同一动机：把「新连接一定能拿到仍待处理的东西」
+   * 变成**服务端保证**，而不是每个客户端各自的义务（论证与纠错记录见该方法的 KDoc）。
+   *
+   * 两者一个区别：提问**不阻塞内核**（Agent 已经继续跑），漏掉它的代价小一些；
+   * 但「卡片不出现、用户以为没问题」同样是坏体验，所以对称补上。
+   * 数据来自适配层的 `userQuestions.pendingAll()` —— 老实现不提供时跳过（可选方法），不报错。
+   */
+  async replayPendingQuestions(principal: Principal): Promise<WorkspaceEvent[]> {
+    const pending = this.api.userQuestions.pendingAll?.() ?? []
+    const allowed: Array<{ rpcId: string; sessionId: string; callId: string; questions: unknown[] }> = []
+    for (const item of pending) {
+      if (await this.isSessionAuthorized(principal, item.sessionId)) allowed.push(item)
+    }
+    return questionReplayEvents(allowed)
   }
 
   async decideApproval(
@@ -1004,6 +1085,23 @@ export function normalizeDshEvent(
       },
     }
   }
+  if (payloadType === 'session/snapshot' && typeof payload.sessionId === 'string') {
+    // 订阅基线（见 `dsh-0.2-bridge.ts` 的 `SessionEventRelay.pump`）：
+    // 它回答的是「这条订阅从哪个持久事件序号开始接增量」，是客户端做**断档检测**的依据。
+    // 刻意**不带** records 正文 —— 那会让 REST 与 WS 各自给一份历史，先后无法保证。
+    const cursor = typeof payload.cursor === 'number' ? payload.cursor : undefined
+    return {
+      id: `${payload.sessionId}:snapshot:${cursor ?? 'unknown'}`,
+      type: 'chat.session.snapshot',
+      time,
+      data: {
+        sessionId: payload.sessionId,
+        ...(cursor === undefined ? {} : { cursor }),
+        ...(typeof payload.hasMore === 'boolean' ? { hasMore: payload.hasMore } : {}),
+        ...(typeof payload.recordCount === 'number' ? { recordCount: payload.recordCount } : {}),
+      },
+    }
+  }
   if (payloadType === 'session/event' && typeof payload.sessionId === 'string' && isRecord(payload.event)) {
     const event = payload.event
     const eventType = typeof event.type === 'string' ? event.type : 'unknown'
@@ -1047,6 +1145,23 @@ export function normalizeDshEvent(
           ...(typeof eventData.turn === 'number' ? { turn: eventData.turn } : {}),
           ...(typeof eventData.step === 'number' ? { step: eventData.step } : {}),
         },
+      }
+    }
+    if (eventType === 'deliverables/presented') {
+      // 内核 `present` 工具成功后**持久化**的事件。历史那一路它一直是原样透传的
+      // （客户端 `ChatHistory.deliverables()` 就靠它出文件卡片），但**实时**这一路此前
+      // 落进末尾的默认分支、被规范化成 `chat.deliverables/presented` —— 客户端不认那个名字，
+      // 于是新交付物要等到下一次消息完成触发刷新才出现（延迟几十秒到几分钟）。
+      //
+      // `files` **原样透传**：客户端按 `path` / `description` 读，内核以后往文件项里加字段
+      // 不需要改这里。
+      const data = isRecord(payload.event) ? payload.event.data : undefined
+      const files = isRecord(data) && Array.isArray(data.files) ? data.files : []
+      return {
+        id: `${payload.sessionId}:deliverables:${seq ?? files.length}`,
+        type: 'chat.deliverables.presented',
+        time,
+        data: { ...base, files },
       }
     }
     if (eventType === 'turn/start' || eventType === 'turn/end') {
@@ -1170,6 +1285,64 @@ function approvalKey(sessionId: string, approvalId: string): string {
 
 function approvalRisk(reason?: string): 'standard' | 'full-access' {
   return reason?.toLowerCase().includes('danger-full-access') === true ? 'full-access' : 'standard'
+}
+
+/**
+ * 把待处理审批记录转成可重放的事件（纯函数，好测）。
+ *
+ * 抽出来的理由：这几行决定「重连后手机能不能看见那张卡」，而它本身与授权、IO 无关；
+ * 放在 `replayPendingApprovals` 里就得为了测它去复刻 principal/database 整套夹具。
+ *
+ * 按 `requestedAt` 升序：先申请的排前面，客户端依次刷新时不会因为顺序错乱而闪。
+ * `id` 与实时事件保持同一形状（`<approvalId>:requested`），
+ * 于是「同一审批」在实时与重放两条路径上对客户端是**同一个事件 id**（便于去重）。
+ */
+export function approvalReplayEvents(
+  records: readonly PendingApprovalRecord[],
+  time = Date.now(),
+): WorkspaceEvent[] {
+  return [...records]
+    .sort((left, right) => left.requestedAt - right.requestedAt)
+    .map(record => ({
+      id: `${record.approvalId}:requested`,
+      type: 'chat.approval.requested',
+      time,
+      data: {
+        sessionId: record.sessionId,
+        approvalId: record.approvalId,
+        // 记录里存的已经是脱敏过的工具名（见 captureApproval），这里不重复处理。
+        toolName: record.toolName,
+        risk: approvalRisk(record.reason),
+        replayed: true,
+      },
+    }))
+}
+
+/**
+ * 把挂起中的提问记录转成可重放的事件（纯函数，好测）。
+ *
+ * 事件类型与**实时路径**一致（`chat.userQuestions/requested`，由 `normalizeDshEvent`
+ * 末段的 `chat.${payloadType}` 兜底产生），data 字段也保持同一组，只多 `replayed: true`。
+ * `id` 用 `<callId>:requested`，与实时事件的 id 形状不冲突（实时用帧 rpcId）——
+ * 客户端按 `callId` 去重，两条路径指向同一道题。
+ */
+export function questionReplayEvents(
+  items: readonly { rpcId: string; sessionId: string; callId: string; questions: unknown[] }[],
+  time = Date.now(),
+): WorkspaceEvent[] {
+  return items.map(item => ({
+    id: `${item.callId}:requested`,
+    type: 'chat.userQuestions/requested',
+    time,
+    data: {
+      type: 'userQuestions/requested',
+      sessionId: item.sessionId,
+      callId: item.callId,
+      rpcId: item.rpcId,
+      questions: item.questions,
+      replayed: true,
+    },
+  }))
 }
 
 function publicApproval(record: PendingApprovalRecord, detail?: string): PendingApprovalView {

@@ -186,6 +186,41 @@ GET /plugin/dsh-remote-bridge/raw?sessionId=<sessionId>&name=<sha256>.<ext>
 
 判据：`Host` 必须回环、拒绝跨站请求、文件名必须匹配内容哈希白名单、扩展名声明必须与魔术字节一致、体积上限 32 MiB。取不到一律 `404`，且不区分「会话不存在」与「文件不存在」。
 
+## 已归档会话
+
+`GET /chat/sessions` 默认只列**未归档**的会话（与 WebUI 的分组界面一致）。带上
+`?archived=true` 则只列**已归档**的那批。
+
+为什么要有这个参数：内核把「归档」实现为**从所有分组界面隐藏**，而本桥此前照做 ——
+于是用户在手机上一归档，那条会话就**再也看不到**（连找都找不到），「归档」成了单向门。
+
+**恢复（取消归档）不在本桥能力内。** 适配层只声明了内核的 `archiveSession`，
+内核是否提供 unarchive 调用，**从本仓不可证**（`node_modules` 下没有 `@deepseek-ai/*`，
+那些包随 DSH 主包安装）。所以客户端不要提供「恢复」按钮，除非有一天能在宿主侧确认该能力。
+—— 这条措辞是刻意的：按 `PITFALLS.md` §空结果的来源要验证，查不到只能写「不可证」，
+不能写「没有」。
+
+## 历史与分页
+
+`GET /chat/sessions/{sessionId}/messages` 返回会话历史（`events` + `hasMore`，可选 `projections`），
+要求 `chat.read` 与对应 session 授权；`beforeSeq` 往回翻、`maxMessages` 限制条数。
+
+响应受**字节预算**约束（单次 2 MiB、单条事件 512 KiB）：
+
+- 整份超出预算时，从**最旧**端丢弃事件、保留最新的连续后缀，并把 `hasMore` 置 `true` ——
+  与分页语义一致：客户端拿最早那条的 `seq` 带 `beforeSeq` 继续往回翻即可，不会「以为到底了」。
+- 单条事件超出预算时，对它内部的超长字符串做首尾保留（各 8000 字符，中间插入
+  `…[truncated]…`），并在该元素上标 `bridgeTruncated: { truncated: true }`。
+- **真的发生裁剪时**，响应体追加 `truncated: true` 与 `bytes`（裁剪后的事件字节数）；
+  **未发生裁剪时这两个字段不出现**，响应与加这道闸之前逐字节一致。
+
+为什么需要：`events` 是原样透传的内核事件，工具输出单条就可能几 MB，而手机端必须先把整份
+JSON 读进内存才谈得上解析 —— 不设闸，「翻一次历史」就能变成卡顿甚至 OOM。
+为什么不做字段级裁剪（只掐工具输出那个字段）：本仓**无法证明**工具结果挂在哪个字段上 ——
+`tool/result` 这个类型名在本仓 `src/`、`tests/`、`docs/` 零命中，而**内核契约不在本仓可查范围内**
+（`node_modules` 下没有 `@deepseek-ai/*`：那些包随 DSH 主包安装，本仓只把它们列为 peer 依赖）。
+按猜出来的字段名写裁剪最坏结果是**静默无效**。实现见 `src/host/history-budget.ts`。
+
 ## 工具审批
 
 `GET /chat/sessions/{sessionId}/approvals` 返回当前授权会话的待审批操作；要求 `chat.read` 及对应 root grant。响应只包含公开 `approvalId`、工具名、风险等级，以及可选的脱敏原因和限长命令预览，不返回 DSH 私有 `rpcId`、原始工具参数或未脱敏正文。
@@ -217,6 +252,79 @@ WebSocket 地址为 `ws://HOST:PORT/api/v1/events` 或 `wss://...`。OkHttp 等�
 `file.*` 事件要求实时 `files.read` scope，`chat.*` 事件要求实时 `chat.read` scope，并继续检查对应 root/session 授权。授权更新或撤销无需重连即可对后续事件生效；断线后客户端通过 REST 刷新状态，不依赖无限事件回放。
 
 DSH 的 `assistant/chunk` 不直接泄漏为私有 wire。插件将文本和思考 token 规范化为 `chat.message.delta`，载荷包含 `sessionId`、`turn`、`step`、`index`、`kind` 和 `text`；完成的用户/助手消息发送 `chat.message.committed`，客户端随后读取 REST 历史收口。运行状态、Agent 切换和审批变化分别使用 `chat.session.status`、`chat.agent-preset.selected` 与 `chat.approval.*`。
+
+### 文件卡片（`chat.deliverables.presented`）
+
+智能体用内核 `present` 工具明确交付文件时，前端会收到这条事件，载荷里的 `files` 是
+**原样透传**的（客户端读 `path` / `description`，内核以后加字段不用改插件）。
+
+对应的持久事件是 `deliverables/presented` —— 它一直在历史里原样透传（客户端的文件卡片
+就是读它渲染的），但**实时**这一路此前被规范化成了一个客户端不认识的名字，
+于是新交付物要等到下次消息完成才出现。这条事件补的就是那个**实时性**。
+
+### `seq` 的语义（只有一种）
+
+出网事件里的 `seq` **只表示会话持久事件序号**（内核 `session/event` 的 `event.seq`）——
+它是 `beforeSeq` 分页与 `atSeq` 分叉的**坐标**。
+
+**流式片段（`chat.message.delta`）不再带 `seq`**：它没有持久位置，位置信息在 `index`
+（本次流内的 chunk 序号，每轮从 0 重新开始）。此前适配层把内核 `assistant-stream` 的
+`inner.index` 填进了 `seq`，于是同一个字段名在两条路径上是两种含义 ——
+按 `seq` 排序 / 去重 / 分页的消费者会静默错乱，把它当分叉点更会指向不相干的历史位置。
+
+决策、以及「为什么可以安全地不再输出」（逐个核过消费者）见
+`docs/project/decisions/ADR-0008-seq-single-meaning.md`。
+
+### 连接即宣告能力（`connection.ready`）
+
+每条被接受的 WebSocket 连接，第一帧都是 `connection.ready`，其 `data` 形如：
+
+```json
+{ "bridgeVersion": "2.3.7", "capabilities": ["history-v1", "approvals-v1", "…"] }
+```
+
+**请用 `capabilities` 做特性探测，不要硬比 `bridgeVersion`**：能力位回答的是「这台服务端**现在**
+能做什么」，而版本号只是它的历史编号（同一版本可能因配置差异关掉某条能力）。
+命名规则 `<能力>-v<主版本>`；能力位是**对外承诺**，只增不撤（撤要发新位并把旧的标 deprecated）。
+
+**两类用途，别混淆**：① 某客户端的分支判据（例如姊妹仓 Android App 需要
+`approvals-v1` / `questions-v1` 才显示审批与问答卡片，需要 `session-archive-list-v1`
+才显示「已归档」入口）；② **对外声明**（回答「这台服务端能做什么」，服务任何客户端，包括第三方）。
+**「某个客户端没用到」不等于「这项位没人用」** —— 这一类不是死代码，删掉等于撤回了对外承诺。
+完整清单与每项的契约依据见 `src/host/capabilities.ts` 与 `tests/capabilities.spec.ts` ——
+后者会拿依据去 OpenAPI/AsyncAPI 里逐条核对，防止「文档说支持、契约里没有」。
+
+### 历史格式版本（`historyFormatVersion`）
+
+`GET /chat/sessions/{id}/messages` 的响应**总是**带 `historyFormatVersion`（当前 `1`）：
+它描述 `events` 里元素的**形状**约定（既不是包版本，也不是内核的 session format）。
+只是新增可选字段不升版；改变既有字段含义、把可选变必填、事件改名则**必须**升版。
+
+**本轮只声明、不校验**：客户端带回不匹配的版本，服务端暂不拒绝 —— 强行校验会打断已发布
+客户端的 `beforeSeq` 分页（它们不认识这个字段，也就带不对版本）。等客户端开始读它之后再打开
+校验（届时返回 `resetRequired`，让客户端重取基线，而不是拿新形状按老规则解析、
+拼出一段「看起来正常但内容是错的」历史）。
+
+### 连接即重放（待处理审批）
+
+WebSocket 建立后，插件会把**当前仍待处理**的审批补推给**这一条连接**（只发给它，不广播），
+事件形如 `chat.approval.requested`，但多一个 `data.replayed = true`。
+
+为什么需要：「连接后要不要主动查一次 REST」是**每个客户端自己的选择** —— 我方 App 会
+（连接成功时刷新历史/审批/提问/命令），但协议不该把「审批不丢」寄托在这一点上。
+客户端若只在收到事件时才刷新，重连窗口里产生的审批就会静默消失：
+**内核阻塞着等决定，手机上却一片安静**。重放把这件事变成**服务端保证**；
+对已经在连接后刷新的客户端，它只是一次幂等冗余。
+重放按这条连接的身份**逐会话授权过滤**（别的设备授权过的会话不会推给这台手机）；
+客户端按 `approvalId` 去重即可（刷新本身幂等），也可以完全忽略 `replayed` 字段。
+
+**提问侧同样重放**（2026-10-17 同日补齐）：提问不阻塞内核（Agent 已经继续跑），漏掉的代价小一些，
+但「卡片不出现、用户以为没问题」同样是坏体验。它走既有事件类型 `chat.userQuestions/requested`，
+data 字段与实时路径**一致**（只多 `replayed`）；数据来自适配层的「全部会话挂起表」，
+按本条连接的授权逐条过滤。
+
+> 注：提问事件目前由 `normalizeDshEvent` 末段的 `chat.${payloadType}` 兜底产生，
+> 因此**尚未进 AsyncAPI 的 schema**（本次未扩：给所有兜底事件补 schema 是独立一件事）。
 
 ## Android 功能对等矩阵
 

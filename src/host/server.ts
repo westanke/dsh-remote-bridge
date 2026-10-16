@@ -7,12 +7,14 @@ import { fileURLToPath } from 'node:url'
 import { WebSocket, WebSocketServer } from 'ws'
 import type { DevicePrincipal, DeviceScope, Principal, WorkspaceEvent } from '../shared/contracts.ts'
 import type { AuthService } from './auth.ts'
+import { connectionReadyData } from './capabilities.ts'
 import type { DshChatAdapter } from './chat-adapter.ts'
 import type { WorkspaceDatabase } from './database.ts'
 import { ApiError } from './errors.ts'
 import type { WorkspaceEventBus } from './event-bus.ts'
 import { DEFAULT_REMOTE_HOST, loopbackFor, normalizeListenerHost, normalizeListenerPort } from './listener-config.ts'
 import type { ApiRouter, RemoteControl, RemoteOperationView } from './router.ts'
+import { stringifyWire } from './wire-json.ts'
 
 interface RemoteApiServerOptions {
   port: number
@@ -247,10 +249,49 @@ export class RemoteApiServer implements RemoteControl {
         this.sockets.set(webSocket, principal)
         webSocket.on('close', () => { this.sockets.delete(webSocket) })
         webSocket.on('error', () => { this.sockets.delete(webSocket) })
-        webSocket.send(JSON.stringify({ id: randomUUID(), type: 'connection.ready', time: Date.now(), data: {} }))
+        // 连接即宣告能力：客户端据此做特性探测，而不是硬比版本号（见 capabilities.ts）。
+        webSocket.send(stringifyWire({
+          id: randomUUID(),
+          type: 'connection.ready',
+          time: Date.now(),
+          data: connectionReadyData(),
+        }))
+        // 连接即重放：把**当前仍待处理**的审批补推给这一条连接。
+        // 不 await（见方法注释）：握手不该为一次授权过滤而卡住。
+        void this.replayPendingInteractions(webSocket, principal)
       })
     } catch {
       socket.destroy()
+    }
+  }
+
+  /**
+   * 把待处理的**审批与提问**补推给刚建立的这条连接。
+   *
+   * 为什么要有这一步：「连接后要不要主动查一次 REST」是**每个客户端自己的选择**。
+   * 我方 App 会（`HarnessViewModel` 的 `connection` 回调里刷新历史/审批/提问/命令），
+   * 但协议不该把「审批不丢」寄托在这一点上：客户端若只在收到事件时才刷新，
+   * 重连窗口里产生的审批就会静默消失（内核阻塞着等决定、手机上却一片安静）。
+   * 重放把「新连接一定能拿到仍待处理的审批」变成**服务端保证**，而不是客户端的义务。
+   *
+   * 三个刻意的取舍：
+   * - **不 await**：重放要按会话做授权过滤（异步），握手不能为它排队；
+   * - **只发这一条连接**：不走 `broadcast`，避免每次有人重连就骚扰所有在线设备；
+   * - **失败静默**：重放是补救措施，它出错不该影响这条连接正常收事件。
+   *   客户端侧「连接后/亮屏后主动刷新」仍是兜底，但不再是唯一依赖。
+   */
+  private async replayPendingInteractions(socket: WebSocket, principal: Principal): Promise<void> {
+    try {
+      const events = [
+        ...(await this.options.chat.replayPendingApprovals(principal)),
+        ...(await this.options.chat.replayPendingQuestions(principal)),
+      ]
+      for (const event of events) {
+        if (socket.readyState !== WebSocket.OPEN) return
+        socket.send(stringifyWire(event))
+      }
+    } catch {
+      // 静默：见方法注释
     }
   }
 
@@ -274,7 +315,7 @@ export class RemoteApiServer implements RemoteControl {
         this.sockets.set(socket, currentPrincipal)
       }
       if (!(await this.eventAllowed(currentPrincipal, event))) continue
-      socket.send(JSON.stringify(event))
+      socket.send(stringifyWire(event))
     }
   }
 

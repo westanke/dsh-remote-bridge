@@ -39,7 +39,7 @@ components:
           id: { type: string }
           type:
             type: string
-            examples: [file.changed, file.trashed, chat.message.delta, chat.message.committed, chat.session.status, chat.approval.requested, chat.approval.resolved, chat.turn.failed, connection.ready]
+            examples: [file.changed, file.trashed, chat.message.delta, chat.message.committed, chat.session.status, chat.session.snapshot, chat.deliverables.presented, chat.approval.requested, chat.approval.resolved, chat.turn.failed, connection.ready]
           time: { type: integer }
           data:
             oneOf:
@@ -48,17 +48,31 @@ components:
               - $ref: '#/components/schemas/ChatApprovalRequested'
               - $ref: '#/components/schemas/ChatApprovalResolved'
               - $ref: '#/components/schemas/ChatTurnFailed'
+              - $ref: '#/components/schemas/ConnectionReadyData'
+              - $ref: '#/components/schemas/ChatSessionSnapshot'
+              - $ref: '#/components/schemas/ChatDeliverablesPresented'
               - type: object
                 additionalProperties: true
   schemas:
     ChatMessageDelta:
       type: object
-      description: A stable token-level assistant update normalized from DSH assistant/chunk events.
+      description: |
+        A stable token-level assistant update normalized from DSH assistant/chunk events.
+        Streaming deltas have **no durable position** -- `index` is the chunk index within the
+        current stream (it restarts at 0 every turn), so this message carries no `seq`. See
+        ADR-0008: `seq` means one thing only, the durable session event sequence.
       required: [sessionId, eventType, turn, step, index, kind, text]
       properties:
         sessionId: { type: string }
         eventType: { type: string, const: assistant/chunk }
-        seq: { type: integer }
+        seq:
+          type: integer
+          deprecated: true
+          description: |
+            Deprecated and **no longer emitted** on this message (ADR-0008). It previously
+            carried the chunk index, which made `seq` mean two different things depending on
+            which path produced the frame. Kept in the schema rather than removed so existing
+            third-party implementations are not judged invalid; it was optional either way.
         turn: { type: integer }
         step: { type: integer }
         index: { type: integer }
@@ -77,13 +91,22 @@ components:
         step: { type: integer }
     ChatApprovalRequested:
       type: object
-      description: Signals that clients should refresh the session pending-approval REST resource.
+      description: |
+        Signals that clients should refresh the session pending-approval REST resource.
+        On WebSocket connect the plugin also replays every approval that is still pending to
+        **that connection only** (it is not broadcast). Re-querying REST after connecting is a
+        client's own choice, so the protocol does not rely on it: this makes "a fresh connection
+        learns everything still pending" a server-side guarantee rather than a client
+        obligation. Clients that already refresh on connect just see one idempotent extra
+        refresh. Those frames carry `replayed: true`; deduplicate by `approvalId` or ignore the
+        flag entirely.
       required: [sessionId, approvalId, toolName, risk]
       properties:
         sessionId: { type: string }
         approvalId: { type: string }
         toolName: { type: string }
         risk: { type: string, enum: [standard, full-access] }
+        replayed: { type: boolean }
     ChatApprovalResolved:
       type: object
       description: Signals that an approval was settled and clients should refresh session state.
@@ -119,3 +142,61 @@ components:
             message: { type: string }
             code: { type: string }
             stopped: { type: boolean, const: true }
+
+    ChatDeliverablesPresented:
+      type: object
+      description: |
+        A file the agent explicitly **presented** (`chat.deliverables.presented`, produced by the
+        kernel's `present` tool). The durable event `deliverables/presented` has always been
+        forwarded verbatim inside history; this frame is what makes it visible **live**, so a
+        client does not have to wait for the next message to discover a new deliverable.
+        `files` is forwarded as-is (clients read `path` and `description`), so fields the kernel
+        adds later need no change here.
+      required: [sessionId, files]
+      properties:
+        sessionId: { type: string }
+        eventType: { type: string, const: deliverables/presented }
+        seq: { type: integer }
+        files:
+          type: array
+          items:
+            type: object
+            properties:
+              path: { type: string }
+              description: { type: string }
+
+    ChatSessionSnapshot:
+      type: object
+      description: |
+        The **subscription baseline** (`chat.session.snapshot`): the durable event sequence the
+        server starts streaming from. Sent once when a session's live relay attaches (the
+        upstream relay's first frame is always a snapshot). `cursor` is the durable `seq` at that cut, so a client can tell
+        whether its own history is behind (`max(local seq) < cursor` = events were missed
+        between the REST read and the subscription).
+        The baseline's **records are deliberately not shipped**: this bridge is REST + WebSocket
+        dual-channel, and pushing history bodies here would create two baselines whose relative
+        order cannot be guaranteed. History bodies stay on REST as the single source.
+      required: [sessionId]
+      properties:
+        sessionId: { type: string }
+        cursor: { type: integer }
+        hasMore: { type: boolean }
+        recordCount: { type: integer }
+
+    ConnectionReadyData:
+      type: object
+      description: |
+        Payload of the very first frame on every accepted WebSocket
+        (`{"type": "connection.ready"}`). Clients should use `capabilities` for
+        feature detection instead of comparing `bridgeVersion` against a
+        hard-coded minimum: a capability says what this server can do right now,
+        while a version number is only its historical label. Capability names are
+        `<feature>-v<major>` and are never silently removed. Send
+        `Authorization: Bearer <token>` (or the `bearer.<token>` subprotocol) as
+        usual; this frame carries no credentials.
+      required: [bridgeVersion, capabilities]
+      properties:
+        bridgeVersion: { type: string }
+        capabilities:
+          type: array
+          items: { type: string }

@@ -46,6 +46,8 @@
 | [ADR-0005](decisions/ADR-0005-android-app.md) | accepted | 独立开发原生 Compose Android App，并以版本化 BFF 逐项实现 WebUI 功能对等 |
 | [ADR-0006](decisions/ADR-0006-final-project-split.md) | accepted | 正式版拆分为 `dsh-workspace` 与 `dsh-android-app` 两个独立项目，并从 v1.0.0 开始发布 |
 | [ADR-0007](decisions/ADR-0007-image-handoff-route.md) | accepted | 图片交接的显示链路并入本插件，只读路由改收「会话 + 裸文件名」，识图路径成为可改设置、出厂默认只读 |
+| [ADR-0008](decisions/ADR-0008-seq-single-meaning.md) | accepted | `seq` 只表示会话持久事件序号；流式 delta 不再输出它（`index` 承载 chunk 位置）——同一字段名不再有两种语义 |
+| [ADR-0009](decisions/ADR-0009-single-winner-interactions.md) | **proposed** | 审批/提问的单胜方：身份比对与迟到响应 `not-pending` 已有；并行下发与「abort 下游收起 WebUI 弹窗」待拍板（后者本仓不可证，附一个低成本验证实验） |
 
 ## 稳定任务 ID
 

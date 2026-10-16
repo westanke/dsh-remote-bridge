@@ -29,6 +29,7 @@ import {
 import { inspectResolvedPath, matchAuthorizedRoot } from './root-resolver.ts'
 import type { CustomProviderCreate, DshSettingsAdapter, ProviderPatch } from './settings-adapter.ts'
 import { PLUGIN_VERSION } from '../shared/version.ts'
+import { stringifyWire } from './wire-json.ts'
 
 export interface RemoteOperationView {
   id: string
@@ -378,7 +379,10 @@ export class ApiRouter {
     if (pathname === '/api/v1/chat/sessions') {
       if (method === 'GET') {
         this.options.auth.requireScope(principal, 'chat.read')
-        sendJson(res, 200, { items: await this.options.chat.listSessions(principal) })
+        // `archived=true` 列已归档的那批（默认列未归档）—— 没有它，「归档」在手机端
+        // 就是单向门：点了之后那条会话再也看不到。恢复不在本桥能力内（见 listSessions 注释）。
+        const archived = url.searchParams.get('archived') === 'true'
+        sendJson(res, 200, { items: await this.options.chat.listSessions(principal, { archived }) })
         return
       }
       if (method === 'POST') {
@@ -1043,7 +1047,8 @@ async function readBytes(req: IncomingMessage, maxBytes: number): Promise<Uint8A
 }
 
 function sendJson(res: ServerResponse, status: number, body: unknown): void {
-  const encoded = Buffer.from(JSON.stringify(body))
+  // 经 wire 消毒：孤立代理项会让 Foundation 侧拒绝整帧（见 wire-json.ts）
+  const encoded = Buffer.from(stringifyWire(body))
   res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Content-Length': encoded.length })
   res.end(encoded)
 }

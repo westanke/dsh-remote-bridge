@@ -729,16 +729,48 @@ describe('dsh 0.2.x bridge: contract shapes', () => {
       sessionId: 'session-9',
       event: {
         type: 'assistant/chunk',
-        seq: 3,
         time: 1234,
         data: { chunk: { type: 'text-delta', text: 'hi', index: 0 }, turn: 1, step: 0 },
       },
     })
+    // ADR-0008：流式 chunk **不再**带 `seq`（那是会话持久事件序号，与 chunk 序号无关）。
+    // 断言写成「字段不存在」而不是「等于某个值」—— 后者在有人把 seq 加回来时会静默通过。
+    // 对照：同一个文件里 `frame.type === 'event'` 走的持久事件**仍然**带 seq（见下面
+    // `assistant/message` 那条 `seq: 7`）。
+    expect((frame as { event: Record<string, unknown> }).event).not.toHaveProperty('seq')
     expect(follow).toHaveBeenCalledWith(
       // assistantStream must be requested or the host sends no incremental frames.
       { address: { kind: 'session', sessionId: 'session-9' }, assistantStream: true },
       expect.anything(),
     )
+    controller.abort()
+  })
+
+  it('relays the follow snapshot as a subscription baseline', async () => {
+    const { host, emit } = makeHost()
+    host.sessionController.follow = vi.fn(() => (async function* () {
+      yield { type: 'snapshot', cursor: 77, records: [{ seq: 1 }, { seq: 2 }], hasMore: true }
+    })())
+    const api = createDsh02ApiProxy(host)
+    const controller = new AbortController()
+    const stream = api.events.mux({ rpcId: 'r', payload: {} }, controller.signal)
+
+    emit('api-session/status', 'session-9', true)
+    const frame = await nextFrame(stream)
+    // 订阅基线：`cursor` 是「这条订阅从哪个持久 seq 开始接增量」——
+    // 客户端拿它和本地历史的最大 seq 比，就知道「REST 拉取」与「WS 订阅」之间有没有漏事件。
+    // 此前这一帧被 `frame.type !== 'assistant-stream'` 的 continue 直接丢掉，
+    // 于是那个窗口期的事件**永远补不回来**。
+    expect(frame).toMatchObject({
+      type: 'session/snapshot',
+      sessionId: 'session-9',
+      cursor: 77,
+      hasMore: true,
+      recordCount: 2,
+    })
+    // 正文**刻意不带**：本仓是 REST + WS 双通道，把历史正文灌进 WS 会造出两份基线，
+    // 而它们的先后顺序无法保证。断言「字段不存在」，防止有人日后顺手把它加上。
+    expect(frame).not.toHaveProperty('records')
     controller.abort()
   })
 

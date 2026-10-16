@@ -1,5 +1,490 @@
 # 开发日志
 
+## 用机检兑现「`@patch` 的 `test` 必须存在」这条承诺（2026-10-17，未发版）
+
+### 基于什么
+
+`AGENTS.md` §3.3 白纸黑字写着「`test` 指向的测试**必须存在** —— 这条可机检」，
+而本仓**一直没有实现它**（姊妹仓 `dsh-companion` 早由 `ArchitectureGuardTest` 兑现）。
+
+**一份承诺了「可机检」的纪律，如果没有检查，实际约束力等于零** —— 这正是要补的不对称。
+
+### 干了什么
+
+新增 `tests/patch-discipline.spec.ts`：
+
+1. 五要素齐全且非空（`id` / `for` / `why` / `until` / `test`），支持 `//` 续行；
+2. `test` 里至少有一个 `tests/*.spec.ts` 路径，且**文件真实存在**；
+3. `test` 里写出的**用例名**必须真的在那个文件里 —— 否则「有测试盯着」是句空话；
+4. **下限断言**（至少扫到 1 个块）：解析规则失效时，「零问题」与「零解析」长得一模一样。
+
+当前 2 个块（`approval-hook-prepend`、`question-hook-prepend`）都合格。
+
+### 我验证了这条检查真的会红
+
+**一个从不失败的检查等于没有检查**，所以做了一次 mutation check：故意把一个 `test`
+改成不存在的用例名 → 检查失败，报错精确到
+`dsh-0.2-bridge.ts:642 的 test 写了用例名「…」，但 tests/dsh-0.2-bridge.spec.ts 里找不到它`
+→ 恢复后重新通过。
+
+### 测什么
+
+- `tsc --noEmit` exit 0；`vitest run` **37 个测试文件 / 275 个用例**（+1）。
+
+## 把「坑位索引一致性」并入 `docs:check`（2026-10-17，未发版）
+
+**基于什么**：姊妹仓把同一条检查并进了它的 `ArchitectureGuardTest`；
+本仓的对应位置是 `scripts/check-project-docs.ts`（已经进 `pnpm check`）。
+
+**干了什么**：`docs:check` 现在会校验 `AGENTS.md` 的坑位索引与 `PITFALLS.md` 的 `###` 标题**双向一致**，
+并带一条**下限断言**（两边各 ≥ 10 条）。三处讲究与姊妹仓相同：**双向**（单向时空集合永远满足）、
+**下限**（防解析失败被当成「一致」）、**不按编号找小节**（本仓在 §6、姊妹仓在 §7）。
+
+**新检查第一次跑就抓到了自己的实现 bug**：我原本从 `contents` 缓存里取 `PITFALLS.md` ——
+而它**不在那 10 份必需文档里**，于是拿到空串、解析出 0 个标题、17 条索引全报「正文里没有」。
+是那条**下限断言**让错误信息指向「解析失败」而不是「正文缺条目」（否则我会去正文里白找一遍）。
+已在注释里写明：**不要从必需文档缓存里取 PITFALLS，直接读文件**。
+
+**测什么**：`tsc --noEmit` exit 0；`docs:check`（10 文档 / 39 任务 / 9 ADR）通过；
+`vitest run` 仍 36 文件 / 274 用例（这条检查不新增用例）。
+
+## 能力位消费者审计：26 项里只有 3 项是「我方客户端的分支判据」（2026-10-17，未发版）
+
+**基于什么**：交付前自检时想到的问题 —— 这一轮加了 26 项能力位，而我方客户端只读了少数几个。
+这正是我在别处反复批评过的「声明了没人用」，值得查清。
+
+**审计方法**：把 `BRIDGE_CAPABILITIES` 的 26 项逐个在 `dsh-companion` 全仓（`.kt` + `.xml`）grep。
+
+**结论**：
+
+| 类别 | 数量 | 是哪些 |
+|---|---|---|
+| 我方客户端的分支判据 | **3** | `approvals-v1` / `questions-v1`（缺失时客户端明说「插件过旧、卡片不会出现」）、`session-archive-list-v1`（决定是否显示「已归档」入口） |
+| **对外声明** | 23 | 其余全部 —— 回答「这台服务端能做什么」，**服务任何客户端（包括第三方）** |
+
+（另有 `session-archive-v1` / `history-v1` 两个名字出现在客户端**测试**里，那是用例字面量，不算消费。）
+
+**这不是同一个问题**：能力位与服务端能力的对应关系是**对外契约**，
+「某个客户端没用到」不等于「没人用」；删掉第 2 类等于撤回了对外承诺。
+
+**干了什么**
+
+- `capabilities.ts` 的 KDoc 新增「**两类用途**」一节：讲清两类的区别，
+  写明「别把第二类当死代码删」，并给出加位的克制标准（客户端可能需要分支，或这是一个稳定的对外能力面）；
+- `API.md` 的能力位一节同步这段说明；
+- **加了一条跨仓钉子**：`tests/capabilities.spec.ts` 断言 `approvals-v1` 与 `questions-v1`
+  **必须在清单里** —— 客户端把这两个名字写死在 `REQUIRED_CAPABILITIES` 里，
+  删掉不是内部重构，而是让客户端对**所有用户**误报「插件过旧」。
+- 客户端侧 `BridgeCapabilities.kt` 的注释里加了指向那条钉子的说明（跨仓契约要两边都留线索）。
+
+**测了什么**：`tsc --noEmit` exit 0；`vitest run` **36 文件 / 274 用例全绿**（能力位契约测试 6 → 7 例）。
+
+**未做**：没有为 26 项维护「消费方」分类表 —— 「外部消费者」本来就无法机检，
+为它加一张需要人工维护的表只会变成新的漂移源。真正能机检的那一条（客户端必需项）已经钉住了。
+
+## 文件卡片有了实时事件：交付物不再等下一次刷新（2026-10-17，未发版）
+
+**基于什么**：C 批清单的最后一项「文件卡片事件」。对标报告点名这是一处**能力缺口**：
+它的网关只要在 `buildWireEvent` 加一个 `case 'deliverables/presented'` 就修好了一个 UI 特性；
+而我方 bridge 的 `grep -rn 'deliverables\|presented' src/` 是 **0**。
+
+**动手前的核实**（决定了这是「补一条实时通道」而不是「从零做功能」）：
+
+- **历史那一路一直是通的**：内核的持久事件 `deliverables/presented` 原样透传，
+  客户端的 `ChatHistory.deliverables()` 与文件卡片（`ChatSessionFiles.kt`）**早已在读它**、
+  也已经能显示 ✓
+- **缺的是实时性**：`session/event` 里这个 eventType 此前落进末尾的默认分支，
+  被规范化成 `chat.deliverables/presented` —— 客户端不认那个名字，于是新交付物要等到
+  **下一次消息完成**触发刷新才出现（延迟几十秒到几分钟）
+
+**干了什么**
+
+- `normalizeDshEvent` 加 `deliverables/presented` 分支 → **`chat.deliverables.presented`**；
+  `files` **原样透传**（客户端按 `path` / `description` 读，内核以后往文件项里加字段不用改插件）；
+  没有 `files` 时也照样发这条事件（客户端据此知道「这次没有可展示的文件」，而不是干等）。
+- 客户端加同名分支 → `scheduleChatRefresh()`：卡片数据在**历史**里，刷新即出现。
+- 契约：AsyncAPI 新增 `ChatDeliverablesPresented`、事件名进 `type.examples`；
+  `API.md` 新增「文件卡片」一节。
+
+**不加能力位**：客户端的行为是「收到就刷新」，没有它只是**晚一点**看到 —— 这不是分支关系。
+按既有判断标准（有分支需求才加位），不加。
+
+**测了什么**
+
+- 新增 `tests/deliverables.spec.ts`（**4 例**）：事件名与字段映射、**未知文件字段原样透传**、
+  无 `files` 时给空列表、多次 present 的 `id` 可区分（否则客户端按 id 去重会吞掉后一次）。
+- `tsc --noEmit` exit 0；`vitest run` **36 文件 / 273 用例全绿**；
+  `docs:check`（10 文档 / 39 任务 / 9 ADR）；`tsdown` build 通过。
+
+**未做（如实记）**
+
+- 客户端那条分支**没有单测**：ViewModel 层在本项目没有测试基建，其余事件分支同样如此 ——
+  不假装覆盖了。
+- 未做真机：要真机上让智能体 `present` 一个文件，看卡片是否**立刻**出现。
+
+## 单胜方交互的核账：两件已有、两件待拍板（2026-10-17，未发版）
+
+**基于什么**：C 批清单的最后一项「单胜方下游 abort」。对标报告 §4.3 把竞品的机制拆成**四件事**。
+
+**动手前的核账**（本轮的全部工作 —— 结论决定了「不该改代码」）：
+
+| # | 竞品的做法 | 我方现状 |
+|---|---|---|
+| ① | 注册时立刻 `next()`：WebUI 与手机**同时**拿到卡片 | **刻意不调** —— `prepend` 到 waterfall 链首，接管到手机作答为止 |
+| ② | 身份比对判胜方 | **已有** ✓ |
+| ③ | 手机赢时 abort 下游信号，收起所有 WebUI 弹窗 | **没有**，且**本仓不可证**：`req.signal` 是否可写、内核/WebUI 是否认这个 abort，都查不到 |
+| ④ | 迟到响应统一视为 `not-pending` | **已有** ✓，且**有测试钉住**（`dsh-0.2-bridge.spec.ts:232`、`chat-adapter.spec.ts:403`） |
+
+**结论：这项不该直接改代码。** 串行 vs 并行决定的是「**用户在电脑前能不能看到卡片**」，
+属于产品行为；而并行化的前提（③）在本仓不可证。硬做的代价可能是**永远挂着的弹窗**——
+用户点它只会得到「已由别处处理」（④ 会返回 `not-pending`），但弹窗本身不会消失，比现状更糟。
+
+**交付**：`decisions/ADR-0009-single-winner-interactions.md`（状态 **proposed**）——
+把四件事逐条核账、列出两个选项的代价、并给出**选项 C：一个低成本实验**：
+
+> 在下一次联调时，于内核侧让一次审批的 `req.signal` 触发 abort，
+> 观察官方 WebUI 的审批弹窗**是否自行收起**。
+
+- 会收 ⇒ 并行化具备前提，可以排期做；
+- 不会收 ⇒ 串行就是终局，届时把「电脑端看不到卡」作为**已知限制**写进 README
+  （让用户知道这是设计选择，而不是我们漏做了）。
+
+**为什么这是正确的交付**：查不到就写「不可证」，并给出**让它变得可查**的办法 ——
+而不是凭猜在两条路之间选一个。这正是本项目 §空结果的来源要验证 那条坑位的用法。
+
+**未改代码**：本文没有任何代码改动。门槛与用例数因此不变
+（`tsc` exit 0、**34 文件 / 264 用例**、`docs:check` 现在报 **9 ADR**）。
+
+## 订阅基线不再被丢弃：断档从此可检测（2026-10-17，未发版）
+
+**基于什么**：对标报告点名的「原子基线 `snapshot`」。报告的证据是
+`dsh-0.2-bridge.ts:554` 那句 `continue` 把上游第一条 `snapshot` 直接丢掉。
+
+**动手前先核实**（不照报告抄）。两处独立证据：
+
+1. 本文件 `SessionEventRelay` 顶部注释写着：Live follow stream. Its first frame is
+   **always** a `snapshot`；
+2. history 路径（`:1434-1451`）**一直在消费** `snapshot.records` / `hasMore` / `cursor`
+   —— `throughSeq` 就取自 `snapshot.cursor`。
+
+所以 mux 那条路上每一路订阅的第一帧确实是 snapshot，只是被丢了。
+
+**为什么是问题**：手机端因此**永远拿不到原子基线** —— 「REST 拉历史」与「WS 订阅」
+之间的窗口期事件真漏，而且客户端**无从判断漏没漏**（它没有任何参照点）。
+
+**干了什么**
+
+- `SessionEventRelay.pump` 接出 `frame.type === 'snapshot'` 分支，推 `session/snapshot`；
+- `normalizeDshEvent` 把 `session/snapshot` 转成 **`chat.session.snapshot`**，
+  data 带 `sessionId` / `cursor` / `hasMore` / `recordCount`；
+- 能力位新增 **`session-snapshot-v1`**（依据是 AsyncAPI 里的 `chat.session.snapshot`）；
+- AsyncAPI 新增 `ChatSessionSnapshot` schema、把事件名加进 `type.examples`；`API.md` 新增「订阅基线」一节。
+
+**两个刻意的收窄**（写在代码、契约与文档三处）：
+
+1. **正文不发**：`records` 只计数成 `recordCount`。本桥是 REST + WS **双通道**，
+   把历史正文也灌进 WS 会造出**两份基线**，而它们的先后顺序无法保证 ——
+   竞品的教训清单里正有「不得用迟到的 history 响应覆盖订阅基线」这一条。
+   正文继续由 REST 作为**单一来源**。
+2. **不可证字段不给**：某些版本的 snapshot 里可能有 `assistantStream.activeAttempt`，
+   但在我方 0.2.x 上**不可证**（本仓 `node_modules` 下没有内核包）。按
+   `PITFALLS.md` §空结果的来源要验证，宁可不给，也不按想象给。
+
+**测了什么**
+
+- `tests/dsh-0.2-bridge.spec.ts` 加 1 例：snapshot 帧被转发为 `session/snapshot`，
+  且**断言不含 `records`**（防日后有人顺手把它加回来）。
+- 新增 `tests/session-snapshot.spec.ts`（**4 例**）：字段映射、**缺字段不凭空补**
+  （补个 `cursor: 0` 会让客户端把「历史完整」判成事实）、即使 `records` 传到规范化层
+  **也不透出**（第二道防线）、重订阅的 id 可区分。
+- `tsc --noEmit` exit 0；`vitest run` **35 文件 / 269 用例全绿**；
+  `docs:check`（10 文档 / 39 任务 / 8 ADR）；`tsdown` build 通过。
+
+**顺带**：能力位契约测试当场拦下「声明了 `session-snapshot-v1` 但契约里没有这个字面量」——
+我只加了 schema、忘了把事件名写进文档。补进 `type.examples` 与 schema 描述后通过。
+这是它第二次真正生效（上一次是 ADR 索引）。
+
+**未做**：客户端消费（收到基线后比 `max(本地 seq) < cursor` ⇒ 重取历史）归到下一项
+「断档检测与 resync」—— 那一项本来就要客户端一套完整的判断与恢复路径，
+分两次做反而会把状态机切碎。
+
+## `seq` 语义单一化：流式片段不再冒充会话序号（2026-10-17，未发版）
+
+**基于什么**：对标报告点名的阻断项「`seq` 隔离」——
+`dsh-0.2-bridge.ts` 的 `assistant-stream` 路径用 `inner.index` 冒充 `seq`。
+
+**先设计再动手**：新增 `docs/project/decisions/ADR-0008-seq-single-meaning.md`。
+改 wire 语义按本项目制度**先落决策记录**，再改实现。
+
+**病根**：两条来源塞进了同一个字段名 ——
+
+| 来源 | 原来的 `seq` | 真实含义 |
+|---|---|---|
+| `frame.type === 'event'` | `event.seq` | 会话**持久事件**序号（历史坐标） |
+| `frame.type === 'assistant-stream'` | `inner.index` | **本次流内**的 chunk 序号（每轮从 0 重来） |
+
+按 `seq` 排序 / 去重 / 分页的消费者，会把「流式片段的 0,1,2…」与「持久事件的 0,1,2…」
+当成同一序列；把 chunk 序号当作 `beforeSeq` 游标或 `atSeq` 分叉点，更会指向完全不相干的历史位置。
+不是崩溃，是**静默的语义污染**。
+
+**动手前逐个核过消费者**（这是「可以安全地不再输出」的前提，不是推断）：
+
+- 本仓 `kotlin-sdk` 未建模 delta；
+- WebUI 兜底页 `chat.html` 不读 `seq`；
+- 姊妹仓 App 的 `ChatDelta` 里**没有 seq 字段**，`chatDelta()` 只读 `index`；
+- AsyncAPI 的 `ChatMessageDelta.seq` 本来就不是必填。
+
+也就是：这个字段**当前没有任何消费者**，它唯一的作用是给后来者埋雷。
+
+**干了什么**
+
+- `assistant-stream` 路径推给 mux 的 `assistant/chunk` 事件**不再带 `seq`**；
+  `index` / `turn` / `step` / `time` / `data.chunk` 照旧。
+- AsyncAPI 把 `ChatMessageDelta.seq` 标注为 **deprecated**（保留而非删除 ——
+  免得把已有第三方实现判成不合法），并写明它只对持久事件有意义。
+- `API.md` 新增「`seq` 的语义（只有一种）」一节；ADR-0008 登记进 `docs/project/README.md` 索引。
+
+**测了什么**
+
+- `tests/dsh-0.2-bridge.spec.ts` 的 chunk 断言改为**断言字段不存在**（而不是改成别的值 ——
+  那样有人在把 `seq` 加回来时会静默通过），并与同一文件里持久事件
+  `assistant/message` 的 `seq: 7` **形成对照**：两条路径的语义差异从此被测试钉住。
+- `tsc --noEmit` exit 0；`vitest run` **34 文件 / 264 用例全绿**；
+  `docs:check`（10 文档 / 39 任务 / **8 ADR**）；`tsdown` build 通过。
+
+**未做 / 边界**
+
+- **不加能力位**：能力位表示「客户端可据此分支的能力」，而这里没有任何客户端需要分支 ——
+  它只是不再产生一个没人读的字段；加了反而暗示客户端应该做点什么（理由写在 ADR 的影响节）。
+- 未发版；`pnpm` 仍不可用（见 `PITFALLS.md` §pnpm store 打不开数据库）。
+
+**顺带**：`docs:check` 当场拦下「新 ADR 未登记进索引」（`ADR-0008-… is missing from the ADR index`）——
+**那条校验第一次真正生效**。
+
+## 已归档会话可列：手机端的「归档」不再是单向门（2026-10-17，未发版）
+
+**基于什么**：对标报告 A 批清单里的「归档恢复」。动手前先查证了两件事，结论决定了这次的边界：
+
+1. 归档数据**本仓可得**吗？—— 可得：`archivedSessionIds` 与 sessions 都在宿主响应里，
+   本仓代码已在读（`chat-adapter.ts` 的 `listSessions` 用它做过滤）。
+2. 内核支持**取消归档**吗？—— **本仓不可证**：适配层只声明了 `archiveSession`，
+   `node_modules` 下没有 `@deepseek-ai/*`（那些包随 DSH 主包安装）。
+
+**为什么**：内核把「归档」实现为**从所有分组界面隐藏**，本桥默认照做 —— 于是用户在手机上
+一归档，那条会话就**再也看不到**（连找都找不到）。「恢复」这次做不到（见下），
+但「连看都看不到」是更糟的那一半。
+
+**干了什么**
+
+- `chat-adapter.listSessions(principal, { archived })`：`archived: true` 时**只列归档**的那批，
+  默认行为完全不变（仍只列未归档）。
+- `GET /chat/sessions?archived=true` 接上；OpenAPI 补参数与说明；`API.md` 新增「已归档会话」一节。
+- 能力位新增 **`session-archive-list-v1`** —— 按能力位纪律（加位必须能指出契约依据），
+  依据就是那个 query 参数：`tests/capabilities.spec.ts` 会拿 `name: archived` 去 OpenAPI 里核对。
+
+**测了什么**
+
+- 既有 `chat-adapter.spec.ts` 补两条断言：默认列表 2 条（**不含**归档会话）、
+  `archived: true` 只返回 `session-archived`。
+- `tsc --noEmit` exit 0；`vitest run` 全绿；能力位契约测试同步通过。
+
+**未做 / 边界（刻意）**
+
+- **恢复（取消归档）不做**：内核是否提供 unarchive **从本仓不可证**。按
+  `PITFALLS.md` §空结果的来源要验证，只在代码注释与 `API.md` 里写「不可证」，
+  并明确「客户端不要提供恢复按钮，除非能在宿主侧确认该能力」。
+  宁可少一个功能，也不实现一个可能不存在的内核调用。
+- **客户端 UI 未做**（已归档列表入口 + 归档动作的确认文案），留下一轮。
+- 未发版；`pnpm` 仍不可用（见 `PITFALLS.md` §pnpm store 打不开数据库）。
+
+## 能力发现与历史格式版本：不再让客户端硬比版本号（2026-10-17，未发版）
+
+**基于什么**：对标第三方移动网关的 `hello.capabilities`（19 项、带 `-v1` 后缀，
+且是**配置与鉴权状态的函数**）与它的 `historyFormatVersion` 游标护栏。
+
+**为什么**：客户端需要一个**运行时**判据来回答「这台服务端现在能做什么」。
+—— 先纠正一个易混点：README 里那句「要求 bridge ≥ 2.3.7」是给**用户**看的安装门槛，
+而 `dsh-companion` 的代码里**既没有**版本比较、**也没有**处理 `connection.ready`（已核实）。
+所以真实症状不是「判据太粗」，而是**没有判据**：服务端能力不足时，手机端只会静默少一个功能
+（审批卡片不弹，看起来与「本来就没有待审批」一模一样 —— 这个坑踩过两次，根因都在插件侧）。
+能力位把「不支持」变成可探测的事实，客户端据此可以**明说**而不是让用户干等。
+另：版本号本身也不适合当判据 —— 粒度太粗（一个版本加五件事只能整包接受），
+且方向反了（能不能用取决于服务端**现在**提供什么，版本号只是它的历史编号）。
+另一头，`history` 响应没有任何**形状**版本标记：将来事件形状一变，老客户端会拿新形状
+按老规则解析，拼出一段「看起来正常、内容却是错的」历史 —— 那比直接报错难查得多。
+
+**干了什么**
+
+- 新增 `src/host/capabilities.ts`：
+  - `BRIDGE_CAPABILITIES`：24 项能力位，**每一项都能指出依据**（一条 OpenAPI 路径+方法，
+    或一个 AsyncAPI 事件）；命名固定 `<能力>-v<主版本>`，纪律写在文件头：
+    只增不撤、语义变更要升 `-v2`、加位必须能指依据、只声明已稳定的东西。
+  - `connectionReadyData()`：每次返回**副本**（一次手滑改到常量会污染进程内后续所有连接）。
+  - `HISTORY_FORMAT_VERSION = 1` 及其升级规则。
+- `server.ts`：`connection.ready` 的 `data` 从 `{}` 变成 `{ bridgeVersion, capabilities }`。
+- `chat-adapter.history()`：响应**总是**带 `historyFormatVersion`（**只声明不校验** ——
+  强制会打断已发布客户端的 `beforeSeq` 分页）。
+- 契约面：AsyncAPI 新增 `ConnectionReadyData` 并接入 `WorkspaceEvent.data.oneOf`；
+  OpenAPI 的 `listMessages` 200 补 `historyFormatVersion` 与说明。
+
+**测了什么**
+
+- 新增 `tests/capabilities.spec.ts`（**6 用例**）：命名规则与去重、
+  **逐条把能力位依据拿进 openapi/asyncapi 核对**、反向断言「依据表不许有孤儿」
+  （少写依据或加依据忘加能力位都红）、`connectionReadyData()` 返回副本、格式版本为正整数。
+- `tsc --noEmit` **exit 0**；`vitest run` **34 个测试文件 / 264 用例全绿**；
+  `docs:check`（10 文档 / 39 任务 / 7 ADR）；`tsdown` build 通过。
+
+**未做**
+
+- **客户端未接入**：`dsh-companion` 仍在硬比版本号。下一轮改成按能力位分支、
+  版本号只留作诊断。
+- 未打开 `historyFormatVersion` 的强制校验（等客户端会读之后）。
+- 未发版；`pnpm` 仍不可用（见 `PITFALLS.md` §pnpm store 打不开数据库）。
+
+## 连接即重放：把「新连接能拿到待处理审批」变成服务端保证（2026-10-17，未发版）
+
+**基于什么**：对标第三方移动网关的 `replayPendingInteractions` —— 它在**连接建立**与
+**subscribe** 两个触发点重发仍待处理的提问/审批并打 `replay: true`，客户端按 id 去重
+（证据见 `dsh-study/分析-2026-10-16/mobile-gateway-插件借鉴点.md` 的「立刻可抄」第 5 条）。
+
+**为什么**：「连接后要不要主动查一次 REST」是**每个客户端自己的选择**。
+姊妹仓 `dsh-companion` 会 —— 它的 `HarnessViewModel` 在 `connection` 回调里（连接成功时）
+刷新历史、审批、提问与命令（`HarnessViewModel.kt:537-546`）。
+**但协议不该把「审批不丢」寄托在这一点上**：客户端若只在收到事件时才刷新，
+重连窗口里产生的审批就会静默消失（内核阻塞着等决定、手机上却一片安静）。
+重放把这件事变成**服务端保证**；对已经在连接后刷新的客户端，它只是一次幂等冗余。
+
+> **纠错记录（同一轮内自查）**：本条初稿的论证是「客户端自动重连不触发任何刷新，
+> 这就是缺口」——**那是错的**。写它的时候我只 grep 了 data 层的 `DshClient.onOpen`，
+> 没追到 ViewModel 的 `connection` 回调。功能保留（它让协议不再依赖客户端自觉），
+> 理由按事实改正；这类「论证比代码错得更早」的教训已记入 `PITFALLS.md`。
+
+**干了什么**
+
+- `chat-adapter.ts`：新增 `replayPendingApprovals(principal)` —— 复用已有的
+  `pendingApprovals` 本地缓存（`captureApproval` 从 mux 帧捕获的完整信息），
+  **零 IO**；逐条按 `isSessionAuthorized` 过滤（重放走的是这条连接的身份，
+  不能把别的设备授权过的会话推给这台手机）。
+- 抽出纯函数 `approvalReplayEvents(records, time)`：按 `requestedAt` 升序、
+  `id` 与实时事件同形（`<approvalId>:requested`）、`data.replayed = true`。
+- `server.ts`：WS 升级成功后调用，**只发这一条连接**（不走 broadcast，避免有人重连就骚扰所有在线设备）；
+  **不 await**（握手不该为一次授权过滤排队）；**失败静默**（重放是补救措施，
+  真正的兜底仍在客户端侧）。
+- 契约面：AsyncAPI 的 `ChatApprovalRequested` 补 `replayed` 与说明；
+  `API.md` 新增「连接即重放（待处理审批）」一节。
+
+**测了什么**
+
+- 新增 `tests/interaction-replay.spec.ts`（**10 用例**：审批 6 + 提问 4）：空集、事件 id/字段形状、
+  full-access 风险判定、按 `requestedAt` 升序、时间戳统一，以及一条**契约钉子** ——
+  「实时路径（`normalizeDshEvent`）与重放路径必须给出同一组 data 字段（重放多一个 `replayed`）」。
+  两条路径各写各的，最容易的漂移就是一条加了字段另一条没加，症状只在「重连后」出现。
+- `tsc --noEmit` **exit 0**；`vitest run` **33 个测试文件 / 258 用例全绿**。
+
+**未做**
+
+- ~~提问侧未重放~~ **已于同日补齐**：`QuestionBridge.pendingAll()` → `chat-adapter.replayPendingQuestions()`
+  → server 合并推送，走既有事件类型 `chat.userQuestions/requested`，data 字段与实时路径一致（只多 `replayed`）。
+  提问不阻塞内核、漏掉的代价小一些，但对称做掉它才配得上「新连接一定能拿到仍待处理的东西」这句话。
+- **提问事件仍未进 AsyncAPI**：它由 `normalizeDshEvent` 末段的 `chat.${payloadType}` 兜底产生，
+  不在 `components.messages` 里；给所有兜底事件补 schema 是独立的一件事，本次未扩（已记在 `API.md`）。
+- 客户端侧未改动：重放对我方 App **无需改代码**（它收到 `chat.approval.requested` 就会去查
+  REST，刷新幂等），但也**未经真机验证**。
+- 未发版；`pnpm` 仍不可用（见 `PITFALLS.md` §pnpm store 打不开数据库）。
+
+## 历史响应字节预算：一次「翻历史」不再能把手机打死（2026-10-17，未发版）
+
+**基于什么**：对标第三方移动网关的字节预算做法（单帧 4 MiB、订阅基线 256 KiB，
+`tool/result` 首尾各保留 8000 字符并置 `outputTruncated`）—— 证据见
+`dsh-study/分析-2026-10-16/mobile-gateway-插件借鉴点.md` 的「立刻可抄」第 6 条。
+
+**为什么**：`GET /chat/sessions/{id}/messages` 是**原样透传**内核事件的，工具输出单条就可能几 MB
+（`cargo build`、大文件读取、日志回放）。手机端拿到响应必须**先把整份 JSON 读进内存**才谈得上解析，
+于是「翻一次历史」就能变成卡顿甚至 OOM —— 而服务端毫无察觉（序列化成功、HTTP 200 正常返回）。
+
+**干了什么**
+
+- 新增 `src/host/history-budget.ts`：
+  - `clampStrings()`：递归把超长字符串换成「首尾保留 + `…[truncated]…`」，**形状无关**（不认识字段名也能生效）。
+  - `clampHistoryEvents()`：单条超限先剥字符串；整份超限则从**最旧**端丢整条，直到落进预算。
+  - `applyHistoryBudget()`：套回响应体 —— 丢过条 ⇒ `hasMore` 置真（与 `beforeSeq` 分页语义一致）；
+    真的动手 ⇒ 追加 `truncated` + `bytes`；**没动手就一字不加**。
+- `chat-adapter.history()` 出网前调用（router 原样透传，无需改动）。
+- **为什么不照抄字段级裁剪**：本仓**无法证明**工具结果挂在哪个字段上 —— `tool/result` 这个类型名
+  在本仓 `src/`、`tests/`、`docs/` 零命中，而**内核契约不在本仓可查范围内**（`node_modules` 下没有
+  `@deepseek-ai/*`）。按猜出来的字段名写裁剪，最坏结果是**静默无效**
+  （裁剪器一条都没命中，界面上看不出区别，直到线上真的 OOM）。
+
+  > **纠错记录（2026-10-17 当日自查）**：本条初稿写的是「`tool/result` 在本仓与**内核的
+  > `node_modules`** 里都零命中」—— 那半句是**假证据**：`node_modules/@deepseek-ai` 这个目录
+  > **根本不存在**，`grep -r PATTERN missing-dir/` 的 0 命中被我当成了「查过、没有」。
+  > 而且本文件里 2.1.x 那条记录早就写明「官方内核包随 DSH 主包安装，不会出现在 profile 的
+  > `node_modules` 下」—— 我既没验证目录存在，也和仓库已有知识矛盾。
+  > 结论不变（仍是"形状无关"实现），但理由已按事实重写；教训记入 `PITFALLS.md` §空结果的来源要验证。
+- `kotlin-sdk` 未改：该 SDK 没有建模 history 响应（已核），契约面只有 `API.md` + OpenAPI。
+
+**测了什么**
+
+- 新增 `tests/history-budget.spec.ts`（**13 用例**）：小响应逐字节不变、单条限幅、嵌套字符串、
+  丢最旧保最新、单条超总预算时至少留一条、不改入参、无字符串事件、字节数报告、
+  以及 `applyHistoryBudget` 的四个分支（不动手不加字段 / 丢条置 `hasMore` / 只剥串不动 `hasMore` /
+  上游已说 `hasMore` 时保持）。
+- **一条回归钉子专治实现初版的真 bug**：标记挂在了**原始** entry 上，于是「标记说截断了、
+  内容一个字符没少」——客户端会据此提示用户「内容已截断」，而几十万字符照旧进了响应。
+  现在断言「有标记 ⇒ 内容确实变短」。
+- `tsc --noEmit` **exit 0**；`vitest run` **32 个测试文件 / 248 用例全绿**。
+- 文档同步：`API.md` 新增「历史与分页」一节；`docs/api/openapi.yaml` 的 `listMessages` 200
+  补上 schema（`events`/`hasMore`/`projections`/`bytes`/`truncated`）。
+
+**未做**
+
+- 未发版、无版本号变更。
+- `pnpm` 仍不可用（见下一条与 `PITFALLS.md` §pnpm store 打不开数据库），四道门仍是逐条等价执行。
+
+## 出网 JSON 消毒：孤立代理项不再打死整条连接（2026-10-17，未发版）
+
+**基于什么**：对标第三方移动网关时发现它有一个 7 行的 `lib/wire-json.mjs`，
+把**孤立 UTF-16 代理项**替换为 U+FFFD，理由写在注释里：DSH 内核的摘要截断会留下
+半个代理项，`JSON.stringify` 会照样把它转义成 `\udXXX`，而 **Swift/Foundation 的
+JSONDecoder 会拒绝整帧**。证据见 `dsh-study/分析-2026-10-16/mobile-gateway-插件借鉴点.md`
+的「立刻可抄」第 7 条（我方当时零对应处理）。
+
+**为什么**：这不是新功能，是补传输层的安全网。一条工具输出被截断在 emoji 中间，
+就能让整条 WebSocket 帧变成 Foundation 不接受的 JSON —— 症状是客户端「突然不再更新」，
+而服务端日志一句报错都没有（序列化本身是成功的）。放在**出网口**做，未来新增事件类型自动受益。
+
+**干了什么**
+
+- 新增 `src/host/wire-json.ts`：
+  - `sanitizeLoneSurrogates(text)`：单遍字符扫描。合法代理对（emoji）原样放行，
+    无缺陷输入**返回原引用**（广播热路径上零分配）。
+  - `stringifyWire(value)`：用 `JSON.stringify` 的 `replacer` 只清洗**字符串值**，
+    不做深拷贝（工具结果动辄几百 KB，深拷贝就是白烧 GC）。
+  - 刻意**不用正则**：孤立代理项的判定要看相邻字符，带后向断言/重复分组的正则在长串上
+    有性能与跨端一致性问题（同一天在姊妹仓踩过一次，见那边 `PITFALLS.md` §长文本正则与重复分组）。
+  - 已知边界写在注释里：`replacer` 不经过**对象的键**，本项目键名都是协议固定 ASCII 字段，
+    不存在「按字符数截断的键」；真出现应从产生侧修，而不是在每次广播上做全量 JSON 词法扫描。
+- 接入**两个出网口**：WebSocket（`src/host/server.ts` 的 `connection.ready` 与 `broadcast`）
+  与 HTTP JSON（`src/host/router.ts` 的 `sendJson`）。路由鉴权、事件过滤一律未动。
+
+**测了什么**
+
+- 新增 `tests/wire-json.spec.ts`（8 用例）：合法代理对保留、孤立高/低代理替换、
+  好坏混合只修坏的、无缺陷快路径同引用、嵌套结构往返后线上无 `\ud800`、
+  干净输入与原生 `JSON.stringify` 逐字节一致、20 万字符病态输入不退化。
+- `tsc --noEmit` **exit 0**；`vitest run` **31 个测试文件 / 235 用例全绿**
+  （新增 1 文件 8 用例，其余未动）。
+- `tsx scripts/check-project-docs.ts` 与 `tsdown` build：见本轮门验结论。
+
+**未做 / 环境问题（需明确提示）**
+
+- **未发版**，无版本号变更。
+- ⚠️ **本机 `pnpm` 已坏**：`pnpm --version` 直接报 `[ERROR] unable to open database file`，
+  换 `XDG_STATE_HOME` 无效；`node_modules/.bin/` 下的同名二进制（tsc / vitest / tsx / tsdown）
+  全部正常，npm 10.9.9 与 node v24.19.0 正常。因此本轮 `pnpm check` 的四道门是**逐条等价执行**的，
+  不是一条命令跑的 —— 环境修复后应补跑一次完整 `pnpm check`。已记入 `PITFALLS.md`。
+
 ## 投稿 awesome-dsh-plugin 收录（2026-10-15，未发版，仅文档与资产）
 
 **基于什么**：读 [awesome-dsh-plugin/contributing.md](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin/blob/main/contributing.md) 全文，逐条比对两个仓库的现状。该列表的收录形态是「一个插件一个 YAML 文件」，两个 README 由脚本生成、禁止手改。

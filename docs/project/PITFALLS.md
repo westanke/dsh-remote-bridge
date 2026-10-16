@@ -237,3 +237,131 @@ Cordis 4.0.2（`vendor/cordis/src/events.ts`）：
 ② 测试替身若忽略第三个参数，`{ prepend: true }` 写错或被删都不会红 ——
 本仓 `tests/dsh-0.2-bridge.spec.ts` 的 `makeHost().on` 已按 `unshift`/`push` 忠实建模，
 并有回归用例「registers both interaction hooks at the head of the waterfall chain」盯着。
+
+---
+
+### 孤立代理项打死整条连接
+
+**症状**：客户端「突然不再更新」——WebSocket 看着还连着，但一帧都不再处理。
+服务端日志干净（`JSON.stringify` 本身没报错），客户端侧只有一句 JSON 解码失败。
+重启客户端后一切正常，直到下一次同样的输出再次出现。
+
+**根因**：DSH 内核按**字符数**截断摘要（工具输出、标题）时，截断点可能落在代理对中间，
+字符串里只剩**半个** UTF-16 代理项（emoji、部分 CJK 扩展字）。`JSON.stringify` 会照常把它
+转义成 `\udXXX` —— JSON **语法合法、语义非法**，而 Swift/Foundation 的 JSONDecoder
+拒绝的是**整帧**，不是那个字段。一个坏字符 = 一条连接静默死亡。
+
+**现在怎么办**：出网统一走 `src/host/wire-json.ts` 的 `stringifyWire()`（孤立代理项 → U+FFFD）。
+两个出网口都已接入：WS（`server.ts` 的 `connection.ready` 与 `broadcast`）与
+HTTP JSON（`router.ts` 的 `sendJson`）。**新增任何出网口都要走它**，不要直接 `JSON.stringify`。
+
+**铁律**：跨端协议上的字符串必须保证是**合法 Unicode** —— 同一个坏字符在 JS 端无害，
+在 Swift 端是整帧被拒。判断责任时先看**接收端能不能解**，而不是看发送端有没有抛错。
+
+**回归**：`tests/wire-json.spec.ts`（8 用例，含嵌套结构往返、干净输入与原生逐字节一致、
+20 万字符病态输入）。
+
+---
+
+### pnpm store 打不开数据库
+
+**症状**：任何 `pnpm` 命令（含 `pnpm --version`）直接失败并打印
+`[ERROR] unable to open database file`，连帮助都出不来。
+而 `node --version`、`npm` 与项目 `node_modules/.bin/` 下的 tsc / vitest / tsx / tsdown 全部正常。
+
+**根因**：本机 pnpm 自身的 store/state 层问题（pnpm 11 用 SQLite 维护索引）。
+换 `XDG_STATE_HOME`、换 `store-dir` 都无效，`~/.local/state/pnpm` 里只有一份正常权限的
+`pnpm-state.json` —— 所以不是项目配置，而是**全局 pnpm 安装或它的 store 索引损坏**。
+2026-10-17 首次遇到，尚未修复（npm 10.9.9 / node v24.19.0 / 磁盘余量 747G 均正常）。
+
+**现在怎么办（临时口径）**：`pnpm check` 的四道门**逐条等价执行**：
+
+```sh
+./node_modules/.bin/tsc --noEmit
+./node_modules/.bin/vitest run
+./node_modules/.bin/tsx scripts/check-project-docs.ts
+./node_modules/.bin/tsdown
+```
+
+**铁律**：pnpm 不可用时**不要**去改项目脚本迁就环境；用本地二进制跑等价门禁，
+并在提交信息与日志里写明「本次不是一条命令跑的」。**环境修复后必须补跑一次完整 `pnpm check`**
+—— `prepack`（发版前最后一道闸）只有它能触发，`build` 不查类型（见本文件 §build 不查类型）。
+
+---
+
+### 截断标记与内容必须同源
+
+**症状**：响应里带了 `truncated: true`（或 `bridgeTruncated` 之类）的标记，客户端据此提示用户
+「内容已截断」，**而内容一个字符都没少**。反过来更危险：内容真被裁了却**没有**标记，
+用户以为看到的是全文。
+
+**根因**（2026-10-17 实发）：`history-budget.ts` 初版给事件贴标记时写的是
+`{ ...entry, bridgeTruncated }` —— 用的是**原始** entry，而裁剪结果在 `result.value` 里。
+于是「标记加上了、内容没换」。更值得记住的是：**单元测试里只断言「有标记」时它会静默通过** ——
+断言写弱了，等于给 bug 发了通行证。
+
+**现在怎么办（铁律）**：
+- 任何「我改过了」的标记必须与**改动后的数据**来自同一处（同一个变量/对象），
+  不能一边留着旧引用、一边贴新标记。
+- 测试必须**双向**：有标记 ⇒ 内容确实变了（长度或字节数变小）；
+  无标记 ⇒ 内容与输入**逐字节一致**。只测一侧等于没测。
+- 回归钉子：`tests/history-budget.spec.ts` 的
+  「never marks an event as truncated unless its content really shrank」与
+  「leaves a within-budget response exactly as it was, with no extra fields」。
+
+---
+
+### 论证要先追到消费侧
+
+**症状**：文档 / 提交信息 / 代码注释里写下「X 不会做 Y，所以这里是缺口」，
+而实际上 X **会**做 Y。依据只是「我 grep 了 X 的入口文件，没看到」。
+更麻烦的是这种结论会被当成设计依据继续传播 —— 后来的人只抄前一句，不会重查。
+
+**根因**（2026-10-17 实发）：给「连接即重放」写动因时，只 grep 了客户端 data 层的
+`DshClient.onOpen`（那里确实只改连接状态），就断言「自动重连不触发任何业务刷新」。
+而真正的刷新发生在**上一层**：`HarnessViewModel.connectEvents` 的 `connection` 回调
+（`dsh-companion` 的 `HarnessViewModel.kt:537-546`）在连接成功时刷新历史、审批、提问与命令。
+搜索停在了「信号的发出处」，没走到「信号的消费处」。
+
+**现在怎么办（铁律）**：
+- 说「某某不做某件事」之前，必须追到**消费该信号的那一层**：回调的注册方、
+  事件的订阅方、接口的调用方。只搜发出方得出的结论**不算证据**。
+- 中间隔着回调 / 事件 / 抽象类时尤其危险：「发出方只做了 A」≠「系统只做了 A」。
+- **纠错要留痕**：改正措辞之外，还要在 `CHANGELOG-DEV.md` 里写一句
+  「初稿论证是错的、错在哪」——否则下一个人会顺着旧结论再推一遍。
+  本条的实例见 2026-10-17「连接即重放」条目末尾的纠错记录。
+
+**为什么值得单列**：这类错误**没有测试能抓**（代码全绿、行为也对），
+它污染的是「为什么这么做」的记录，而那份记录正是后来者唯一能依据的东西。
+
+---
+
+### 空结果的来源要验证
+
+**症状**：注释 / 文档 / 提交信息里写着「X 里**没有** Y（已 grep）」，看起来有证据，
+而那条 grep 的 0 命中来自一个**不存在的目录**（或压根没读到的文件）。结论有证据的外形，
+实际是**空证据**，还会被后来者当依据继续传播。
+
+**根因**（2026-10-17 实发）：为「历史响应为什么不照抄字段级裁剪」写理由时，
+`grep -rho "tool/result" node_modules/@deepseek-ai/` 返回 0，我据此写下
+「本仓与**内核的 `node_modules`** 里都零命中」。而 `node_modules/@deepseek-ai`
+**根本不存在** —— 官方内核包随 DSH 主包安装，本仓只把它们列为 peer 依赖；
+**这一点本仓 `CHANGELOG-DEV.md` 里早就写着**（2.1.x 那条「官方内核包随 DSH 主包安装，
+不会出现在 profile 的 `node_modules` 下」）。我既没验证路径存在，也和仓库已有知识矛盾。
+
+`grep` 对不存在的路径返回空输出 + 退出码 2，与「目录存在但没匹配」在终端上几乎一样 ——
+**除了退出码，两者不可区分，而人不会去看退出码**。
+
+**现在怎么办（铁律）**：
+- **先确认目标存在，再引用它的查询结果**：`ls -d <path>` / `test -d <path>` 跑一遍再 grep；
+  或者把范围限定在**仓库内**（`grep -r --include='*.ts' PATTERN src/ tests/ docs/`），
+  这样"路径不存在"这个失败模式从根上消失。
+- 区分三种「没有」，只有第一种能当证据：
+  ① 我查了，目标存在，确实没有 → 可写「已核」；
+  ② 我查了，但目标不存在 / 没读到 → 只能写「**本仓不可证**」；
+  ③ 我没查 → 什么都不该写。
+- 审稿看到「已核 / 零命中 / 不存在」这类断言，先问：**查的是哪条路径？那条路径存在吗？**
+
+**为什么值得单列**：这类错误**没有测试能抓**（代码全绿、行为也对），
+它伪造的是「为什么这么做」的依据 —— 而那份依据正是后来者唯一能据以判断的东西。
+与 §论证要先追到消费侧 是一对：那条讲「别把发出方当消费方」，这条讲「别把查不到当不存在」。
