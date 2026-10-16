@@ -204,3 +204,36 @@ v2.2.1 是第一次按此规矩执行，哈希成功对上。
 写双列地址前**先验证两端都真的可达**。
 
 **铁律**：双站镜像 ≠ 双站都有货。写进文档的下载地址，两端都要点一次。
+
+---
+
+### waterfall 不 prepend 就等于没注册
+
+**症状**：审批与提问卡片在手机端**一张都不显示**，而电脑端官方 WebUI 一切正常；
+两侧日志都不会说一句话（本插件的 `log()` 里一条 approval/question 记录都没有）。
+
+**根因**：内核的 `approval/request` 与 `user-questions/request` 是 **waterfall** 链。
+Cordis 4.0.2（`vendor/cordis/src/events.ts`）：
+
+- `:143` / `:255` —— 注册就是数组插入：`const method = options.prepend ? 'unshift' : 'push'`；
+  **不传 `prepend` 就是 `push` 到链尾**。
+- `:225-228`（waterfall 语义原文）——「Listeners run outermost-first;
+  **a listener that does not call `next()` vetoes the rest of the chain**」。
+
+于是：不 prepend 时本插件排在官方 WebUI 的监听器**之后**；官方 WebUI 自己处理掉
+这次审批/提问就不调 `next()`，**本钩子永远不被调用**——表现与「压根没注册」完全一样。
+
+**现在怎么办**：两个钩子注册时都传 `{ prepend: true }`
+（`src/host/dsh-0.2-bridge.ts` 的 `ApprovalBridge.attach` 与 `QuestionBridge.attach`）。
+**真机已验证**（v2.3.7，2026-10-16）：改前 plan 模式评审卡片只有电脑端弹、
+手机端零卡片；改后**手机端与电脑端同时正常弹出**，电脑端行为一字未变（没抢答）。
+
+**为什么难以发现**：提问钩子的源码注释里**早就写对了这段机理**
+（「我们必须在链的最外层……排在后面的话，前面那家一旦不调 next（veto 整条链），
+我们根本不会被调用」）——**知道该怎么做，只是注册时漏了这个选项**。
+且失败路径**完全静默**，没有任何日志或报错。
+
+**铁律**：① 在 waterfall 事件上注册接管钩子，**必须 prepend**；
+② 测试替身若忽略第三个参数，`{ prepend: true }` 写错或被删都不会红 ——
+本仓 `tests/dsh-0.2-bridge.spec.ts` 的 `makeHost().on` 已按 `unshift`/`push` 忠实建模，
+并有回归用例「registers both interaction hooks at the head of the waterfall chain」盯着。

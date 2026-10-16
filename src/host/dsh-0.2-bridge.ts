@@ -265,8 +265,17 @@ export interface Dsh02HostServices {
    * Cordis event bus of the host context. Used for the two facts the old
    * `apiProxy` event streams carried that no controller returns: session
    * registry changes and the approval answerer waterfall.
+   *
+   * `options.prepend` 是 Cordis `EventsService.on` 的原生选项（cordis 4.0.2
+   * `src/events.ts:143`、`:255`：`const method = options.prepend ? 'unshift' : 'push'`）。
+   * 审批与提问两个钩子**必须**传 `{ prepend: true }` —— 原因见
+   * `ApprovalBridge.attach` 与 `QuestionBridge.attach` 的注释。
    */
-  on(event: string, listener: (...args: any[]) => unknown): () => void
+  on(
+    event: string,
+    listener: (...args: any[]) => unknown,
+    options?: { prepend?: boolean },
+  ): () => void
 }
 
 // ── RPC envelope helpers ───────────────────────────────────────────────────
@@ -596,6 +605,17 @@ class ApprovalBridge {
 
   /** Register the answerer once, during plugin activation. */
   attach(): void {
+    // @patch
+    // id: approval-hook-prepend
+    // for: Cordis 4.0.2 `ctx.on` 的 `{ prepend: true }` 选项（events.ts:113-114、:255）
+    // why: 内核的 `approval/request` 是 **waterfall** 链（cordis events.ts:225-228：
+    //      「Listeners run outermost-first; a listener that does not call `next()`
+    //      vetoes the rest of the chain」）。不 prepend 时本监听器被 `push` 到链尾
+    //      （events.ts:255），排在官方 WebUI 的监听器**之后**；官方 WebUI 若自己
+    //      处理掉这次审批就不会调 `next()`，本钩子**永远不被调用** —— 症状正是
+    //      「电脑端一切正常、手机端一张卡都没有」，且两侧日志都不会说一句话。
+    // until: 上游把审批也改成可并行的广播语义，或本插件不再需要抢在 WebUI 之前接管。
+    // test: tests/dsh-0.2-bridge.spec.ts › registers both interaction hooks at the head of the waterfall chain
     this.host.on('approval/request', async (...args: any[]) => {
       const req = args[0] as { agent?: unknown; toolName?: unknown; reason?: unknown; callId?: unknown; signal?: AbortSignal }
       const next = args[args.length - 1] as () => Promise<unknown>
@@ -637,7 +657,7 @@ class ApprovalBridge {
       })
       if (outcome === 'delegate') return next()
       return outcome
-    })
+    }, { prepend: true })
   }
 
   async respond(message: { type: 'client-response'; rpcId: string; result: { ok: true; value: unknown } }): Promise<{ accepted: true } | { accepted: false; reason: 'not-pending' | 'bad-response' }> {
@@ -737,6 +757,16 @@ class QuestionBridge {
     //
     // 另外这是**全局**监听：提问是 agent 作用域派发的（内核用 scopeTarget 派发），
     // 而 `ctx.on` 默认注册的 hook 带作用域标签、会被派发侧的 filter 过滤掉。
+    //
+    // @patch
+    // id: question-hook-prepend
+    // for: Cordis 4.0.2 `ctx.on` 的 `{ prepend: true }` 选项（events.ts:113-114、:255）
+    // why: 上面那段注释已经把机理写清楚了，但注册时**漏了这个选项** —— 注释与
+    //      实现不符，等于「知道该怎么做但没做」。不 prepend 时本监听器被 `push`
+    //      到链尾（events.ts:255），前面那家一旦不调 `next()`（waterfall 会 veto
+    //      整条链，events.ts:225-228），本钩子永远不被调用。
+    // until: 同 approval-hook-prepend。
+    // test: tests/dsh-0.2-bridge.spec.ts（同上，用例名：registers both interaction hooks at the head of the waterfall chain）
     this.host.on('user-questions/request', async function (...args: any[]) {
       const request = args[0] as UserQuestionRequestLike | undefined
       const next = args[args.length - 1]
@@ -831,7 +861,7 @@ class QuestionBridge {
       // delegated 分支里 delegate 已经 fulfilled，await 不会抛；
       // dismissed（中止）分支里把 delegate 原样交出去。
       return await delegate
-    })
+    }, { prepend: true })
   }
 
   /**
