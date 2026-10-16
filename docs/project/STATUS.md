@@ -53,6 +53,11 @@
     `hasInteractionClient` 在线判据（有 id 但没手机连就`next()` 放行，防止劫持电脑端）；
     ② 学它用 `AbortSignal.any` 在答完后主动 abort 下游；③ `sessionIdOfAgent` 链序把
     `id` 提到第一位（`agent.sessionId` 根本不存在，第一格永远走不到）。
+  - **产物**：`artifacts/dsh-remote-bridge-v2.3.7.tgz`，**532,529 字节**，
+    SHA-256 `0e9d76bb8ad7d9b7a8c97cf6e8331fdf02f752911a7df1a1ec74c815cf921603`，
+    npm shasum `6c5a4d17ed357907a5169f59d93ecb8a603e8934`（与 `npm pack` 输出一致）。
+    打包命令 `npm pack --pack-destination artifacts`（**不用 `pnpm pack`**，见
+    `PITFALLS.md` §npm pack 与 pnpm pack）。
 - 2.3.6（归档点了没反应 + 手机端交互卡片全灭）：
   - **现象**：手机 App 会话列表里点「归档」→ 确认 → 请求返回 200，但该会话照旧留在列表里，像是什么都没发生。
   - **根因（写入通、读取断）**：App `POST /chat/sessions/{id}/archive` → router → chat-adapter → 桥接 `workspaceController.archiveSession`，内核确实把会话写进**注册表级**归档集合（`WorkspaceRegistry.archivedSessionIds`，持久化在 workspace state）。但读这一侧，`chat-adapter.listSessions` 靠 `api.workspace.list().archivedSessionIds` 过滤，而桥接 `workspace.list` **把它硬编码成 `[]`**（原注释：「注册表没有插件侧归档的概念」—— 对「插件自建存储」成立，但归档根本不是插件侧状态，`archiveSession` 写的正是注册表本身）。过滤集恒空 → `continue` 一次都不执行 → 归档成功却被自己抹掉。
