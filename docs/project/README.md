@@ -2,12 +2,19 @@
 
 本文档目录是开发事实来源。聊天记录可以帮助讨论，但不得替代这里的状态、接口和决策记录。
 
+## 工程宪法
+
+仓库根的 `AGENTS.md` 是每次会话必然读到的那份约定：命令口径（`pnpm check` 而非 `pnpm build`）、
+三条不可动的对外契约、wire schema 五处同步、债务台账（行数预算 600）、`@patch` 四要素、
+测试纪律、对外表述三态、坑位索引。**规矩写在那里，不靠记忆、不靠口头。**
+
 ## 每轮开始
 
 1. 阅读 [STATUS.md](STATUS.md)，确认当前基线、正在进行的任务和阻塞项。
 2. 阅读 [ROADMAP.md](ROADMAP.md)，只处理状态为 `in-progress` 或下一项 `planned` 的任务。
 3. 按任务需要阅读 [ARCHITECTURE.md](ARCHITECTURE.md)、[API.md](API.md)、[SECURITY.md](SECURITY.md) 和相关 ADR。
 4. 检查 `git status --short`，不覆盖来源不明的修改。
+5. **改代码前**按名字读 [PITFALLS.md](PITFALLS.md) 对应坑位；超行数预算前先入 [TECH-DEBT.md](TECH-DEBT.md)。
 
 ## 更新规则
 
@@ -16,7 +23,9 @@
 - 公共 wire schema 变化时同步更新 `API.md`、OpenAPI、AsyncAPI、Kotlin SDK 和测试。
 - 跨平台结论变化时更新 `COMPATIBILITY.md`；安全边界变化时更新 `SECURITY.md`。
 - 不可逆的架构或协议决定写入 `decisions/ADR-NNNN-*.md`，并加入下方索引。
-- 每次提交前运行 `pnpm docs:check`，把已运行命令追加到 `TESTING.md` 和 `CHANGELOG-DEV.md`。
+- 每次提交前运行 `pnpm docs:check`（本机 pnpm store 不可用时用 `./node_modules/.bin/tsx scripts/check-project-docs.ts`），把已运行命令追加到 `TESTING.md` 和 `CHANGELOG-DEV.md`。
+- **提交前跑 `pnpm check`**（typecheck → test → docs:check → build），不是 `pnpm build` —— 见 [PITFALLS.md](PITFALLS.md) §build 不查类型。
+- 因内核/上游行为写的适配代码必须打 `@patch` 四要素标（`AGENTS.md` §3.3），存量见 [TECH-DEBT.md](TECH-DEBT.md) DEBT-003/004。
 - 准备发版、发布 npm 或建双站 Release 时，先读 [RELEASE.md](RELEASE.md) —— 版本号清单、打包器差异、npm 的 2FA 与首次发布暂存审核、发完必做的实测都在那里。
 - 排查「某个功能不工作」之前，先读 [RETRO-question-card.md](RETRO-question-card.md) 的「该记住的」一节。
 
