@@ -57,7 +57,7 @@
   - ⚠️ **本机 `pnpm` 已坏**（`unable to open database file`，换 store/state 目录无效），
     上述四道门是**逐条等价执行**（`node_modules/.bin/` 下的 tsc/vitest/tsx/tsdown），
     不是一条 `pnpm check`。环境修复后必须补跑完整 `pnpm check`（`prepack` 只有它能触发）。
-- 阶段：`dsh-remote-bridge` **v2.3.7**（**已提交，未推送未发版**）
+- 阶段：`dsh-remote-bridge` **v2.3.8**（**已提交，未推送未发版**）—— 对标补强 C 批：`seq` 单一语义、订阅基线、连接即重放、Unicode 消毒、字节预算、交付物实时事件、26 项能力位、两条机检门禁
 - 当前任务：**v2.3.7 = 审批与提问卡片在手机端全灭的第二个病根**
   （即 `PITFALLS.md` §waterfall 不 prepend 就等于没注册）。
   **真机已验证**（2026-10-16，用户重启 dsh 后实测）：改前 plan 模式评审卡片只有电脑端弹、
