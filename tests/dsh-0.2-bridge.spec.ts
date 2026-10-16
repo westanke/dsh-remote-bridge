@@ -94,9 +94,14 @@ function makeHost() {
     attachments: {
       readImage: vi.fn(async () => ({ ref: { mediaType: 'image/jpeg' }, data: new Uint8Array([1, 2, 3]) })),
     },
-    on(event: string, listener: Listener): () => void {
+    on(event: string, listener: Listener, options?: { prepend?: boolean }): () => void {
       const list = handlers.get(event) ?? []
-      list.push(listener)
+      // 忠实模拟 Cordis 4.0.2 `EventsService.on`（vendor/cordis/src/events.ts:255）：
+      // `const method = options.prepend ? 'unshift' : 'push'`。
+      // 不模拟这一条，`{ prepend: true }` 写错或被删掉测试都不会红 —— 那正是
+      // 「钩子排在链尾 → 永远不被调用」这个 bug 能活到今天的原因。
+      if (options?.prepend === true) list.unshift(listener)
+      else list.push(listener)
       handlers.set(event, list)
       return () => {
         const current = handlers.get(event) ?? []
@@ -106,6 +111,10 @@ function makeHost() {
   }
   return {
     host: host as unknown as Dsh02HostServices,
+    /** 监听器注册顺序（0 = 链首）。瀑布链 outermost-first，序号越小越先跑。 */
+    listenerOrder(event: string): Listener[] {
+      return [...(handlers.get(event) ?? [])]
+    },
     emit(event: string, ...args: unknown[]): Promise<unknown>[] {
       return (handlers.get(event) ?? []).map(listener => listener(...args) as Promise<unknown>)
     },
@@ -122,6 +131,30 @@ async function nextFrame(stream: AsyncIterable<{ payload: Record<string, unknown
 }
 
 describe('dsh 0.2.x bridge: approval answerer', () => {
+  it('registers both interaction hooks at the head of the waterfall chain', async () => {
+    // 回归钉子：`approval/request` 与 `user-questions/request` 都是 waterfall
+    // （cordis events.ts:225-228「a listener that does not call `next()` vetoes
+    // the rest of the chain」）。不传 `{ prepend: true }` 就被 `push` 到链尾，
+    // 排在官方 WebUI 的监听器之后 —— 那家自己处理掉就不调 `next()`，
+    // 本钩子永远不被调用，症状是「电脑端正常、手机端一张卡都没有」且全静默。
+    // 这条用例把 prepend 从「注释里写过」变成「改不掉」。
+    for (const event of ['approval/request', 'user-questions/request']) {
+      const { host, listenerOrder } = makeHost()
+      // 先注册一个「官方 WebUI 那一类」的后置监听器，模拟它在链里排前面。
+      const webui = vi.fn(async () => 'unavailable')
+      host.on(event, webui)
+      createDsh02ApiProxy(host)
+
+      const chain = listenerOrder(event)
+      expect(chain).toHaveLength(2)
+      // 本插件的监听器必须在 webui **之前**（链首 = 最外层 = 先跑）。
+      // 测试替身按 cordis 的 `options.prepend ? 'unshift' : 'push'` 忠实建模，
+      // 去掉 prepend 这里立刻会红，不会静默通过。
+      expect(chain[0]).not.toBe(webui)
+      expect(chain[1]).toBe(webui)
+    }
+  })
+
   it('claims an approval request, republishes it, and settles from respond()', async () => {
     const { host, emit, listenerCount } = makeHost()
     const api = createDsh02ApiProxy(host)

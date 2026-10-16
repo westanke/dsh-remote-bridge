@@ -1,8 +1,16 @@
 # 当前状态
 
-- 日期：2026-10-15
-- 阶段：`dsh-remote-bridge` **v2.3.6**（**已发版**：npm 官方源 + npmmirror + 双站 Release + git tag `v2.3.6`。**实装目录未同步** —— 该目录在本机工作区之外且为只读挂载，助手写入被拒，需用户手动执行后再重启 dsh）
-- 当前任务：`v2.3.6` 两处修复 —— ① 桥接 `workspace.list` 把内核注册表级归档集合硬编码成 `[]`，导致「归档点了没反应」；② `sessionIdOfAgent` 漏了内核 `Agent.id`（与 `session.header.id`），导致审批与提问**两类**交互卡片在手机端全灭；本轮追加**投稿 awesome-dsh-plugin 收录**（见下节）
+- 日期：2026-10-16
+- 阶段：`dsh-remote-bridge` **v2.3.7**（**已提交，未推送未发版**）
+- 当前任务：**v2.3.7 = 审批与提问卡片在手机端全灭的第二个病根**
+  （即 `PITFALLS.md` §waterfall 不 prepend 就等于没注册）。
+  **真机已验证**（2026-10-16，用户重启 dsh 后实测）：改前 plan 模式评审卡片只有电脑端弹、
+  手机端零卡片；改后**手机端与电脑端同时正常弹出**，电脑端行为一字未变（未抢答，红线未踩）。
+  待推送 origin + gitee 与双站 Release（**等用户明确同意**）。
+- 上一版 v2.3.6 的「实装目录未同步」记录**已作废** —— 该目录现已可写，v2.3.7 已同步至
+  `~/.dsh/profiles/{desktop,web}/node_modules/dsh-remote-bridge/lib/index.js`
+  （各留一份 `index.js.bak-before-prepend` 供回滚），并经用户重启 dsh 后确认生效。
+- v2.3.7 详情见下方「2.3.7（waterfall 不 prepend）」节。
 - awesome-dsh-plugin 投稿（2026-10-15，基于 `contributing.md` 逐项整改）：
   - **收录范围**：只投 `dsh-remote-bridge`。`dsh-companion` 是纯 Kotlin/Gradle 的 Android 工程，仓库内**没有 `package.json`**，因此无法声明 CI 强制要求的 `dsh.bundle` manifest —— 按文档第 2 项检查必然被拒，硬造一个 Node 外壳只会命中「占位仓库」条款。客户端改由 remote-bridge 的 README「连接 Android App 或其他客户端」一节引用（GitHub / Gitee 双链接 + 双二维码）。
   - **新增 `screenshots.json`**（4 张，市场详情页展示）：`assets/screenshots/panel-roots.png` / `panel-remote.png` / `panel-devices.png` / `panel-app-download.png`。截图由 `scripts/generate-screenshots.ts` 生成，DOM 与 `WORKSPACE_CSS` 均从 `src/client/` 导入，与 `e2e/styles.spec.ts` 同一产出来源（那一层本就在量这些样式的计算值），**不是手工画的示意图**。未连接真实内核，故面板呈现「刚装好、远程访问未启用」的自然状态。
@@ -15,6 +23,36 @@
 - 2.2.3 / 2.2.4（纯文本模型发图）：内核以 `MODEL_DOES_NOT_SUPPORT_IMAGES` 拒收纯文本模型会话里的图片，插件按内核自己的 `llm.resolveModelInfo()` 判定并把图片落成工作区文件（`<会话工作目录>/.dsh-images/<sha256>.<ext>`，内容寻址、0700/0600），消息里留两行：第一行给人看（当前值可配置的识图路径），第二行 `[Image: source: <绝对路径>]` 给机器；解析不出工作目录时退回 `<dataDir>/image-handoff`。手机端用 `GET /api/v1/image-handoff` 把图取回去显示，历史图片走 `sessionController.attachment`
 - 2.2.4 实装 + 本轮待发版内容（`IMAGE-001`）：设置页新增「识图」分区 —— 识图路径（交接目录名）可改、存 `settings.image_handoff_subdir`、改完立即生效；「当前默认」`.dsh-images` 与兜底目录为只读栏。dsh-image-paths 0.3.1 的宿主路由与浏览器图集并入本插件：只读路由 `GET /plugin/dsh-remote-bridge/raw?sessionId=…&name=…`（回环 + 同源 + 裸文件名白名单 + 字节自证 + 32 MiB 上限，目录由宿主按会话推出），图集挂在 `conversation.chat.turnTail`，只认用户消息里的交接行首标记
 - **待办**：① 真机验证（重启 dsh 后：会话里「加载更早消息」能否翻出更早记录；「插件」页是否不再报判定不出 profile；**启停一个插件看是否要重启才生效、备份文件是否落地**）；② 停用独立 `image-paths` 插件那一行 —— 两个插件会把同一张图在 Turn 尾画两遍，本插件已自带该能力
+- 2.3.7（waterfall 不 prepend —— 手机端交互卡片全灭的**第二个**病根）：
+  - **现象**：v2.3.6 修好 `sessionIdOfAgent` 之后，plan 模式的评审卡片在**电脑端正常弹出、
+    手机端依然零卡片**。用户 2026-10-16 重启 dsh 后实测确认。
+  - **根因**：`approval/request` 与 `user-questions/request` 是 **waterfall** 链，而本插件
+    注册钩子时**没传 `{ prepend: true }`**。Cordis 4.0.2（`vendor/cordis/src/events.ts`）
+    `:143`/`:255` 是 `const method = options.prepend ? 'unshift' : 'push'` —— 不传就是
+    `push` 到**链尾**；`:225-228` 的 waterfall 语义明写「a listener that does not call
+    `next()` vetoes the rest of the chain」。于是本插件排在官方 WebUI 的监听器**之后**，
+    WebUI 自己处理掉就不调 `next()`，**本钩子永远不被调用**——表现与「压根没注册」一样，
+    且失败**完全静默**（两侧日志都不说一句话）。
+  - **为什么这么隐蔽**：提问钩子的源码注释里**早就写对了这段机理**（「我们必须在链的最外层……
+    排在后面的话，前面那家一旦不调 next（veto 整条链），我们根本不会被调用」）——
+    **知道该怎么做，只是注册时漏了这个选项**。参照来源是第三方实现 Whaleness 的网关插件
+    `dsh-plugin-mobile-gateway`（`lib/index.mjs:3182`、`:3214` 两个钩子都带 `{ prepend: true }`）。
+  - **修法**：两处 `host.on(…, listener)` 补第三参 `{ prepend: true }`；
+    `Dsh02HostServices.on` 的 TS 签名同步加 `options?: { prepend?: boolean }`；
+    两处各加 `@patch` 四要素（id `approval-hook-prepend` / `question-hook-prepend`）。
+  - **测**：`tests/dsh-0.2-bridge.spec.ts` 的 `makeHost().on` 改为**忠实模拟** Cordis 的
+    `unshift`/`push`（原桩忽略第三个参数，`{ prepend: true }` 写错或被删都不会红——那正是
+    这bug 能活到今天的原因之一）；新增回归用例「registers both interaction hooks at the
+    head of the waterfall chain」。**反向验证**：临时删掉两处 prepend，该用例如期变红
+    （`expected [AsyncFunction Mock] not to be [AsyncFunction Mock]`），恢复后 45 用例全绿。
+  - **真机验证（2026-10-16）**：用户重启 dsh 后，plan 模式评审 —— **手机端弹出卡片，
+    电脑端 WebUI 同时正常弹出**。红线「不得抢答、不得让电脑端卡片消失」**未踩**。
+    回滚预案留档 `docs/project/ROLLBACK-prepend-2026-10-16.md`，
+    实装目录各留 `lib/index.js.bak-before-prepend`。
+  - **未做**（本轮刻意只改一件事，避免说不清是哪件起的作用）：① 学Whaleness 加
+    `hasInteractionClient` 在线判据（有 id 但没手机连就`next()` 放行，防止劫持电脑端）；
+    ② 学它用 `AbortSignal.any` 在答完后主动 abort 下游；③ `sessionIdOfAgent` 链序把
+    `id` 提到第一位（`agent.sessionId` 根本不存在，第一格永远走不到）。
 - 2.3.6（归档点了没反应 + 手机端交互卡片全灭）：
   - **现象**：手机 App 会话列表里点「归档」→ 确认 → 请求返回 200，但该会话照旧留在列表里，像是什么都没发生。
   - **根因（写入通、读取断）**：App `POST /chat/sessions/{id}/archive` → router → chat-adapter → 桥接 `workspaceController.archiveSession`，内核确实把会话写进**注册表级**归档集合（`WorkspaceRegistry.archivedSessionIds`，持久化在 workspace state）。但读这一侧，`chat-adapter.listSessions` 靠 `api.workspace.list().archivedSessionIds` 过滤，而桥接 `workspace.list` **把它硬编码成 `[]`**（原注释：「注册表没有插件侧归档的概念」—— 对「插件自建存储」成立，但归档根本不是插件侧状态，`archiveSession` 写的正是注册表本身）。过滤集恒空 → `continue` 一次都不执行 → 归档成功却被自己抹掉。

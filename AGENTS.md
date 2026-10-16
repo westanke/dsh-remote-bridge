@@ -165,6 +165,7 @@ docs/api/            ← OpenAPI + AsyncAPI（wire schema 的权威）
 - `归档点了不消失`
 - `审批与提问卡片全灭`
 - `抢答与 next() 委托`
+- `waterfall 不 prepend 就等于没注册`
 - `wait.callId 判据过严`
 - `npm pack 与 pnpm pack`
 - `Gitee Release 死链`
