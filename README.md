@@ -9,7 +9,7 @@
 </p>
 
 <p align="center">
-  <img alt="Version" src="https://img.shields.io/badge/version-v2.3.6-087f8c">
+  <img alt="Version" src="https://img.shields.io/badge/version-v2.4.0-087f8c">
   <img alt="DSH plugin" src="https://img.shields.io/badge/DeepSeek_Harness-plugin-1f2328">
   <img alt="Platforms" src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-586069">
   <img alt="License" src="https://img.shields.io/badge/license-AGPL--3.0-2da44e">
@@ -76,10 +76,10 @@ dsh plugin --profile web add dsh-remote-bridge
 dsh plugin --profile web add dsh-remote-bridge --registry https://registry.npmmirror.com
 
 # ② GitHub Release 的 tarball
-dsh plugin --profile web add https://github.com/westanke/dsh-remote-bridge/releases/download/v2.3.6/dsh-remote-bridge-v2.3.6.tgz
+dsh plugin --profile web add https://github.com/westanke/dsh-remote-bridge/releases/download/v2.4.0/dsh-remote-bridge-v2.4.0.tgz
 
 # ③ Gitee Release 的 tarball（国内访问更快）
-dsh plugin --profile web add https://gitee.com/westanke/dsh-remote-bridge/releases/download/v2.3.6/dsh-remote-bridge-v2.3.6.tgz
+dsh plugin --profile web add https://gitee.com/westanke/dsh-remote-bridge/releases/download/v2.4.0/dsh-remote-bridge-v2.4.0.tgz
 
 npx @deepseek-ai/dsh web
 ```
@@ -95,7 +95,7 @@ npx @deepseek-ai/dsh web
 从 GitHub Release 下载离线安装包时，可直接安装 tarball：
 
 ```sh
-dsh plugin --profile web add ./dsh-remote-bridge-v2.3.6.tgz
+dsh plugin --profile web add ./dsh-remote-bridge-v2.4.0.tgz
 ```
 
 ## 第一次使用
@@ -325,11 +325,11 @@ pnpm pack
 
 `npm pack` 的产物约 **0.29 MB**：2.2.0 删除独立页及其编辑器依赖、并关闭 source map 之后，从 1.72 MB 降下来。
 
-v2.3.6 基于 DSH `master@47f943859bef60e4160492346772ded9b24f765a` 开发，CI 覆盖 Windows、Ubuntu 和 macOS。
+v2.4.0 基于 DSH `master@47f943859bef60e4160492346772ded9b24f765a` 开发，CI 覆盖 Windows、Ubuntu 和 macOS。
 
 ## 项目信息
 
-- 当前版本：`v2.3.6`
+- 当前版本：`v2.4.0`
 - 作者：上游 [Hakunm](https://github.com/Hakunm)，本 fork 维护 [westanke](https://github.com/westanke)
 - 仓库：[GitHub](https://github.com/westanke/dsh-remote-bridge) · [Gitee](https://gitee.com/westanke/dsh-remote-bridge)
 - npm：[`dsh-remote-bridge`](https://www.npmjs.com/package/dsh-remote-bridge)（[国内镜像](https://registry.npmmirror.com/dsh-remote-bridge)）

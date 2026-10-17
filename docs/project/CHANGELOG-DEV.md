@@ -1,5 +1,41 @@
 # 开发日志
 
+## 2.4.0 · Cloudflare WAN 隧道接入 + 远程卡 UI 调整（2026-10-17）
+
+### 基于什么
+
+「人已出门、只有手机在手」也要能连回本机 —— 远端在哪、局域网之外怎么连，是远程访问的
+最后一块短板。用户已在真机（重启 dsh 后）确认手机端可访问，随后提出插件界面端四项 UI 调整。
+
+### 为什么
+
+1. 之前只有独立 listener（局域网/直连），没有公网兜底通道；人不在同一网络就断了；
+2. Cloudflare 隧道（边缘上已由 provider 做了)→ 不需要逐个路由器配端口映射；
+3. 原 UI 里隧道开关、地址、创建/停止分散，「用隧道地址生成配置文本」藏在一处；
+4. 创建云隧道是**公网暴露**的高风险动作，缺一个安全确认在逻辑上站不住。
+
+### 干了什么
+
+- **云端接入**：新增 `src/host/cloudflared.ts`（`ensureCloudflared` 复用局内已下载的二进制/否则
+  择源解包，`CloudflaredTunnelManager` 起 Quick Tunnel，从 stdout 正则抓
+  `https://<host>.trycloudflare.com`）；router 加回环管理端点
+  `/manage/cloudflare/{status,create,stop}` 与进度查询 `/manage/cloudflare/activity`；
+  `api.ts` 加 `tunnelStatus/Create/Stop/Activity`。端点对外统一为 `https://`；
+- **UI 调整（四项）**：
+  1. 隧道主体区（标题/状态 pill/安全警告/开关/进度/地址）**上移到「选择权限」之上、「远程访问
+     已启用」之下**；
+  2. 创建/停止**合并为单按钮**，按隧道运行状态切换文案「开启云隧道 / 停止云隧道」；
+  3. 「用隧道地址生成配置文本」按钮**移到主「生成配置文本」按钮之后**，按状态显示
+     「生成隧道配置文件」（可点）/「隧道未开启」（点击等同开启云隧道）；
+  4. 开启云隧道（含「隧道未开启」态触发的开启）先弹 `window.confirm` 安全确认
+     （`tunnelStartConfirm`），取消则不执行；UI 常驻 `tunnelSecurityWarning`。
+
+### 测什么
+
+`tsc --noEmit` exit 0；`vitest run` **38 文件 / 290 用例**；`docs:check`（10 文档 / 39 任务 / 9 ADR）；
+`tsdown` 构建通过；`playwright test` 4 个样式契约全部通过。
+真机（2026-10-17）：官方 cloudflared deb 在本机择源下载解包起隧道成功，手机端确认可访问。
+
 ## 2.3.8 · C 批结构性修复 + 能力位与事件面（2026-10-17）
 
 ### 基于什么

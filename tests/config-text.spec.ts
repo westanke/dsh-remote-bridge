@@ -109,6 +109,37 @@ describe('classifyHost', () => {
     expect(classifyHost('8.8.8.8')).toBe('WAN')
     expect(classifyHost('not-an-ip')).toBe('UNKNOWN')
   })
+
+  it('classifies a Cloudflare quick-tunnel host as UNKNOWN (kind is cosmetic, not in wire)', () => {
+    expect(classifyHost('real-tunnel-9f2k.trycloudflare.com')).toBe('UNKNOWN')
+    expect(classifyHost('abcdef-try-123.trycloudflare.com')).toBe('UNKNOWN')
+  })
+})
+
+describe('encodeConfigText with a Cloudflare tunnel endpoint', () => {
+  // 坑位 §wss 端点必须归一成 https：隧道对外的原生地址是 `https://<host>.trycloudflare.com`，
+  // 它必须是 https（客户端拼 /events 时自动升级为 wss），不能把 wss:// 或 http:// 直接塞进去。
+  it('round-trips an https quick-tunnel endpoint into the wire format', () => {
+    const payload = {
+      displayName: '家里的电脑',
+      endpoints: [
+        {
+          label: '云隧道',
+          baseUrl: 'https://real-tunnel-9f2k.trycloudflare.com',
+          kind: 'WAN' as const,
+        },
+      ],
+      token: 'tok_tunnel',
+      deviceName: 'Pixel 9',
+      scopes: [],
+    }
+    const text = encodeConfigText(payload)
+    expect(text).toContain('DSH1:')
+    const body = Buffer.from(text.slice('DSH1:'.length), 'base64url').toString('utf8')
+    const decoded = JSON.parse(body)
+    // 端点地址原样保留：https 前缀与 trycloudflare 主机都不能在编码途中被改写掉。
+    expect(decoded.endpoints[0].baseUrl).toBe('https://real-tunnel-9f2k.trycloudflare.com')
+  })
 })
 
 describe('normalizeBaseUrl', () => {

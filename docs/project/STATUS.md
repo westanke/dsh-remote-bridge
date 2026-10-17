@@ -54,11 +54,39 @@
   见 `CHANGELOG-DEV.md` 2026-10-17 十条。见 `CHANGELOG-DEV.md` 2026-10-17 七条。
   门验：`tsc --noEmit` exit 0、**34 文件 / 264 用例全绿**、`docs:check`（10 文档 / 39 任务 / 9 ADR）、
   `tsdown` build 通过。
-  - ⚠️ **本机 `pnpm` 已坏**（`unable to open database file`，换 store/state 目录无效），
-    上述四道门是**逐条等价执行**（`node_modules/.bin/` 下的 tsc/vitest/tsx/tsdown），
-    不是一条 `pnpm check`。环境修复后必须补跑完整 `pnpm check`（`prepack` 只有它能触发）。
-- 阶段：`dsh-remote-bridge` **v2.3.8**（**已提交，未推送未发版**）—— 对标补强 C 批：`seq` 单一语义、订阅基线、连接即重放、Unicode 消毒、字节预算、交付物实时事件、26 项能力位、两条机检门禁
-- 当前任务：**v2.3.7 = 审批与提问卡片在手机端全灭的第二个病根**
+  ⑪ **Cloudflare WAN 隧道接入**（一次性把「人已出门、只有手机」也能连回家打通）：
+  新增 `cloudflared.ts`（`ensureCloudflared` 落盘 + `CloudflaredTunnelManager` 起 Quick Tunnel、
+  从 stdout 正则抓 `https://<host>.trycloudflare.com`），router 加三个回环管理端点
+  `/manage/cloudflare/{status,create,stop}`，`api.ts` 加 `tunnelStatus/Create/Stop`，
+  WebUI「📱 手机设置」远程卡叠加一块隧道分区（状态、地址、创建/停止、「用隧道地址生成配置文本」）。
+  **红线未踩**：电脑端 config-text 直连、扫码/配对码路径与七张卡片一字未动。端点对外统一为
+  `https://`（客户端拼 wss 时自行升级，坑位 §wss 端点必须归一成 https）。Quick 隧道地址
+  临时会漂移。门验：`pnpm check` 四道门全绿（**38 文件 / 286 用例**、docs:check、build）。
+  新坑位三条已入 `PITFALLS.md` 与 AGENTS §6 索引。
+  - **真机验证（2026-10-17）**：用真实 cloudflared（官方 `pkg.cloudflare.com` deb 解包）实测
+    宿主侧闭环保真跑通——`ensureCloudflared`(复用/下载解包) → Quick Tunnel 创建成功 →
+    抓到 `https://*.trycloudflare.com` → 生成 DSH1 配置、往返解码 baseUrl 一致 → stop 干净退出。
+    另验证了新增 `deb+` 下载源：`CLOUDFLARED_MIRROR=deb+https://pkg.cloudflare.com/cloudflared/pool/main/c/cloudflared/cloudflared_2026.10.1_amd64.deb`
+    在本机（GitHub 直连被墙）能真实下载解包并成功起隧道。门验随之更新为 **38 文件 / 288 用例**。
+    `src/host/cloudflared.ts` 注释已从「诚实声明无镜像」改为「真实择源」。
+  - ⚠️ ~~本机 `pnpm` 已坏~~（`unable to open database file`）：**2026-10-17 Cloudflare 接入时
+    `pnpm check` 已恢复正常**，四道门（typecheck → test 38/288 → docs:check → build）由一条命令
+    逐段跑通（`prepack` 可正常触发）。此条作废。
+- 阶段：`dsh-remote-bridge` **v2.4.0**（**已提交，未推送未发版**）—— **Cloudflare WAN 隧道接入**（「人已出门、只有手机在手」也能连回家）+ 远程卡 UI 调整（隧道区上移、开关合并、生成隧道配置文件按钮、安全确认）。
+  - **云端**：新增 `src/host/cloudflared.ts`（`ensureCloudflared` 复用/下载解包 + `CloudflaredTunnelManager` 起 Quick Tunnel、正则抓 `https://<host>.trycloudflare.com`），
+    router 加回环管理端点 `/manage/cloudflare/{status,create,stop}` + `/manage/cloudflare/activity`（下载进度），`api.ts` 加 `tunnelStatus/Create/Stop/Activity`。
+    端点对外统一为 `https://`（客户端拼 wss 时自行升级，坑位 §wss 端点必须归一成 https）；Quick 隧道地址临时会漂移。
+  - **真机已验证**（2026-10-17）：`pkg.cloudflare.com` 官方 deb 在本机（GitHub 直连被墙）能真实下载解包并成功起隧道，手机端确认可访问。
+  - **UI 调整（本轮）**：① 隧道主体区（标题/状态/安全警告/开关/进度/地址）上移到「选择权限」之上、「远程访问已启用」之下；
+    ② 创建/停止合并为单按钮，按隧道状态切换文案「开启云隧道 / 停止云隧道」；
+    ③ 「用隧道地址生成配置文本」按钮移到主「生成配置文本」按钮之后，按状态显示「生成隧道配置文件 / 隧道未开启」（未开启态点击等同开启）；
+    ④ 开启云隧道（含隧道未开启态触发）弹安全确认，UI 常驻安全警告。
+  - **红线未踩**：电脑端 config-text 直连、扫码/配对码、其余六张卡片一字未动（仅隧道区 UI 重排）。
+  - 门验：`pnpm check` 四道门全绿（**38 文件 / 290 用例**、docs:check、build）+ e2e 4 样式契约。新坑位扫过 `PITFALLS.md`。
+- v2.3.9（delta 帧始终带 turn/step）——**已提交并推送两仓 + tag 已打**（`1c75aca`）：`assistant-stream` 的 start 帧
+  turn/step 兜底 0 不再留 undefined，修复「客户端静默丢帧」。
+- 上一版 v2.3.8（对标补强 C 批）**已提交**（`d6c4298`）：`seq` 单一语义、订阅基线、连接即重放、Unicode 消毒、字节预算、交付物实时事件、26 项能力位、两条机检门禁。详见下方「在途」记录。
+- 前几批历史：v2.3.7（waterfall 不 prepend）、v2.3.6（归档 + 审批/提问卡片）等见下方各节与 `CHANGELOG-DEV.md`。
   （即 `PITFALLS.md` §waterfall 不 prepend 就等于没注册）。
   **真机已验证**（2026-10-16，用户重启 dsh 后实测）：改前 plan 模式评审卡片只有电脑端弹、
   手机端零卡片；改后**手机端与电脑端同时正常弹出**，电脑端行为一字未变（未抢答，红线未踩）。

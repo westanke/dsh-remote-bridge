@@ -365,3 +365,81 @@ HTTP JSON（`router.ts` 的 `sendJson`）。**新增任何出网口都要走它*
 **为什么值得单列**：这类错误**没有测试能抓**（代码全绿、行为也对），
 它伪造的是「为什么这么做」的依据 —— 而那份依据正是后来者唯一能据以判断的东西。
 与 §论证要先追到消费侧 是一对：那条讲「别把发出方当消费方」，这条讲「别把查不到当不存在」。
+
+---
+
+### wss 端点必须归一成 https
+
+**症状**：配置文本里直接塞 `wss://…`（隧道给的原始地址），App 解析时报错 / 直接打不开。
+
+**根因**：`config-text.ts` 的 `normalizeBaseUrl` 与 App 端 `DshClient.normalizeEndpoint`
+（`dsh-companion`）都有一条硬性的 `require(input.startsWith("http://") || input.startsWith("https://"))`
+—— **前缀必须是 `http(s)://`**，写 `wss://` 会被 `require` 直接 throw，
+或判定为「非端点地址」。`wss://` 的「s」其实由 OkHttp `HttpUrl` 根据 scheme 在拼 `/events` 时
+自动补上（`https` → `wss`），bridge 自己不终止 TLS。
+
+**现在怎么办（铁律）**：生成配置文本时收到隧道地址
+`wss://xxx.trycloudflare.com` / `https://your.domain`，**一律归一成 `https://` 再进配置文本**，
+绝不让 `wss://` 字面量进入 `DSH1:` 文本。客户端拼 `/events` 时自动升级为 wss。
+
+---
+
+### 国内下载 cloudflared 必须择源
+
+**症状**：UOS 20 上「创建云隧道」一直转圈 / 卡死 / 点了没反应，日志里是 `github.com/…/cloudflared…` 超时。
+
+**根因**：cloudflared 官方二进制主要发布在 GitHub Releases，国内裸连时好时坏；直接走 GitHub
+是「能否上网看脸」。更隐蔽的是——**复用 fetch 的超时**：被墙网络的 TCP 连接是「半开挂起」，
+Node 的 `fetch`（undici）对这类连接**不响应 `AbortController.abort()`**（真机实测 15s 超时
+根本不触发、请求永久挂起），于是「超时 → 回退 deb」永远走不到，前端只看到泛型 500「内部错误」、
+没有具体原因（asApiError 吞掉 non-ApiError 的 message）。
+
+**现在怎么办（铁律）**：
+- 下载用**原生 `node:https`**（`downloadHttps`），`req.destroy()` 从 socket 层硬掐断被墙连接，
+  必然在超时内返回（回归用例 `downloadHttps aborts within the timeout` 盯着）。
+  超时语义只到「响应头到达」，否则 20MB 的 deb 会被「下载慢」误判成超时。
+- 取源顺序（`ensureCloudflared`）：显式 `CLOUDFLARED_MIRROR`（若设）→ 官方 GitHub →
+  官方 deb 兜底 `pkg.cloudflare.com`。三者都失败时**聚合带 URL 的具体原因**给前端（502
+  `TUNNEL_DOWNLOAD_FAILED`），而不是泛型 500。
+- `CLOUDFLARED_MIRROR` 支持两种形态（见 `src/host/cloudflared.ts`）：
+  1. **`deb+` 完整 .deb 地址（推荐，已验证）**：
+     `CLOUDFLARED_MIRROR=deb+https://pkg.cloudflare.com/cloudflared/pool/main/c/cloudflared/cloudflared_2026.10.1_amd64.deb`
+     → 下载后用 `dpkg-deb -x` 解包提取 `usr/bin/cloudflared`（不污染包数据库）。
+     `pkg.cloudflare.com` 是 Cloudflare 官方 deb 仓库，在 GitHub 直连被墙的真机上**实测可达可用**
+     （2026-10-17 验证：下载解包并成功拉起 Quick Tunnel、抓到 `.trycloudflare.com` 地址）。
+  2. **裸二进制镜像基址**：拼上架构后缀，如 `CLOUDFLARED_MIRROR=https://host/cloudflared-`。
+- 并按 `getconf LONG_BIT` / `uname -m` 选 amd64 归档，别拿错 arm64。解压到用户目录
+  （`~/.local/share/dsh-cloudflared/`），不碰 `/usr` 权限。
+
+---
+
+### Quick 隧道地址漂移后不会自动更新
+
+**症状**：建设成功、手机也连上了，但重启电脑 / 隧道进程后地址变成新的，
+手机还死连旧 `wss://xxx.trycloudflare.com`，事件一直收不到。
+
+**根因**：App 端 `ReconnectingEvents`（`dsh-companion/data/DshClient.kt`）对**同一个 base URL**
+做指数退避重连（1s → 30s），`closed` 才停——它**不知道** `trycloudflare.com` 换地址了，
+只会对着旧地址无限重试。
+
+**现在怎么办（铁律）**：Quick Channel 的产出是对外**易失地址**，要让 App 「吃新地址」：
+面板显示当前 wss + 「重建即换新」提示；用户在 App 端重新导入最新配置文本（或换端点重连）。
+设计上不要把 Quick 地址当作长期固定，把它当「临时演示/兜底」。
+
+### 创建隧道无提示
+
+**症状**：点「创建云隧道」后界面无任何反应，几十秒才出结果（首次要跨 GitHub 超时 + deb 下载）。
+
+**根因**：下载整块埋在单个 POST `/manage/cloudflare/create` 里，前端只知道 busy，看不到 到哪一步。
+
+**现在怎么办（铁律）**：创建期间前端**轮询** `GET /manage/cloudflare/activity`（约 350ms）拿阶段
+进度渲染进度条 + 文案；后端 `ensureCloudflared` 通过可选 `report` 回调逐阶段上报
+（`locating`/`downloading`/`unpacking`/`starting`，下载阶段带真实字节百分比）。
+阶段随管理实例 `CloudflaredTunnelManager` 收敛，路由 `/cloudflare/activity` 暴露，POST 结束即清空。
+- 新增阶段文案走前端硬编码中文即可，不必进 i18n 字典（与 `tunnelCreate` 按钮共存的临时提示）。
+- 进度条：确定百分比用真实宽度，无确定值（连接/启动）用 `30%` 占位即可，别硬凑假百分比。
+
+**另一个「无提示」：安全层面**（2026-10-17，v2.4.0 修）：创建云隧道 = 把本机远程端口经
+Cloudflare 边缘暴露到公网，是高风险的对外动作，光有进度条不够，还得在**动手前**让用户
+意识到风险。修法：创建入口（面板开关与「隧道未开启」态）先 `window.confirm`（i18n
+`tunnelStartConfirm`），取消则不执行；隧道区常驻 `tunnelSecurityWarning` 警示文字。

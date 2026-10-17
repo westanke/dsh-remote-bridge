@@ -66,6 +66,22 @@ export interface ConfigTextResult {
   deviceId: string
 }
 
+/** Cloudflare 隧道的对外状态视图。 */
+export interface CloudflareTunnelState {
+  channel: 'quick' | 'named' | null
+  /** 对外地址（`https://` 前缀原文），null = 未就绪。 */
+  url: string | null
+  running: boolean
+  error?: string
+}
+
+/** 创建云隧道进行中任务的阶段进度（与后端 TunnelActivity 对应）。 */
+export interface CloudflareTunnelActivity {
+  stage: 'idle' | 'locating' | 'downloading' | 'unpacking' | 'starting'
+  label: string
+  percent: number | null
+}
+
 export class WorkspaceApi {
   constructor(
     readonly apiBase: string,
@@ -199,6 +215,26 @@ export class WorkspaceApi {
 
   async audit(): Promise<{ items: Record<string, unknown>[] }> {
     return this.manageJson('/audit?limit=200')
+  }
+
+  /** 当前 Cloudflare 隧道状态（未启动时 running:false）。 */
+  async tunnelStatus(): Promise<CloudflareTunnelState> {
+    return this.manageJson('/cloudflare/status')
+  }
+
+  /** 创建云隧道进行中任务的阶段进度（无任务时 stage 为 idle）。 */
+  async tunnelActivity(): Promise<CloudflareTunnelActivity> {
+    return this.manageJson('/cloudflare/activity')
+  }
+
+  /** 创建（或复用）cloudflared 并启动 Quick Tunnel，返回对外地址。 */
+  async tunnelCreate(): Promise<CloudflareTunnelState> {
+    return this.manageJson('/cloudflare/create', { method: 'POST' })
+  }
+
+  /** 停止当前隧道。 */
+  async tunnelStop(): Promise<CloudflareTunnelState> {
+    return this.manageJson('/cloudflare/stop', { method: 'POST' })
   }
 
   /** 识图路径：当前值 + 出厂默认（只读）+ 兜底目录（只读）。 */

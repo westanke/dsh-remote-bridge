@@ -180,6 +180,10 @@ docs/api/            ← OpenAPI + AsyncAPI（wire schema 的权威）
 - `截断标记与内容必须同源`
 - `论证要先追到消费侧`
 - `空结果的来源要验证`
+- `wss 端点必须归一成 https`
+- `国内下载 cloudflared 必须择源`
+- `Quick 隧道地址漂移后不会自动更新`
+- `创建隧道无提示`
 
 > 新坑位：名字加进上面清单 + 原文写进 `PITFALLS.md` 并补 `### 同名` 锚点。
 

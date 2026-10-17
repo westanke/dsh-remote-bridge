@@ -10,6 +10,8 @@ import type { PromptContentPart, UserQuestionAnswer } from './chat-adapter.ts'
 import type { StoredRoot, WorkspaceDatabase } from './database.ts'
 import { handoffLocaleOf } from './dsh-0.2-bridge.ts'
 import { ApiError, asApiError } from './errors.ts'
+import type { CloudflaredTunnelManager } from './cloudflared.ts'
+import { ensureCloudflared } from './cloudflared.ts'
 import type { FileService } from './file-service.ts'
 import { imageHandoffView, saveHandoffSubdir } from './image-handoff.ts'
 import {
@@ -63,6 +65,14 @@ interface RouterOptions {
   chat: DshChatAdapter
   settings: DshSettingsAdapter
   remote: RemoteControl
+  /**
+   * Cloudflare 隧道管理器。可选：不注入则该端点不可用（返回 404），测试不必每条都补。
+   */
+  tunnels?: CloudflaredTunnelManager
+  /**
+   * cloudflared 可执行文件落盘目录（默认可由实现方推导；这里显式传入保证与插件安装目录一致）。
+   */
+  cloudflaredBinDir?: string
   maxUploadBytes: number
   /**
    * 解析不出会话工作目录时的图片兜底目录（设置面板里只读展示）。
@@ -880,6 +890,57 @@ export class ApiRouter {
       res.end()
       return
     }
+
+    // Cloudflare 隧道（管理面）。
+    //
+    // /manage/cloudflare/status → 当前隧道状态（未开始返回 running:false）。
+    // /manage/cloudflare/create  → 查/建 cloudflared 并启动 Quick Tunnel，返回对外地址。
+    // /manage/cloudflare/stop    → 停隧道。
+    //
+    // 端点只有在注入了 `tunnels` 时才可用；未注入（测试、未启用的构建）返回 404。
+    if (this.options.tunnels !== undefined && pathname === '/manage/cloudflare/status') {
+      if (method === 'GET' || method === 'HEAD') {
+        sendJson(res, 200, this.options.tunnels.publicState)
+        return
+      }
+    }
+    if (this.options.tunnels !== undefined && pathname === '/manage/cloudflare/activity') {
+      if (method === 'GET' || method === 'HEAD') {
+        sendJson(res, 200, this.options.tunnels.activityState)
+        return
+      }
+    }
+    if (this.options.tunnels !== undefined && method === 'POST' && pathname === '/manage/cloudflare/create') {
+      const binDir = this.options.cloudflaredBinDir
+      let exe: string
+      try {
+        exe = await ensureCloudflared(binDir ?? this.options.database.dataDir, (a) => {
+          this.options.tunnels!.reportActivity(a)
+        })
+        // 下载/解包结束但仍要继续：进入「启动"阶段由 startQuick 自己上报」。
+      } catch (cause) {
+        this.options.tunnels!.clearActivity()
+        // 下载/解包失败要透传具体原因，否则 fallback 到泛型 500，前端只看到「内部错误」无提示。
+        const message = cause instanceof Error ? cause.message : String(cause)
+        throw new ApiError(502, 'TUNNEL_DOWNLOAD_FAILED', message)
+      }
+      // 转发到「配置的监听端口」（不是实际绑定的 127.0.0.1 探测端口）。
+      // oc隧道入口即桥接给客户端连，client 连的是 wss:// 边缘 → cloudflared → localhost:port。
+      const status = this.options.remote.status()
+      const port = status.configuredPort ?? DEFAULT_PORT
+      const state = await this.options.tunnels.startQuick(exe, port)
+      this.options.tunnels!.clearActivity()
+      this.options.database.audit('admin', 'loopback-admin', 'cloudflare.create', undefined, undefined, {}, requestId)
+      sendJson(res, 201, state)
+      return
+    }
+    if (this.options.tunnels !== undefined && method === 'POST' && pathname === '/manage/cloudflare/stop') {
+      const state = this.options.tunnels.stop()
+      this.options.database.audit('admin', 'loopback-admin', 'cloudflare.stop', undefined, undefined, {}, requestId)
+      sendJson(res, 200, state)
+      return
+    }
+
     throw new ApiError(404, 'ROUTE_NOT_FOUND', 'The requested management route does not exist.')
   }
 

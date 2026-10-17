@@ -1,6 +1,7 @@
 import path from 'node:path'
 import { stat } from 'node:fs/promises'
 import { AuthService } from './host/auth.ts'
+import { CloudflaredTunnelManager } from './host/cloudflared.ts'
 import { DshChatAdapter } from './host/chat-adapter.ts'
 import { WorkspaceDatabase } from './host/database.ts'
 import { createDsh02ApiProxy, readHandoffImageFile, type Dsh02HostServices } from './host/dsh-0.2-bridge.ts'
@@ -145,7 +146,21 @@ export async function apply(ctx: HostContext, config: Config = {}): Promise<void
     events,
     handle: (req, res) => router.handle(req, res),
   })
-  router = new ApiRouter({ database, auth, files, chat, settings, remote, maxUploadBytes, imageFallbackDir: imageHandoffDir })
+  // Cloudflare 隧道管理器：进程状态全部收敛在这一个实例里，router 只当 HTTP 门面。
+  // 二进制不随插件发布，需按需下载（见 cloudflared.ts），位置在 `dataDir/cloudflared-bin`。
+  const tunnels = new CloudflaredTunnelManager()
+  router = new ApiRouter({
+    database,
+    auth,
+    files,
+    chat,
+    settings,
+    remote,
+    tunnels,
+    cloudflaredBinDir: path.join(dataDir, 'cloudflared-bin'),
+    maxUploadBytes,
+    imageFallbackDir: imageHandoffDir,
+  })
 
   try {
     await remote.start()

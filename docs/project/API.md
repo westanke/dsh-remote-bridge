@@ -56,6 +56,37 @@ curl -X POST http://127.0.0.1:3090/manage/config/text \
 探测不到任何非回环地址时返回 `400 NO_ENDPOINT`，此时应显式传 `endpoints`。
 `text` 内含设备令牌，等价于一把钥匙，只应发给自己。
 
+## Cloudflare 隧道管理
+
+这三种管理端点用于「公网连回本机」的兜底通道（手机不在局域网时也能连）。它们只在注入了
+`tunnels`（`CloudflaredTunnelManager`）的构建上可用；未注入时返回 `404 ROUTE_NOT_FOUND`。
+`GET /manage/cloudflare/status` 带 `HEAD`/`GET` 任一。`create`/`stop` 为 `POST`，均走回环管理面。
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| `GET` | `/manage/cloudflare/status` | 当前隧道状态：`{ channel, url, running, error? }`。未启动时 `running:false`、`url:null` |
+| `POST` | `/manage/cloudflare/create` | 查/建 `cloudflared` 可执行文件并启动 **Quick Tunnel**（转发到配置的监听端口，常为 `3090`），响应 `201` 返回与 `status` 同构的状态 |
+| `POST` | `/manage/cloudflare/stop` | 停止当前隧道，返回 `200` 与状态 |
+| `GET` | `/manage/cloudflare/activity` | 创建期间的阶段进度（用户侧用它轮询画进度条）：`{ stage, label, percent }`；`create` 结束即清空 |
+
+`create` 会先下载缺省的 `cloudflared`（官方 GitHub Release，版本 `CLOUDFLARED_VERSION`；
+可用环境变量 `CLOUDFLARED_MIRROR` 指定下载镜像），随后 `spawn cloudflared tunnel --url http://127.0.0.1:<port>`，
+并从 stdout 里用正则抓取 `https://<host>.trycloudflare.com` 形式的对外地址。
+
+`CLOUDFLARED_MIRROR` 支持两种形态：
+
+- **裸二进制镜像基址**（默认解释）：在被下载地址后拼上架构后缀，如
+  `CLOUDFLARED_MIRROR=https://host/cloudflared-` → `https://host/cloudflared-linux-amd64`。
+- **`deb+` 前缀的 .deb 完整地址**：`deb+https://…/cloudflared_<ver>_amd64.deb`，
+  会下载该 .deb 并用 `dpkg-deb -x` 解包提取 `usr/bin/cloudflared`（**不**污染系统包数据库）。
+
+  已在真机（GitHub 直连被墙）验证：`CLOUDFLARED_MIRROR=deb+https://pkg.cloudflare.com/cloudflared/pool/main/c/cloudflared/cloudflared_2026.10.1_amd64.deb`
+  可下载解包并成功拉起 Quick Tunnel（见 PITFALLS §国内下载 cloudflared 必须择源）。
+
+对外地址是 **`https://`**（不产生 `wss://`）：`.trycloudflare.com` 域名来自边缘的 WebSocket 反向代理，
+客户端在拼 `wss://` connection 时由客户端侧完成升级。Quick Tunnel 地址**临时且会漂移**，
+重建即换新 —— 客户端应用最新的 `url`，不要缓存。
+
 ## 管理文件
 
 路径必须由 `rootId` 和使用 `/` 的相对路径组成：

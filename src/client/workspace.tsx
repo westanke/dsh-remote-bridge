@@ -23,7 +23,7 @@ import type { DeviceScope, DeviceView, ImageHandoffSettings, RootView } from '..
 import { DEVICE_SCOPES } from '../shared/contracts.ts'
 import { APP_QR_CODES } from './app-qr.ts'
 import { WorkspaceApi, WorkspaceApiError } from './api.ts'
-import type { ConfigTextResult } from './api.ts'
+import type { CloudflareTunnelActivity, CloudflareTunnelState, ConfigTextResult } from './api.ts'
 import { type MessageKey, scopeLabel, type Translate, useWorkspaceI18n } from './i18n.tsx'
 import { installWorkspaceStyles } from './styles.ts'
 import { PLUGIN_VERSION } from '../shared/version.ts'
@@ -45,6 +45,11 @@ export const DEFAULT_PANEL_SECTION: AdminTab = 'roots'
  */
 function tabLabelKey(tab: AdminTab): MessageKey {
   return tab === 'app-download' ? 'appDownloadTab' : `${tab}Tab`
+}
+
+/** 云隧道进度条宽度：有确定百分比则用之，否则给 30% 作「流动中」占位。 */
+function pct(a: CloudflareTunnelActivity): string {
+  return `${a.percent ?? 30}%`
 }
 
 /**
@@ -180,6 +185,11 @@ export function AdminPanel(props: { api: WorkspaceApi; initialOpen: AdminTab }):
   const [openCards, setOpenCards] = useState<Set<AdminTab>>(() => new Set([props.initialOpen]))
   const [imageSaved, setImageSaved] = useState(false)
   const [error, setError] = useState<unknown>()
+  // Cloudflare 隧道状态：只在远程卡展开时拉取（与 trash/audit/image 同纪律）。
+  const [tunnel, setTunnel] = useState<CloudflareTunnelState>()
+  const [tunnelBusy, setTunnelBusy] = useState(false)
+  // 创建云隧道的进行中阶段进度（下载/解包/启动），busy 期间由轮询填充。
+  const [activity, setActivity] = useState<CloudflareTunnelActivity>()
 
   const isOpen = useCallback((card: AdminTab) => openCards.has(card), [openCards])
   const toggleCard = useCallback((card: AdminTab) => {
@@ -205,11 +215,43 @@ export function AdminPanel(props: { api: WorkspaceApi; initialOpen: AdminTab }):
         setImageDraft(settings.subdir)
         setImageSaved(false)
       }
+      if (openCards.has('remote')) {
+        setTunnel(await props.api.tunnelStatus())
+      }
       setError(undefined)
     } catch (cause) {
       setError(cause)
     }
   }, [props.api, openCards])
+
+  // 开启云隧道：进入下载/启动流程并轮询进度。开启与未运行时的「生成隧道配置文件」共用此起点。
+  const createTunnel = useCallback(() => {
+    // 公网暴露是高风险动作，先弹一次安全确认再动手；取消则不执行。
+    if (!window.confirm(t('tunnelStartConfirm'))) return
+    setTunnelBusy(true)
+    setError(undefined)
+    setActivity(undefined)
+    setActivity({ stage: 'locating', label: '正在准备 cloudflared…', percent: null })
+    const poll = window.setInterval(() => {
+      void props.api.tunnelActivity()
+        .then(a => { if (a.stage !== 'idle') setActivity(a) })
+        .catch(() => { /* 轮询失败忽略，主请求才是真实结果 */ })
+    }, 350)
+    void props.api.tunnelCreate()
+      .then(async (next) => { setTunnel(next); setActivity(undefined); await refresh() })
+      .catch(setError)
+      .finally(() => { window.clearInterval(poll); setActivity(undefined); setTunnelBusy(false) })
+  }, [props.api, refresh, t])
+
+  // 停止云隧道。
+  const stopTunnel = useCallback(() => {
+    setTunnelBusy(true)
+    setError(undefined)
+    void props.api.tunnelStop()
+      .then(async (next) => { setTunnel(next); await refresh() })
+      .catch(setError)
+      .finally(() => setTunnelBusy(false))
+  }, [props.api, refresh])
 
   // Refresh on mount and whenever a card opens: trash, audit and image settings are card-local,
   // and `refresh` now depends on `openCards`, so expanding a card fetches its data.
@@ -222,6 +264,16 @@ export function AdminPanel(props: { api: WorkspaceApi; initialOpen: AdminTab }):
     setListenerPort(String(status.configuredPort))
   }, [status?.configuredHost, status?.configuredPort])
   const roots = status?.roots ?? []
+  // 用隧道地址生成配置文本（隧道运行时启用；url 为 null 时是「隧道未开启」态）。
+  const genTunnelConfig = useCallback((baseUrl: string) => {
+    setConfigTextBusy(true)
+    setError(undefined)
+    // 把隧道地址作为唯一端点生成配置文本，客户端拼 /events 时自动升级 wss。
+    void props.api.createConfigText({
+      ...(roots.length === 0 ? {} : { rootIds: roots.map(root => root.id) }),
+      endpoints: [{ label: t('tunnelEndpointLabel'), baseUrl }],
+    }).then(value => { setConfigText(value); return refresh() }).catch(setError).finally(() => setConfigTextBusy(false))
+  }, [props.api, refresh, roots, t])
   // 「启用远程访问」时授予的权限 —— **由用户在这里勾选**。
   //
   // 这条链路是：勾权限 → 生成访问码 → APP 输入码 → 权限随设备一起落库。
@@ -301,6 +353,28 @@ export function AdminPanel(props: { api: WorkspaceApi; initialOpen: AdminTab }):
             {status?.remoteEnabled && <div className="daw-list-meta daw-listener-hint">{t('disableToEditListener')}</div>}
             {!status?.remoteEnabled && listenerDirty && <div className="daw-list-meta daw-listener-hint">{t('saveBeforeEnable')}</div>}
             <p><span className={`daw-pill${status?.remoteEnabled ? ' on' : ''}`}>{status?.remoteEnabled ? t('remoteEnabled') : t('loopbackOnly')}</span></p>
+            {/* Cloudflare 隧道分区：公网连入的兜底通道，位于「远程访问已启用」与「选择权限」之间。 */}
+            <div className="daw-tunnel">
+              <div className="daw-tunnel-head">
+                <span><strong>{t('tunnelTitle')}</strong></span>
+                <span className={`daw-pill${tunnel?.running ? ' on' : ''}`}>{tunnel?.running ? t('tunnelRunning') : t('tunnelStopped')}</span>
+              </div>
+              <p className="daw-list-meta">{t('tunnelHint')}</p>
+              <div className="daw-warning">{t('tunnelSecurityWarning')}</div>
+              {tunnel?.error !== undefined && <div className="daw-warning">{tunnel.error}</div>}
+              {tunnel?.url !== undefined && tunnel.url !== null && (
+                <div className="daw-tunnel-url" style={{ marginTop: 8 }}>{tunnel.url}</div>
+              )}
+              <button className="daw-command primary" style={{ marginTop: 10 }} disabled={tunnelBusy || roots.length === 0} onClick={() => { if (tunnel?.running === true) stopTunnel(); else createTunnel() }}>{tunnel?.running === true ? t('tunnelStop') : t('tunnelCreate')}</button>
+              {activity !== undefined && (
+                <div className="daw-tunnel-progress" style={{ marginTop: 10 }}>
+                  <div className="daw-progress-track">
+                    <div className="daw-progress-fill" style={{ width: pct(activity) }} />
+                  </div>
+                  <div className="daw-list-meta" style={{ marginTop: 4 }}>{activity.label}</div>
+                </div>
+              )}
+            </div>
             <div className="daw-scope-grid">{DEVICE_SCOPES.map(scope => <label className="daw-check" key={scope}><input type="checkbox" checked={grantedScopes.includes(scope)} onChange={() => toggleScope(scope)} /> {scopeLabel(locale, scope)}</label>)}</div>
             <div className="daw-list-meta">{grantNotice}</div>
             {status?.remoteEnabled
@@ -320,6 +394,13 @@ export function AdminPanel(props: { api: WorkspaceApi; initialOpen: AdminTab }):
                   ...(manual === '' ? {} : { endpoints: [{ label: t('configTextManualLabel'), baseUrl: manual }] }),
                 }).then(value => { setConfigText(value); return refresh() }).catch(setError).finally(() => setConfigTextBusy(false))
               }}>{t('newConfigText')}</button>
+              {tunnel !== undefined && (
+                <button className="daw-command daw-inline-command" disabled={configTextBusy || tunnelBusy} onClick={() => {
+                  // 隧道已运行：用隧道地址生成配置文本；未运行：等同「开启云隧道」。
+                  if (tunnel.running === true && tunnel.url !== null && tunnel.url !== undefined) genTunnelConfig(tunnel.url)
+                  else createTunnel()
+                }}>{tunnel.running === true && tunnel.url !== null && tunnel.url !== undefined ? t('tunnelGenConfigReady') : t('tunnelGenConfigOff')}</button>
+              )}
               <div className="daw-list-meta daw-listener-hint">{t('configTextScopeNote')}</div>
             </>}
             {pairing !== undefined && <div className="daw-code">{pairing.code}</div>}
