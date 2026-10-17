@@ -72,7 +72,7 @@
   - ⚠️ ~~本机 `pnpm` 已坏~~（`unable to open database file`）：**2026-10-17 Cloudflare 接入时
     `pnpm check` 已恢复正常**，四道门（typecheck → test 38/288 → docs:check → build）由一条命令
     逐段跑通（`prepack` 可正常触发）。此条作废。
-- 阶段：`dsh-remote-bridge` **v2.4.0**（**已提交，未推送未发版**）—— **Cloudflare WAN 隧道接入**（「人已出门、只有手机在手」也能连回家）+ 远程卡 UI 调整（隧道区上移、开关合并、生成隧道配置文件按钮、安全确认）。
+- 阶段：`dsh-remote-bridge` **v2.4.0**（**已双推 origin+gitee、已打 tag、双站 Release 与 npm 均已发布**；发布提交 `b9f08a2`）—— **Cloudflare WAN 隧道接入**（「人已出门、只有手机在手」也能连回家）+ 远程卡 UI 调整（隧道区上移、开关合并、生成隧道配置文件按钮、安全确认）。
   - **云端**：新增 `src/host/cloudflared.ts`（`ensureCloudflared` 复用/下载解包 + `CloudflaredTunnelManager` 起 Quick Tunnel、正则抓 `https://<host>.trycloudflare.com`），
     router 加回环管理端点 `/manage/cloudflare/{status,create,stop}` + `/manage/cloudflare/activity`（下载进度），`api.ts` 加 `tunnelStatus/Create/Stop/Activity`。
     端点对外统一为 `https://`（客户端拼 wss 时自行升级，坑位 §wss 端点必须归一成 https）；Quick 隧道地址临时会漂移。
@@ -199,12 +199,12 @@
 - 二维码资产：提交进仓库并由 `tests/app-qr.spec.ts` 解码校验，指向 Releases **列表页**（非具体文件），因此发新版不需重新生成
 - 2.2.0（删独立页 + 瘦身）：删除独立页 `/dsh-workspace`（文件树 + CodeMirror 6 编辑器）及 `src/standalone/`、`assets/workspace.html`、`src/client/editor.tsx`、`workspace.tsx` 中的 `WorkspaceApp`/`DirectoryNode`/`CommandDialog`/`AdminOverlay`、`scripts/test-server.ts`，以及 8 个 `@codemirror/*` 与 `@lezer/highlight` 依赖；同时关闭 tsdown source map（映射本身约 5 MB，而插件发的是预构建 bundle、包内又没有原始 TS 源码，消费者根本用不上）。理由：手机 App 的文件页已原生覆盖同一套能力，桌面端这个页面无人使用。发布包 **1.72 MB → 0.25 MB**；`/dsh-workspace-api` 代理前缀与全部 REST 文件端点未动，App 不受影响
 - 附件能力边界：会话历史图片需要宿主提供 `ctx.attachments` 服务；缺失时插件照常激活，读取接口返回 `ATTACHMENT_STORE_UNAVAILABLE`，附件类上传返回 `FILE_UPLOADS_UNAVAILABLE`
-- 最近验证：`pnpm typecheck` 通过 · `pnpm test` **30 个测试文件 / 226 个用例全绿** · `pnpm docs:check` 通过 · `pnpm build` 两个 entry（host / client）构建完成。**实装目录本轮未同步**（其路径在工作区之外、属只读挂载，助手提权被拒后按规矩停手）：需用户手动把 `lib/` 三个文件拷入真正被加载的 profile 目录，再**重启 dsh**（插件为进程内加载）。另有 **4 个浏览器层用例**（Playwright 用真实浏览器量计算样式），4/4 通过
+- 最近验证：`pnpm typecheck` 通过 · `pnpm test` **38 个测试文件 / 290 个用例全绿** · `pnpm docs:check` 通过（10 文档 / 39 任务 / 9 ADR） · `pnpm build` 两个 entry（host / client）构建完成。**实装目录本轮已同步**（2026-10-17 v2.4.0 发布时用 `cp` 把 `lib/` 三个文件拷入 `desktop` 与 `web` 两个 profile，逐文件 SHA-256 校验一致）：运行中的 DSH 仍加载 2.3.7，需**重启 dsh** 才生效（插件为进程内加载），浏览器还需 Ctrl+Shift+R 强刷。另有 **4 个浏览器层用例**（Playwright 用真实浏览器量计算样式），4/4 通过
 - 界面截图：桌面界面截图**已删除**（那是改名前的旧界面，含 v1.0.0 徽章与旧的 1400px 文件树对话框）。重录需要能驱动插件面板的浏览器环境，目前不具备；二维码另有 SVG/PNG 资产。桌面文件工作区界面（独立页）已于 2.2.0 删除，不再有对应截图需求
 - 仓库：`https://github.com/westanke/dsh-remote-bridge`，topic 包含 `dsh-plugin`
-- Release：**v2.3.6** —— Gitee `https://gitee.com/westanke/dsh-remote-bridge/releases/tag/v2.3.6`（自传 3 资产 + 平台自动生成的 zip / tar.gz，下载回读**逐字节一致**）；GitHub `https://github.com/westanke/dsh-remote-bridge/releases/tag/v2.3.6`（3 资产，tgz 309,399 字节与本地一致）。上一版为 v2.3.5
-- **GitHub 站补建说明**：核对时发现 GitHub 上此前**只有 `v1.0.0` 一个 Release**，`v2.0.4`~`v2.3.3` 的 Release 实际只建在 Gitee（tag 两端都在）—— 旧记载的「双站 Release」与事实不符。`v2.3.4` 起两站齐发
-- Release 历史：`v2.0.0` / `v2.0.1` 为已知缺陷版，`v2.0.2` / `v2.0.3` 从未发布；v2.3.2 未单独发版，其修复并入 v2.3.3 的 Release notes；npm 现为 **v2.3.6**
-- 正式产物：`artifacts/dsh-remote-bridge-v2.3.6.tgz`，**309,399 字节（约 0.29 MB）**，SHA-256 `d2ead6c256cdfc116caaa499c24155afee3a358b18c0cdd52687f725262d3a5e`（`npm pack` 生成，**已发布**：npm 与双站 Release 均上传完成，Gitee 侧下载回读哈希与本地一致）。上一版 `artifacts/dsh-remote-bridge-v2.3.5.tgz`（308,510 字节，SHA-256 `592fdac116faec7b9442d7ed67a799b6aacbb2197716ce2f47f24cccd02bf922`）已发布，按「发新版 → 上传 → 回读校验 → 再删上一版本地包」的规矩**暂不删除**
+- Release：**v2.4.0** —— Gitee `https://gitee.com/westanke/dsh-remote-bridge/releases/tag/v2.4.0`（自传 2 资产 `dsh-remote-bridge-2.4.0.tgz` + `SHA256SUMS.txt`，另平台自动生成 zip / tar.gz；下载回读**逐字节一致**，并用发布出去的 SHA256SUMS 反向 `sha256sum -c` 校验成功）；GitHub `https://github.com/westanke/dsh-remote-bridge/releases/tag/v2.4.0`（2 资产，tgz 555,053 字节，API 核验大小一致、下载回读哈希一致）。两站上一版均为 **v2.3.7**（v2.3.8 / v2.3.9 只有代码提交，未单独发 Release）
+- **GitHub 站早期缺口**：GitHub 上的 Release 最早是 `v2.2.0`（2026-10-09），`v2.0.4` ~ `v2.1.3` 只建在 Gitee（tag 两端都在）；`v2.2.0` 起两站齐发
+- Release 历史：`v2.0.0` / `v2.0.1` 为已知缺陷版，`v2.0.2` / `v2.0.3` 从未发布；v2.3.2 未单独发版，其修复并入 v2.3.3 的 Release notes；npm 现为 **v2.4.0**
+- 正式产物：`artifacts/dsh-remote-bridge-2.4.0.tgz`，**555,053 字节（约 0.53 MB）**，SHA-256 `42d5bd586ca775f986e017916b541a976a0274c6fe85278ed69c2c7a799d40e3`（`npm pack` 生成，**已发布**：npm 与双站 Release 均上传完成，两站下载回读哈希与本地一致；npm dist.integrity `sha512-DhZrZSVTVKUkY…ZknhpBAM1/zXg==`、shasum `60b70cc123e5d274ece3e748b5c6a05688d3116a` 与本地 `npm pack` 完全一致）。**`artifacts/` 现只留本版 2.4.0 一个 tgz**（上一版 v2.3.7 的本地包已按「发新版 → 上传 → 回读校验 → 再删上一版本地包」的规矩删除；仓库根另有一个 `dsh-remote-bridge-2.1.3.tgz` 历史包、未被 git 跟踪，勿删）
 - 分发：npm [`dsh-remote-bridge`](https://www.npmjs.com/package/dsh-remote-bridge)（官方源 + npmmirror 均有），`dsh plugin --profile web add dsh-remote-bridge` 可用
 - 阻塞项：Android 与 DSH WebUI 的后续完整能力对等仍按 `PARITY-001` 推进

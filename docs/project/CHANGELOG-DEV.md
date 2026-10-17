@@ -36,6 +36,14 @@
 `tsdown` 构建通过；`playwright test` 4 个样式契约全部通过。
 真机（2026-10-17）：官方 cloudflared deb 在本机择源下载解包起隧道成功，手机端确认可访问。
 
+### 发布（2026-10-17）
+
+提交 `b9f08a2`，双推 origin(GitHub) + gitee、tag `v2.4.0`、双站 Release 与 npm 均已发布。
+- 产物 `dsh-remote-bridge-2.4.0.tgz`，555,053 字节，SHA-256 `42d5bd58…9d40e3`；
+  npm dist.integrity `sha512-DhZrZSVTVKUkY…ZknhpBAM1/zXg==` 与本地 `npm pack` 一致；
+- 两站资产均**下载回读哈希**并 Gitee 侧反向 `sha256sum -c` 校验通过；npmmirror 已同步 2.4.0；
+- GitHub 侧因历史上 v2.3.6 后与本地分叉，经用户拍板用 `--force-with-lease` 对齐到本地历史。
+
 ## 2.3.8 · C 批结构性修复 + 能力位与事件面（2026-10-17）
 
 ### 基于什么
