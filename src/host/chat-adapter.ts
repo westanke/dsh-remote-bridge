@@ -1126,8 +1126,11 @@ export function normalizeDshEvent(
               kind,
               text: rawChunk.text,
               index: rawChunk.index,
-              ...(typeof assistantData.turn === 'number' ? { turn: assistantData.turn } : {}),
-              ...(typeof assistantData.step === 'number' ? { step: assistantData.step } : {}),
+              // turn / step **始终带上**（缺失兜底 0）—— 见 dsh-0.2-bridge.ts 里
+              // assistant-stream start 帧的同类兜底：这两个字段只用于分段，客户端曾
+              // 因为它们缺失而把整个 delta 帧静默丢掉。
+              turn: typeof assistantData.turn === 'number' ? assistantData.turn : 0,
+              step: typeof assistantData.step === 'number' ? assistantData.step : 0,
             },
           }
         }

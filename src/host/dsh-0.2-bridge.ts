@@ -582,8 +582,13 @@ class SessionEventRelay {
       const inner = frame.frame
       if (inner.type === 'start') {
         // turn/step are announced once per attempt and tag every later chunk.
-        turn = typeof inner.turn === 'number' ? inner.turn : undefined
-        step = typeof inner.step === 'number' ? inner.step : undefined
+        //
+        // 兜底为 0 而不是 undefined：客户端 `chatDelta()` 曾把这两个字段当**必填**，
+        // 缺失即整帧 `return null` 静默丢弃（真机症状：思考条永不出现，状态条永远
+        // 显示「内容由 AI 生成」，而正文其实正在流式渲染）。这两��只用于分段，
+        // 不参与正文渲染，缺了就当第 0 段 —— 与客户端的兜底保持一致。
+        turn = typeof inner.turn === 'number' ? inner.turn : 0
+        step = typeof inner.step === 'number' ? inner.step : 0
         continue
       }
       if (inner.type !== 'chunk') continue
