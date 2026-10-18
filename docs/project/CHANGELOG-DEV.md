@@ -1,5 +1,38 @@
 # 开发日志
 
+## 2.4.1 · `turn/end` 的 `reason` 透传（回答被截断提示）（2026-10-19）
+
+### 基于什么
+
+客户端（dsh-companion）新增「回答被截断」提示，需要在 `turn/end` 帧上读到
+`reason.kind === 'max-tokens'`。真机实测 2026-10-18：电脑端 WebUI 有这条黄色截断提示，
+App 里整条消失 —— 因为 bridge 根本没把这个字段发出去。
+
+### 为什么
+
+`chat.turn.failed` 只覆盖 error 与登出两种**终局失败**；而 `reason.kind === 'max-tokens'`
+（输出撞上限、回答被截断）既不是失败、也没有第二条通道能告诉客户端。不发这一帧，
+客户端收到的与「正常跑完」一模一样，那条截断提示永远不出现。
+
+### 干了什么
+
+- `src/host/chat-adapter.ts`：`normalizeDshEvent` 在 `turn/end` 上附带 `data.reason`，
+  **原样透传**（本仓不解读 `kind` 的取值与语义，归内核 `turn-error.js` /
+  `turn-max-tokens.js` / `retry.js`）。`turn/start` 没有 reason，不带；无 reason 时
+  帧结构与旧版逐字节一致（老客户端忽略该字段，新客户端直接拿到）。
+- `docs/project/API.md` + `docs/api/asyncapi.yaml`：补 `turn/end` 的 `reason` 字段说明。
+- `tests/chat-adapter.spec.ts`：4 个回归用例（带 reason 透传 / 不带时结构不变 /
+  只对 turn/end 附带 / 未知 kind 也原样带出）。
+
+### 测什么
+
+`pnpm typecheck` 通过 · `pnpm test` 38 文件 / 291 用例全绿 · `pnpm docs:check` 通过
+（10 文档 / 39 任务 / 9 ADR） · `pnpm build` 通过 · `npm pack` 触发 prepack 全闸通过。
+
+### 发布（2026-10-19）
+
+见本文件下方对应提交与 `STATUS.md` 的 Release 记载。
+
 ## 2.4.0 · Cloudflare WAN 隧道接入 + 远程卡 UI 调整（2026-10-17）
 
 ### 基于什么

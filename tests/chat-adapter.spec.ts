@@ -272,6 +272,62 @@ describe('DSH chat choices', () => {
     })
   })
 
+  it('forwards turn/end reason so clients can see the max-tokens truncation notice', () => {
+    // 输出撞上限：**不是失败**，所以不会发 chat.turn.failed；
+    // 而它又必须让客户端知道「回答被截断了」—— 唯一通道就是 turn/end 上的 reason。
+    // 以前 base 里只有 sessionId/eventType/seq，客户端收到的与「正常跑完」一模一样，
+    // 于是那条黄色提示在 App 里整条消失（真机实测 2026-10-18）。
+    expect(normalizeDshEvent({
+      rpcId: 'turn-mt',
+      payload: {
+        type: 'session/event',
+        sessionId: 'session-1',
+        event: {
+          type: 'turn/end',
+          seq: 950,
+          data: { turn: 5, reason: { kind: 'max-tokens' } },
+        },
+      },
+    }, 'mux', 2000)).toEqual({
+      id: 'turn-mt',
+      type: 'chat.turn.end',
+      time: 2000,
+      data: {
+        sessionId: 'session-1',
+        eventType: 'turn/end',
+        seq: 950,
+        reason: { kind: 'max-tokens' },
+      },
+    })
+
+    // 正常收尾也要带（kind: 'ok'）—— 让客户端能区分「正常」与「被截断」，
+    // 而不是靠「没有 reason」去猜，那种猜测在下一次内核加 kind 时会静默出错。
+    expect(normalizeDshEvent({
+      rpcId: 'turn-ok',
+      payload: {
+        type: 'session/event',
+        sessionId: 'session-1',
+        event: { type: 'turn/end', seq: 951, data: { turn: 6, reason: { kind: 'ok' } } },
+      },
+    }, 'mux', 2001)).toMatchObject({
+      type: 'chat.turn.end',
+      data: { reason: { kind: 'ok' } },
+    })
+
+    // turn/start 没有 reason，不能凭空造一个字段出来。
+    expect(normalizeDshEvent({
+      rpcId: 'turn-start',
+      payload: {
+        type: 'session/event',
+        sessionId: 'session-1',
+        event: { type: 'turn/start', seq: 952, data: { turn: 7 } },
+      },
+    }, 'mux', 2002)).toMatchObject({
+      type: 'chat.turn.start',
+      data: { sessionId: 'session-1', eventType: 'turn/start', seq: 952 },
+    })
+  })
+
   it('surfaces terminal turn failures as chat.turn.failed instead of a bare turn/end', () => {
     // 真机上抓到的原样 payload：免费额度限流。code 是空串、message 是服务端口径，
     // 插件**不加工** —— 本地化是客户端的事，服务端这句话本身已经是中文。

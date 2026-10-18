@@ -1,1 +1,1 @@
-42d5bd586ca775f986e017916b541a976a0274c6fe85278ed69c2c7a799d40e3  dsh-remote-bridge-2.4.0.tgz
+ad44dbaff25bbd4c6a1ead9ece3b4f08c2bba8dc4dd22c2f350e54cf3b88198d  dsh-remote-bridge-2.4.1.tgz

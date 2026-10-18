@@ -1194,11 +1194,24 @@ export function normalizeDshEvent(
           }
         }
       }
+      // `turn/end` 的 `reason` **必须带出去**。
+      //
+      // `chat.turn.failed` 只覆盖 error 与登出两种**终局失败**；而
+      // `reason.kind === 'max-tokens'`（输出撞上限、回答被截断）既不是失败、
+      // 也没有第二条通道能告诉客户端 —— 不上车，客户端收到的帧与「正常跑完」
+      // 一模一样，于是那条「回答被截断」提示永远不出现。
+      // 真机实测 2026-10-18：电脑端 WebUI 有这条黄色提示，App 里整条消失。
+      //
+      // 只对 `turn/end` 附带，且**原样透传**：kind 的取值与语义归内核
+      // （`turn-error.js` / `turn-max-tokens.js` / `retry.js`），本仓不解读、
+      // 不写白名单 —— 内核将来新增 reason kind 时，老客户端忽略该字段、
+      // 新客户端能直接拿到。`turn/start` 没有 reason，不带。
+      const turnReason = eventType === 'turn/end' && isRecord(event.data) ? event.data.reason : undefined
       return {
         id: frame.rpcId,
         type: eventType === 'turn/start' ? 'chat.turn.start' : 'chat.turn.end',
         time,
-        data: base,
+        data: turnReason === undefined ? base : { ...base, reason: turnReason },
       }
     }
     return { id: frame.rpcId, type: 'chat.session.event', time, data: base }

@@ -1,7 +1,7 @@
 asyncapi: 3.0.0
 info:
   title: DeepSeek Harness Mobile Events
-  version: 2.4.0
+  version: 2.4.1
   description: |
     Live file and authorized DSH chat events. Reconnect clients must refresh
     REST state; unbounded replay is not provided.
@@ -143,6 +143,37 @@ components:
             code: { type: string }
             stopped: { type: boolean, const: true }
 
+    ChatTurnEnd:
+      type: object
+      description: |
+        A turn ended. Emitted for every `turn/end` the host reports, including the
+        ordinary `reason.kind === 'ok'` case. When the host stops a turn at its
+        output-token cap (`reason.kind === 'max-tokens'`) the reply is **truncated,
+        not failed** — this frame is the only place a client can learn that, because
+        no separate failure frame is emitted for it. Clients that ignore `reason`
+        keep working unchanged (the field is additive).
+      required: [sessionId, eventType]
+      properties:
+        sessionId: { type: string }
+        eventType: { type: string, const: turn/end }
+        seq: { type: integer }
+        reason:
+          type: object
+          description: |
+            Forwarded **verbatim** from the host; this repository does not interpret
+            it. Known `kind` values (kernel `turn-error.js` / `turn-max-tokens.js` /
+            `retry.js`): `ok` (normal), `error` (terminal failure — also delivered as
+            `chat.turn.failed`), `max-tokens` (output-token cap: reply truncated,
+            earlier output preserved — render as a **warning**, not an error),
+            `aborted` (cancelled by the user or a hook, e.g. signing out).
+            Unknown kinds must be ignored rather than treated as failure.
+          properties:
+            kind: { type: string }
+            error:
+              type: object
+              properties:
+                message: { type: string }
+                code: { type: string }
     ChatDeliverablesPresented:
       type: object
       description: |

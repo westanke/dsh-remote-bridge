@@ -284,6 +284,26 @@ WebSocket 地址为 `ws://HOST:PORT/api/v1/events` 或 `wss://...`。OkHttp 等�
 
 DSH 的 `assistant/chunk` 不直接泄漏为私有 wire。插件将文本和思考 token 规范化为 `chat.message.delta`，载荷包含 `sessionId`、`turn`、`step`、`index`、`kind` 和 `text`；完成的用户/助手消息发送 `chat.message.committed`，客户端随后读取 REST 历史收口。运行状态、Agent 切换和审批变化分别使用 `chat.session.status`、`chat.agent-preset.selected` 与 `chat.approval.*`。
 
+### 一轮怎么结束的（`chat.turn.end` 的 `reason`）
+
+`chat.turn.end` 的 `data` 里带 `reason`，**原样透传**自内核，本插件不解读、不写白名单。
+已知四种 `kind`（内核 `turn-error.js` / `turn-max-tokens.js` / `retry.js`）：
+
+| `kind` | 含义 | 客户端该怎么显示 |
+|---|---|---|
+| `ok` | 正常收尾 | 什么都不用做 |
+| `error` | 终局失败（限流/配额/密钥） | 红框；**另有**一帧 `chat.turn.failed` 带 message/code |
+| `max-tokens` | **输出撞上限，回答被截断**（已有输出有效） | **黄色警示**，不是失败 |
+| `aborted` | 被用户或钩子取消（如登出） | 按取消处理 |
+
+**为什么必须带**：`max-tokens` 既不是失败（所以不会发 `chat.turn.failed`），
+也没有第二条通道能告诉客户端 —— 不带上它，客户端收到的帧与「正常跑完」一模一样，
+那条「回答被截断」的提示就永远不出现。2026-10-18 真机实测正是这个症状：
+电脑端 WebUI 有黄色提示，App 里整条消失。
+
+**向后兼容**：这是**新增字段**，老客户端忽略它、行为不变；未知 `kind` 必须按「不认识就忽略」处理，
+**不得**当成失败（内核将来加新 kind 时不能把老客户端吓成红框）。
+
 ### 文件卡片（`chat.deliverables.presented`）
 
 智能体用内核 `present` 工具明确交付文件时，前端会收到这条事件，载荷里的 `files` 是
