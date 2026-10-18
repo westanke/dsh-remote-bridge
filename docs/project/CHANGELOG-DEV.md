@@ -31,7 +31,10 @@ App 里整条消失 —— 因为 bridge 根本没把这个字段发出去。
 
 ### 发布（2026-10-19）
 
-见本文件下方对应提交与 `STATUS.md` 的 Release 记载。
+- 提交 `8eec95b`，双推 origin + gitee（`3ebdeb0..8eec95b`），tag `v2.4.1`（`783346c`）两端一致；
+- npm 发布 `dsh-remote-bridge@2.4.1`（`latest`；shasum `451a7138…`、integrity `sha512-2wsGPPucDvj9Y…cAXseb2HrHInA==`，与本地 `npm pack` 完全一致）；
+- 双站 Release：GitHub `releases/tag/v2.4.1`（2 资产，tgz 555,503 字节，digest `sha256:ad44dbaf…8198d`）；Gitee `releases/tag/v2.4.1`（id 1217063，自传 2 资产 + 平台自动 zip/tar.gz）；
+- **回读校验**：Gitee 下载 tgz **逐字节一致**（555,503 字节，SHA-256 `ad44dbaf…8198d`），GitHub API digest 与本地一致。
 
 ## 2.4.0 · Cloudflare WAN 隧道接入 + 远程卡 UI 调整（2026-10-17）
 
