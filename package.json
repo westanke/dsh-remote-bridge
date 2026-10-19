@@ -50,15 +50,15 @@
   },
   "scripts": {
     "clean": "node -e \"require('node:fs').rmSync('lib',{recursive:true,force:true})\"",
-    "build": "pnpm clean && tsdown",
+    "build": "npm run clean && tsdown",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:e2e": "playwright test",
     "docs:check": "tsx scripts/check-project-docs.ts",
     "qr:app": "node scripts/generate-app-qr.mjs",
-    "check": "pnpm typecheck && pnpm test && pnpm docs:check && pnpm build",
-    "prepack": "pnpm check"
+    "check": "npm run typecheck && npm run test && npm run docs:check && npm run build",
+    "prepack": "npm run check"
   },
   "engines": {
     "node": "^22.19.0 || >=24.0.0"

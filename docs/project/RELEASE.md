@@ -83,13 +83,35 @@ sha256sum artifacts/dsh-remote-bridge-*.tgz
 
 用同一个打包器，Release 产物与 npm 上那份就是同一串字节，哈希可以直接对账。
 
-先把 `prepack`（= `pnpm check`）跑完再打包：`npm pack` 会自己触发它。
+先把 `prepack`（= `npm run check`）跑完再打包：`npm pack` 会自己触发它。
+
+> **2026-10-19 收成脚本**：`bash scripts/pack-release.sh` 一次做完
+> 门禁 → pack → **重命名成带 v 的副本** → 写 `SHA256SUMS.txt`。
+> 用它的理由见下面「两个名字」那条 —— `npm pack` 的产物名没有 v 前缀，
+> 而 README 的安装命令有，两边不手动对齐就必然 404。
 
 ## 2. 发布到 npm
 
 ```sh
+bash scripts/publish-npm.sh    # 推荐：查重 → 门禁 → npm@12 发布 → 轮询 registry 确认
+```
+
+它比手敲 `npm publish` 多做的三件事，每件都是踩出来的（详见 `PITFALLS.md`
+§npm 发布：本地 npm 不支持 staged，报错方向还相反）：
+
+1. **发布前先查重**：版本已存在就直接早退 —— 否则会依次撞上
+   `E409 Cannot publish over previously staged version`（本地 npm 10）
+   和 `You cannot publish over the previously published versions`（npm@12）两个**方向相反**的报错。
+2. **强制用 `npx npm@12`**：本地 npm 10 对 staged 流程支持不完整。
+3. **不看 `npm publish` 的退出码，只看 registry 的实际状态**，每 15 秒轮询、最多 8 分钟。
+   命令说成功 ≠ 包真的在了；反过来，报「已经发过」也可能就是真的发过了。
+
+手动等价命令（脚本不可用时）：
+
+```sh
 npm whoami                     # 确认登录态
-npm publish --access public    # package.json 已配 publishConfig.access: public
+npx npm@12 publish             # package.json 已配 publishConfig.access: public
+curl -s https://registry.npmjs.org/dsh-remote-bridge/<version> | head -c 200   # 回读确认
 ```
 
 **两条硬性事实**（都实测过）：

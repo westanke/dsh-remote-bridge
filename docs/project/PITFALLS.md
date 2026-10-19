@@ -203,7 +203,14 @@ v2.2.1 是第一次按此规矩执行，哈希成功对上。
 **现在怎么办**：用 Gitee API v5 补建 Release（v2.0.4，id 1192683），上传同一份 tarball。
 写双列地址前**先验证两端都真的可达**。
 
-**铁律**：双站镜像 ≠ 双站都有货。写进文档的下载地址，两端都要点一次。
+**2026-10-19 又栽一次，换了个面孔**：这次 Release 有货、附件也在，但 README 的链接仍然 404 ——
+因为**文件名对不上**。`npm pack` 产出 `dsh-remote-bridge-<ver>.tgz`（**无 v 前缀**），
+README 两条安装命令写的是 `dsh-remote-bridge-v<ver>.tgz`（**带 v**）。对照 v2.4.1 的附件列表，
+上一版就是裸名 —— 也就是说这个链接**从 v2.2.x 起就没工作过**，只是没人点过。
+现在 `scripts/pack-release.sh` 产出**两个名字各一份**，上传时两份都传，文档怎么写都能下。
+
+**铁律**：双站镜像 ≠ 双站都有货。写进文档的下载地址，两端都要点一次 ——
+而且要点的是**文档里那个字面地址**，不是「我以为的产物名」。
 
 ---
 
@@ -240,6 +247,28 @@ Cordis 4.0.2（`vendor/cordis/src/events.ts`）：
 
 ---
 
+### npm 发布：本地 npm 不支持 staged，报错方向还相反
+
+**症状**（2026-10-19 发 v2.4.2 时）：
+1. 本地 npm 10.9.9 跑 `npm publish` → 输出 `+ dsh-remote-bridge@2.4.2` 像是成功，
+   但 `npm view` 查不到；
+2. 再发一次 → `E409 Cannot publish over previously **staged** version "2.4.2"`；
+3. 换 `npm@12` 再发 → `You cannot publish over the **previously published** versions: 2.4.2`。
+
+三次报错，两个相反方向（「还没发」vs「已经发过」），全都指向「这版本状态不明」。
+
+**根因**：账号的 token 是 **bypass-2FA 型**，npm 官方已把它限制为**只能暂存发布**，
+而本地 npm 10.9.9 对 staged 流程支持不完整。第 3 步的「已经发过」才是事实 ——
+**第一次发布真的成功了，只是 registry 的 CDN 要几分钟才可见**。
+
+**现在怎么办**：`scripts/publish-npm.sh`。它做三件事：
+① 发布前先查 registry 是否已有该版本（有则直接早退，避免撞上面那串鬼报错）；
+② 用 `npx npm@12 publish`；
+③ **不看 publish 的退出码，只看 registry 的实际状态**，每 15 秒轮询一次、最多 8 分钟。
+
+**铁律**：`npm publish` 的退出码不足以判断成败，**以 registry 回读为准**。
+「命令说成功」与「包真的在了」是两件事。
+
 ### 孤立代理项打死整条连接
 
 **症状**：客户端「突然不再更新」——WebSocket 看着还连着，但一帧都不再处理。
@@ -274,7 +303,13 @@ HTTP JSON（`router.ts` 的 `sendJson`）。**新增任何出网口都要走它*
 `pnpm-state.json` —— 所以不是项目配置，而是**全局 pnpm 安装或它的 store 索引损坏**。
 2026-10-17 首次遇到，尚未修复（npm 10.9.9 / node v24.19.0 / 磁盘余量 747G 均正常）。
 
-**现在怎么办（临时口径）**：`pnpm check` 的四道门**逐条等价执行**：
+**2026-10-19 根治了一半**：`package.json` 里 `check` / `build` / `prepack` 曾经**内部再调 pnpm**
+（`pnpm typecheck && pnpm test && …`），于是 `npm publish` 的 prepack 钩子会在 pnpm 一坏时整条断掉，
+报错还只说「pnpm 打不开库」。现已全部改成 `npm run` 自调用：
+`pnpm check` 入口照旧可用（pnpm 跑 check 脚本），而 `npm run check` 也能独立跑通。
+**新脚本一律用 `npm run` 串，不要用 `pnpm` 串** —— 让发布链不依赖那个会坏的东西。
+
+**临时口径（pnpm 整体不可用时）**：`pnpm check` 的四道门**逐条等价执行**：
 
 ```sh
 ./node_modules/.bin/tsc --noEmit

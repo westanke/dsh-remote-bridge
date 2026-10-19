@@ -175,6 +175,7 @@ docs/api/            ← OpenAPI + AsyncAPI（wire schema 的权威）
 - `wait.callId 判据过严`
 - `npm pack 与 pnpm pack`
 - `Gitee Release 死链`
+- `npm 发布：本地 npm 不支持 staged，报错方向还相反`
 - `孤立代理项打死整条连接`
 - `pnpm store 打不开数据库`
 - `截断标记与内容必须同源`
