@@ -126,6 +126,13 @@ npm view <name> version --registry=https://registry.npmmirror.com   # 验证
 `main` 先推 Gitee，再用 `gh-mirror-rest.py` 镜像到 GitHub（本机 `github.com:443` 不通，
 `api.github.com` 通）。然后打 tag、两站各建 Release，附件是第 1 步的产物 + `SHA256SUMS.txt`。
 
+> **附件名要传两份（2026-10-19 踩到）**：`npm pack` 产出的是 `dsh-remote-bridge-<ver>.tgz`
+> （**没有 v 前缀**），而 README 里两条安装命令写的是 `dsh-remote-bridge-v<ver>.tgz`（带 v）。
+> 两个名字从 v2.2.x 起就一直对不上，结果是 README 的下载链接**长期 404** ——
+> 只是没人点过。所以发布时**把产物 cp 一份带 v 的**，两份都上传；
+> 或者反过来改 README，但改文档等于改已发布页面的说明，不如多传一个 558 KB 的副本稳妥。
+> 校验：`curl -sL -o /dev/null -w '%{http_code}' <两个 URL>` 都要 200。
+
 **双站链接规则**（全局规矩）：安装命令、Release 下载这类**必须带主机名**的地址一律两份并列，
 不能只写 GitHub —— 同一个 README 由两站共用，写死一处另一处就指错。仓库内文件用相对链接。
 
