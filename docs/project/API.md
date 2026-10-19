@@ -134,9 +134,26 @@ curl "http://192.168.1.20:3090/api/v1/roots/resolve?path=%2Fmedia%2Fdata%2Fproje
 
 `PUT /chat/sessions/{sessionId}/agent-preset` 可重新组合空白会话的 Agent Preset。DSH 只允许在第一条消息被接受前切换；会话开始后返回 `409 AGENT_PRESET_LOCKED`，客户端应展示当前 Agent 但禁用切换。
 
+`GET /chat/permission-presets` 返回可选权限档位清单（`options` 与部署默认 `defaultPreset`），scope 与 agent-presets 同为 `chat.read`。
+
+**为什么必须单开一条**：内核把预设清单放在**独立的远程服务** `permissionPresets.catalog()` 上，而会话投影里那条 `permissions` wire 视图**只产 `currentValue`**（`wire.view: state => ({ currentValue })`）。两者没有任何交叉引用，客户端能读到「当前档位」却列不出候选 —— Android 客户端 v2.2.44 的权限档位 Pill 与 ⋯ 菜单权限项因此在真机上**从不渲染**（PARITY 上当时误标为 `done`）。候选不在投影里，所以插件必须自己透出来；清单是**进程级**的，客户端连上时取一次即可。形状由 `normalizePermissionCatalog` 收敛：丢弃没有 `value` 的行、`name` 缺失时退回 `value`、空串 `description` 不透传（否则客户端会渲染出一行空白副标题）。
+
+**降级行为（重要）**：`ctx.permissionPresets` 在部分 profile 上**不可注入**（实测 2026-10-19 抛 `cannot get property "permissionPresets" without inject`）。按本仓既定结论，该异常的含义是「**压根没有**这个可注入服务」，而非「加载时机不对」—— 旁证是内核这条能力本身在工作（`/permission` 命令可列出、投影 `permissions.currentValue` 有值），只是没挂进本插件的注入面，因此**装包并不能解决它**。
+
+所以这条端点**容错读取**：服务不可用时返回**内核默认档位**（`workspace-write` / `danger-full-access`，取值依据是内核 `Config` 的 `.default({...})`），客户端菜单因此仍可用；且**服务缺席不会让端点报错**（一个可选能力缺席不该毁掉整个权限入口）。**代价**：真部署若自定义过 `presets`，这份降级清单就不全 —— 它只是兜底，权威来源永远是 `permissionPresets.catalog()`。`read-only` 虽然合法（在 `SANDBOX_MODES` 里），但内核**没有为它配 preset**，而 `/permission <preset>` 切的是 preset 名，故**不**放进降级清单（放进去等于给客户端一个点下去必然失败的选项）。
+
 `GET /chat/sessions/{sessionId}/commands` 列出 DSH host 为当前会话实际注册的斜杠命令、说明和可选参数提示；`POST` 同一路径以 `{ "line": "/permission workspace-write" }` 执行命令。执行要求 `chat.write` 及对应 session/root 授权，命令必须存在于当前列表中，并直接进入 DSH command registry，不会退化为普通模型消息。审计仅记录命令名，不记录可能敏感的参数。
 
-会话历史响应的 `projections.values.todos` 与 `projections.values.permissions` 分别提供 DSH 当前 TODO 列表和权限选择器状态。移动端据此展示任务进度，并使用公开命令接口切换 `read-only`、`workspace-write` 或 `danger-full-access`；完整访问仍应由客户端二次确认。
+会话历史响应的 `projections.values.todos` 与 `projections.values.permissions` 分别提供 DSH 当前 TODO 列表和权限档位**当前值**。移动端据此展示任务进度，并使用公开命令接口切换 `read-only`、`workspace-write` 或 `danger-full-access`；完整访问仍应由客户端二次确认。
+
+> **`permissions` 只给当前值，候选档位不在里面。** 内核那条 wire 视图是
+> `wire.view: state => ({ currentValue })` —— 它不产 `options`，候选项在**另一个远程服务**
+> `permissionPresets.catalog()` 上（见上文 `GET /chat/permission-presets`）。
+> 客户端的权限菜单必须**两路合成**：当前值读这里，候选读那条目录接口。
+>
+> `projections` 是**可选**字段，内核没给基线时整个字段缺席（不是空对象）。
+> 客户端必须容忍它不存在 —— 把「读不到投影」当成「没有权限这个功能」，
+> 就会做出一个永远不渲染的权限入口（v2.2.44 真机验收踩过，见 `PITFALLS.md` §桥的 history 不带 projections）。
 
 需要新的会话工作区时，客户端先用授权的 `rootId + relativePath` 调用 `POST /chat/workspaces`。服务端确认目标是现有目录且仍位于设备授权根内，再通过 DSH `workspace.create` 登记；响应只返回不透明工作区信息。该接口不会创建本地目录，目录应先通过文件 API 创建。
 

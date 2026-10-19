@@ -264,6 +264,14 @@ export class ApiRouter {
       return
     }
 
+    // 权限档位候选清单（客户端的会话权限 Pill / ⋯ 菜单靠它列档位）。
+    // scope 跟 agent-presets 同档：都是「读会话配置」，不含任何写入。
+    if (method === 'GET' && pathname === '/api/v1/chat/permission-presets') {
+      this.options.auth.requireScope(principal, 'chat.read')
+      sendJson(res, 200, await this.options.chat.listPermissionPresets())
+      return
+    }
+
     if (pathname === '/api/v1/settings/providers') {
       if (method === 'GET') {
         this.options.auth.requireScope(principal, 'settings.read')

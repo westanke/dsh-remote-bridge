@@ -2,7 +2,7 @@ import { mkdtemp, readFile, stat } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
-import { createDsh02ApiProxy, handoffLocaleOf, type Dsh02HostServices } from '../src/host/dsh-0.2-bridge.ts'
+import { FALLBACK_PERMISSION_CATALOG, createDsh02ApiProxy, handoffLocaleOf, type Dsh02HostServices } from '../src/host/dsh-0.2-bridge.ts'
 
 /**
  * Contract tests for the DSH 0.2.x bridge.
@@ -582,11 +582,75 @@ describe('dsh 0.2.x bridge: contract shapes', () => {
     const api = createDsh02ApiProxy(host)
 
     const response = await api.sessions.history({ rpcId: 'r', payload: { sessionId: 's', maxMessages: 10 } })
-    expect(response.result.ok && response.result.value).toEqual({ events: [{ seq: 1 }], hasMore: true })
+    // `projections` 是本轮补上的（见 readSessionProjections 的 @patch）：
+    // follow 的 snapshot 本身不带它，得单独问 sessionController 一次。
+    // 夹具里 projections 默认回 `{asOfSeq: 0, values: {}}`，所以这里应当带着它。
+    expect(response.result.ok && response.result.value).toEqual({
+      events: [{ seq: 1 }],
+      hasMore: true,
+      projections: { asOfSeq: 0, values: {} },
+    })
     expect(follow).toHaveBeenCalledWith(
       { address: { kind: 'session', sessionId: 's' }, maxMessages: 10 },
       expect.anything(),
     )
+  })
+
+  // ── 权限档位目录：内核服务**不可注入**时的容错 ──────────────────────────
+  //
+  // 本机实测（2026-10-19）这条 profile 上 `ctx.permissionPresets` 会抛
+  // `cannot get property "permissionPresets" without inject`。按本仓既定结论
+  // （见 `createDsh02ApiProxy` 里 attachments/fileUploads 的那段注释），
+  // 这个异常的含义是「**压根没有**这个可注入服务」，而且**不能**让它把端点打崩 ——
+  // 一个可选能力缺席，不该顺带毁掉权限入口。
+  //
+  // 下面两条用例把两个方向都钉住：没有服务时给降级清单；有服务时以内核为准。
+
+  it('falls back to the kernel-default presets when permissionPresets is not injectable', async () => {
+    const { host } = makeHost()
+    // 精确复现 cordis 的行为：读一个没人提供的注入属性会抛，而不是返回 undefined。
+    Object.defineProperty(host, 'permissionPresets', {
+      configurable: true,
+      get() {
+        throw new Error('cannot get property "permissionPresets" without inject')
+      },
+    })
+    const api = createDsh02ApiProxy(host)
+
+    const response = await api.permissionPresets.catalog({ rpcId: 'r', payload: {} })
+
+    const value = response.result.ok ? response.result.value : null
+    expect(value).toEqual(FALLBACK_PERMISSION_CATALOG)
+    // `read-only` 是合法 sandbox 模式但没有对应 preset，放进来等于给一个点了必失败的选项。
+    expect(JSON.stringify(value)).not.toContain('read-only')
+  })
+
+  it('prefers the kernel catalog when permissionPresets is available', async () => {
+    const { host } = makeHost()
+    Object.defineProperty(host, 'permissionPresets', {
+      configurable: true,
+      value: {
+        catalog: async () => ({
+          options: [
+            { value: 'read-only', name: 'Read only' },
+            { value: 'workspace-write', name: 'Workspace write', description: '只写工作区' },
+          ],
+          defaultOptions: [{ value: 'workspace-write', name: 'Workspace write' }],
+          defaultPreset: 'read-only',
+        }),
+      },
+    })
+    const api = createDsh02ApiProxy(host)
+
+    const response = await api.permissionPresets.catalog({ rpcId: 'r', payload: {} })
+
+    expect(response.result.ok && response.result.value).toEqual({
+      options: [
+        { value: 'read-only', name: 'Read only' },
+        { value: 'workspace-write', name: 'Workspace write', description: '只写工作区' },
+      ],
+      defaultPreset: 'read-only',
+    })
   })
 
   it('folds the model catalog and the session projection into SessionModels', async () => {

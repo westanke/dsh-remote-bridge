@@ -52,6 +52,9 @@ export const inject = [
   'settingsController',
   'credentialsController',
   'agentPresets',
+  // 权限档位目录（ctx.permissionPresets）：内核把它做成独立的 Typert 远程服务，
+  // 会话投影那条 wire 视图只给 currentValue、不带候选项，客户端要列档位就只能拿它。
+  'permissionPresets',
   'llm',
   'webServer',
   'agents',

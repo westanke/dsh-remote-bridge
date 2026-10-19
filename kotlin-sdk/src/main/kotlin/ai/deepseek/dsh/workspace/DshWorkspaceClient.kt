@@ -116,6 +116,30 @@ data class AgentPreset(
 @Serializable
 data class ModelSelection(val provider: String, val model: String, val reasoningEffort: String? = null)
 
+/**
+ * 一个可选的权限档位。
+ *
+ * [name] 是**非空**的：服务端 `normalizePermissionCatalog` 保证名字缺失时用 `value` 顶上，
+ * 空名字会在严格反序列化器上失败，或在 UI 上留下一行没有文字的选项。
+ */
+@Serializable
+data class PermissionOption(
+    val value: String,
+    val name: String,
+    val description: String? = null,
+)
+
+/**
+ * 权限档位清单（`GET /chat/permission-presets`）。
+ *
+ * [defaultPreset] 是部署默认，**不等于**某个会话的当前档位 —— 当前值只认会话投影。
+ */
+@Serializable
+data class PermissionCatalog(
+    val options: List<PermissionOption> = emptyList(),
+    val defaultPreset: String = "",
+)
+
 @Serializable
 data class ModelReasoningEffort(val id: String, val name: String, val description: String? = null)
 
@@ -342,6 +366,19 @@ class DshWorkspaceClient(
         null,
         AgentPresetList.serializer(),
     ).items
+
+    /**
+     * 权限档位候选清单。
+     *
+     * 必须单开一条：会话投影里那条 `permissions` 视图**只给 currentValue**，
+     * 候选项在内核的独立远程服务上，所以客户端列不出档位菜单。
+     */
+    fun listPermissionPresets(): PermissionCatalog = executeJson(
+        "chat/permission-presets",
+        "GET",
+        null,
+        PermissionCatalog.serializer(),
+    )
 
     fun selectSessionAgentPreset(sessionId: String, agentPreset: String): String {
         val body = json.encodeToString(AgentPresetSelection.serializer(), AgentPresetSelection(agentPreset))

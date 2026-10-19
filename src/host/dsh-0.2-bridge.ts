@@ -207,6 +207,23 @@ export interface AgentPresetsLike {
   select(agent: unknown, agentPreset: string): Promise<string>
 }
 
+/**
+ * 内核 `dsh-permission-presets`（cordis 服务名 `permissionPresets`）。
+ *
+ * @patch
+ * id: permission-presets-catalog-bff
+ * for: 内核把「权限预设清单」放在**独立的远程服务**上（`@Remote('catalog')`），
+ *      而会话投影里那条同名 wire 视图只给 `currentValue`（`wire.view: state => ({ currentValue })`），
+ *      两者没有任何交叉引用。客户端要列候选档位就只能自己编。
+ * why: 没有正规写法可用 —— 内核的 Host FaceModel 里没有「把 catalog 并进投影」这个方法；
+ *      插件唯一的入口就是那个远程服务。
+ * until: 内核把候选项并进投影，或提供一条已含 options 的查询。
+ * test: tests/permission-presets.spec.ts
+ */
+export interface PermissionPresetsLike {
+  catalog(): Promise<unknown>
+}
+
 export interface LlmLike {
   /** Live routes, as `{ id, name }` rows. */
   listProviders(): readonly { id: string }[]
@@ -243,6 +260,7 @@ export interface Dsh02HostServices {
   settingsController: SettingsControllerLike
   credentialsController: CredentialsControllerLike
   agentPresets: AgentPresetsLike
+  permissionPresets: PermissionPresetsLike
   llm: LlmLike
   /**
    * 内核附件存储（`ctx.attachments`）；会话历史里的图片要经它取字节。
@@ -1160,6 +1178,134 @@ async function sessionWorkspaceDir(
   return undefined
 }
 
+/**
+ * 内核 `permissionPresets.catalog()` 的形状收敛器。
+ *
+ * @patch
+ * id: permission-presets-catalog-bff
+ * for: 内核把预设清单放在独立的远程服务上，且 wire 视图与投影都不带候选项。
+ * why: 没有正规写法可用 —— 客户端需要候选项，而内核只把这个方法单独暴露。
+ * until: 内核把候选项并进投影，或提供一条已含 options 的查询。
+ * test: tests/permission-presets.spec.ts
+ */
+export function normalizePermissionCatalog(raw: unknown): {
+  options: { value: string; name: string; description?: string }[]
+  defaultPreset: string
+} {
+  const view = (raw && typeof raw === 'object' ? raw : {}) as {
+    options?: unknown
+    defaultPreset?: unknown
+  }
+  const options = Array.isArray(view.options)
+    ? view.options
+        .map((entry) => {
+          const row = (entry && typeof entry === 'object' ? entry : {}) as {
+            value?: unknown
+            name?: unknown
+            description?: unknown
+          }
+          if (typeof row.value !== 'string' || row.value === '') return null
+          return {
+            value: row.value,
+            // 名字可以缺（内核的 custom 档位只保证 value），缺了就退回 value 本身 ——
+            // 客户端拿它显示档位标签，空串会让菜单出现一个没有文字的行。
+            name: typeof row.name === 'string' && row.name !== '' ? row.name : row.value,
+            // 空串的 description **不能**原样透传：客户端把它当「有副标题」渲染，
+            // 结果是一行空白。判定与 name 一样按「非空串」算。
+            ...(typeof row.description === 'string' && row.description !== ''
+              ? { description: row.description }
+              : {}),
+          }
+        })
+        .filter((entry): entry is { value: string; name: string; description?: string } => entry !== null)
+    : []
+  const defaultPreset = typeof view.defaultPreset === 'string' && view.defaultPreset !== ''
+    ? view.defaultPreset
+    // 清单能读出候选、却读不出默认值时，退回第一个候选：它必然是内核声明顺序里的首个，
+    // 与「默认档位」的语义最接近，也比抛错好。
+    : (options[0]?.value ?? 'workspace-write')
+  return { options, defaultPreset }
+}
+
+/**
+ * 内核 `dsh-permission-presets` 不可注入时用的**降级档位清单**。
+ *
+ * ## 取值依据（不是编的）
+ *
+ * 来自内核 `@deepseek-ai/dsh-permission-presets/lib/index.js` 的 `static Config`：
+ *
+ * ```js
+ * presets: z.dict(z.object({ sandbox, approval, name, description })).default({
+ *   "workspace-write":   { sandbox: "workspace-write",   approval: "ask",   … },
+ *   "danger-full-access":{ sandbox: "danger-full-access",approval: "never", … },
+ * })
+ * ```
+ *
+ * 也就是说**未配置时内核就这两个档位**。`read-only` 是合法的 sandbox 模式
+ * （`dsh-sandbox-policy` 的 `SANDBOX_MODES = ['read-only','workspace-write','danger-full-access']`），
+ * 但内核**没有为它配 preset**，而 `/permission <preset>` 切的是 **preset 名**，
+ * 所以这里**不放** read-only —— 放进去等于给客户端一个点下去必然失败的选项。
+ *
+ * ## 代价（必须说清楚）
+ *
+ * 这只覆盖**内核默认**：真部署若自定义了 `presets`，这份清单就不全。
+ * 所以它只是「内核服务读不到」时的兜底，**不是**候选清单的权威来源 ——
+ * 权威来源永远是 `permissionPresets.catalog()`。
+ */
+export const FALLBACK_PERMISSION_CATALOG = {
+  options: [
+    {
+      value: 'workspace-write',
+      name: 'workspace-write',
+      description: 'Write inside the workspace and permitted temporary directories; wider retries require approval.',
+    },
+    {
+      value: 'danger-full-access',
+      name: 'danger-full-access',
+      description: 'Full file access without approval prompts.',
+    },
+  ],
+  defaultPreset: 'workspace-write',
+}
+
+/**
+ * 读会话的**投影基线**（`permissions` / `modelSelection` / `title` …）。
+ *
+ * @patch
+ * id: history-projections-passthrough
+ * for: 内核 `sessionController.follow()` 的 snapshot 与 `page()` 都**不返回 projections**
+ *      （类型上就是 `{ cursor, records, hasMore }`），而客户端要靠
+ *      `projections.values.permissions` 才能显示会话的当前权限档位。
+ *      内核那边确实注册了这条投影（`dsh-permission-presets` 里
+ *      `ctx.sessionProjections.register({ key: 'permissions', … })`），
+ *      只是它**不在 history 通道上** —— 必须单独问一次 `sessionController.projections()`。
+ * why: 没有正规写法：history 端点拿不到投影，只能补一次调用。
+ *      不补的后果是 Android 客户端的权限档位 Pill 与 ⋯ 菜单权限项**从不渲染**
+ *      —— v2.2.44 真机验收实测到了这个，而当时 `PARITY.md` 还把它标成 `done`。
+ * until: 内核把 projections 并进 follow/page 的返回。
+ * test: tests/history-projections.spec.ts
+ */
+export async function readSessionProjections(
+  host: Dsh02HostServices,
+  sessionId: string,
+  signal: AbortSignal,
+): Promise<{ asOfSeq?: number; values: Record<string, unknown> } | undefined> {
+  try {
+    const baseline = await host.sessionController.projections({ sessionId }, signal)
+    if (baseline === null || baseline === undefined) return undefined
+    const values = baseline.values
+    if (values === undefined || values === null || typeof values !== 'object') return undefined
+    return {
+      ...(typeof baseline.asOfSeq === 'number' ? { asOfSeq: baseline.asOfSeq } : {}),
+      values: values as Record<string, unknown>,
+    }
+  } catch {
+    // 投影取不到**绝不能**把整份历史打掉：历史是主功能，档位是附加信息。
+    // 取不到就是「这次没有投影」，客户端会据此走降级路径（只显示得出来的那部分）。
+    return undefined
+  }
+}
+
 /** 会话当前生效的模型（pending > lastUsed > 目录默认），取不到返回 undefined。 */
 async function currentModelSelection(
   host: Dsh02HostServices,
@@ -1467,13 +1613,19 @@ export function createDsh02ApiProxy(
           if (snapshot === undefined || snapshot.type !== 'snapshot') {
             return { events: [], hasMore: false } as never
           }
+          // 投影单独取一次：follow/page 都不带它，而客户端要靠
+          // `values.permissions` 显示当前权限档位（见 readSessionProjections 的 @patch）。
+          // 放在两条分支之前取一次，分页回来的那一页也带得上，客户端不必为它多打一次请求。
+          const projections = await readSessionProjections(host, sessionId, controller.signal)
+          const withProjections = <T extends object>(payload: T): T | (T & { projections: unknown }) =>
+            projections === undefined ? payload : { ...payload, projections }
           // When beforeSeq is not provided, return the follow snapshot (current behavior)
           if (beforeSeq === undefined) {
             // 0.2.x names the durable event array `records`; the plugin reads `events`.
-            return {
+            return withProjections({
               events: Array.isArray(snapshot.records) ? [...snapshot.records] : [],
               hasMore: snapshot.hasMore === true,
-            } as never
+            }) as never
           }
           // When beforeSeq is provided, use page() to get older messages.
           // throughSeq must come from the follow snapshot's cursor — hard-coding
@@ -1484,10 +1636,10 @@ export function createDsh02ApiProxy(
             beforeSeq,
             ...(maxMessages === undefined ? {} : { maxMessages }),
           }, controller.signal)
-          return {
+          return withProjections({
             events: Array.isArray(page.records) ? [...page.records] : [],
             hasMore: page.hasMore === true,
-          } as never
+          }) as never
         } finally {
           controller.abort()
         }
@@ -1677,6 +1829,29 @@ export function createDsh02ApiProxy(
         const agent = await agentFor(request.payload.sessionId)
         const agentPreset = await host.agentPresets.select(agent, request.payload.agentPreset)
         return { agentPreset }
+      }),
+    },
+
+    // 权限档位目录：内核的 `permissionPresets.catalog()` 是进程级清单，
+    // 客户端必须能拿到它才能列候选档位（见 PermissionPresetsLike 的 @patch 说明）。
+    permissionPresets: {
+      catalog: () => call(async () => {
+        // **必须容错读取**，不能直接 `host.permissionPresets`：
+        // 本机实测（2026-10-19）这条 profile 上它抛
+        // `cannot get property "permissionPresets" without inject`。
+        //
+        // 注意这不是「加载时机不对」—— 文件顶部那段注释已经把结论写死了：
+        // 该异常的含义是「**压根没有**这个可注入服务」。旁证是内核那条能力本身在正常工作：
+        // `/permission` 命令存在（`GET …/commands` 能列出来）、会话投影里
+        // `permissions.currentValue` 也有值 —— 只是服务没挂进本插件的注入面。
+        // 所以「装包」解决不了它（本 profile 里包就在核身体内），直接读只会让端点 500。
+        const service = optionalService<PermissionPresetsLike>(host, 'permissionPresets')
+        if (service === null || typeof service.catalog !== 'function') {
+          // 降级：给出**内核声明过的默认档位**（依据见 FALLBACK_PERMISSION_CATALOG 注释），
+          // 让客户端的档位菜单可用；拿不到内核全量清单时至少这两个是能切成功的。
+          return FALLBACK_PERMISSION_CATALOG
+        }
+        return normalizePermissionCatalog(await service.catalog())
       }),
     },
 
