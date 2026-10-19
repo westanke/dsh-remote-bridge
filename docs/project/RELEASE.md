@@ -3,6 +3,37 @@
 本文档记录**怎么发一版**，以及每一次实际发版中学到的教训。状态类事实见 [STATUS.md](STATUS.md)，
 变更记录见 [CHANGELOG-DEV.md](CHANGELOG-DEV.md)。
 
+## 0. 推荐路径：`bash scripts/release.sh`
+
+发版是**七件事的清单**，不是「记得的那几件」。用户 2026-10-19 定的规矩：
+
+> **打包一律用 npm；git 和 npm 要一起发，缺一不可。**
+
+脚本按顺序做完并逐步回读：
+
+```
+0) 前置检查（版本号两处一致、工作区干净）
+1) 门禁 npm run check
+2) 打包 npm pack（产出带 v 与不带 v 两份 + SHA256SUMS）
+3) 打 tag v<ver>
+4) git 双推（Gitee + AtomGit 的分支与 tag）
+5) 两站 Release + 附件
+6) npm 发布（npm@12 + registry 轮询）
+7) 全渠道回读（npm 可读、两个下载 URL 都 200、两站 tag 就位）
+```
+
+**每一步都幂等**：tag 在就跳过、Release 在就跳过、附件在就跳过、npm 版本已发就跳过。
+中途失败修完再跑一遍即可，不会重复创建或重复上传。
+
+`DRY_RUN=1` 只打印计划。`SKIP_NPM=1` 是排障用的，**正常发版绝不能跳**——
+v2.4.2 那次就是漏了 npm，被用户追问才补的。
+
+> 为什么值得做成脚本：同类问题已经栽过两次 —— 一次漏发 npm，一次把「registry CDN 延迟」
+> 误判成发布失败（`npm view` 查不到就以为没发，其实已经发了）。
+> 两次都是「靠人记住清单」失效，而不是知识缺失。
+
+---
+
 ## 0. 前置
 
 - 工作区干净、`pnpm check` 全绿（含 `docs:check`），浏览器层 `pnpm test:e2e` 通过。

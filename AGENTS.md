@@ -55,6 +55,7 @@
 ## 2. 命令（本地唯一可信口径）
 
 ```sh
+bash scripts/release.sh   # 一键发版：门禁→npm 打包→tag→双推→两站 Release→npm 发布→全渠道回读
 pnpm check          # typecheck → test → docs:check → build（提交前跑这个）
 pnpm test           # vitest run
 pnpm typecheck      # tsc --noEmit
@@ -70,6 +71,8 @@ pnpm test:e2e       # playwright
   `prepack → pnpm check`，那是发布前最后一道闸，比单独 `build` 严格得多。
 - 产物用 `npm pack --pack-destination artifacts`，**不用 `pnpm pack`**——
   目的是让本地产物与 npm 上那份的 shasum/integrity 哈希一致（`RELEASE.md` 新规矩）。
+- **发版时 git 与 npm 必须同批**：只推 git + 建 Release 不算发完，`npm publish` 是同一件事的一部分。
+  一键脚本 `scripts/release.sh` 已把两者串起来并逐步回读——**别再手敲清单，会漏**（v2.4.2 漏过一次）。
 - `docs:check` 是**必需清单式**校验（10 份文档 + ADR 索引齐全），新增文档不会让它红；
   README 双站**不在**覆盖范围内（`PITFALLS.md` §README 双站漂移）。
 
