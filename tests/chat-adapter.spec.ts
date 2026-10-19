@@ -57,8 +57,15 @@ describe('DSH chat choices', () => {
           { name: 'permission', description: 'Switch permission preset', input: { hint: '<preset>' } },
           { name: 'compact', description: 'Compact session context' },
         ] : [],
-        execute: async (_agent, line) => {
+        execute: async (_agent, line, submittedAttachments, signal) => {
           commandLines.push(line)
+          // **必须断言第三、四参**：内核签名是 `execute(agent, line, submittedAttachments, signal)`。
+          // 少传一个 → 内核拿 `undefined.aborted` → 所有斜杠命令（包括 `/permission`）
+          // 全都报 `Cannot read properties of undefined (reading 'aborted')`。
+          // 这个桩以前写成 `(_agent, line)`，正好**放过了**这个错位（2026-10-19 真机踩到）。
+          expect(submittedAttachments).toEqual([])
+          expect(signal).toBeDefined()
+          expect(typeof signal.aborted).toBe('boolean')
           return { commandId: 'command-1', result: { kind: 'success', text: 'preset workspace-write' } }
         },
       },

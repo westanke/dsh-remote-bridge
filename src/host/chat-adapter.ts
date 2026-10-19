@@ -3,6 +3,7 @@ import { lstat } from 'node:fs/promises'
 import type { Principal, WorkspaceEvent } from '../shared/contracts.ts'
 import type { StoredRoot, WorkspaceDatabase } from './database.ts'
 import type { HandoffLocale } from './dsh-0.2-bridge.ts'
+import { normalizePermissionCatalog } from './dsh-0.2-bridge.ts'
 import { ApiError } from './errors.ts'
 import { HISTORY_FORMAT_VERSION } from './capabilities.ts'
 import { applyHistoryBudget } from './history-budget.ts'
@@ -99,6 +100,15 @@ export interface DshApiProxy {
     select(request: { rpcId: string; payload: { sessionId: string; agentPreset: string } }): Promise<RpcResponse<{ agentPreset: string }>>
   }
   /**
+   * 权限档位目录（内核 `ctx.permissionPresets`）。
+   *
+   * 单开命名空间的理由与 userQuestions 相同：它由**另一个内核服务**提供
+   * （`@deepseek-ai/dsh-permission-presets`），在没装它的 profile 上是可选能力。
+   */
+  permissionPresets: {
+    catalog(request: { rpcId: string; payload: Record<string, never> }): Promise<RpcResponse<unknown>>
+  }
+  /**
    * 用户问题（内核 `ctx.userQuestions`，即 ask_user_question 工具）。
    *
    * 为什么单开一个命名空间而不是塞进 `sessions`：它由**另一个内核服务**提供
@@ -165,7 +175,14 @@ export interface CommandExecutionView {
 
 export interface DshCommandRuntime {
   list(agent: unknown): readonly CommandDescriptorView[]
-  execute(agent: unknown, line: string, signal: AbortSignal): Promise<CommandExecutionView | undefined>
+  /**
+   * 内核签名是 **四个**参数：`execute(agent, line, submittedAttachments, signal)`。
+   *
+   * 少传一个（把 signal 传到第三个位）会让内核读到 `undefined.aborted`，
+   * 表现为**所有**斜杠命令都报 `Cannot read properties of undefined (reading 'aborted')`。
+   * 实测 2026-10-19 踩过：手机端因此切不了会话权限档位。
+   */
+  execute(agent: unknown, line: string, submittedAttachments: readonly unknown[], signal: AbortSignal): Promise<CommandExecutionView | undefined>
 }
 
 export interface DshAgentRegistry {
@@ -333,6 +350,17 @@ export interface AgentPresetView {
   available: boolean
 }
 
+/**
+ * 一个可选的权限档位。字段名刻意与内核 `optionOf()` 的产出一致
+ * （`{ value, name, description? }`），中间不再改名 —— 客户端的
+ * kotlinx.serialization 严格解码器对字段名敏感。
+ */
+export interface PermissionOptionView {
+  value: string
+  name: string
+  description?: string
+}
+
 export class DshChatAdapter {
   private readonly sessionRootIds = new Map<string, string>()
   private readonly sessionRootLookups = new Map<string, Promise<string | undefined>>()
@@ -460,6 +488,19 @@ export class DshChatAdapter {
       isDefault: preset.isDefault,
       available: preset.broken === undefined,
     }))
+  }
+
+  /**
+   * 权限档位候选清单。
+   *
+   * 为什么这条必须在插件侧：BFF 要把内核的进程级 catalog 透出来。会话投影里那条
+   * wire 视图只带 `currentValue`，没有候选项 —— 客户端拿不到候选就列不出档位菜单。
+   */
+  async listPermissionPresets(): Promise<{ options: PermissionOptionView[]; defaultPreset: string }> {
+    return normalizePermissionCatalog(unwrapDsh(await this.api.permissionPresets.catalog({
+      rpcId: randomUUID(),
+      payload: {},
+    })))
   }
 
   async selectAgentPreset(principal: Principal, sessionId: string, agentPreset: string): Promise<string> {
@@ -865,7 +906,21 @@ export class DshChatAdapter {
     const known = this.commandServices!.commands.list(agent).some(command => command.name === match[1])
     if (!known) throw new ApiError(404, 'COMMAND_NOT_FOUND', 'The command is not available for this session.')
     try {
-      const execution = await this.commandServices!.commands.execute(agent, normalized, new AbortController().signal)
+      // **四个参数**，不是三个：内核 `commands.execute(agent, line, submittedAttachments, signal)`
+      // （`@deepseek-ai/dsh-commands/lib/types/index.js:302`）。
+      // 少传一个会让 `signal` 实际收到 `submittedAttachments`（undefined），
+      // 内核随后读 `signal.aborted` 就炸成
+      // `Cannot read properties of undefined (reading 'aborted')`。
+      //
+      // 症状很有迷惑性：**所有**斜杠命令都执行不了（含 `/permission`），
+      // 报出来的却是「undefined 的 aborted」，跟权限、跟会话冷热都无关。
+      // 实测 2026-10-19：手机端切不了权限档位，根因就在这一处。
+      const execution = await this.commandServices!.commands.execute(
+        agent,
+        normalized,
+        [],
+        new AbortController().signal,
+      )
       if (execution === undefined) throw new ApiError(404, 'COMMAND_NOT_FOUND', 'The command is no longer available for this session.')
       return {
         commandId: String(execution.commandId),
