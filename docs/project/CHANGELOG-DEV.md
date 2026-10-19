@@ -1,5 +1,55 @@
 # 开发日志
 
+## 2.4.2 · history 带投影 + 权限档位 BFF + 斜杠命令执行修复（2026-10-19）
+
+### 基于什么
+
+dsh-companion v2.2.44 真机验收报 F1「权限档位 Pill 与 ⋯ 菜单权限项**从不渲染**」，
+以及在真机上「会话中改不了权限」（2026-10-19 复验）。追下去发现是**桥侧三个独立问题**：
+
+1. `GET /chat/sessions/{id}/messages` **完全不下发 `projections`**（顶层只有
+   `events` / `hasMore` / `historyFormatVersion`）—— 客户端连「当前权限档位」都读不到；
+2. 权限档位的**候选项**只在内核的独立远程服务 `permissionPresets.catalog()` 上，
+   桥没有任何入口能把它透出去；
+3. **所有斜杠命令都执行失败**，报 `Cannot read properties of undefined (reading 'aborted')`。
+
+### 干了什么
+
+- **history 透传投影**：新增 `readSessionProjections()`，在 `sessions.history` 的两条分支
+  （首屏 follow snapshot / `beforeSeq` 分页）都把 `sessionController.projections()` 的结果
+  并进响应。登记 `@patch history-projections-passthrough`，新 6 例测试
+  （`tests/history-projections.spec.ts`）。
+  取不到投影**不抛错**：历史是主功能，投影是附加信息，缺席时客户端走降级路径。
+- **新增 `GET /chat/permission-presets`**（scope 与 agent-presets 同为 `chat.read`）：
+  走新 `permissionPresets` 命名空间 → 内核 `catalog()`，出网前过 `normalizePermissionCatalog`
+  收敛形状（丢无 value 的行、缺 name 退回 value、空串 description 不透传）。
+  登记 `@patch permission-presets-catalog-bff`，新 6 例测试。
+- **该端点是容错读取**：`ctx.permissionPresets` 在本 profile **不可注入**
+  （`cannot get property … without inject`）。按本仓 `attachments`/`fileUploads` 那条既有结论，
+  这个异常的含义是「**压根没有**这个可注入服务」，不是时机问题 —— 旁证是内核该能力本身在工作
+  （`/permission` 命令可列出、投影 `permissions.currentValue` 有值）。所以改用现成
+  `optionalService` 容错读取，缺失时返回**内核默认档位**
+  （`workspace-write` / `danger-full-access`，取值依据 `Config.default`）。
+  不放 `read-only`：它是合法 sandbox 模式但内核没为它配 preset，而 `/permission <preset>`
+  切的是 preset 名。
+- **修斜杠命令执行**：`chat-adapter.executeCommand` 调内核 `commands.execute` 时**少传了
+  `submittedAttachments`**（内核签名是四个参数 `execute(agent, line, submittedAttachments, signal)`），
+  于是 `signal` 实际收到 `undefined`，内核随后读 `signal.aborted` 就炸。
+  **症状极有迷惑性**：所有命令全废，报出来的却是「undefined 的 aborted」，与权限、与会话冷热都无关。
+  已修，并让测试桩断言第三、四参（此前桩写成 `(_agent, line)`，正好放过了这个错位）。
+- 文档：OpenAPI 加 `/chat/permission-presets` 与 `PermissionOption`；API.md 补两节
+  （为什么单开一条、降级行为与代价）；Kotlin SDK 加 `listPermissionPresets()` 与两个数据类。
+
+### 测了什么
+
+- 40 个测试文件 / 305 用例全绿（`pnpm check` 四道门）；`docs:check` 10 文档一致。
+- **两条用例首跑就抓到实现的真 bug**：空串 `description` 被原样透传（客户端会渲染出
+  一行空白副标题）—— 已修（判据与 name 一样按非空串算）。
+- 真机复验（配合 App）：重启后 `messages` 响应带上
+  `projections = {"asOfSeq":…,"values":{"permissions":{"currentValue":"danger-full-access"},…}}`，
+  App 的权限 Pill 与 ⋯ 菜单权限项**正常显示**；`/permission workspace-write` 返回
+  `{"kind":"success","text":"preset workspace-write"}`，App 侧档位随之切换。
+
 ## 2.4.1 · `turn/end` 的 `reason` 透传（回答被截断提示）（2026-10-19）
 
 ### 基于什么

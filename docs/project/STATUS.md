@@ -1,5 +1,20 @@
 # 当前状态
 
+- 日期：2026-10-19
+- **已发版 v2.4.2（2026-10-19）**：**history 带投影 + 权限档位 BFF + 斜杠命令执行修复**。
+  - **history 透传投影**：新增 `readSessionProjections()`，`sessions.history` 两条分支都把
+    `sessionController.projections()` 并进响应（`@patch history-projections-passthrough`）。
+    此前 `messages` 顶层只有 `events`/`hasMore`/`historyFormatVersion`，客户端连
+    「当前权限档位」都读不到 —— 这是 dsh-companion F1「权限 Pill 从不渲染」的上游根因。
+  - **新增 `GET /chat/permission-presets`** 透出内核 `permissionPresets.catalog()`
+    （候选项只在这个独立远程服务上）。端点**容错读取**：该服务在本 profile 不可注入时
+    （`without inject` = 压根没有，不是时机问题）返回内核默认档位，而不是让端点 500。
+  - **修斜杠命令执行**：`commands.execute` 少传 `submittedAttachments`（内核四参签名），
+    导致 signal 位错、所有斜杠命令报 `reading 'aborted'`。测试桩补上第三、四参断言。
+  - 门验：40 文件 / 305 用例 / 0 失败；`docs:check` 10 文档一致。
+  - 真机复验：投影带上 `permissions.currentValue`，App 权限 Pill 与菜单权限项正常显示；
+    `/permission workspace-write` 返回 success，档位可切换。
+
 - 日期：2026-10-17
 - **在途（未发版、无版本号变更）**：三项（两项传输层加固 + 一项交互可靠性）——
   ① **出网 JSON 消毒**：新增 `src/host/wire-json.ts`（孤立 UTF-16 代理项 → U+FFFD），

@@ -9,7 +9,7 @@
 </p>
 
 <p align="center">
-  <img alt="Version" src="https://img.shields.io/badge/version-v2.4.1-087f8c">
+  <img alt="Version" src="https://img.shields.io/badge/version-v2.4.2-087f8c">
   <img alt="DSH plugin" src="https://img.shields.io/badge/DeepSeek_Harness-plugin-1f2328">
   <img alt="Platforms" src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-586069">
   <img alt="License" src="https://img.shields.io/badge/license-AGPL--3.0-2da44e">
@@ -77,10 +77,10 @@ dsh plugin --profile web add dsh-remote-bridge
 dsh plugin --profile web add dsh-remote-bridge --registry https://registry.npmmirror.com
 
 # 2. tarball from the GitHub release
-dsh plugin --profile web add https://github.com/westanke/dsh-remote-bridge/releases/download/v2.4.1/dsh-remote-bridge-v2.4.1.tgz
+dsh plugin --profile web add https://github.com/westanke/dsh-remote-bridge/releases/download/v2.4.2/dsh-remote-bridge-v2.4.2.tgz
 
 # 3. tarball from the Gitee release (faster from mainland China)
-dsh plugin --profile web add https://gitee.com/westanke/dsh-remote-bridge/releases/download/v2.4.1/dsh-remote-bridge-v2.4.1.tgz
+dsh plugin --profile web add https://gitee.com/westanke/dsh-remote-bridge/releases/download/v2.4.2/dsh-remote-bridge-v2.4.2.tgz
 
 npx @deepseek-ai/dsh web
 ```
@@ -97,7 +97,7 @@ Restart DSH after installation, then open settings — The section is titled **�
 To install a downloaded release archive:
 
 ```sh
-dsh plugin --profile web add ./dsh-remote-bridge-v2.4.1.tgz
+dsh plugin --profile web add ./dsh-remote-bridge-v2.4.2.tgz
 ```
 
 ## First connection
@@ -329,13 +329,13 @@ pnpm pack
 
 `pnpm check` covers type-checking, documentation consistency, and tests. It currently passes **30 test files / 226 cases**, plus **4 browser-layer cases** (Playwright measuring real computed styles).
 
-`npm pack` produces roughly a **0.29 MB** archive: 2.2.0 dropped the standalone page and its editor dependencies and turned source maps off, down from 1.72 MB.
+`npm pack` produces roughly a **0.53 MB** archive (v2.4.2 measured 558,704 bytes, SHA-256 `0260fe57…e3067f`): 2.2.0 dropped the standalone page and its editor dependencies and turned source maps off, down from 1.72 MB; it has since grown slightly with projection passthrough and the permission BFF.
 
-v2.4.1 was developed against DSH `master@47f943859bef60e4160492346772ded9b24f765a`. CI covers Windows, Ubuntu, and macOS.
+v2.4.2 was developed against DSH `master@47f943859bef60e4160492346772ded9b24f765a`. CI covers Windows, Ubuntu, and macOS.
 
 ## Project
 
-- Version: `v2.4.1`
+- Version: `v2.4.2`
 - Author: upstream [Hakunm](https://github.com/Hakunm); this fork maintained by [westanke](https://github.com/westanke)
 - Repository: [GitHub](https://github.com/westanke/dsh-remote-bridge) · [Gitee](https://gitee.com/westanke/dsh-remote-bridge)
 - npm: [`dsh-remote-bridge`](https://www.npmjs.com/package/dsh-remote-bridge) ([mainland-China mirror](https://registry.npmmirror.com/dsh-remote-bridge))
