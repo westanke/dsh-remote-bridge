@@ -1212,7 +1212,12 @@ function writeHandoffFile(dir: string, workspace: string | undefined, mediaType:
   // 写死时 Windows 上判断恒不成立 → relative 退化成裸文件名 → 给模型的提示里
   // 丢了 `.dsh-images/` 目录，模型按提示找不到图（2026-10-20 CI 实锤）。
   const relative = workspace !== undefined && absolute.startsWith(workspace + sep)
-    ? absolute.slice(workspace.length + 1)
+    // ⚠️ 必须转成 **wire 形式（正斜杠）**：这段文字是给**模型**看的路径提示，
+    // 也是客户端摘除该行时依赖的标记。Windows 上 path.relative 产出的是
+    // `\` 分隔，直接给出去会让模型按 `dir\file` 去找而找不到
+    // （2026-10-20 CI 在 windows-latest 上实锤）。
+    // 对照 `wireRelative()`（path-policy.ts）的做法：split(sep).join('/')。
+    ? absolute.slice(workspace.length + 1).split(sep).join('/')
     : fileName
   return { absolute, relative }
 }

@@ -356,7 +356,7 @@ pnpm pack
 
 `npm pack` produces roughly a **0.55 MB** archive (v2.4.3 measured 572,951 bytes, SHA-256 `38f25c10…299c93`): 2.2.0 dropped the standalone page and its editor dependencies and turned source maps off, down from 1.72 MB; it has since grown slightly with projection passthrough and the permission BFF.
 
-v2.4.3 was verified on DSH **0.2.1-rc.2** on real hardware: all 14/14 host services injected, the three jobs endpoints exercised, and the permission catalog returned the kernel's real three presets. The development baseline is `master@47f943859bef60e4160492346772ded9b24f765a` (kernel 0.2.0-rc.2); see `engines.dsh` above for the supported range. CI covers Windows, Ubuntu, and macOS.
+v2.4.3 was verified on DSH **0.2.1-rc.2** on real hardware: all 14/14 host services injected, the three jobs endpoints exercised, and the permission catalog returned the kernel's real three presets. The development baseline is upstream `dsh-v0.2.1-rc.2` (commit `687f282e8625c6b8d11ff58211a90524be2e4317`); see `engines.dsh` above for the supported range. CI covers Windows, Ubuntu, and macOS.
 
 ## Project
 
