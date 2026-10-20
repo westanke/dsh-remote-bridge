@@ -32,15 +32,37 @@ non-properly terminated`，重试 4~6 次才成功一次；改走 `gh api` 通�
 - 四个新脚本全部过 `bash -n`；workflow 过 YAML 解析（jobs: mirror / releases）。
 - 门禁：tsc 干净；vitest 42 文件 / 345 用例全绿；docs:check 三段全过。
 
-### 待办
+### MIRROR_PAT secret 已配齐，workflow 实测通过
 
-- **GitHub 从站的 `MIRROR_PAT` secret 需仓库管理员配置**（带 repo + workflow scope 的
-  PAT，与姊妹仓 dsh-companion 同名 secret 同规格）。缺它时 workflow 会在
-  `git push --mirror` 前报「MIRROR_PAT 未配置」——主源探测与克隆都是成功的，
-  只是推回 GitHub 时没凭据。
-- 配好 secret 后触发一次 workflow：它会用 Gitee 覆盖 GitHub，让主线归一
-  （当前 GitHub 上的 main 是用 Contents API 造出的独立 commit，与 Gitee 主线分叉，
-  这是预期内的 —— 从站本来就该被主源覆盖）。
+secret 值来自**本机 `gh` 登录的 OAuth token**（`gho_` 前缀）——实测其 scope 为
+`delete_repo, gist, read:org, repo, workflow`，含 mirror-sync 需要的 `repo` 与 `workflow`。
+这大概率也是姊妹仓 dsh-companion 2026-10-16 配同名 secret 时用的那一个。
+
+```sh
+gh auth token | gh secret set MIRROR_PAT --repo westanke/dsh-remote-bridge
+```
+
+**workflow 端到端实测通过**（run 39398004802，success）：从 Gitee 克隆 → `push --mirror`
+→ GitHub，再由 `sync-releases.py` 回填 Release 与附件。同步后四站 main 完全一致：
+
+```
+本地   : acfe080c68bb
+Gitee  : acfe080c68bb
+AtomGit: acfe080c68bb
+GitHub : acfe080c68bb
+```
+
+### 顺带解决的一个老问题：github.com:443 抖动
+
+今天发版实测到 `git push origin` 要重试 4~6 次才成功（`Empty reply from server` /
+`TLS handshake failed`），而 `gh api` 通道稳定。**用 token URL 直连**可以绕过：
+
+```sh
+git push "https://x-access-token:$(gh auth token)@github.com/<owner>/<repo>.git" main
+```
+
+实测一次成功。日常仍用 `scripts/push-all.sh`（只推国内两站），GitHub 由 workflow 兜底；
+真要手工补推 GitHub 时用上面这条。
 
 ## 2.4.3 · jobs 端点 + patch inject 修复 + 宿主服务探针（2026-10-20）
 
