@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import { JobAdapter, JobApiError } from '../src/host/job-adapter.ts'
+import { matchJobRoute } from '../src/host/router.ts'
 import type { JobControllerLike } from '../src/host/dsh-0.2-bridge.ts'
 
 /**
@@ -313,3 +314,60 @@ describe('JobAdapter.follow', () => {
 
 const JOB_NOT_FOUND = expect.objectContaining({ status: 404, code: 'JOB_NOT_FOUND' })
 const JOB_KILL_FAILED = expect.objectContaining({ status: 502, code: 'JOB_KILL_FAILED' })
+
+describe('matchJobRoute（路由可达性回归）', () => {
+  /**
+   * 这一组的由来：kill 端点第一版把 `/kill` 后缀的路由复用了「以 jobId 结尾」
+   * 的 `$` 正则，永远匹配不上 —— 而 adapter 的单测全绿，因为它们只测 kill
+   * **方法**，不测**路径分发**。真机一打就 `ROUTE_NOT_FOUND`。
+   *
+   * 所以正则抽成 `matchJobRoute` 单点维护，这一组直接打它：
+   * 三条真实路径各一条用例，外加 405 语义与 404 边界。
+   */
+
+  it('routes the roster path', () => {
+    expect(matchJobRoute('/api/v1/chat/sessions/s1/jobs')).toEqual({ kind: 'list', sessionId: 's1' })
+  })
+
+  it('routes the kill path — the shape that shipped broken once', () => {
+    // 这条在第一版实现里返回 null（正则以 jobId 结尾，配不上 /kill 后缀），
+    // 于是 kill 打到 ROUTE_NOT_FOUND。回归就钉在这里。
+    expect(matchJobRoute('/api/v1/chat/sessions/s1/jobs/bash-abc/kill')).toEqual({
+      kind: 'kill',
+      sessionId: 's1',
+      jobId: 'bash-abc',
+    })
+  })
+
+  it('routes the output path with its query handled elsewhere', () => {
+    // ?from= 是 query，不进 pathname，所以匹配不受它影响。
+    expect(matchJobRoute('/api/v1/chat/sessions/s1/jobs/bash-abc/output')).toEqual({
+      kind: 'output',
+      sessionId: 's1',
+      jobId: 'bash-abc',
+    })
+  })
+
+  it('matches the bare job path for 405 semantics instead of 404', () => {
+    // /jobs/{jobId} 没有对应的 REST 动作，但它是存在的资源：打它该是 405。
+    expect(matchJobRoute('/api/v1/chat/sessions/s1/jobs/bash-abc')).toEqual({
+      kind: 'unknown',
+      sessionId: 's1',
+      jobId: 'bash-abc',
+    })
+  })
+
+  it('decodes session and job ids', () => {
+    expect(matchJobRoute('/api/v1/chat/sessions/s%20x/jobs/bash%2Fa/kill')).toEqual({
+      kind: 'kill',
+      sessionId: 's x',
+      jobId: 'bash/a',
+    })
+  })
+
+  it('returns null for unrelated paths', () => {
+    expect(matchJobRoute('/api/v1/chat/sessions/s1/messages')).toBeNull()
+    expect(matchJobRoute('/api/v1/chat/sessions/s1/jobs/')).toBeNull()
+    expect(matchJobRoute('/api/v1/roots')).toBeNull()
+  })
+})

@@ -99,6 +99,44 @@ interface RouterOptions {
   jobs?: JobAdapter
 }
 
+/**
+ * 后台任务路由的**单点**匹配器：list / output / kill 三种形态。
+ *
+ * 为什么抽成导出函数而不是散在 dispatch 里写四个正则：kill 曾经吃过正则的亏 ——
+ * 复用「以 jobId 结尾」的 `$` 正则去配带 `/kill` 后缀的路径，永远匹配不上，
+ * 而那个 bug 在 adapter 的单测里完全不可见（adapter 只测 kill 方法本身，
+ * 不测路径分发），直到真机一打 `ROUTE_NOT_FOUND` 才现形。
+ *
+ * 抽出来之后 `tests/job-api.spec.ts` 直接打这四个正则的**可达性**：
+ * list / output / kill 三条各有一条用例，`/jobs/{jobId}` 本体也要能匹配
+ * （它是 405 语义的守卫，不是 404）。
+ */
+export type JobRouteMatch =
+  | { kind: 'list'; sessionId: string }
+  | { kind: 'output'; sessionId: string; jobId: string }
+  | { kind: 'kill'; sessionId: string; jobId: string }
+  | { kind: 'unknown'; sessionId: string; jobId?: string }
+
+export function matchJobRoute(pathname: string): JobRouteMatch | null {
+  const jobs = pathname.match(/^\/api\/v1\/chat\/sessions\/([^/]+)\/jobs$/)
+  if (jobs !== null) return { kind: 'list', sessionId: decodeURIComponent(jobs[1] as string) }
+  const output = pathname.match(/^\/api\/v1\/chat\/sessions\/([^/]+)\/jobs\/([^/]+)\/output$/)
+  if (output !== null) {
+    return { kind: 'output', sessionId: decodeURIComponent(output[1] as string), jobId: decodeURIComponent(output[2] as string) }
+  }
+  const kill = pathname.match(/^\/api\/v1\/chat\/sessions\/([^/]+)\/jobs\/([^/]+)\/kill$/)
+  if (kill !== null) {
+    return { kind: 'kill', sessionId: decodeURIComponent(kill[1] as string), jobId: decodeURIComponent(kill[2] as string) }
+  }
+  // `/jobs/{jobId}` 本体（无后缀）：没有对应的 REST 动作，但它是**存在的资源路径**
+  // —— 打它应该得到 405（方法不允许）而不是 404（资源不存在）。
+  const bare = pathname.match(/^\/api\/v1\/chat\/sessions\/([^/]+)\/jobs\/([^/]+)$/)
+  if (bare !== null) {
+    return { kind: 'unknown', sessionId: decodeURIComponent(bare[1] as string), jobId: decodeURIComponent(bare[2] as string) }
+  }
+  return null
+}
+
 export class ApiRouter {
   constructor(private readonly options: RouterOptions) {}
 
@@ -513,39 +551,31 @@ export class ApiRouter {
     //
     // 为什么挂在会话维度：内核的 `list` / `kill` 都要 sessionId，owner fence
     // 是唯一的访问规则。详见 job-adapter.ts 头部说明。
-    const jobsRoute = pathname.match(/^\/api\/v1\/chat\/sessions\/([^/]+)\/jobs$/)
-    const jobRoute = pathname.match(/^\/api\/v1\/chat\/sessions\/([^/]+)\/jobs\/([^/]+)$/)
-    const jobOutputRoute = pathname.match(/^\/api\/v1\/chat\/sessions\/([^/]+)\/jobs\/([^/]+)\/output$/)
-    if (jobsRoute !== null || jobRoute !== null || jobOutputRoute !== null) {
+    const jobDispatch = matchJobRoute(pathname)
+    if (jobDispatch !== null) {
       const jobs = this.options.jobs
       if (jobs === undefined) throw new ApiError(404, 'NOT_FOUND', 'Background jobs are not available in this build.')
-      if (method === 'GET' && jobsRoute !== null) {
+      if (method === 'GET' && jobDispatch.kind === 'list') {
         this.options.auth.requireScope(principal, 'chat.read')
-        const sessionId = decodeURIComponent(jobsRoute[1] as string)
-        // 客户端断开（abort）时要能取消内核订阅，否则每次刷新都漏一个流。
-        const result = await jobs.list(sessionId, AbortSignal.timeout(15_000))
+        const result = await jobs.list(jobDispatch.sessionId, AbortSignal.timeout(15_000))
         sendJson(res, 200, result)
         return
       }
-      if (method === 'GET' && jobOutputRoute !== null) {
+      if (method === 'GET' && jobDispatch.kind === 'output') {
         this.options.auth.requireScope(principal, 'chat.read')
-        const sessionId = decodeURIComponent(jobOutputRoute[1] as string)
-        const jobId = decodeURIComponent(jobOutputRoute[2] as string)
         const from = url.searchParams.get('from')
         const offset = from === null ? undefined : Number(from)
         if (offset !== undefined && !Number.isFinite(offset)) {
           throw new ApiError(400, 'QUERY_INVALID', 'from must be a finite byte offset.')
         }
-        const result = await jobs.follow(sessionId, jobId, offset, AbortSignal.timeout(30_000))
+        const result = await jobs.follow(jobDispatch.sessionId, jobDispatch.jobId, offset, AbortSignal.timeout(30_000))
         sendJson(res, 200, result)
         return
       }
-      if (method === 'POST' && jobRoute !== null && pathname.endsWith('/kill')) {
+      if (method === 'POST' && jobDispatch.kind === 'kill') {
         this.options.auth.requireScope(principal, 'chat.write')
-        const sessionId = decodeURIComponent(jobRoute[1] as string)
-        const jobId = decodeURIComponent(jobRoute[2] as string)
-        const result = jobs.kill(sessionId, jobId)
-        this.audit(principal, 'chat.job.kill', undefined, undefined, requestId, { sessionId, jobId })
+        const result = jobs.kill(jobDispatch.sessionId, jobDispatch.jobId)
+        this.audit(principal, 'chat.job.kill', undefined, undefined, requestId, { sessionId: jobDispatch.sessionId, jobId: jobDispatch.jobId })
         sendJson(res, 200, result)
         return
       }
