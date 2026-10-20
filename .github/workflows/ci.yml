@@ -92,16 +92,34 @@ jobs:
           set -euo pipefail
           export DSH_HOME="$RUNNER_TEMP/daw-runtime-home"
           (cd deepseek-harness && pnpm dsh plugin --profile web add "$GITHUB_WORKSPACE/artifacts/${{ steps.tarball.outputs.file }}")
-          (cd deepseek-harness && node --import tsx/esm apps/cli/src/bin.ts web --port 43992) &
+          (cd deepseek-harness && node --import tsx/esm apps/cli/src/bin.ts web --port 43992 --no-open) \
+            >"$RUNNER_TEMP/dsh-web.log" 2>&1 &
           server_pid=$!
           trap 'kill "$server_pid" 2>/dev/null || true' EXIT
+          # 这里的判活口径要贴着 DSH 0.2.x 的真实契约：
+          #
+          # 1) WebUI 从 0.2.x 起**对 loopback 也要求 token**，裸请求 `GET /` 返回 401。
+          #    原先用 `curl --fail http://127.0.0.1:43992/` 判活，于是 401 被当成「没起来」，
+          #    重试 120 秒后必然 exit 1 —— 2026-10-20 那次 run 39413498323 的实测日志就是
+          #    只有 dsh web 启动横幅、没有任何探针输出，最后 exit 1。401 是**鉴权正常**，
+          #    不是进程没监听，所以下面按状态码判活：000（连不上）和 5xx（起了但报错）算失败，
+          #    2xx/3xx/4xx 都说明 HTTP 端口已经在服务。
+          # 2) 插件自己的 `/api/v1/healthz` 必须 200，且返回体带 pluginVersion —— 这是
+          #    「tarball 装进 profile 后插件真的被加载并监听 3090」的唯一证据，继续 `--fail`。
+          web_code="000"
           for attempt in $(seq 1 120); do
-            if curl --fail --silent http://127.0.0.1:43992/ >/dev/null \
-              && curl --fail --silent http://127.0.0.1:3090/api/v1/healthz >/dev/null; then
+            web_code=$(curl --silent --max-time 2 --output /dev/null \
+              --write-out '%{http_code}' http://127.0.0.1:43992/ || true)
+            if [[ "$web_code" =~ ^[234] ]] \
+              && curl --fail --silent --max-time 2 http://127.0.0.1:3090/api/v1/healthz >/dev/null; then
+              echo "web smoke ok: web=$web_code plugin=200"
               exit 0
             fi
             sleep 1
           done
+          echo "::error::web smoke failed after 120s: web=$web_code (000=not listening, 5xx=server error)"
+          echo "--- dsh web log ---"
+          cat "$RUNNER_TEMP/dsh-web.log" || true
           exit 1
 
   kotlin-sdk:

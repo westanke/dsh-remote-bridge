@@ -199,6 +199,7 @@ docs/api/            ← OpenAPI + AsyncAPI（wire schema 的权威）
 - `国内下载 cloudflared 必须择源`
 - `Quick 隧道地址漂移后不会自动更新`
 - `创建隧道无提示`
+- `CI 判活把 401 当没起来`
 
 > 新坑位：名字加进上面清单 + 原文写进 `PITFALLS.md` 并补 `### 同名` 锚点。
 

@@ -579,3 +579,28 @@ Node 的 `fetch`（undici）对这类连接**不响应 `AbortController.abort()`
 Cloudflare 边缘暴露到公网，是高风险的对外动作，光有进度条不够，还得在**动手前**让用户
 意识到风险。修法：创建入口（面板开关与「隧道未开启」态）先 `window.confirm`（i18n
 `tunnelStartConfirm`），取消则不执行；隧道区常驻 `tunnelSecurityWarning` 警示文字。
+
+### CI 判活把 401 当没起来
+
+**症状**：`profile-install (ubuntu-latest)` 每次稳定红 5 分钟，日志里只有 `dsh web:` 启动横幅，
+下面探针循环**一句话都没有**，最后 `Process completed with exit code 1`。
+其余 10 个 job 全绿，看上去像「只有 Ubuntu 的 web 冒烟挂了、插件本身没事」——这个判断只对了一半。
+
+**根因**：探针用 `curl --fail --silent http://127.0.0.1:43992/` 判活。
+DSH 0.2.x 起 WebUI **对 loopback 也要求 token**，裸请求 `GET /` 返回 **401**；
+`--fail` 把 401 当成失败，120 秒重试自然全部落空。**401 是鉴权正常工作，不是进程没监听。**
+
+**实发案例（2026-10-20，run `39413498323` / commit `c5e0b3f`）**：本机隔离 `DSH_HOME`
+起 DSH `0.2.1-rc.2` 实测：`GET /` = **401**，带 token 的 `GET /?token=…` = **303**，
+而插件 `GET :3090/api/v1/healthz` = **200**（`{"ok":true,"version":"v1","pluginVersion":"2.4.3"}`）。
+插件、tarball 安装、bundle 激活全部正常，唯一错的是探针口径。
+
+**现在怎么办**：按状态码判活，别用 `--fail` 判「服务在不在」——
+`000`（连不上）和 `5xx`（起了但报错）算失败，`2xx/3xx/4xx` 都说明 HTTP 端口已在服务；
+插件端点（`/api/v1/healthz`）继续 `curl --fail`（它返回 401 才是真问题）。
+同时给 `dsh web` 加 `--no-open`（headless runner 上不需要开浏览器），
+启动输出重定向到 `$RUNNER_TEMP/dsh-web.log`，失败时 `cat` 出来。
+
+**铁律**：CI 判活要贴着**当前内核的鉴权契约**写。把「401 需要 token」写成「服务没起来」，
+这条红就会伪装成产品 bug，白烧一整轮排查。判活失败时必须把服务端日志打出来
+（这次原脚本把 `dsh web` 的 stdout 丢进了 CI 控制台，循环里又一句不打印，等于零诊断信息）。

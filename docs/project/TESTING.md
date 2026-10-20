@@ -92,8 +92,12 @@ CI 在 Windows、Ubuntu 和 macOS 执行相同核心门禁。Playwright 另外�
 | 2026-08-14 | ARM64 Oracle / DSH 活动会话保护 | 上传审批 tarball并核对 SHA-256、`/healthz` 与 PID | 通过；包仅暂存为 `/tmp/dsh-android-app-workspace-approval-0.1.0.tgz`，活动 DSH PID `3574165` 与 `3090` 保持健康，未安装、未重启、未替用户决定当前高权限审批 |
 | 2026-10-12 | Linux / Node 24 / DSH 0.2.x | `pnpm typecheck && pnpm test && pnpm build` | 通过；**22 个文件 / 163 个 Vitest**（+35：识图设置与只读图片路由、交接句式解析与图集、识图路径改完写读同步），两个 entry（host 200.5 kB / client 680 kB）构建完成 |
 | 2026-10-12 | Linux / DSH 0.2.x 实装 | 同步 `lib/` 到 `~/.dsh/profiles/web/node_modules/dsh-remote-bridge/` | 通过；**本次含 client.cjs**（上一轮只同步 host 产物）。真机核验（重启 + 刷新 → 发图 → 看图与路径同在）**待做** |
+| 2026-10-20 | Linux / Node 24.19.0 / DSH 0.2.1-rc.2 | 隔离 `DSH_HOME` 起 `dsh web --port 43992 --no-open`，分别探裸 `/`、带 token `/` 与插件 `:3090/api/v1/healthz` | 通过；裸 `/` **401**、带 token **303**、插件 healthz **200**（`{"ok":true,"version":"v1","pluginVersion":"2.4.3"}`）——由此证实 CI `profile-install (ubuntu)` 的红是探针把 401 当「没起来」，插件与 tarball 安装均正常；探针改后本地自测 401→PASS、死端口→FAIL，`pnpm check` 42 文件/348 用例全绿 |
 
-尚待远程仓库创建后运行 GitHub Actions 的 `windows-latest`、`ubuntu-latest`、`macos-latest` hosted 矩阵；这也是 `TEST-001` 仍为 `in-progress` 的唯一测试项。
+GitHub Actions 的 `windows-latest`、`ubuntu-latest`、`macos-latest` hosted 矩阵已在 2026-10-20 跑起来
+（run `39413498323`：`core` 6 组、`browser`、`profile-install` 3 组、`kotlin-sdk` 全绿）。唯一红点是
+`profile-install (ubuntu-latest)` 的 web 冒烟探针把 DSH 0.2.x 的 401 鉴权当成服务未启动，已修
+（见 `PITFALLS.md` §CI 判活把 401 当没起来）；修复待推送后由下一次 run 复跑确认。
 
 Android `TEST-002` 已通过 8 项 HTTP/文件/聊天/WebSocket URL 与事件呈现单测、`lintDebug`、R8 Release 构建、包名检查和独立 4096 位 RSA APK v2 签名验证。本机真实 listener 另已通过临时设备/根的一次性配对、5 scope、文件创建/读取、ETag 更新、移动、软删除/恢复、会话授权过滤、DSH 工作区发现和 Agent Preset 回归，测试设备与根随后撤销。
 
