@@ -1,5 +1,47 @@
 # 开发日志
 
+## 未发布 · 推送拓扑改为「国内源为主」（2026-10-20）
+
+### 基于什么
+
+姊妹仓 dsh-companion 2026-10-16 起就是「Gitee 主 + AtomGit 备 + GitHub 从站自动同步」，
+本仓却一直是手工推三站。本轮发版实测到本机到 github.com:443 **长期被阻断且间歇性**：
+`Empty reply from server`、`TLS handshake failed: The TLS connection was
+non-properly terminated`，重试 4~6 次才成功一次；改走 `gh api` 通道则稳定。
+
+### 干了什么
+
+- 新增 `scripts/push-all.sh`：推 Gitee（主）+ AtomGit（备），GitHub 不再手工推。
+  参数与姊妹仓同名脚本一致（`PUSH_TAGS` / `PUSH_ALL_TAGS` / `BRANCH` / `FORCE` /
+  `INCLUDE_GITHUB`）。tag 逐个推并逐个判断「远端已有则跳过」——
+  不用 `git push --tags`（任意一个旧 tag 冲突就会整条被拒）。
+- 新增 `scripts/setup-remotes.sh`：整理三远端命名（幂等）。
+- 新增 `.github/workflows/mirror-sync.yml` + `scripts/ci/mirror-push.sh` +
+  `scripts/ci/sync-releases.py`：GitHub 作为**从站**，每 3 小时从 Gitee 自动同步
+  refs（`push --mirror`）与 Release（正文 + tgz/SHA256SUMS）。自举段内嵌在
+  workflow 里（空仓首次运行时还没有 `scripts/ci/`）。
+- `scripts/release.sh` 第 4 步改为复用 `scripts/push-all.sh`，**不再重写一遍推送逻辑**
+  —— 两处各写一份必然分叉（姊妹仓就出过「分支与 tag if/else 互斥，只推了一半」的 bug）。
+- `scripts/release.sh` 建 Gitee Release 改用 **form 字段**传 `access_token`
+  （此前是 query + JSON body，实测一律 40001「登录失效」）。
+
+### 测了什么
+
+- `scripts/push-all.sh` 实跑：Gitee 与 AtomGit 分支均推成功；`PUSH_TAGS=1` 时
+  正确提示「没有要推的 tag —— 指向 HEAD 的 tag 为空」而不是静默跳过。
+- 四个新脚本全部过 `bash -n`；workflow 过 YAML 解析（jobs: mirror / releases）。
+- 门禁：tsc 干净；vitest 42 文件 / 345 用例全绿；docs:check 三段全过。
+
+### 待办
+
+- **GitHub 从站的 `MIRROR_PAT` secret 需仓库管理员配置**（带 repo + workflow scope 的
+  PAT，与姊妹仓 dsh-companion 同名 secret 同规格）。缺它时 workflow 会在
+  `git push --mirror` 前报「MIRROR_PAT 未配置」——主源探测与克隆都是成功的，
+  只是推回 GitHub 时没凭据。
+- 配好 secret 后触发一次 workflow：它会用 Gitee 覆盖 GitHub，让主线归一
+  （当前 GitHub 上的 main 是用 Contents API 造出的独立 commit，与 Gitee 主线分叉，
+  这是预期内的 —— 从站本来就该被主源覆盖）。
+
 ## 2.4.3 · jobs 端点 + patch inject 修复 + 宿主服务探针（2026-10-20）
 
 ### 发现过程
