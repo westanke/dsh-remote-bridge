@@ -98,6 +98,10 @@
     ④ 开启云隧道（含隧道未开启态触发）弹安全确认，UI 常驻安全警告。
   - **红线未踩**：电脑端 config-text 直连、扫码/配对码、其余六张卡片一字未动（仅隧道区 UI 重排）。
   - 门验：`pnpm check` 四道门全绿（**38 文件 / 290 用例**、docs:check、build）+ e2e 4 样式契约。新坑位扫过 `PITFALLS.md`。
+  - **端到端复核通过（2026-10-20，补记）**：真实触发一次 max-tokens 截断（内核会话日志
+    `session.v4.jsonl.zstd` 中 `turn/end` 带 `reason.kind == 'max-tokens'`），运行中的
+    2.4.3（含本透传）把 `reason` 送到了 App（companion 2.2.46），「回答被截断」黄条
+    **用户真机实测可见** —— 双端配套就此闭环（App 侧记录见姊妹仓 `STATUS.md` 2026-10-20 条目）。
 - v2.3.9（delta 帧始终带 turn/step）——**已提交并推送两仓 + tag 已打**（`1c75aca`）：`assistant-stream` 的 start 帧
   turn/step 兜底 0 不再留 undefined，修复「客户端静默丢帧」。
 - 上一版 v2.3.8（对标补强 C 批）**已提交**（`d6c4298`）：`seq` 单一语义、订阅基线、连接即重放、Unicode 消毒、字节预算、交付物实时事件、26 项能力位、两条机检门禁。详见下方「在途」记录。
