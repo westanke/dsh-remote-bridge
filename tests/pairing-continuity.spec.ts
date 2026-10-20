@@ -1,4 +1,5 @@
-import { mkdir, mkdtemp, rm } from 'node:fs/promises'
+import {mkdir, mkdtemp,} from 'node:fs/promises'
+import { TestCleanup } from './test-cleanup.ts'
 import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { WorkspaceDatabase } from '../src/host/database.ts'
@@ -15,17 +16,17 @@ import { WorkspaceDatabase } from '../src/host/database.ts'
  *    不能让人自己发现「手机里看不到那个目录」。
  */
 
-const cleanup: string[] = []
+const cleanup = new TestCleanup()
 
 afterEach(async () => {
-  for (const target of cleanup.splice(0)) await rm(target, { recursive: true, force: true })
+  await cleanup.dispose()
 })
 
 async function scratch(prefix: string): Promise<string> {
   const container = path.join(process.cwd(), '.local-backup', 'test-tmp')
   await mkdir(container, { recursive: true })
   const base = await mkdtemp(path.join(container, `${prefix}-`))
-  cleanup.push(base)
+  cleanup.dir(base)
   return base
 }
 
@@ -36,7 +37,7 @@ describe('the built-in root never invalidates existing pairings', () => {
     const shared = path.join(base, 'shared')
     await mkdir(workspace)
     await mkdir(shared)
-    const database = new WorkspaceDatabase(path.join(base, 'state'))
+    const database = cleanup.db(new WorkspaceDatabase(path.join(base, 'state')))
     try {
       // 手机先配对一次，授权的是当时存在的那个根。
       const existing = await database.addRoot(shared, 'Shared')
@@ -70,7 +71,7 @@ describe('the built-in root never invalidates existing pairings', () => {
     const shared = path.join(base, 'shared')
     await mkdir(workspace)
     await mkdir(shared)
-    const database = new WorkspaceDatabase(path.join(base, 'state'))
+    const database = cleanup.db(new WorkspaceDatabase(path.join(base, 'state')))
     try {
       const existing = await database.addRoot(shared, 'Shared')
       const pairing = database.createPairing([existing.id], ['files.read'])

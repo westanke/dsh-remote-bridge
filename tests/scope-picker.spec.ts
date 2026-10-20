@@ -1,4 +1,5 @@
-import { mkdir, mkdtemp, rm } from 'node:fs/promises'
+import {mkdir, mkdtemp,} from 'node:fs/promises'
+import { TestCleanup } from './test-cleanup.ts'
 import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { WorkspaceDatabase } from '../src/host/database.ts'
@@ -17,17 +18,17 @@ import { readFileSync } from 'node:fs'
  * 无论是子集、单元素还是空集。UI 那一半由源码契约测（见下），不依赖 jsdom。
  */
 
-const cleanup: string[] = []
+const cleanup = new TestCleanup()
 
 afterEach(async () => {
-  for (const target of cleanup.splice(0)) await rm(target, { recursive: true, force: true })
+  await cleanup.dispose()
 })
 
 async function scratch(prefix: string): Promise<string> {
   const container = path.join(process.cwd(), '.local-backup', 'test-tmp')
   await mkdir(container, { recursive: true })
   const base = await mkdtemp(path.join(container, `${prefix}-`))
-  cleanup.push(base)
+  cleanup.dir(base)
   return base
 }
 
@@ -36,7 +37,7 @@ describe('pairing carries the scopes the user picked', () => {
     const base = await scratch('scope-subset')
     const project = path.join(base, 'project')
     await mkdir(project)
-    const database = new WorkspaceDatabase(path.join(base, 'state'))
+    const database = cleanup.db(new WorkspaceDatabase(path.join(base, 'state')))
     try {
       const root = await database.addRoot(project, 'P')
       // 只勾了「读聊天」和「读文件」—— 手机不该拿到别的。
@@ -59,7 +60,7 @@ describe('pairing carries the scopes the user picked', () => {
     const base = await scratch('scope-edge')
     const project = path.join(base, 'project')
     await mkdir(project)
-    const database = new WorkspaceDatabase(path.join(base, 'state'))
+    const database = cleanup.db(new WorkspaceDatabase(path.join(base, 'state')))
     try {
       const root = await database.addRoot(project, 'P')
 
@@ -78,7 +79,7 @@ describe('pairing carries the scopes the user picked', () => {
     const base = await scratch('scope-invalid')
     const project = path.join(base, 'project')
     await mkdir(project)
-    const database = new WorkspaceDatabase(path.join(base, 'state'))
+    const database = cleanup.db(new WorkspaceDatabase(path.join(base, 'state')))
     try {
       const root = await database.addRoot(project, 'P')
       // 打错一个字符（比如 `file.read`）必须报错。静默忽略会让用户以为授权成功了，

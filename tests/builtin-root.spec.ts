@@ -1,4 +1,5 @@
-import { mkdir, mkdtemp, rm } from 'node:fs/promises'
+import {mkdir, mkdtemp,} from 'node:fs/promises'
+import { TestCleanup } from './test-cleanup.ts'
 import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { WorkspaceDatabase } from '../src/host/database.ts'
@@ -13,10 +14,10 @@ import { WorkspaceDatabase } from '../src/host/database.ts'
  * - 可访问：它是**普通的**一条根，手机端照常浏览，不另起一套特例。
  */
 
-const cleanup: string[] = []
+const cleanup = new TestCleanup()
 
 afterEach(async () => {
-  for (const target of cleanup.splice(0)) await rm(target, { recursive: true, force: true })
+  await cleanup.dispose()
 })
 
 /**
@@ -28,7 +29,7 @@ async function scratch(prefix: string): Promise<string> {
   await mkdir(container, { recursive: true })
   const base = path.join(container, `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`)
   await mkdir(base, { recursive: true })
-  cleanup.push(base)
+  cleanup.dir(base)
   return base
 }
 
@@ -37,7 +38,7 @@ describe('built-in workspace root', () => {
     const base = await scratch('builtin-idempotent')
     const workspace = path.join(base, 'workspace')
     await mkdir(workspace)
-    const database = new WorkspaceDatabase(path.join(base, 'state'))
+    const database = cleanup.db(new WorkspaceDatabase(path.join(base, 'state')))
     try {
       const first = await database.ensureBuiltinRoot(workspace, 'DSH 工作区')
       expect(first?.builtin).toBe(true)
@@ -59,7 +60,7 @@ describe('built-in workspace root', () => {
     const own = path.join(base, 'own')
     await mkdir(workspace)
     await mkdir(own)
-    const database = new WorkspaceDatabase(path.join(base, 'state'))
+    const database = cleanup.db(new WorkspaceDatabase(path.join(base, 'state')))
     try {
       const builtin = await database.ensureBuiltinRoot(workspace, 'DSH 工作区')
       const added = await database.addRoot(own, 'Mine')
@@ -81,7 +82,7 @@ describe('built-in workspace root', () => {
     const base = await scratch('builtin-usable')
     const workspace = path.join(base, 'workspace')
     await mkdir(workspace)
-    const database = new WorkspaceDatabase(path.join(base, 'state'))
+    const database = cleanup.db(new WorkspaceDatabase(path.join(base, 'state')))
     try {
       const builtin = await database.ensureBuiltinRoot(workspace, 'DSH 工作区')
       const pairing = database.createPairing([builtin!.id], ['files.read', 'chat.read'])
@@ -99,7 +100,7 @@ describe('built-in workspace root', () => {
     const base = await scratch('builtin-respect-user')
     const workspace = path.join(base, 'workspace')
     await mkdir(workspace)
-    const database = new WorkspaceDatabase(path.join(base, 'state'))
+    const database = cleanup.db(new WorkspaceDatabase(path.join(base, 'state')))
     try {
       const mine = await database.addRoot(workspace, '我加的')
       await database.ensureBuiltinRoot(workspace, 'DSH 工作区')
@@ -119,7 +120,7 @@ describe('built-in workspace root', () => {
     const other = path.join(base, 'other')
     await mkdir(workspace)
     await mkdir(other)
-    const database = new WorkspaceDatabase(path.join(base, 'state'))
+    const database = cleanup.db(new WorkspaceDatabase(path.join(base, 'state')))
     try {
       await database.addRoot(other, '先加的')
       await database.ensureBuiltinRoot(workspace, 'DSH 工作区')
@@ -147,13 +148,13 @@ describe('roots migration', () => {
       .run('legacy-1', '老的根', workspace, Date.now())
     legacy.close()
 
-    const database = new WorkspaceDatabase(state)
+    const database = cleanup.db(new WorkspaceDatabase(state))
     // 老行必须读成「非内置」，不能因为列默认值而凭空变成不可删。
     expect(database.getRoot('legacy-1')?.builtin).toBeUndefined()
     database.close()
 
     // 迁移可重跑：插件每次启动都走一次 migrate，第二次不能再报 duplicate column。
-    const reopened = new WorkspaceDatabase(state)
+    const reopened = cleanup.db(new WorkspaceDatabase(state))
     try {
       expect(reopened.listRoots()).toHaveLength(1)
       expect(reopened.getRoot('legacy-1')?.builtin).toBeUndefined()

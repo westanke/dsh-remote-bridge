@@ -1,5 +1,6 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
-import { mkdtemp, rm } from 'node:fs/promises'
+import { TestCleanup } from './test-cleanup.ts'
+import {mkdtemp,} from 'node:fs/promises'
 import type { AddressInfo } from 'node:net'
 import os from 'node:os'
 import path from 'node:path'
@@ -30,10 +31,10 @@ import { ApiRouter } from '../src/host/router.ts'
  * 跨站拒绝、非回环拒绝、文件名白名单、字节自证、体积上限，一条都不能少。
  */
 
-const cleanup: string[] = []
+const cleanup = new TestCleanup()
 
 afterEach(async () => {
-  for (const target of cleanup.splice(0)) await rm(target, { recursive: true, force: true })
+  await cleanup.dispose()
 })
 
 /** 一张 1x1 PNG（真图，字节自证能过）。 */
@@ -46,8 +47,8 @@ const SHA = 'a'.repeat(64)
 
 async function makeDatabase(): Promise<WorkspaceDatabase> {
   const base = await mkdtemp(path.join(os.tmpdir(), 'daw-image-'))
-  cleanup.push(base)
-  return new WorkspaceDatabase(path.join(base, 'state'))
+  cleanup.dir(base)
+  return cleanup.db(new WorkspaceDatabase(path.join(base, 'state')))
 }
 
 /** 起一个真 http server 跑给定 handler，返回 base URL 与关闭函数。 */

@@ -1,4 +1,5 @@
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import {mkdir, mkdtemp, writeFile} from 'node:fs/promises'
+import { TestCleanup } from './test-cleanup.ts'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -9,10 +10,10 @@ import {
   togglePlugin,
 } from '../src/host/plugin-inventory.ts'
 
-const cleanup: string[] = []
+const cleanup = new TestCleanup()
 
 afterEach(async () => {
-  for (const target of cleanup.splice(0)) await rm(target, { recursive: true, force: true })
+  await cleanup.dispose()
 })
 
 async function makeProfile(options: {
@@ -22,7 +23,7 @@ async function makeProfile(options: {
   installed?: Record<string, string>
 } = {}): Promise<{ dshHome: string; profile: string }> {
   const dshHome = await mkdtemp(path.join(os.tmpdir(), 'daw-plugins-'))
-  cleanup.push(dshHome)
+  cleanup.dir(dshHome)
   const profile = options.profile ?? 'web'
   const profilePath = path.join(dshHome, 'profiles', profile)
   await mkdir(profilePath, { recursive: true })
@@ -303,7 +304,7 @@ describe('readPluginInventory', () => {
 
   it('reports MANIFEST_UNREADABLE when the profile has no package.json', async () => {
     const dshHome = await mkdtemp(path.join(os.tmpdir(), 'daw-plugins-'))
-    cleanup.push(dshHome)
+    cleanup.dir(dshHome)
     const inventory = await readPluginInventory({ env: { DSH_HOME: dshHome, DSH_PROFILE: 'web' }, argv: [] })
 
     expect(inventory).toMatchObject({ available: false, reason: 'MANIFEST_UNREADABLE', profile: 'web' })
@@ -312,7 +313,7 @@ describe('readPluginInventory', () => {
 
   it('survives a malformed manifest without throwing', async () => {
     const dshHome = await mkdtemp(path.join(os.tmpdir(), 'daw-plugins-'))
-    cleanup.push(dshHome)
+    cleanup.dir(dshHome)
     const profilePath = path.join(dshHome, 'profiles', 'web')
     await mkdir(profilePath, { recursive: true })
     await writeFile(path.join(profilePath, 'package.json'), '{ this is not json')
@@ -324,7 +325,7 @@ describe('readPluginInventory', () => {
 
   it('tolerates a manifest without a dsh.profile.bundles section', async () => {
     const dshHome = await mkdtemp(path.join(os.tmpdir(), 'daw-plugins-'))
-    cleanup.push(dshHome)
+    cleanup.dir(dshHome)
     const profilePath = path.join(dshHome, 'profiles', 'web')
     await mkdir(profilePath, { recursive: true })
     await writeFile(path.join(profilePath, 'package.json'), JSON.stringify({ dependencies: { a: '1.0.0' } }))

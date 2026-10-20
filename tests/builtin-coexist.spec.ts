@@ -1,4 +1,5 @@
-import { mkdir, mkdtemp, rm } from 'node:fs/promises'
+import {mkdir, mkdtemp,} from 'node:fs/promises'
+import { TestCleanup } from './test-cleanup.ts'
 import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { WorkspaceDatabase } from '../src/host/database.ts'
@@ -16,17 +17,17 @@ import { WorkspaceDatabase } from '../src/host/database.ts'
  * - 手工加的根仍然可删（这次的起因就是它被误当成内置的）。
  */
 
-const cleanup: string[] = []
+const cleanup = new TestCleanup()
 
 afterEach(async () => {
-  for (const target of cleanup.splice(0)) await rm(target, { recursive: true, force: true })
+  await cleanup.dispose()
 })
 
 async function scratch(prefix: string): Promise<string> {
   const container = path.join(process.cwd(), '.local-backup', 'test-tmp')
   await mkdir(container, { recursive: true })
   const base = await mkdtemp(path.join(container, `${prefix}-`))
-  cleanup.push(base)
+  cleanup.dir(base)
   return base
 }
 
@@ -35,7 +36,7 @@ describe('the built-in root coexists with a hand-added root for the same path', 
     const base = await scratch('builtin-coexist')
     const workspace = path.join(base, 'workspace')
     await mkdir(workspace)
-    const database = new WorkspaceDatabase(path.join(base, 'state'))
+    const database = cleanup.db(new WorkspaceDatabase(path.join(base, 'state')))
     try {
       // 用户先手动加了这个目录 —— 现实里就是这样（本机那条是 10-08 加的）。
       const mine = await database.addRoot(workspace, 'workspace')
@@ -61,7 +62,7 @@ describe('the built-in root coexists with a hand-added root for the same path', 
     const base = await scratch('builtin-coexist-idem')
     const workspace = path.join(base, 'workspace')
     await mkdir(workspace)
-    const database = new WorkspaceDatabase(path.join(base, 'state'))
+    const database = cleanup.db(new WorkspaceDatabase(path.join(base, 'state')))
     try {
       await database.addRoot(workspace, 'workspace')
       const first = await database.ensureBuiltinRoot(workspace, 'DSH 工作区')
@@ -82,7 +83,7 @@ describe('the built-in root coexists with a hand-added root for the same path', 
     await mkdir(workspace)
     await mkdir(other)
     const state = path.join(base, 'state')
-    const database = new WorkspaceDatabase(state)
+    const database = cleanup.db(new WorkspaceDatabase(state))
     const kept = await database.addRoot(workspace, 'workspace')
     const otherRoot = await database.addRoot(other, 'other')
     const pairing = database.createPairing([kept.id, otherRoot.id], ['files.read'])
@@ -90,7 +91,7 @@ describe('the built-in root coexists with a hand-added root for the same path', 
     database.close()
 
     // 重建发生在 reopen 里：老库带着 UNIQUE 且没有 builtin 列，靠 migrate() 升级。
-    const reopened = new WorkspaceDatabase(state)
+    const reopened = cleanup.db(new WorkspaceDatabase(state))
     try {
       expect(reopened.listRoots().map(root => root.id).sort())
         .toEqual([kept.id, otherRoot.id].sort())

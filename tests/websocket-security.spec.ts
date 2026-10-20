@@ -1,4 +1,5 @@
-import { mkdtemp, mkdir, rm } from 'node:fs/promises'
+import {mkdtemp, mkdir,} from 'node:fs/promises'
+import { TestCleanup } from './test-cleanup.ts'
 import os from 'node:os'
 import path from 'node:path'
 import { WebSocket } from 'ws'
@@ -12,19 +13,19 @@ import { ApiRouter } from '../src/host/router.ts'
 import { RemoteApiServer } from '../src/host/server.ts'
 import { DshSettingsAdapter } from '../src/host/settings-adapter.ts'
 
-const cleanup: string[] = []
+const cleanup = new TestCleanup()
 
 afterEach(async () => {
-  for (const target of cleanup.splice(0)) await rm(target, { recursive: true, force: true })
+  await cleanup.dispose()
 })
 
 describe('WebSocket authorization', () => {
   it('applies scopes and live root grants to every event', async () => {
     const base = await mkdtemp(path.join(os.tmpdir(), 'daw-ws-'))
-    cleanup.push(base)
+    cleanup.dir(base)
     const project = path.join(base, 'project')
     await mkdir(project)
-    const database = new WorkspaceDatabase(path.join(base, 'state'))
+    const database = cleanup.db(new WorkspaceDatabase(path.join(base, 'state')))
     const root = await database.addRoot(project, 'Project')
     const pairing = database.createPairing([root.id], ['files.read'])
     const credentials = database.exchangePairing(pairing.code, 'Socket device')

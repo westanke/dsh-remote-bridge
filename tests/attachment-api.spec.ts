@@ -1,4 +1,5 @@
-import { mkdtemp, rm } from 'node:fs/promises'
+import {mkdtemp,} from 'node:fs/promises'
+import { TestCleanup } from './test-cleanup.ts'
 import { createServer } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import os from 'node:os'
@@ -9,10 +10,10 @@ import { WorkspaceDatabase } from '../src/host/database.ts'
 import { FileService } from '../src/host/file-service.ts'
 import { ApiRouter } from '../src/host/router.ts'
 
-const cleanup: string[] = []
+const cleanup = new TestCleanup()
 
 afterEach(async () => {
-  for (const target of cleanup.splice(0)) await rm(target, { recursive: true, force: true })
+  await cleanup.dispose()
 })
 
 /**
@@ -31,8 +32,8 @@ afterEach(async () => {
 describe('attachment REST contract', () => {
   it('forwards sessionId and attachmentId to the kernel-backed read', async () => {
     const base = await mkdtemp(path.join(os.tmpdir(), 'daw-attachment-api-'))
-    cleanup.push(base)
-    const database = new WorkspaceDatabase(path.join(base, 'state'))
+    cleanup.dir(base)
+    const database = cleanup.db(new WorkspaceDatabase(path.join(base, 'state')))
     const auth = new AuthService(database)
     const files = new FileService(database, () => undefined)
     const seen: { sessionId: string; attachmentId: string }[] = []
@@ -69,8 +70,8 @@ describe('attachment REST contract', () => {
     // sessionId 是必需的：内核要靠它读会话事件、定位那张图的真实 ref。
     // 缺它时早一点报 400，比让内核抛一个语焉不详的错误好查。
     const base = await mkdtemp(path.join(os.tmpdir(), 'daw-attachment-api-'))
-    cleanup.push(base)
-    const database = new WorkspaceDatabase(path.join(base, 'state'))
+    cleanup.dir(base)
+    const database = cleanup.db(new WorkspaceDatabase(path.join(base, 'state')))
     const auth = new AuthService(database)
     const files = new FileService(database, () => undefined)
     const chat = {

@@ -1,4 +1,5 @@
 import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises'
+import { TestCleanup } from './test-cleanup.ts'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -14,15 +15,15 @@ import { inspectResolvedPath, matchAuthorizedRoot, matchAuthorizedRootResolved }
  * 而转换一旦写错，要么用户点不开文件，要么越权读到根外的内容。两个方向都要测。
  */
 
-const cleanup: string[] = []
+const cleanup = new TestCleanup()
 
 afterEach(async () => {
-  for (const target of cleanup.splice(0)) await rm(target, { recursive: true, force: true })
+  await cleanup.dispose()
 })
 
 async function tempDir(prefix = 'daw-resolve-'): Promise<string> {
   const dir = await mkdtemp(path.join(os.tmpdir(), prefix))
-  cleanup.push(dir)
+  cleanup.dir(dir)
   return dir
 }
 

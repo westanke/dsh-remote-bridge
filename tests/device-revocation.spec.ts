@@ -1,4 +1,5 @@
-import { mkdir, mkdtemp, rm } from 'node:fs/promises'
+import {mkdir, mkdtemp,} from 'node:fs/promises'
+import { TestCleanup } from './test-cleanup.ts'
 import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { WorkspaceDatabase } from '../src/host/database.ts'
@@ -17,17 +18,17 @@ import { scopeLabel, translate } from '../src/client/i18n.tsx'
  * 永远要到出事那天才被发现。
  */
 
-const cleanup: string[] = []
+const cleanup = new TestCleanup()
 
 afterEach(async () => {
-  for (const target of cleanup.splice(0)) await rm(target, { recursive: true, force: true })
+  await cleanup.dispose()
 })
 
 async function scratch(prefix: string): Promise<string> {
   const container = path.join(process.cwd(), '.local-backup', 'test-tmp')
   await mkdir(container, { recursive: true })
   const base = await mkdtemp(path.join(container, `${prefix}-`))
-  cleanup.push(base)
+  cleanup.dir(base)
   return base
 }
 
@@ -43,7 +44,7 @@ describe('revoking a device deletes the row outright', () => {
     const base = await scratch('revoke-delete')
     const project = path.join(base, 'project')
     await mkdir(project)
-    const database = new WorkspaceDatabase(path.join(base, 'state'))
+    const database = cleanup.db(new WorkspaceDatabase(path.join(base, 'state')))
     try {
       const root = await database.addRoot(project, 'P')
       const device = await pairDevice(database, root.id, '我的手机')
@@ -65,7 +66,7 @@ describe('revoking a device deletes the row outright', () => {
     const base = await scratch('revoke-cascade')
     const project = path.join(base, 'project')
     await mkdir(project)
-    const database = new WorkspaceDatabase(path.join(base, 'state'))
+    const database = cleanup.db(new WorkspaceDatabase(path.join(base, 'state')))
     try {
       const root = await database.addRoot(project, 'P')
       const device = await pairDevice(database, root.id, '我的手机')
@@ -87,7 +88,7 @@ describe('revoking a device deletes the row outright', () => {
     const base = await scratch('revoke-twice')
     const project = path.join(base, 'project')
     await mkdir(project)
-    const database = new WorkspaceDatabase(path.join(base, 'state'))
+    const database = cleanup.db(new WorkspaceDatabase(path.join(base, 'state')))
     try {
       const root = await database.addRoot(project, 'P')
       const device = await pairDevice(database, root.id, '手机')
@@ -105,7 +106,7 @@ describe('purging the old marker-style revocations', () => {
     const base = await scratch('purge-legacy')
     const project = path.join(base, 'project')
     await mkdir(project)
-    const database = new WorkspaceDatabase(path.join(base, 'state'))
+    const database = cleanup.db(new WorkspaceDatabase(path.join(base, 'state')))
     try {
       const root = await database.addRoot(project, 'P')
       const alive = await pairDevice(database, root.id, '还在用')

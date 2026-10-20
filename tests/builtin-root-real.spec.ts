@@ -1,4 +1,5 @@
-import { mkdir, mkdtemp, rm } from 'node:fs/promises'
+import {mkdir, mkdtemp,} from 'node:fs/promises'
+import { TestCleanup } from './test-cleanup.ts'
 import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { WorkspaceDatabase } from '../src/host/database.ts'
@@ -41,10 +42,10 @@ function readRealWorkspaces(): { path: string; title: string }[] {
   return ids.flatMap(id => (table[id] === undefined ? [] : [table[id]!]))
 }
 
-const cleanup: string[] = []
+const cleanup = new TestCleanup()
 
 afterEach(async () => {
-  for (const target of cleanup.splice(0)) await rm(target, { recursive: true, force: true })
+  await cleanup.dispose()
 })
 
 describe.skipIf(!hasRealRegistry)('the real DSH workspace on this machine', () => {
@@ -55,9 +56,9 @@ describe.skipIf(!hasRealRegistry)('the real DSH workspace on this machine', () =
     const container = path.join(process.cwd(), '.local-backup', 'test-tmp')
     await mkdir(container, { recursive: true })
     const base = await mkdtemp(path.join(container, 'real-'))
-    cleanup.push(base)
+    cleanup.dir(base)
 
-    const database = new WorkspaceDatabase(path.join(base, 'state'))
+    const database = cleanup.db(new WorkspaceDatabase(path.join(base, 'state')))
     try {
       // 与 `registerBuiltinWorkspaceRoot` 完全一致的两个前置判据。
       const workspace = workspaces[0]!

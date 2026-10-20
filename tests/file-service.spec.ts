@@ -1,21 +1,22 @@
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import {mkdtemp, readFile, writeFile} from 'node:fs/promises'
+import { TestCleanup } from './test-cleanup.ts'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { WorkspaceDatabase } from '../src/host/database.ts'
 import { FileService } from '../src/host/file-service.ts'
 
-const cleanup: string[] = []
+const cleanup = new TestCleanup()
 
 afterEach(async () => {
-  for (const target of cleanup.splice(0)) await rm(target, { recursive: true, force: true })
+  await cleanup.dispose()
 })
 
 describe('file service', () => {
   it('creates, saves with ETags, trashes, and restores a file', async () => {
     const base = await mkdtemp(path.join(os.tmpdir(), 'daw-files-'))
-    cleanup.push(base)
-    const database = new WorkspaceDatabase(path.join(base, 'state'))
+    cleanup.dir(base)
+    const database = cleanup.db(new WorkspaceDatabase(path.join(base, 'state')))
     const events: string[] = []
     const files = new FileService(database, event => events.push(event.type))
     try {
@@ -39,8 +40,8 @@ describe('file service', () => {
 
   it('preserves a conflicting restore destination', async () => {
     const base = await mkdtemp(path.join(os.tmpdir(), 'daw-restore-'))
-    cleanup.push(base)
-    const database = new WorkspaceDatabase(path.join(base, 'state'))
+    cleanup.dir(base)
+    const database = cleanup.db(new WorkspaceDatabase(path.join(base, 'state')))
     const files = new FileService(database, () => undefined)
     try {
       const root = await database.addRoot(base)

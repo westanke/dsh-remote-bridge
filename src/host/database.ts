@@ -46,10 +46,63 @@ export interface TrashRecord {
   status: string
 }
 
+/**
+ * 本进程内打开的库（弱引用集合）。
+ *
+ * ## 为什么需要它
+ *
+ * `WorkspaceDatabase` 用 `PRAGMA journal_mode=WAL` 打开 sqlite，会留下
+ * `workspace.sqlite` / `-wal` / `-shm` 三个文件，**且句柄不关就删不掉**。
+ * Linux/macOS 上删一个仍被打开的文件是允许的（unlink 只是断链），所以问题
+ * 在那里看不出来；**Windows 上直接 EBUSY**：
+ *
+ * ```
+ * EBUSY: resource busy or locked, unlink 'C:\...\Temp\daw-xxx\state\workspace.sqlite'
+ * ```
+ *
+ * 2026-10-20 CI 在 windows-latest 上实锤（macOS/Linux 全绿、Windows 全红）。
+ *
+ * ## 它的作用
+ *
+ * 进程退出时统一关闭所有还开着的库 —— 无论调用方记不记得 `close()`。
+ * 这不是「代替 close」，而是**兜底**：正常路径仍应显式 close（早关早释放），
+ * 但漏掉的那一个不会在 Windows 上变成 EBUSY 式的删除失败。
+ *
+ * 弱引用：不阻止 GC，也不阻止正常 close 后的移除（close 时会从集合里摘掉）。
+ */
+const openDatabases = new Set<WeakRef<WorkspaceDatabase>>()
+
+/** 进程退出时尽力关闭所有还开着的库。 */
+function closeAllOpenDatabases(): void {
+  for (const ref of [...openDatabases]) {
+    const db = ref.deref()
+    if (db === undefined) {
+      openDatabases.delete(ref)
+      continue
+    }
+    try {
+      db.close()
+    } catch {
+      // 已经关过了：忽略。
+    }
+  }
+  openDatabases.clear()
+}
+
+// 进程退出时兜底关闭。
+//
+// ⚠️ 只挂 **'exit'**（同步），不挂 'beforeExit'/'SIGINT'：那些回调里 close 是异步的
+// （`db.close()` 本身同步，但我们的清理走的是 try/catch 同步路径），而 'exit' 保证
+// 进程真正结束前把句柄都放开 —— Windows 删除临时目录时也就不会再 EBUSY。
+//
+// 注册一次即可（模块级），多个 import 不会重复挂。
+process.once('exit', closeAllOpenDatabases)
+
 export class WorkspaceDatabase {
   readonly dataDir: string
   readonly trashDir: string
   private readonly db: DatabaseSync
+  private closed = false
 
   constructor(dataDir: string) {
     this.dataDir = path.resolve(dataDir)
@@ -58,9 +111,16 @@ export class WorkspaceDatabase {
     this.db = new DatabaseSync(path.join(this.dataDir, 'workspace.sqlite'))
     this.db.exec('PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;')
     this.migrate()
+    openDatabases.add(new WeakRef(this))
   }
 
+  /** 关闭数据库。**幂等** —— 重复调用不抛错。 */
   close(): void {
+    if (this.closed) return
+    this.closed = true
+    for (const ref of [...openDatabases]) {
+      if (ref.deref() === this) openDatabases.delete(ref)
+    }
     this.db.close()
   }
 

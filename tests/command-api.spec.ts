@@ -1,4 +1,5 @@
-import { mkdtemp, rm } from 'node:fs/promises'
+import {mkdtemp,} from 'node:fs/promises'
+import { TestCleanup } from './test-cleanup.ts'
 import { createServer } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import os from 'node:os'
@@ -10,17 +11,17 @@ import { WorkspaceEventBus } from '../src/host/event-bus.ts'
 import { FileService } from '../src/host/file-service.ts'
 import { ApiRouter } from '../src/host/router.ts'
 
-const cleanup: string[] = []
+const cleanup = new TestCleanup()
 
 afterEach(async () => {
-  for (const target of cleanup.splice(0)) await rm(target, { recursive: true, force: true })
+  await cleanup.dispose()
 })
 
 describe('slash-command REST contract', () => {
   it('lists and executes host commands without auditing arguments', async () => {
     const base = await mkdtemp(path.join(os.tmpdir(), 'daw-command-api-'))
-    cleanup.push(base)
-    const database = new WorkspaceDatabase(path.join(base, 'state'))
+    cleanup.dir(base)
+    const database = cleanup.db(new WorkspaceDatabase(path.join(base, 'state')))
     const auth = new AuthService(database)
     const events = new WorkspaceEventBus()
     const files = new FileService(database, event => events.emit(event))

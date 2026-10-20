@@ -1,4 +1,5 @@
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import {mkdir, mkdtemp, writeFile} from 'node:fs/promises'
+import { TestCleanup } from './test-cleanup.ts'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -19,11 +20,11 @@ import { DshSettingsAdapter } from '../src/host/settings-adapter.ts'
  * 只测逻辑函数无法证明路由挂对了、鉴权没漏。
  */
 
-const cleanup: string[] = []
+const cleanup = new TestCleanup()
 const originalEnv = { DSH_HOME: process.env.DSH_HOME, DSH_PROFILE: process.env.DSH_PROFILE }
 
 afterEach(async () => {
-  for (const target of cleanup.splice(0)) await rm(target, { recursive: true, force: true })
+  await cleanup.dispose()
   if (originalEnv.DSH_HOME === undefined) delete process.env.DSH_HOME
   else process.env.DSH_HOME = originalEnv.DSH_HOME
   if (originalEnv.DSH_PROFILE === undefined) delete process.env.DSH_PROFILE
@@ -32,8 +33,8 @@ afterEach(async () => {
 
 async function startServer(): Promise<{ baseUrl: string; database: WorkspaceDatabase; close: () => Promise<void> }> {
   const base = await mkdtemp(path.join(os.tmpdir(), 'daw-plugins-api-'))
-  cleanup.push(base)
-  const database = new WorkspaceDatabase(path.join(base, 'state'))
+  cleanup.dir(base)
+  const database = cleanup.db(new WorkspaceDatabase(path.join(base, 'state')))
   const events = new WorkspaceEventBus()
   const auth = new AuthService(database)
   const files = new FileService(database, event => events.emit(event))
@@ -66,7 +67,7 @@ function deviceToken(database: WorkspaceDatabase, scopes: Array<'settings.read'>
 /** 准备一个可读的临时 profile，并把它指向 DSH_HOME / DSH_PROFILE。 */
 async function installFakeProfile(): Promise<{ dshHome: string }> {
   const dshHome = await mkdtemp(path.join(os.tmpdir(), 'daw-plugins-home-'))
-  cleanup.push(dshHome)
+  cleanup.dir(dshHome)
   const profilePath = path.join(dshHome, 'profiles', 'web')
   await mkdir(path.join(profilePath, 'node_modules', 'dsh-ffmpeg'), { recursive: true })
   await writeFile(
@@ -176,7 +177,7 @@ describe('GET /api/v1/settings/plugins', () => {
 describe('GET /api/v1/roots/resolve', () => {
   it('maps an absolute path to rootId plus relative path without leaking the root path', async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'daw-resolve-api-'))
-    cleanup.push(root)
+    cleanup.dir(root)
     await writeFile(path.join(root, 'notes.md'), '# notes')
 
     const server = await startServer()
@@ -202,7 +203,7 @@ describe('GET /api/v1/roots/resolve', () => {
 
   it('rejects a path outside every authorized root', async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'daw-resolve-api-'))
-    cleanup.push(root)
+    cleanup.dir(root)
     const server = await startServer()
     try {
       const rootRecord = await server.database.addRoot(root, 'workspace')
@@ -261,7 +262,7 @@ describe('POST /manage/config/text', () => {
 
   it('produces a decodable config text and never echoes the token separately', async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'daw-config-'))
-    cleanup.push(root)
+    cleanup.dir(root)
     const server = await startServer()
     try {
       await server.database.addRoot(root, 'workspace')

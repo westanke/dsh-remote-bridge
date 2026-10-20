@@ -1,4 +1,5 @@
-import { mkdtemp, mkdir, realpath, rm } from 'node:fs/promises'
+import {mkdtemp, mkdir, realpath,} from 'node:fs/promises'
+import { TestCleanup } from './test-cleanup.ts'
 import { createServer } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import os from 'node:os'
@@ -14,19 +15,19 @@ import { PLUGIN_VERSION } from '../src/shared/version.ts'
 import { RemoteApiServer } from '../src/host/server.ts'
 import { DshSettingsAdapter } from '../src/host/settings-adapter.ts'
 
-const cleanup: string[] = []
+const cleanup = new TestCleanup()
 
 afterEach(async () => {
-  for (const target of cleanup.splice(0)) await rm(target, { recursive: true, force: true })
+  await cleanup.dispose()
 })
 
 describe('remote HTTP API', () => {
   it('pairs a device and enforces revocation on the next request', async () => {
     const base = await mkdtemp(path.join(os.tmpdir(), 'daw-http-'))
-    cleanup.push(base)
+    cleanup.dir(base)
     const project = path.join(base, 'project')
     await mkdir(project)
-    const database = new WorkspaceDatabase(path.join(base, 'state'))
+    const database = cleanup.db(new WorkspaceDatabase(path.join(base, 'state')))
     const events = new WorkspaceEventBus()
     const auth = new AuthService(database)
     const files = new FileService(database, event => events.emit(event))
@@ -168,10 +169,10 @@ describe('remote HTTP API', () => {
 
   it('exposes authorized workspace and session management routes', async () => {
     const base = await mkdtemp(path.join(os.tmpdir(), 'daw-chat-management-'))
-    cleanup.push(base)
+    cleanup.dir(base)
     const project = path.join(base, 'project')
     await mkdir(project)
-    const database = new WorkspaceDatabase(path.join(base, 'state'))
+    const database = cleanup.db(new WorkspaceDatabase(path.join(base, 'state')))
     await database.addRoot(project, 'Project')
     const events = new WorkspaceEventBus()
     const auth = new AuthService(database)

@@ -1,4 +1,5 @@
-import { mkdtemp, mkdir, realpath, rm } from 'node:fs/promises'
+import {mkdtemp, mkdir, realpath,} from 'node:fs/promises'
+import { TestCleanup } from './test-cleanup.ts'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -6,16 +7,16 @@ import type { DevicePrincipal } from '../src/shared/contracts.ts'
 import { DshChatAdapter, normalizeDshEvent, redactApprovalText, turnFailureOf } from '../src/host/chat-adapter.ts'
 import { WorkspaceDatabase } from '../src/host/database.ts'
 
-const cleanup: string[] = []
+const cleanup = new TestCleanup()
 
 afterEach(async () => {
-  for (const target of cleanup.splice(0)) await rm(target, { recursive: true, force: true })
+  await cleanup.dispose()
 })
 
 describe('DSH chat choices', () => {
   it('projects only authorized DSH workspaces and selectable Agent presets', async () => {
     const base = await mkdtemp(path.join(os.tmpdir(), 'daw-chat-'))
-    cleanup.push(base)
+    cleanup.dir(base)
     const project = path.join(base, 'project')
     const workspacePath = path.join(project, 'mobile-workspace')
     const newWorkspacePath = path.join(project, 'new-workspace')
@@ -24,7 +25,7 @@ describe('DSH chat choices', () => {
     await mkdir(newWorkspacePath)
     await mkdir(hiddenPath)
 
-    const database = new WorkspaceDatabase(path.join(base, 'state'))
+    const database = cleanup.db(new WorkspaceDatabase(path.join(base, 'state')))
     const root = await database.addRoot(project, 'Files only label')
     let createPayload: Record<string, unknown> | undefined
     let workspaceCreatePayload: Record<string, unknown> | undefined
@@ -188,9 +189,9 @@ describe('DSH chat choices', () => {
     // 手机端此前对空串直接放弃，输入框 `@` 于是显示「读不到这个会话的工作目录」。
     // 顺带钉住 `cwdAbsolute`：客户端靠它拼 `@绝对路径`。
     const base = await mkdtemp(path.join(os.tmpdir(), 'daw-chat-root-'))
-    cleanup.push(base)
+    cleanup.dir(base)
     const rootPath = await realpath(base)
-    const database = new WorkspaceDatabase(path.join(base, 'state'))
+    const database = cleanup.db(new WorkspaceDatabase(path.join(base, 'state')))
     const root = await database.addRoot(base, 'Root itself')
     const adapter = new DshChatAdapter({
       sessions: {
@@ -415,10 +416,10 @@ describe('DSH chat choices', () => {
 
   it('caches approval requests, redacts command previews, and answers only once', async () => {
     const base = await mkdtemp(path.join(os.tmpdir(), 'daw-approval-'))
-    cleanup.push(base)
+    cleanup.dir(base)
     const project = path.join(base, 'project')
     await mkdir(project)
-    const database = new WorkspaceDatabase(path.join(base, 'state'))
+    const database = cleanup.db(new WorkspaceDatabase(path.join(base, 'state')))
     const root = await database.addRoot(project, 'Project')
     const responses: unknown[] = []
     const adapter = new DshChatAdapter(approvalApi(await realpath(project), responses) as never, database)
