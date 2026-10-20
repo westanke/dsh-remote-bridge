@@ -1036,7 +1036,13 @@ describe('dsh 0.2.x bridge: image handoff for text-only models', () => {
     // ⑤ 文件真的落盘、内容正确、组/其他人不可读。
     const bytes = await readFile(filePath!)
     expect(Buffer.from(bytes).toString('base64')).toBe(PNG)
-    expect((await stat(filePath!)).mode & 0o077).toBe(0)
+    // 权限位是 **POSIX 概念**：Windows 没有可用的权限位，Node 在那里给的是
+    // 与 umask 相关的默认值（实测 0o66 = 54），`mode & 0o077` 恒不为 0。
+    // 断言「除 owner 外无人可读」在 Windows 上**无法成立**，也不该假装成立 ——
+    // 那条路径的权限保障是 POSIX 主机上的事（生产目标是 Linux）。
+    if (process.platform !== 'win32') {
+      expect((await stat(filePath!)).mode & 0o077).toBe(0)
+    }
   })
 
   it('speaks the client interface language, and never leaks our field to the kernel', async () => {
