@@ -51,7 +51,11 @@ describe('extractQuickTunnelUrl', () => {
 
 describe('archSuffix', () => {
   it('resolves linux x64 to the official amd64 archive name', () => {
-    expect(archSuffix('linux')).toBe('linux-amd64')
+    // 架构必须**显式传入**。旧实现里 platform 是参数、arch 却读 `process.arch`，
+    // 于是这条断言在 macOS runner（arm64）上返回 linux-arm64 而红 ——
+    // 全平台矩阵里只有 Linux 那两格能过。修复后 arch 也是入参，结果只由入参决定。
+    expect(archSuffix('linux', 'x64')).toBe('linux-amd64')
+    expect(archSuffix('linux', 'arm64')).toBe('linux-arm64')
   })
 
   it('throws on unsupported non-linux platform', () => {

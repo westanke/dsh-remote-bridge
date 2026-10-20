@@ -2,7 +2,7 @@ import { mkdir, mkdtemp, rm } from 'node:fs/promises'
 import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { WorkspaceDatabase } from '../src/host/database.ts'
-import { readFileSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 
 /**
  * 拿**这台机器真实**的 DSH 工作区数据跑一遍登记流程。
@@ -16,6 +16,18 @@ import { readFileSync } from 'node:fs'
  */
 
 const REGISTRY = path.join(process.env.HOME ?? '/root', '.dsh', 'storages', 'workspace.json')
+
+/**
+ * 这套测试**按设计**读本机真实数据（理由见文件头注释：整套登记逻辑依赖
+ * 「注册表返回的第一个工作区就是用户当前的工作目录」这个前提，造假路径测不到它）。
+ *
+ * 但 CI runner 上没有 `~/.dsh/storages/workspace.json` —— 这不是失败，是**环境没有**
+ * 可供测的真实数据。红着会让 CI 永远失败，久而久之就没人看 CI 了（这正是
+ * 「flaky/永远红 的门禁比没有门禁更坏」）。
+ *
+ * 所以：文件不存在就**跳过**并说清原因；存在就真跑。
+ */
+const hasRealRegistry = existsSync(REGISTRY)
 
 interface RegistryFile {
   global?: { workspaceIds?: string[] }
@@ -35,7 +47,7 @@ afterEach(async () => {
   for (const target of cleanup.splice(0)) await rm(target, { recursive: true, force: true })
 })
 
-describe('the real DSH workspace on this machine', () => {
+describe.skipIf(!hasRealRegistry)('the real DSH workspace on this machine', () => {
   it('registers the first workspace as the default authorized root', async () => {
     const workspaces = readRealWorkspaces()
     expect(workspaces.length).toBeGreaterThan(0)

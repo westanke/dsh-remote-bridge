@@ -16,6 +16,18 @@ import { WorkspaceDatabase } from '../src/host/database.ts'
  */
 
 const SOURCE = path.join(process.env.HOME ?? '/root', '.dsh', 'dsh-workspace', 'workspace.sqlite')
+
+/**
+ * 这套演练**按设计**跑在生产库的真实副本上（理由见文件头注释：表重建有真实外键风险，
+ * 单测用的是我们自己造的临时库，结构与真实那份不同）。
+ *
+ * CI runner 上没有 `~/.dsh/dsh-workspace/workspace.sqlite` —— 那不是失败，是**环境没有**
+ * 可供演练的真实库。红着会让 CI 永远失败，久而久之就没人看 CI 了
+ * （永远红 的门禁比没有门禁更坏：它教会人忽略红灯）。
+ *
+ * 所以：生产库不在就**跳过**并说清原因；在就真跑一遍。
+ */
+const hasRealDatabase = existsSync(SOURCE)
 const DRILL_DIR = path.join(process.cwd(), '.local-backup', 'migrate-drill')
 
 /** 复制生产库（连同 -wal/-shm 一起，否则打开的可能是过期快照）。 */
@@ -58,7 +70,7 @@ function rewindRootsSchema(dir: string): void {
   }
 }
 
-describe('the table rebuild on a copy of the real production database', () => {
+describe.skipIf(!hasRealDatabase)('the table rebuild on a copy of the real production database', () => {
   it('keeps every root, every device and every grant, and drops the UNIQUE', () => {
     const drillDir = path.join(DRILL_DIR, 'drill1')
     rmSync(drillDir, { recursive: true, force: true })

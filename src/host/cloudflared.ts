@@ -69,12 +69,27 @@ export interface TunnelActivity {
   percent: number | null
 }
 
-/** 平台/架构 -> cloudflared 归档后缀。 */
-export function archSuffix(platform: NodeJS.Platform = process.platform): string {
+/**
+ * 平台/架构 -> cloudflared 归档后缀。
+ *
+ * **架构必须能单独传**，不能读 `process.arch`：
+ * 2026-10-20 CI 实锤 —— 旧实现里 platform 是参数、arch 却写死 `process.arch`，
+ * 于是 `archSuffix('linux')` 在 macOS runner（arm64）上返回 `linux-arm64`，
+ * 而调用方要的是「linux 平台该用哪个官方归档」。同一函数里 platform 可控、
+ * arch 不可控，是**自相矛盾的设计**；测试在 macOS 上红、Linux 上绿，全平台矩阵
+ * （ubuntu/windows/macos × 两个 Node 版本）里只有 Linux 那两格能过。
+ *
+ * 两个参数都带默认值时保持旧行为（本机平台 + 本机架构）；显式传入时，
+ * 结果只由入参决定 —— 这才让「算一个别的平台的后缀」成为可能。
+ */
+export function archSuffix(
+  platform: NodeJS.Platform = process.platform,
+  arch: string = process.arch,
+): string {
   if (platform !== 'linux') {
     throw new Error(`cloudflared 尚不支持 ${platform} 平台。`)
   }
-  switch (process.arch) {
+  switch (arch) {
     case 'x64':
       return 'linux-amd64'
     case 'arm64':
