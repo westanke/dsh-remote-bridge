@@ -1,5 +1,100 @@
 # 开发日志
 
+## 未发布 · 后台任务管理 + snapshot 投影优先 + A1 实测结论（2026-10-20）
+
+### 1. 后台任务管理（jobs）
+
+远程场景下有个真焦虑：在手机上让 agent 跑个长任务，然后切走或放下手机 ——
+此时没有任何地方能看到「它还在跑吗」，更没有地方能「让它停下」。
+
+新增三个端点，全部挂在**会话维度**下（内核的 `list` / `kill` 都要 `sessionId`，
+owner fence 是唯一的访问规则；做成顶层 `/jobs` 就得让客户端猜 session，那是把
+内核的围栏语义搬到桥外面）：
+
+- `GET  /chat/sessions/{sessionId}/jobs` —— 清单
+- `GET  /chat/sessions/{sessionId}/jobs/{jobId}/output` —— 已保留输出
+- `POST /chat/sessions/{sessionId}/jobs/{jobId}/kill` —— 终止
+
+能力位 `job-list-v1` / `job-output-v1` / `job-kill-v1`。
+
+**两个关键设计判断**：
+
+1. **REST 只读第一帧，不做长连接。** 内核的 `list` 是 `AsyncIterable`，但内核注释
+   写得很清楚：「Whole-set replacement, so a reconnect's first frame is already
+   the truth」—— 首帧就是完整真相。所以读一帧就够，不把 HTTP 变成长连接。
+2. **kill 的 not-found 转 404，其它失败转 502。** 内核只有 `requested` /
+   `already-finished` 两种返回，「不存在」走 `job/not-found` 远程错误。不靠
+   `error.message` 猜（文案会变），看内核在 `RemoteErrorDetailsMap` 里登记的 code。
+
+错误类型继承 `ApiError` 而不是另起一套 —— 形状一致，router 现有的 `asApiError`
+直接就能转，不必再写一层转换。
+
+### 2. history 首屏改用 snapshot 自带投影
+
+0.2.1 起 `SessionFollowFrame` 的 snapshot 分支自带 `projections`，所以
+`@patch history-projections-passthrough` 的 `until` 条件（「内核把 projections 并进
+follow/page 的返回」）**已达成**。新增 `projectionsOf()`：优先用 snapshot 自带的，
+取不到才回落 `readSessionProjections` —— 每次 history 读取少打一次 RPC。
+
+保留回落：最低支持版本还是 0.2.0，老内核上 `readSessionProjections` 仍是客户端
+看到权限档位的唯一途径，不能删。
+
+### 3. A1 文件变更监听：实测做不了（附根因）
+
+原计划透出 `workspaceFiles.changes()`。探针实测结论：
+
+```
+observed: workspaceFiles → available: false
+           error: cannot get property "workspaceFiles" without inject
+```
+
+**根因**：`WorkspaceFiles.static inject` 里有 `fs`，而 web profile 的运行时 dump 里
+**没有 `dsh-fs` 这一行**（只有 `fs-observation-policy` 与 `fs-sandbox` 两个附属包，
+`tool-fs` 被显式 `disabled: true`）→ `fs` 无提供者 → 整个 entry 静默不激活。
+
+这与 `workingDirectory`（`inject` 同样含 `fs`）**完全同源**。两者都不是 bug，
+是 web profile 的刻意裁剪。
+
+**所以 A1 不做**，`workspaceFiles` 留在探针观测区，让后来的排查者一眼看到
+「不是忘了接，是接不上」。
+
+### 4. 无用代码审计结论：**无可删**
+
+按「每个 export/内部符号的引用计数」逐个体查（脚本扫 `src/` + `tests/` 全量文本）：
+
+- 未引用的 export：3 个，全部合理 —— `InjectedServiceName` / `ObservedServiceName`
+  是 `as const` 数组的类型别名（导出来给消费方用），`installWorkspaceStyles`
+  是 client 入口。
+- 未引用的内部函数 / const：**0 个**。
+- 空断言测试：0 个。
+
+即：**没有死代码可删**。这不是"审计没做"，是审计的结论。
+
+### 5. C 层（工具专用块）现状修正
+
+此前报告把「工具调用专用块」列为"下一个最大观感差"。核对后发现**已经做完了**：
+`ChatToolBlocks.kt`（304 行）已有 `ReadBlockView` / `TerminalBlockView` /
+`DiffBlockView` 三种专用块，并经 `ChatToolDetail.kt:342` 接入消息流。
+权限档位 Pill（`ChatPermissionPill.kt`）也已落地。
+
+**教训**：那份报告的依据是 10-18 的静态逆向，没核对 v2.2.44 / v2.2.45 的实际改动。
+先查再写，否则会把已完成的东西当待办再做一遍。
+
+### 6. 测试与门禁
+
+新增 `tests/job-api.spec.ts` 21 例（桩照内核真实形状：kill 造成同步、
+list/follow 造成异步迭代器）；`tests/history-projections.spec.ts` 加
+`projectionsOf` 5 例。门禁：tsc 干净；vitest 42 文件 / 337 用例全绿；
+docs:check 两段均过。
+
+`capabilities.spec.ts` 当场抓到我漏写能力位依据（新能力位没有契约字面量可指
+就报红），补上三个 job 能力位各自的 openapi 路径依据。
+
+### 7. 待办
+
+- jobs 三个端点的真机响应（需重启 web profile 后验证 admin 路径）。
+- C3 Goal 入口（App 侧，服务端 API 已就绪，纯 UI）。
+
 ## 未发布 · 宿主服务注入面探针 `GET /debug/host-services`（2026-10-20）
 
 ### 基于什么

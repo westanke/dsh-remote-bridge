@@ -33,6 +33,10 @@ export const INJECTED_SERVICE_NAMES = [
   'webServer',
   'agents',
   'commands',
+  // 后台任务（ctx.jobController）：2026-10-20 加，jobs 三个端点靠它。
+  // **已实测可用** —— 这是它与 workingDirectory / workspaceFiles 的区别：
+  // 后两者的 static inject 里有 fs，而 web profile 没有 dsh-fs 这一行。
+  'jobController',
   'fileUploads',
   'attachments',
 ] as const

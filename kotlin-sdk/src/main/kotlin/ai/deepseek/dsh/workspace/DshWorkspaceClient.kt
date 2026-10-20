@@ -514,6 +514,51 @@ class DshWorkspaceClient(
         executeUnit("chat/sessions/$sessionId/archive", "POST", null)
     }
 
+    /**
+     * 这个会话可见的后台任务清单（它自己的 + 所有无主任务）。
+     *
+     * 服务端只读内核流的第一帧 —— 内核保证首帧就是全量 truth，
+     * 所以这里返回的是完整清单，不是一个分页。
+     */
+    fun listSessionJobs(sessionId: String): List<JobView> = executeJson(
+        "chat/sessions/$sessionId/jobs",
+        "GET",
+        null,
+        JobListEnvelope.serializer(),
+    ).jobs
+
+    /**
+     * 读一个后台任务已保留的输出。
+     *
+     * [from] 是**绝对字节偏移**，传上一次返回的 [JobOutput.next] 即可增量续读；
+     * 传 null 从最旧的保留字节开始。
+     *
+     * [JobOutput.lossy] 为 true 时，请求偏移与返回内容之间有字节被留存策略吃掉 ——
+     * 这段输出不是完整的，调用方应当提示用户。
+     */
+    fun readJobOutput(sessionId: String, jobId: String, from: Long? = null): JobOutput {
+        val query = if (from == null) "" else "?from=$from"
+        return executeJson(
+            "chat/sessions/$sessionId/jobs/$jobId/output$query",
+            "GET",
+            null,
+            JobOutput.serializer(),
+        )
+    }
+
+    /**
+     * 终止一个后台任务。
+     *
+     * 返回 `requested`（已受理）或 `already-finished`（已是终态、无需再杀）——
+     * 调用方应据此显示「已终止」或「它已经结束了」，后者不是前者的成功说法。
+     */
+    fun killSessionJob(sessionId: String, jobId: String): JobKillResult = executeJson(
+        "chat/sessions/$sessionId/jobs/$jobId/kill",
+        "POST",
+        null,
+        JobKillResult.serializer(),
+    )
+
     fun listPendingApprovals(sessionId: String): List<PendingApproval> = executeJson(
         "chat/sessions/$sessionId/approvals",
         "GET",
@@ -726,3 +771,59 @@ class EventSubscription internal constructor(
 @Serializable private data class SendMessageRequest(val text: String, val mode: String, val clientRequestId: String)
 @Serializable private data class ErrorEnvelope(val error: ApiErrorBody)
 @Serializable private data class ApiErrorBody(val code: String, val message: String, val requestId: String)
+
+/** 后台任务的生命周期状态。`running` / `stopping` 存活中，其余为终态。 */
+@Serializable
+enum class JobStatus {
+    @SerialName("running") RUNNING,
+    @SerialName("stopping") STOPPING,
+    @SerialName("completed") COMPLETED,
+    @SerialName("killed") KILLED,
+    @SerialName("failed") FAILED,
+}
+
+/**
+ * 一个后台任务的只读投影。
+ *
+ * 服务端逐个字段校验过类型，所以这里除 [status] / [startedAt] / [id] / [kind] / [label]
+ * 之外的字段都可空 —— 内核没给就是没有，客户端不该看到一个 `owner: undefined`。
+ */
+@Serializable
+data class JobView(
+    val id: String,
+    val kind: String,
+    val label: String,
+    val owner: String? = null,
+    val status: JobStatus,
+    /** 生产者的实时进度行（`3/10`）；终态时被清空。 */
+    val progress: String? = null,
+    /** 终态原因（`exit code: 3`）；记录过的人工取消原因会并进来。 */
+    val detail: String? = null,
+    /** 注册时刻（epoch ms）。 */
+    val startedAt: Long,
+    /** 落定时刻（epoch ms）；存活中为 null。 */
+    val finishedAt: Long? = null,
+)
+
+@Serializable private data class JobListEnvelope(val jobs: List<JobView>)
+
+/** 一个后台任务已保留的输出。 */
+@Serializable
+data class JobOutput(
+    val jobId: String,
+    val text: String,
+    /** 绝对字节偏移；下次增量续读传它。 */
+    val next: Long,
+    /** true = 请求偏移与返回内容之间有字节被留存策略吃掉，这段输出不完整。 */
+    val lossy: Boolean,
+    /** 读到终态帧时带上；流被提前切断时为 null。 */
+    val status: JobStatus? = null,
+)
+
+/** 终止结果。 */
+@Serializable
+data class JobKillResult(
+    val jobId: String,
+    /** `requested` 已受理；`already-finished` 已是终态、无需再杀。 */
+    val outcome: String,
+)
