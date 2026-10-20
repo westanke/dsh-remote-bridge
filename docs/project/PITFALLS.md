@@ -604,3 +604,6 @@ DSH 0.2.x 起 WebUI **对 loopback 也要求 token**，裸请求 `GET /` 返回 
 **铁律**：CI 判活要贴着**当前内核的鉴权契约**写。把「401 需要 token」写成「服务没起来」，
 这条红就会伪装成产品 bug，白烧一整轮排查。判活失败时必须把服务端日志打出来
 （这次原脚本把 `dsh web` 的 stdout 丢进了 CI 控制台，循环里又一句不打印，等于零诊断信息）。
+
+**修复验证**：run `39417950880`（commit `88b444c`）11/11 全绿，`profile-install (ubuntu-latest)`
+的冒烟行实证 `web smoke ok: web=401 plugin=200`。
