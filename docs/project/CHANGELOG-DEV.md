@@ -51,13 +51,42 @@
 门禁：`npx tsc --noEmit` 干净；`npx vitest run` 41 文件 / 311 用例全绿；
 `npm run docs:check` 两段均通过。
 
-### 待办
+### 实测结果（2026-10-20，重启 web profile 后）
 
-- **真机实测**：该端点的真实返回值（需重启 web profile 后验证）。
-  重点看两个数：`permissionPresets` 是否进了 `injectedMissing`，以及
-  `observedAvailable` 里有没有 `workingDirectory`。
-- 若 `workingDirectory` 确实可用，下一步接 `session-working-directory-v1` 能力位与
-  `GET`/`PATCH /chat/sessions/{sessionId}/working-directory` 两个路由。
+`GET /api/v1/debug/host-services` 真实返回（loopback admin）：
+
+```
+injectedTotal: 13
+injectedAvailable: 10
+injectedMissing: ["permissionPresets", "fileUploads", "attachments"]
+observedAvailable: []
+```
+
+**三个缺失全部有据可查，且都不是 bug —— 是 web profile 的刻意裁剪：**
+
+| 服务 | 根因（已追到源码） |
+|---|---|
+| `permissionPresets` | `PermissionPresetService.static inject = ["shell", "approval", "sessions", "sessionProjections"]`。web profile **没有 `shell`**（bash 执行环境归 bash-local / sandbox 那条线），依赖落空 → 整个 entry 激活失败 |
+| `workingDirectory` | `WorkingDirectoryService.static inject = ["fs", "sessionProjections", "systemPrompt"]`。web profile 的 dump 里**没有 `dsh-fs` 这一行**（只有 `fs-observation-policy` 与 `fs-sandbox` 两个附属包；`tool-fs` 被显式 `disabled: true`）→ `fs` 无提供者 → 激活失败 |
+| `fileUploads` | `dsh-client-file-upload` 只发布 client 侧，**没有 host apply** |
+| `attachments` | `dsh-attachment-local` 只是个库，没有 apply（`dsh-0.2-bridge.ts` 那段长注释早已记着这一点） |
+
+**关键教训（本轮最大的收获）**：`dsh --profile web --dump-config` 里 `- id: working-directory` 这行**确实存在且未 disabled**，但服务依然注不进。原因是 **dump 只打印补丁层的行，不代表该行真的被激活** —— 依赖落空的 entry 会静默不激活。此前"`workingDirectory` 在 web profile 挂着、所以能注入"的推断**是错的**，只有探针能回答这个问题。
+
+### 修正此前的推断
+
+- ~~`ctx.workingDirectory` 在 web profile 可用~~ → **不可用**，根因是 `fs` 无提供者。
+  要接它有两条路：① 在 profile patch 里补 `dsh-fs-local` 行（但那是用户的 profile，不是插件的）；② 改用 `sessionController.projections()` 读 `workingDirectory` 投影（**不需要 fs**，因为投影是已提交状态的读出）。
+- `permissionPresets` 的注入面**已定论：0.2.0 与 0.2.1 一样注不进**。权限档位目录继续走 `FALLBACK_PERMISSION_CATALOG` + BFF（2.4.2 已实现），不再列为待验证项。
+
+### 下一步（按修正后的认知重排）
+
+1. **`session-working-directory-v1` 改走投影路线**：`sessionController.projections({sessionId})` 的
+   `values.workingDirectory` 就是已提交的 cwd，**不依赖 `fs`，因此在 web profile 可行**。
+   注意这是**只读**；写（切换 cwd）仍需 `WorkingDirectoryService.set()`，而它需要 agent 与 fs，
+   在 web profile 上走不通 —— 所以手机端「会话内切换工作目录」在 web profile 上**做不到**，
+   这条需求应当降级或改道（例如让用户在 App 里改授权根，而不是改会话 cwd）。
+2. 收掉 `history-projections-passthrough`（`follow()` snapshot 0.2.1 起自带 projections）。
 
 ## 2.4.2 · history 带投影 + 权限档位 BFF + 斜杠命令执行修复（2026-10-19）
 
