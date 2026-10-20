@@ -16,6 +16,20 @@
       # 这一条曾长期掩盖真相：`permissionPresets` 一直以为「web profile 注不进、
       # 只能走内置兜底目录」，实际是这里没声明它。`jobController` 加进来之后
       # 同样注不进，才顺着 `_refresh()` 的 INACTIVE 逻辑反查到这条覆盖规则。
+      # ⚠️ 这份列表**只能放「两个支持版本上都存在的服务」**。
+      # cordis 的 inject 是**硬依赖**：任何一个服务缺失 → 整个 entry 永久 INACTIVE。
+      # 2026-10-20 CI 实锤：把 jobController / fileUploads / attachments /
+      # permissionPresets 加进来后，插件在 **0.2.0-rc.2**（smoke-profile-install
+      # 检出的上游基线）上整体不激活，报
+      # "waiting for services: ..., jobController, fileUploads" ——
+      # 那一版内核的 web profile 没挂这些服务。
+      #
+      # 可选服务（permissionPresets / jobController / fileUploads / attachments /
+      # workingDirectory）**不在这里声明**，由插件在运行时经
+      # `ctx.reflect.get(name, false)` 读取（cordis 给「不带 inject 要求」读服务
+      # 准备的正路，见 dsh-0.2-bridge.ts 的 optionalService 注释）：
+      # 0.2.1-rc.2 上读到就走全功能，0.2.0-rc.2 上读不到就按能力位降级。
+      # 探针（GET /debug/host-services）继续报告这 5 个名字的真实可用性。
       inject: [
         sessionController,
         workspaceController,
@@ -23,20 +37,10 @@
         settingsController,
         credentialsController,
         agentPresets,
-        # 权限档位目录（`ctx.permissionPresets`）：内核把它做成独立的 Typert
-        # 远程服务，会话投影那条 wire 视图只给 currentValue、不带候选项。
-        permissionPresets,
         llm,
         webServer,
         agents,
         commands,
-        # 后台任务（`ctx.jobController`）：远程场景下任务跑飞了要能停掉。
-        jobController,
-        # 文件上传服务（`ctx.fileUploads`）：用它而不是内核那条只绑 loopback 的
-        # /api/session/uploadFileBinary HTTP 路由。
-        fileUploads,
-        # 附件存储（`ctx.attachments`）：会话历史里的图片以 attachmentId 引用存在。
-        attachments,
       ]
       config:
         # 状态目录**不改名**：已装的机器上有既有数据库与回收站，换目录等于让用户

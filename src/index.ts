@@ -54,22 +54,14 @@ export const inject = [
   'settingsController',
   'credentialsController',
   'agentPresets',
-  // 权限档位目录（ctx.permissionPresets）：内核把它做成独立的 Typert 远程服务，
-  // 会话投影那条 wire 视图只给 currentValue、不带候选项，客户端要列档位就只能拿它。
-  'permissionPresets',
   'llm',
   'webServer',
   'agents',
   'commands',
-  // 后台任务（ctx.jobController）：远程场景下「任务跑飞了停不掉」是真焦虑 ——
-  // 人不在电脑前，一个卡住的 bash 任务只能干等。见 job-adapter.ts 头部说明。
-  'jobController',
-  // 文件上传服务（ctx.fileUploads）：内核以 cordis 服务形式暴露。用它而不是内核那条
-  // /api/session/uploadFileBinary HTTP 路由 —— 后者只绑 loopback，手机根本到不了。
-  'fileUploads',
-  // 附件存储（ctx.attachments）：会话历史里的图片以 attachmentId 引用存在，
-  // 要显示它们就必须能按 id 取回字节。
-  'attachments',
+  // ⚠️ inject 只能放「两个支持版本上都存在的服务」（硬依赖，缺一个整个插件不激活）。
+  // 可选服务（permissionPresets / jobController / fileUploads / attachments）不在这里，
+  // 由 optionalService 经 ctx.reflect.get(name, false) 运行时读取 —— 见
+  // dsh-0.2-bridge.ts 的 optionalService 注释与 docs:check 的 inject 对齐门禁。
 ]
 
 export interface Config {
@@ -165,15 +157,15 @@ export async function apply(ctx: HostContext, config: Config = {}): Promise<void
     ctx.logger.warn(new Error(`dsh-remote-bridge: host service probe failed: ${String(error)}`))
   }
   let router!: ApiRouter
-  // jobController 注不进来不该让 jobs 端点假装可用：探针已经告诉我们它在不在
-  // （web profile 上它在，但换成不带 job-controller 的 profile 就不一定）。
-  // 注不进时干脆不挂 jobs —— 客户端会收到 404，而不是一个永远空的清单。
-  let jobControllerAvailable = false
-  try {
-    ctx.jobController
-    jobControllerAvailable = true
-  } catch {
-    ctx.logger.warn(new Error('dsh-remote-bridge: ctx.jobController unavailable, background-job endpoints disabled'))
+  // jobController 是**可选服务**（不在 inject 里 —— inject 是硬依赖，而它只在
+  // 0.2.1 的 web profile 上存在；0.2.0-rc.2 上缺失时把插件整个挂掉是 CI 实锤过的回归）。
+  // 用 reflect.get(name, false) 读：不需要 inject 声明，缺失时返回 undefined。
+  // 缺失时干脆不挂 jobs —— 客户端会收到 404，而不是一个永远空的清单。
+  const reflect = (ctx as { reflect?: { get?: (name: string, strict?: boolean) => unknown } }).reflect
+  const jobControllerAvailable =
+    reflect?.get !== undefined && reflect.get('jobController', false) !== undefined
+  if (!jobControllerAvailable) {
+    ctx.logger.warn(new Error('dsh-remote-bridge: jobController not provided by this kernel, background-job endpoints disabled'))
   }
   const remote = new RemoteApiServer({
     port,
@@ -199,7 +191,9 @@ export async function apply(ctx: HostContext, config: Config = {}): Promise<void
     maxUploadBytes,
     imageFallbackDir: imageHandoffDir,
     ...(hostServiceReport === undefined ? {} : { hostServiceReport }),
-    ...(jobControllerAvailable ? { jobs: new JobAdapter({ jobController: ctx.jobController }) } : {}),
+    ...(jobControllerAvailable && reflect?.get
+      ? { jobs: new JobAdapter({ jobController: reflect.get('jobController', false) as never }) }
+      : {}),
   })
 
   try {

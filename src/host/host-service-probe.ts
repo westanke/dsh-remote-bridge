@@ -20,7 +20,14 @@
  * （需要设备 token 或 loopback admin，与其它 REST 端点同一套鉴权）。
  */
 
-/** 插件 `src/index.ts` 里 inject 声明的全部服务名。 */
+/**
+ * 插件 `cordis.patch.yml` 与 `src/index.ts` 里 inject 声明的全部服务名
+ * （**两份清单必须一致**，docs:check 有对齐门禁）。
+ *
+ * ⚠️ 只能放「两个支持版本（0.2.0-rc.2 与 0.2.1-rc.2）上都存在的服务」——
+ * cordis 的 inject 是硬依赖，缺一个整个插件不激活（2026-10-20 在 0.2.0-rc.2 的
+ * smoke-profile-install 上实锤过）。可选服务一律走 OPTIONAL_SERVICE_NAMES。
+ */
 export const INJECTED_SERVICE_NAMES = [
   'sessionController',
   'workspaceController',
@@ -28,47 +35,63 @@ export const INJECTED_SERVICE_NAMES = [
   'settingsController',
   'credentialsController',
   'agentPresets',
-  'permissionPresets',
   'llm',
   'webServer',
   'agents',
   'commands',
-  // 后台任务（ctx.jobController）：2026-10-20 加，jobs 三个端点靠它。
-  // **已实测可用** —— 这是它与 workingDirectory / workspaceFiles 的区别：
-  // 后两者的 static inject 里有 fs，而 web profile 没有 dsh-fs 这一行。
-  'jobController',
-  'fileUploads',
-  'attachments',
 ] as const
 
 export type InjectedServiceName = (typeof INJECTED_SERVICE_NAMES)[number]
 
-/** 0.2.1 新增、插件尚未 inject 但已确认存在于 web profile 的服务。 */
-export const OBSERVED_ONLY_SERVICE_NAMES = [
+/**
+ * **可选服务**：不写进 inject（inject 是硬依赖），由插件经
+ * `ctx.reflect.get(name, false)` 运行时读取 —— 读到就走该能力，读不到按能力位降级。
+ *
+ * 探针用同一条 `reflect.get` 读取它们：这样报告的是「内核**真的**提供了什么」，
+ * 而不是「我们 inject 了什么」。两者的差就是「可选能力在这台内核上可用与否」。
+ */
+export const OPTIONAL_SERVICE_NAMES = [
   /**
-   * `@deepseek-ai/dsh-working-directory` 的 cordis 服务。
-   *
-   * 已在真实 web profile 组合里确认存在（`dsh --profile web --dump-config`
-   * 的 `- id: working-directory` 行，未 disabled），且它的三个依赖
-   * （`fs` / `sessionProjections` / `systemPrompt`）都在 web profile 落地。
-   * 列在这里是为了让探针顺手回答「要接的时候它在不在」。
+   * `@deepseek-ai/dsh-permission-presets`（权限档位目录）。
+   * 0.2.1-rc.2 的 web profile 上实测可用；0.2.0-rc.2 上未提供时
+   * 权限档位目录走 `FALLBACK_PERMISSION_CATALOG` + BFF。
+   */
+  'permissionPresets',
+  /**
+   * `@deepseek-ai/dsh-api-job-controller`（后台任务）。
+   * 0.2.1-rc.2 的 web profile 上实测可用；0.2.0-rc.2 上缺失时
+   * jobs 三个端点返回 404（`jobs-adapter` 不挂载）。
+   */
+  'jobController',
+  /**
+   * `@deepseek-ai/dsh-client-file-upload`（文件上传）。
+   * 缺失时图片/文件上传走内核的 loopback HTTP 路由降级。
+   */
+  'fileUploads',
+  /**
+   * `@deepseek-ai/dsh-attachment-local` 的附件存储。
+   * 缺失时历史图片读取走内核 `sessionController.attachment()`。
+   */
+  'attachments',
+  /**
+   * `@deepseek-ai/dsh-working-directory`（0.2.1 新增的宿主服务）。
+   * 其 `static inject` 里有 `fs`，而 web profile 没有 `dsh-fs` 这一行，
+   * 所以它在两个版本上都激活不了 —— 列在这里是让探针如实报告「不可用」，
+   * 会话工作目录改走投影只读路线。
    */
   'workingDirectory',
   /**
-   * `@deepseek-ai/dsh-api-workspace-files` 的 cordis 服务（`ctx.workspaceFiles`）。
-   *
-   * 2026-10-20 实测结论：它在 web profile 里**挂着但注不进** —— 原因与
-   * `workingDirectory` 同源，`WorkspaceFiles.static inject` 里有 `fs`，
-   * 而 web profile 没有 `dsh-fs` 这一行。所以「dump 里有这行」不等于
-   * 「服务可用」，只有这个探针能回答后者。
-   *
-   * 列在观测区而不是 inject：**A1 文件变更监听因此做不了**（见 file-watch 的结论），
-   * 留着这条是为了让后来的排查者一眼看到「不是忘了接，是接不上」。
+   * `@deepseek-ai/dsh-api-workspace-files`（工作区文件预览与变更监听）。
+   * 同样因 `static inject` 里的 `fs` 在 web profile 上激活不了；
+   * 文件变更监听（A1）因此未实现，留此存照。
    */
   'workspaceFiles',
 ] as const
 
-export type ObservedServiceName = (typeof OBSERVED_ONLY_SERVICE_NAMES)[number]
+export type OptionalServiceName = (typeof OPTIONAL_SERVICE_NAMES)[number]
+/** 兼容旧名。 */
+export const OBSERVED_ONLY_SERVICE_NAMES = OPTIONAL_SERVICE_NAMES
+export type ObservedServiceName = OptionalServiceName
 
 export interface ServiceProbe {
   name: string
@@ -107,6 +130,34 @@ export interface HostServiceReport {
  * @returns 每个服务的可解析性报告。
  */
 export function probeHostServices(host: object, pluginVersion: string): HostServiceReport {
+  // 可选服务走 reflect.get（strict=false）：不要求 inject 声明，也不要求
+  // 提供方 fiber 已激活 —— 报告的是「内核真的提供了什么」。
+  const reflect = (host as { reflect?: { get?: (name: string, strict?: boolean) => unknown } }).reflect
+  const probeOptional = (name: string): ServiceProbe => {
+    if (reflect === undefined || typeof reflect.get !== 'function') {
+      return { name, available: false, resolvable: false, error: 'ctx.reflect.get unavailable on this cordis' }
+    }
+    try {
+      const value = reflect.get(name, false)
+      const resolvable = value !== null && value !== undefined
+      return {
+        name,
+        available: true,
+        resolvable,
+        ...(resolvable ? {} : { error: 'not provided by this kernel/profile' }),
+      }
+    } catch (caught) {
+      return {
+        name,
+        available: false,
+        resolvable: false,
+        error: caught instanceof Error ? caught.message : String(caught),
+      }
+    }
+  }
+
+  // inject 里的名字走属性读：在 inject 里但未激活会抛
+  // `cannot get required service "x" in inactive context`（那说明依赖没齐，插件本来也活不了）。
   const probeOne = (name: string): ServiceProbe => {
     let available = false
     let resolvable = false
@@ -123,7 +174,7 @@ export function probeHostServices(host: object, pluginVersion: string): HostServ
   }
 
   const injected = INJECTED_SERVICE_NAMES.map(probeOne)
-  const observed = OBSERVED_ONLY_SERVICE_NAMES.map(probeOne)
+  const observed = OPTIONAL_SERVICE_NAMES.map(probeOptional)
 
   return {
     pluginVersion,
@@ -133,7 +184,10 @@ export function probeHostServices(host: object, pluginVersion: string): HostServ
       injectedTotal: injected.length,
       injectedAvailable: injected.filter(service => service.available).length,
       injectedMissing: injected.filter(service => !service.available).map(service => service.name),
-      observedAvailable: observed.filter(service => service.available).map(service => service.name),
+      // 可选区按 **resolvable** 过滤，不是 available：reflect.get 的通道本身总是通的
+      // （available 恒为 true），「这台内核真的提供了这个服务」由 resolvable 表达。
+      // 按 available 过滤会把「没提供」也记成可用 —— 恰好丢掉探针最想回答的那个问题。
+      observedAvailable: observed.filter(service => service.resolvable).map(service => service.name),
     },
   }
 }

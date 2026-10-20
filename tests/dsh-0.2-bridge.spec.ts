@@ -367,7 +367,47 @@ describe('dsh 0.2.x bridge: attachments', () => {
     })
 
     expect(host.sessionController.attachment).toHaveBeenCalledTimes(1)
-    expect(host.attachments.readImage).not.toHaveBeenCalled()
+    expect(host.attachments?.readImage).not.toHaveBeenCalled()
+  })
+
+  it('reads optional services through ctx.reflect.get (the 0.2.0 shape)', async () => {
+    // 这条钉的是 **0.2.0-rc.2 上服务的真实形态**。
+    //
+    // 两种「服务不在」的表现完全不同：
+    // - 属性读抛 `cannot get property "x" without inject`（不在 inject 里）；
+    // - `ctx.reflect.get(name, false)` 返回 **undefined**（服务确实没被任何插件提供）。
+    //
+    // 后者才是 0.2.0 web profile 的样子（CI 的 smoke-profile-install 实锤：
+    // 那边 jobController / fileUploads / attachments 全都没有）。上一条用例只覆盖了前者，
+    // 于是「reflect.get 返回 undefined」这条路径**从未被测过** ——
+    // 而它恰好是 optionalService 改用 reflect.get 之后的主路径。
+    const { host } = makeHost()
+    const withoutOptional = new Proxy(host, {
+      get(target, prop, receiver) {
+        if (prop === 'reflect') {
+          // 模拟 0.2.0：reflect 通道是通的，但这些服务一个都没提供。
+          return {
+            get(name: string): unknown {
+              if (['attachments', 'fileUploads', 'permissionPresets', 'jobController'].includes(name)) {
+                return undefined
+              }
+              return Reflect.get(target, prop, receiver)
+            },
+          }
+        }
+        return Reflect.get(target, prop, receiver)
+      },
+    }) as Dsh02HostServices
+
+    // 构造不能抛 —— 这正是「inject 是硬依赖」那条教训要防的。
+    const api = createDsh02ApiProxy(withoutOptional)
+
+    // 纯文本 prompt 不碰可选服务，照常成功。
+    const sent = await api.sessions.prompt({
+      rpcId: 'p',
+      payload: { sessionId: 'session-1', mode: 'queue', content: [{ type: 'text', text: 'hi' }] },
+    })
+    expect(sent.result.ok).toBe(true)
   })
 
   it('activates even when no plugin provides ctx.attachments or ctx.fileUploads', async () => {
@@ -438,7 +478,7 @@ describe('dsh 0.2.x bridge: attachments', () => {
 
     expect(response.result.ok).toBe(true)
     expect(response.result.ok && response.result.value).toEqual({ receiptId: 'receipt-1', name: 'notes.txt' })
-    expect(host.fileUploads.upload).toHaveBeenCalledTimes(1)
+    expect(host.fileUploads?.upload).toHaveBeenCalledTimes(1)
     // 上传必须绑定到会话对应的 Agent —— 凭证的作用域是 Agent，不是全局。
     expect(host.sessionController.resolveAgent).toHaveBeenCalledWith('session-1')
   })
@@ -449,7 +489,7 @@ describe('dsh 0.2.x bridge: attachments', () => {
 
     await api.sessions.uploadAttachment({ rpcId: 'r', payload: { sessionId: 'session-1', data: 'QUJD', name: '' } })
 
-    const [, request] = vi.mocked(host.fileUploads.upload).mock.calls[0] as [
+    const [, request] = vi.mocked(host.fileUploads!.upload).mock.calls[0] as [
       unknown,
       { data: string; name?: string },
       AbortSignal,
@@ -461,7 +501,7 @@ describe('dsh 0.2.x bridge: attachments', () => {
     const { host } = makeHost()
     const api = createDsh02ApiProxy(host)
     const binding = { commit: vi.fn() }
-    vi.mocked(host.fileUploads.bindPrompt).mockReturnValue(binding)
+    vi.mocked(host.fileUploads!.bindPrompt).mockReturnValue(binding)
 
     const payload = {
       sessionId: 'session-1',
@@ -470,7 +510,7 @@ describe('dsh 0.2.x bridge: attachments', () => {
     }
 
     await api.sessions.prompt({ rpcId: 'r', payload })
-    expect(host.fileUploads.bindPrompt).toHaveBeenCalledTimes(1)
+    expect(host.fileUploads?.bindPrompt).toHaveBeenCalledTimes(1)
     expect(binding.commit).toHaveBeenCalledTimes(1)
 
     // 失败时不 commit：内核的语义是「unless delivery commits it」才归还凭证，
@@ -490,8 +530,8 @@ describe('dsh 0.2.x bridge: attachments', () => {
       payload: { sessionId: 'session-1', mode: 'queue', content: [{ type: 'text', text: 'hello' }] },
     })
 
-    expect(host.fileUploads.bindPrompt).not.toHaveBeenCalled()
-    expect(host.fileUploads.upload).not.toHaveBeenCalled()
+    expect(host.fileUploads?.bindPrompt).not.toHaveBeenCalled()
+    expect(host.fileUploads?.upload).not.toHaveBeenCalled()
   })
 
   it('passes image parts through unchanged so the host can inline them', async () => {

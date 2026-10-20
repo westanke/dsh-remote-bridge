@@ -301,7 +301,14 @@ export interface Dsh02HostServices {
   settingsController: SettingsControllerLike
   credentialsController: CredentialsControllerLike
   agentPresets: AgentPresetsLike
-  permissionPresets: PermissionPresetsLike
+  /**
+   * 权限档位目录（`ctx.permissionPresets`）——**可选**。
+   *
+   * 0.2.1 的 web profile 上有；0.2.0-rc.2 上没有。inject 是硬依赖，
+   * 所以它不能进 inject，只能声明成可选，由 `optionalService` 运行时读；
+   * 读不到时权限档位走 `FALLBACK_PERMISSION_CATALOG` + BFF。
+   */
+  permissionPresets?: PermissionPresetsLike
   /**
    * 后台任务控制器（`ctx.jobController`，`@deepseek-ai/dsh-api-job-controller`）。
    *
@@ -311,7 +318,14 @@ export interface Dsh02HostServices {
    * 与 `sessionController` 不同，这个是 `TypertRemoteService`（不是 `@Remote`
    * 控制器集合），但结构类型消费方式完全一样：只声明用到的成员，缺了就明确报错。
    */
-  jobController: JobControllerLike
+  /**
+   * 后台任务控制器（`ctx.jobController`）——**可选**。
+   *
+   * 只有 DSH 0.2.1 的 web profile 挂了这个服务；0.2.0-rc.2 上没有，
+   * 而 inject 是硬依赖（缺一个整个插件不激活），所以它**不能**出现在 inject 里，
+   * 只能在这里声明成可选，由 `optionalService` 运行时读。
+   */
+  jobController?: JobControllerLike
   llm: LlmLike
   /**
    * 内核附件存储（`ctx.attachments`）；会话历史里的图片要经它取字节。
@@ -322,14 +336,23 @@ export interface Dsh02HostServices {
    * `cannot get property "attachments" without inject` —— 请求链路本身没问题，
    * 挂在服务端、而且只在真的去取图时才炸，所以很难在本地测出来。
    */
-  attachments: AttachmentStoreLike
   /**
-   * Kernel file-upload service (`ctx.fileUploads`).
+   * 内核附件存储（`ctx.attachments`）——**可选**。
+   *
+   * 0.2.0-rc.2 的 web profile 上没有这个服务（诊断日志实测 MISSING），
+   * 而 inject 是硬依赖，所以它只能声明成可选，由 `optionalService` 运行时读；
+   * 读不到时附件读取走内核 `sessionController.attachment()`。
+   */
+  attachments?: AttachmentStoreLike
+  /**
+   * Kernel file-upload service (`ctx.fileUploads`)——**可选**。
    *
    * 为什么用它而不是内核那条 `/api/session/uploadFileBinary` HTTP 路由：那条路由
    * 只绑 loopback（手机根本到不了），而这个 cordis 服务就在同一个进程里，插件可直接调。
+   *
+   * 可选的原因同 [attachments]：0.2.0-rc.2 的 web profile 上没有它。
    */
-  fileUploads: FileUploadsLike
+  fileUploads?: FileUploadsLike
   /**
    * Cordis event bus of the host context. Used for the two facts the old
    * `apiProxy` event streams carried that no controller returns: session
@@ -360,7 +383,38 @@ export interface Dsh02HostServices {
  * 调用方必须自己给出可读的错误（见 readAttachment），而不是让用户看到一个
  * 语焉不详的 500。
  */
+/**
+ * 读一个**可选**宿主服务：存在就返回，不存在返回 null。
+ *
+ * ## 为什么必须走 `ctx.reflect.get(name, false)`，不能直接读属性
+ *
+ * cordis 的 `inject` 是**硬依赖**（`registry.d.ts` 的 `Inject` 类型只有数组与映射两种
+ * 形式，注释原文是 "required services"）：inject 里任何一个服务缺失，`_refresh()`
+ * 就把 epoch 置为 INACTIVE，**整个插件不激活**。
+ *
+ * 所以「可选服务」**不能**写进 inject —— 写了就变成「哪个内核版本缺它、插件在哪一版
+ * 整个死掉」。而直接读属性（`host[name]`）也不行：不在 inject 里的属性会抛
+ * `cannot get property "x" without inject`，与「服务不存在」**报同一个错**，
+ * 于是这个函数会永远返回 null（这正是它此前的实际行为，
+ * `attachments` / `fileUploads` 一直在走降级路径）。
+ *
+ * `ctx.reflect.get(name, false)` 是 cordis 给这件事准备的正路
+ * （`cordis/lib/index.js` 的 ReflectService.get，注释原文：
+ * "Read a service from the store **without the inject requirement**"）：
+ * 不要求 inject 声明，服务不存在时返回 `undefined` 而不是抛错。
+ */
 function optionalService<T>(host: object, name: string): T | null {
+  const reflect = (host as { reflect?: { get?: (name: string, strict?: boolean) => unknown } }).reflect
+  if (reflect !== undefined && typeof reflect.get === 'function') {
+    try {
+      // strict=false：不要求提供方 fiber 已激活（冷启动期也能读到已注册的服务）。
+      const value = reflect.get(name, false)
+      if (value === undefined || value === null) return null
+      return value as T
+    } catch {
+      // reflect 本身读不到（极老的 cordis）时，落到下面的兼容路径。
+    }
+  }
   try {
     return (host as Record<string, unknown>)[name] as T
   } catch {

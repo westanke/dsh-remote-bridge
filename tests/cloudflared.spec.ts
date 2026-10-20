@@ -66,14 +66,16 @@ describe('archSuffix', () => {
 describe('downloadUrlFor', () => {
   it('falls back to the official GitHub release by default', () => {
     delete process.env.CLOUDFLARED_MIRROR
-    const url = downloadUrlFor()
+    // 显式指定 linux/x64：这个函数回答的是「linux 的 cloudflared 从哪下」，
+    // 不该跟着**跑测试的机器**变（macOS runner 上旧实现会直接抛「不支持 darwin」）。
+    const url = downloadUrlFor('linux', 'x64')
     expect(url).toMatch(new RegExp(`^https://github.com/cloudflare/cloudflared/releases/download/[^/]+/cloudflared-linux-`))
   })
 
   it('uses the injected mirror base when present (no fabricated addresses baked in)', () => {
     process.env.CLOUDFLARED_MIRROR = 'https://mirror.example.invalid/cloudflared-'
     try {
-      const url = downloadUrlFor()
+      const url = downloadUrlFor('linux', 'x64')
       expect(url).toBe('https://mirror.example.invalid/cloudflared-linux-amd64')
     } finally {
       delete process.env.CLOUDFLARED_MIRROR
@@ -85,7 +87,7 @@ describe('downloadUrlFor', () => {
       'deb+https://pkg.cloudflare.com/cloudflared/pool/main/c/cloudflared/cloudflared_2026.10.1_amd64.deb'
     try {
       expect(isDebSource()).toBe(true)
-      expect(downloadUrlFor()).toBe(
+      expect(downloadUrlFor('linux', 'x64')).toBe(
         'https://pkg.cloudflare.com/cloudflared/pool/main/c/cloudflared/cloudflared_2026.10.1_amd64.deb',
       )
     } finally {

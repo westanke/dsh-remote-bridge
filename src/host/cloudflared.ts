@@ -189,8 +189,23 @@ export function isDebSource(): boolean {
 }
 
 /** 返回要下载的源 URL：deb 源返回完整 .deb 地址；裸镜像基址拼架构后缀；否则官方 GitHub。 */
-export function downloadUrlFor(): string {
-  const suffix = archSuffix()
+/**
+ * cloudflared 官方归档的下载地址。
+ *
+ * **platform/arch 都能显式传入**（2026-10-20 CI 实锤后加）：旧实现里
+ * `downloadUrlFor()` 走 `archSuffix()` 的默认参数 —— 也就是**本机** platform/arch。
+ * 于是这个函数在 macOS runner 上直接抛「尚不支持 darwin 平台」，
+ * 而它要回答的问题其实是「linux 的 cloudflared 该从哪下」。
+ *
+ * 默认值保持本机（生产调用点 `ensureCloudflared` 就在 linux 上跑，行为不变），
+ * 但显式传入后结果只由入参决定 —— 这才让「算别的平台的 URL」成为可能，
+ * 也让测试不依赖跑在什么机器上。
+ */
+export function downloadUrlFor(
+  platform: NodeJS.Platform = process.platform,
+  arch: string = process.arch,
+): string {
+  const suffix = archSuffix(platform, arch)
   const mirror = mirrorBase()
   if (mirror === '') return `${OFFICIAL_BASE}${suffix}`
   if (mirror.startsWith('deb+')) return mirror.slice(4)
