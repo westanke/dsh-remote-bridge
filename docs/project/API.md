@@ -277,6 +277,47 @@ JSON 读进内存才谈得上解析 —— 不设闸，「翻一次历史」就�
 
 WebSocket 使用 `chat.approval.requested` 与 `chat.approval.resolved` 提醒客户端刷新 REST 状态。DSH mux 重连会重放仍待处理的请求，因此插件可恢复内存缓存；客户端断线重连后也必须重新查询 REST，而不是依赖事件回放。
 
+## 宿主服务注入面探针
+
+`GET /debug/host-services` 回答一个此前只能靠猜的问题：**当前这个 DSH 内核上，插件 `inject` 声明的服务到底有几个真的注进来了。**
+
+本插件刻意不 import 任何 `@deepseek-ai/*` 包，全部宿主服务按结构类型 + Host 注入消费。好处是跨内核版本零漂移，代价是 cordis 的注入属性是惰性访问器 —— 读一个没人提供的服务会抛 `cannot get property "x" without inject`，而这个错误只在真的去读的那一刻出现。历史上反复出现同一类事故：某功能静默不工作，两侧日志都不说一句话（`attachments` 在 2.0.0、`fileUploads` 在 2.0.2 都是这么炸的）。
+
+该端点与其它 REST 端点同一套鉴权（设备 token 或 loopback admin）—— 它暴露宿主内部结构，不该对局域网裸奔。采集发生在插件 `apply` 期间，因为注入属性只在那一刻可读。
+
+```sh
+curl http://127.0.0.1:3090/api/v1/debug/host-services \
+  -H "Authorization: Bearer <device-token>"
+```
+
+```json
+{
+  "pluginVersion": "2.4.2",
+  "injected": [
+    { "name": "sessionController", "available": true, "resolvable": true },
+    { "name": "permissionPresets", "available": false, "resolvable": false,
+      "error": "cannot get property \"permissionPresets\" without inject" }
+  ],
+  "observed": [
+    { "name": "workingDirectory", "available": true, "resolvable": true }
+  ],
+  "summary": {
+    "injectedTotal": 13,
+    "injectedAvailable": 12,
+    "injectedMissing": ["permissionPresets"],
+    "observedAvailable": ["workingDirectory"]
+  }
+}
+```
+
+字段语义：
+
+- `available` —— cordis 是否认为有插件提供这个服务。
+- `resolvable` —— 读到的值是否是可用的服务对象（`available` 为真但 `resolvable` 为假，说明服务注册了却是空的）。
+- `observed` —— 已确认存在于 web profile、但插件**尚未** `inject` 的服务。当前只有 `workingDirectory`（DSH 0.2.1 新增），列在这里是为了让探针顺手回答「要接的时候它在不在」。
+
+插件启动时也会把摘要打成一行 DSH 日志（`host services N/M 可注入`），所以即使没人请求这个端点，「注入了几个服务」也会留在日志里。
+
 ## 错误
 
 所有 REST 业务错误采用：

@@ -7,6 +7,7 @@ import { WorkspaceDatabase } from './host/database.ts'
 import { createDsh02ApiProxy, readHandoffImageFile, type Dsh02HostServices } from './host/dsh-0.2-bridge.ts'
 import { WorkspaceEventBus } from './host/event-bus.ts'
 import { FileService } from './host/file-service.ts'
+import { probeHostServices, type HostServiceReport } from './host/host-service-probe.ts'
 import { createImageRouteHandler, IMAGE_ROUTE, readHandoffSubdir } from './host/image-handoff.ts'
 import { DEFAULT_REMOTE_HOST, normalizeListenerHost, normalizeListenerPort } from './host/listener-config.ts'
 import { ApiRouter } from './host/router.ts'
@@ -139,6 +140,26 @@ export async function apply(ctx: HostContext, config: Config = {}): Promise<void
   })
   const chat = new DshChatAdapter(apiProxy, database, { agents: ctx.agents, commands: ctx.commands })
   const settings = new DshSettingsAdapter(apiProxy)
+  // 宿主服务注入面探针：在 apply 期间（cordis 注入属性仍可读）采集一份快照。
+  //
+  // 为什么必须在这里采、不能留到 HTTP 回调里：注入属性是有生命周期的惰性访问器，
+  // apply 一结束再读会抛 `cannot get property "x" without inject`。2.0.1 正是
+  // 把 attachments 的读取留到回调里，导致整个插件激活失败（见 host-service-probe.ts 头注释）。
+  //
+  // 采集失败不该拦住插件启动 —— 它只是观测。启动期把探针打成日志，
+  // 这样即使没人去请求那个端点，「注入了几个服务」也会出现在 DSH 日志里。
+  let hostServiceReport: HostServiceReport | undefined
+  try {
+    hostServiceReport = probeHostServices(ctx, PLUGIN_VERSION)
+    const { injectedAvailable, injectedTotal, injectedMissing } = hostServiceReport.summary
+    const detail = injectedMissing.length === 0 ? '' : `，缺失：${injectedMissing.join(', ')}`
+    ctx.logger.info(`dsh-remote-bridge: host services ${injectedAvailable}/${injectedTotal} 可注入${detail}`)
+    if (hostServiceReport.summary.observedAvailable.length > 0) {
+      ctx.logger.info(`dsh-remote-bridge: 观测到可用但未 inject 的服务：${hostServiceReport.summary.observedAvailable.join(', ')}`)
+    }
+  } catch (error) {
+    ctx.logger.warn(new Error(`dsh-remote-bridge: host service probe failed: ${String(error)}`))
+  }
   let router!: ApiRouter
   const remote = new RemoteApiServer({
     port,
@@ -163,6 +184,7 @@ export async function apply(ctx: HostContext, config: Config = {}): Promise<void
     cloudflaredBinDir: path.join(dataDir, 'cloudflared-bin'),
     maxUploadBytes,
     imageFallbackDir: imageHandoffDir,
+    ...(hostServiceReport === undefined ? {} : { hostServiceReport }),
   })
 
   try {

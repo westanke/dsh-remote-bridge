@@ -25,6 +25,62 @@ paths:
                   ok: { type: boolean, const: true }
                   version: { type: string, const: v1 }
                   pluginVersion: { type: string, const: 2.4.2 }
+  /debug/host-services:
+    get:
+      operationId: hostServices
+      summary: Host service injection probe
+      description: |
+        Reports which DSH host services the plugin actually resolved on the running
+        kernel. This plugin deliberately imports no `@deepseek-ai/*` package and
+        consumes every host service through a structural type injected by the Host,
+        so "is the service there at all" is otherwise unanswerable without guessing.
+
+        `injected` covers the services named in the plugin's `inject` declaration;
+        `observed` covers services confirmed present in the web profile but not yet
+        consumed (currently only `workingDirectory`, added by DSH 0.2.1).
+
+        Requires a device token or loopback admin, like every other authenticated
+        endpoint: it exposes host internals.
+      responses:
+        '200':
+          description: Injection probe snapshot taken while the plugin applied.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [pluginVersion, injected, observed, summary]
+                properties:
+                  pluginVersion: { type: string }
+                  injected:
+                    type: array
+                    items:
+                      type: object
+                      required: [name, available, resolvable]
+                      properties:
+                        name: { type: string }
+                        available: { type: boolean }
+                        resolvable: { type: boolean }
+                        error: { type: string }
+                  observed:
+                    type: array
+                    items:
+                      type: object
+                      required: [name, available, resolvable]
+                      properties:
+                        name: { type: string }
+                        available: { type: boolean }
+                        resolvable: { type: boolean }
+                        error: { type: string }
+                  summary:
+                    type: object
+                    required: [injectedTotal, injectedAvailable, injectedMissing, observedAvailable]
+                    properties:
+                      injectedTotal: { type: integer }
+                      injectedAvailable: { type: integer }
+                      injectedMissing: { type: array, items: { type: string } }
+                      observedAvailable: { type: array, items: { type: string } }
+        '404':
+          description: The probe is not compiled into this build.
   /pairings/exchange:
     post:
       security: []

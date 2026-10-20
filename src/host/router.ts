@@ -9,6 +9,7 @@ import type { DshChatAdapter } from './chat-adapter.ts'
 import type { PromptContentPart, UserQuestionAnswer } from './chat-adapter.ts'
 import type { StoredRoot, WorkspaceDatabase } from './database.ts'
 import { handoffLocaleOf } from './dsh-0.2-bridge.ts'
+import type { HostServiceReport } from './host-service-probe.ts'
 import { ApiError, asApiError } from './errors.ts'
 import type { CloudflaredTunnelManager } from './cloudflared.ts'
 import { ensureCloudflared } from './cloudflared.ts'
@@ -81,6 +82,14 @@ interface RouterOptions {
    * 生产路径由 `index.ts` 传入与交接实际使用**同一个**目录，避免「界面显示 A、落盘在 B」。
    */
   imageFallbackDir?: string
+  /**
+   * 宿主服务注入面探针报告（见 `host-service-probe.ts`）。
+   *
+   * 可选：不注入则该端点返回 404，测试因此不必每条都补一个字段。
+   * 生产路径由 `index.ts` 在 apply 期间采集后传入 —— 必须是**快照**，
+   * 因为 cordis 的注入属性只在 apply 执行期间可读（见探针文件头注释）。
+   */
+  hostServiceReport?: HostServiceReport
 }
 
 export class ApiRouter {
@@ -123,6 +132,24 @@ export class ApiRouter {
 
     if (method === 'GET' && pathname === '/api/v1/healthz') {
       sendJson(res, 200, { ok: true, version: 'v1', pluginVersion: PLUGIN_VERSION })
+      return
+    }
+
+    // 宿主服务注入面探针。回答一个此前只能靠猜的问题：**这个内核版本上，
+    // 插件 inject 声明的服务到底有几个真的注进来了。**
+    //
+    // 为什么要单独一个端点而不是塞进 healthz：healthz 是 App 每次连接都轮询的
+    // （见 companion 的 BridgeCapabilities），往里塞一份注入面报告会让它变大、
+    // 且把「服务活着吗」和「服务全吗」两个问题混成一个答案。
+    //
+    // 鉴权与其它 REST 端点同一套（设备 token 或 loopback admin）——
+    // 它暴露的是宿主内部结构，不该对局域网裸奔。
+    if (method === 'GET' && pathname === '/api/v1/debug/host-services') {
+      const report = this.options.hostServiceReport
+      if (report === undefined) {
+        throw new ApiError(404, 'NOT_FOUND', 'host service probe is not available in this build.')
+      }
+      sendJson(res, 200, report)
       return
     }
 

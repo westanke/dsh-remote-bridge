@@ -1,5 +1,64 @@
 # 开发日志
 
+## 未发布 · 宿主服务注入面探针 `GET /debug/host-services`（2026-10-20）
+
+### 基于什么
+
+适配 DSH 0.2.1-rc.2 时遇到一个方法论问题：本插件刻意不 import 任何
+`@deepseek-ai/*` 包，全部宿主服务按结构类型 + Host 注入消费。这让它跨内核版本
+零漂移，**但也让「服务到底注进来了没有」只能靠猜** —— cordis 的注入属性是惰性
+访问器，读一个没人提供的服务会抛 `cannot get property "x" without inject`，
+而这个错误只在真的去读的那一刻出现。
+
+于是历史上反复出现同一类事故：某功能静默不工作，两侧日志都不说一句话，
+排错者先从客户端查起。`attachments` 在 2.0.0、`fileUploads` 在 2.0.2 都是这么炸的
+（`dsh-0.2-bridge.ts` 里那段长注释记着连踩两次的过程）。
+
+更具体地，本轮有两个**悬而未决的判断题**：
+
+1. `permissionPresets` 在 0.2.0 上注不进（插件已降级到 `FALLBACK_PERMISSION_CATALOG`），
+   0.2.1 的注入面**未知**；
+2. `ctx.workingDirectory`（DSH 0.2.1 新增）理论上可注入，但没人验证过。
+
+### 干了什么
+
+- **新增 `src/host/host-service-probe.ts`**：在 apply 期间（注入属性仍可读）逐个试读
+  13 个 inject 服务 + 1 个观测服务，记录每个服务的 `available` / `resolvable` / `error`。
+  `available` 与 `resolvable` 分开，是为了区分「服务压根没提供」和「提供了但是空的」。
+- **新增 `GET /debug/host-services`**：返回上述快照。鉴权与其它 REST 端点同一套
+  （设备 token 或 loopback admin）—— 它暴露宿主内部结构，不该对局域网裸奔。
+- **启动期摘要进日志**：`apply` 时把「host services N/M 可注入，缺失：…」打成一行，
+  这样即使没人请求端点，「注入了几个服务」也留在 DSH 日志里。
+- 同步 `docs/project/API.md` + `docs/api/openapi.yaml`（wire schema 五处同步的另两处，
+  另三处 Kotlin SDK / 测试 / 实现已就位；本端点面向排错，App 不消费，故 Kotlin SDK 不加）。
+
+### 测了什么
+
+新增 `tests/host-service-probe.spec.ts` 6 例：
+
+- 全部注入成功时每个服务都可用；
+- 某个服务没注入时进 `injectedMissing` 并带上内核原始错误信息，且**不影响其它服务的判定**；
+- 解析出 `null`/`undefined` 时算 `available` 但不算 `resolvable`；
+- 观测区只报 0.2.1 已确认存在于 web profile 的服务；
+- `workingDirectory` 可用时被单独报出来（这是 0.2.1 的能力信号）；
+- **探针清单与 `src/index.ts` 的 inject 声明一致** —— 防的是「加了 inject 却忘了加进探针」，
+  那种情况下探针答不了那个服务到底注没注进来。
+
+测试桩用 `Proxy` 模拟 cordis 的真实语义（读未提供的服务**抛错**），不是简单留空字段 ——
+空字段读出来是 `undefined`，那测的是「字段不存在」而不是「服务没注入」，
+两者成因不同，而 `available`/`resolvable` 正是为了区分它们。
+
+门禁：`npx tsc --noEmit` 干净；`npx vitest run` 41 文件 / 311 用例全绿；
+`npm run docs:check` 两段均通过。
+
+### 待办
+
+- **真机实测**：该端点的真实返回值（需重启 web profile 后验证）。
+  重点看两个数：`permissionPresets` 是否进了 `injectedMissing`，以及
+  `observedAvailable` 里有没有 `workingDirectory`。
+- 若 `workingDirectory` 确实可用，下一步接 `session-working-directory-v1` 能力位与
+  `GET`/`PATCH /chat/sessions/{sessionId}/working-directory` 两个路由。
+
 ## 2.4.2 · history 带投影 + 权限档位 BFF + 斜杠命令执行修复（2026-10-19）
 
 ### 基于什么

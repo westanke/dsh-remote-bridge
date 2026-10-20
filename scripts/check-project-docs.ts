@@ -238,6 +238,7 @@ if (openapiDoc.info?.version !== packageJson.version) failures.push('OpenAPI ver
 if (asyncapiDoc.info?.version !== packageJson.version) failures.push('AsyncAPI version differs from package.json')
 for (const route of [
   '/healthz',
+  '/debug/host-services',
   '/pairings/exchange',
   '/devices/self',
   '/roots',
