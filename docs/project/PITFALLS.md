@@ -249,6 +249,40 @@ README 两条安装命令写的是 `dsh-remote-bridge-v<ver>.tgz`（**带 v**）
 **铁律**：双站镜像 ≠ 双站都有货。写进文档的下载地址，两端都要点一次 ——
 而且要点的是**文档里那个字面地址**，不是「我以为的产物名」。
 
+### inject 是硬依赖：只放「所有支持版本都存在」的服务
+
+**症状**：某个内核版本上插件**整个不激活**，报
+
+```
+dsh-remote-bridge: pending (waiting for services: sessionController, ..., jobController, fileUploads)
+Error: dsh: plugin tree failed to load: dsh: 1 entry did not activate
+```
+
+**根因**：cordis 的 `inject` 是**硬依赖**（`cordis/lib/types/registry.d.ts` 的 `Inject`
+类型注释原文 "required services"）—— 任何一个服务缺失，`_refresh()` 就把 epoch 置为
+INACTIVE，**整个插件不激活**。所以「某版本才有的服务」写进 inject 的意思是
+**那个版本上插件整个死掉**。
+
+**踩坑实例（2026-10-20）**：把 0.2.1 才有的 `jobController` / `fileUploads` /
+`attachments` / `permissionPresets` 加进 inject 后，插件在 **0.2.0-rc.2** 上整体不激活
+（CI 的 `profile-install` job 检出固定上游提交 47f9438 = 0.2.0-rc.2 基线）。
+**这直接证伪了本仓自己写下的 `engines.dsh: >=0.2.0-rc.2 <0.3.0` 声明。**
+
+**正确做法**：
+
+1. `inject` 只放**所有支持版本都存在**的服务；
+2. 某版本才有的服务声明成**可选**（`foo?: FooLike`），运行时经
+   `ctx.reflect.get(name, false)` 读 —— cordis 给这件事准备的正路
+   （`ReflectService.get` 注释原文："Read a service from the store **without the inject
+   requirement**"），服务不存在时返回 `undefined` 而不是抛错；
+3. 「不声明」与「声明了但服务没提供」在运行时报**同一个错**
+   （`cannot get property "x" without inject`）—— 只有探针能分辨，
+   见 §patch 的 inject 覆盖插件 inject。
+
+**铁律**：加一个 inject 服务之前，先问「**最老的支持版本上有它吗**」。
+`docs:check` 的 inject 对齐门禁只保证 patch 与 `src/index.ts` 两份清单**互相一致**，
+不保证它们**在所有支持版本上都存在** —— 后者只能靠真机/CI 验证。
+
 ### Gitee API 的 token 必须放 form 字段
 
 **症状**：建 Gitee Release 一律返回

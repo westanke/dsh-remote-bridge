@@ -26,13 +26,21 @@
 > 0.2.x 上无法启动（表现为「添加根目录返回 405」）。兼容层的完整说明——基于什么、为什么、改了什么、
 > 测了什么——见 [DSH 0.2.x 兼容性适配说明](./docs/project/DSH-0.2-COMPAT.md)。
 >
-> **对 DSH 0.2.1-rc.2 的适配结论**（2026-10-20 复核，依据 `/media/wangke/OFFICE/workspace/dsh-remote-bridge/docs/project/DSH-0.2.1-ADAPTATION.md`）：
+> **对 DSH 0.2.1-rc.2 的适配结论**（2026-10-20 复核，依据 `docs/project/DSH-0.2.1-ADAPTATION.md`）：
 > 本插件**刻意不 import 任何 `@deepseek-ai/*` 包**，全部宿主服务经结构类型 + Host 注入消费
 > （见 `src/host/dsh-0.2-bridge.ts` 头注释）。逐一到 `0.2.1-rc.2` 实装包核对：`cordis.patch.yml`
 > 的 10 项 `inject` 服务名**全部仍存在且签名未变**，`engines.dsh` 在 0.2.1 被内核识别
 > （`dsh-app-boot/lib/index.js` 的 `prepareProfileEntries`），不满足时只把该 entry 置
 > `disabled` 并打 stderr，**宿主进程不退出**。故本插件无需改码即可运行于 `0.2.1-rc.2`。
-> 唯一需真机定论的是 `permissionPresets` 的注入面（0.2.0 上即注不进，已降级到内置目录）。
+>
+> **两版的功能差异（重要）**：`inject` 里只放**两个版本都存在**的服务 —— cordis 的 inject 是
+> **硬依赖**，任何一个服务缺失就整个插件不激活（CI 在 0.2.0-rc.2 基线上实锤过：
+> 一度因为把 0.2.1 才有的服务写进 inject 而让插件在 0.2.0 上整体不激活）。
+> 因此 0.2.1 才提供的服务（**后台任务** `jobController`、**权限档位目录**
+> `permissionPresets`、文件上传 `fileUploads`、附件存储 `attachments`）改为运行时经
+> `ctx.reflect.get(name, false)` 读取：**0.2.1-rc.2 上这些功能全部可用，0.2.0-rc.2 上
+> 自动降级**（如后台任务端点返回 404、权限档位走内置目录），插件本体两种内核都能跑。
+> 用 `GET /api/v1/debug/host-services` 可以查这台机器上哪些可选能力可用。
 
 ## 实际效果
 

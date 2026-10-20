@@ -36,9 +36,17 @@ The interface is bilingual and defaults to Chinese. Prebuilt packages run on Win
 > `engines.dsh` is recognized by the 0.2.1 kernel (`prepareProfileEntries` in
 > `dsh-app-boot/lib/index.js`) — an unmet range only sets that entry to `disabled` and prints to
 > stderr; **the host process does not exit**. So no code change is needed to run on `0.2.1-rc.2`.
-> The only point still needing on-device confirmation is the injection surface of
-> `permissionPresets` (never injectable on 0.2.0 either, where the plugin already falls back to a
-> built-in catalog).
+>
+> **Functional differences between the two versions (important)**: the `inject` list holds **only
+> services that exist in both versions** — cordis treats `inject` as a **hard dependency**, and a
+> single missing service leaves the whole plugin inactive (proven by CI on the 0.2.0-rc.2 baseline:
+> writing a 0.2.1-only service into `inject` once made the plugin fail to activate on 0.2.0).
+> The services that only 0.2.1 provides (**background jobs** `jobController`, the **permission
+> catalog** `permissionPresets`, file upload `fileUploads`, attachment storage `attachments`) are
+> therefore read at runtime through `ctx.reflect.get(name, false)`: **all of them work on
+> 0.2.1-rc.2 and degrade automatically on 0.2.0-rc.2** (the jobs endpoints answer 404 there, the
+> permission catalog falls back to its built-in one) — the plugin itself runs on both kernels.
+> `GET /api/v1/debug/host-services` reports which optional capabilities the current machine has.
 
 ## What it looks like
 

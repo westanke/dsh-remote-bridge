@@ -177,6 +177,7 @@ docs/api/            ← OpenAPI + AsyncAPI（wire schema 的权威）
 - `build 不查类型`
 - `README 双站漂移`
 - `patch 的 inject 覆盖插件 inject`
+- `inject 是硬依赖：只放「所有支持版本都存在」的服务`
 - `apiProxy 消失`
 - `前缀契约`
 - `端口 3090 归属`
