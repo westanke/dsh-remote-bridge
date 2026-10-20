@@ -249,6 +249,36 @@ README 两条安装命令写的是 `dsh-remote-bridge-v<ver>.tgz`（**带 v**）
 **铁律**：双站镜像 ≠ 双站都有货。写进文档的下载地址，两端都要点一次 ——
 而且要点的是**文档里那个字面地址**，不是「我以为的产物名」。
 
+### Gitee API 的 token 必须放 form 字段
+
+**症状**：建 Gitee Release 一律返回
+`{"message":"登录失效，无权限访问该资源","code":40001}` —— 看着像 token 失效或没权限。
+
+**真相**：token 本身是好的，只是**以 query 参数传时 Gitee 的写接口不认**。
+
+| 传法 | 结果 |
+|---|---|
+| `?access_token=$GT`（query） | ❌ 40001 登录失效 |
+| `-F "access_token=$GT"`（form 字段） | ✅ 一次成功 |
+
+**排查时容易走错的路**（2026-10-20 实际走了一遍）：
+
+| 猜测 | 实测 | 结论 |
+|---|---|---|
+| token 过期 | `GET /api/v5/user` → **200**，返回 `{"login":"westanke"}` | token 有效 |
+| 仓库无权限 | `GET /api/v5/repos/...` → **200** | 仓库可读 |
+| payload / 正文格式错 | 手工用同样 payload POST → 同样 40001 | 与内容无关 |
+| git 身份问题 | `git ls-remote gitee` → 正常 | git 推送完全正常 |
+
+**所以「读接口通 + 写接口 401」这个组合，唯一可能就是传参方式**。
+
+附件 `attach_files` 一直是 form（`-F "file=@..."`），所以**只有建 Release 这一步**会踩。
+
+**另一条**：回读下载要用**网页直链**
+`https://gitee.com/<owner>/<repo>/releases/download/<tag>/<file>`（不带 token），
+API 路径 `/api/v5/repos/.../releases/download/...` 返回 404 HTML。
+且 `foruda.gitee.com` 的 CDN 偶发只给 52 字节，**回读要重试**再判失败。
+
 ---
 
 ### waterfall 不 prepend 就等于没注册

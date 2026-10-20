@@ -56,6 +56,8 @@
 
 ```sh
 bash scripts/release.sh   # 一键发版：门禁→npm 打包→tag→双推→两站 Release→npm 发布→全渠道回读
+bash scripts/push-all.sh  # 手工推送：Gitee 主 + AtomGit 备（GitHub 从站自动同步，不用手推）
+bash scripts/setup-remotes.sh  # 整理三远端命名（幂等）
 pnpm check          # typecheck → test → docs:check → build（提交前跑这个）
 pnpm test           # vitest run
 pnpm typecheck      # tsc --noEmit
@@ -146,6 +148,7 @@ docs/api/            ← OpenAPI + AsyncAPI（wire schema 的权威）
 | 文档 | `pnpm docs:check` | 10 文档 / ROADMAP 状态 / STATUS 引用 / ADR 索引 / 根 README 双站 + CHANGELOG 口径 |
 | e2e | `pnpm test:e2e` | playwright；**4 个样式契约用例**，渲染真实 DOM 量计算样式，**不需要服务器**（插件已无可访问的独立页），只需 chromium。本机 `pnpm` 坏时用 `node_modules/.bin/playwright test` |
 | 真机 | 人工 | **单测绿 ≠ 行为对**。涉及内核交互、审批、问答卡片的一律真机确认 |
+| 推送 | `bash scripts/push-all.sh` | **Gitee 主 + AtomGit 备**；GitHub 是从站，由 `.github/workflows/mirror-sync.yml` 从 Gitee 自动同步（本机到 github.com:443 长期被阻断，不手工推） |
 
 **铁律**：
 - 修 bug 必须带回归用例（`TESTING.md` 记录演进）。
@@ -184,6 +187,7 @@ docs/api/            ← OpenAPI + AsyncAPI（wire schema 的权威）
 - `wait.callId 判据过严`
 - `npm pack 与 pnpm pack`
 - `Gitee Release 死链`
+- `Gitee API 的 token 必须放 form 字段`
 - `npm 发布：本地 npm 不支持 staged，报错方向还相反`
 - `孤立代理项打死整条连接`
 - `pnpm store 打不开数据库`
@@ -206,7 +210,7 @@ docs/api/            ← OpenAPI + AsyncAPI（wire schema 的权威）
 | 语言 | TypeScript | Kotlin |
 | 命令口径 | `pnpm check`（四道门一条命令） | `scripts/build.sh <task>` |
 | 行数预算 | **600**/文件 | 800/文件 |
-| 文档门禁 | `pnpm docs:check`（10 文档 + ADR 索引 + 根 README 双站/CHANGELOG） | `docsCheck`（8 文档） |
+| 文档门禁 | `pnpm docs:check`（10 文档 + ADR 索引 + 根 README 双站/CHANGELOG + patch inject 对齐） | `docsCheck`（8 文档 + 根 README 双站/CHANGELOG） |
 | 独有坑位 | apiProxy 消失、前缀契约、抢答委托、pack 差异 | WebView 双实现、熄屏断流、图片附件元数据与字节读取 |
 | 共有坑位 | README 双站漂移、端口 3090 归属、对外表述三态 | 同 |
 

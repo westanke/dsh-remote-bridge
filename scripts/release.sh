@@ -91,18 +91,25 @@ fi
 say ""
 
 # ── 4. git 双推（分支 + tag）──────────────────────────────────────
+# 复用 scripts/push-all.sh（与姊妹仓 dsh-companion 同一套），**不**在这里重写一遍推送逻辑：
+# 两处各写一份必然分叉（姊妹仓就出过「分支与 tag if/else 互斥，导致只推了一半」的 bug）。
+#
+# 拓扑：Gitee 主站 + AtomGit 备站；GitHub 是从站，由 .github/workflows/mirror-sync.yml
+# 从 Gitee 自动同步（本机到 github.com:443 长期被阻断，不手工推）。
+#
+# tag 的推法与 push-all.sh 的默认一致：**只推指向 HEAD 的 tag**。本脚本在第 3 步
+# 刚打完 tag，那正是指向 HEAD 的，所以推得上去；历史 tag 不重推（远端已有同名 tag 时
+# 逐个判断跳过，不会像 `git push --tags` 那样因任意一个旧 tag 冲突而整条被拒）。
 say "4) git 双推（Gitee 主站 + AtomGit 备站）"
-for r in gitee atomgit; do
-  git remote get-url "$r" >/dev/null 2>&1 || { warn "没有 remote $r，跳过"; continue; }
-  run git push "$r" "$BRANCH"
-  ok "$r 分支已推"
-  if [ -n "$(git ls-remote --tags "$r" "refs/tags/$TAG" 2>/dev/null)" ]; then
-    ok "$r 已有 $TAG"
+if [ "$DRY_RUN" = "1" ]; then
+  say "  [dry] bash scripts/push-all.sh"
+else
+  if bash scripts/push-all.sh; then
+    ok "主备两站已推（分支 + 指向 HEAD 的 tag）"
   else
-    run git push "$r" "refs/tags/$TAG"
-    ok "$r 已推 $TAG"
+    bad "push-all.sh 报告推送失败 —— 继续走 Release，但代码可能没全部推上去"
   fi
-done
+fi
 say ""
 
 # ── 5. 两站 Release + 附件 ────────────────────────────────────────
@@ -124,17 +131,23 @@ gitee_release() {
     [ "$DRY_RUN" = "1" ] && return 0
     local body
     body=$( [ -n "$BODY_FILE" ] && cat "$BODY_FILE" || sed -n '/^## /,$p' docs/project/CHANGELOG-DEV.md | head -60 )
-    # 用 node 组装 JSON，避免 shell 引号与大段正文打架
-    PAYLOAD=$(VER="$VER" TAG="$TAG" BODY_FILE="$BODY_FILE" node -e '
-      const fs=require("fs");
-      const body = process.env.BODY_FILE && fs.existsSync(process.env.BODY_FILE)
-        ? fs.readFileSync(process.env.BODY_FILE,"utf8")
-        : fs.readFileSync("docs/project/CHANGELOG-DEV.md","utf8").split(/^## /m).slice(1,3).map(x=>"## "+x).join("");
-      process.stdout.write(JSON.stringify({tag_name:process.env.TAG,name:process.env.VER,body,target_commitish:"main"}));
-    ')
-    id=$(curl -s -X POST "https://gitee.com/api/v5/repos/$repo/releases" \
-         -H 'Content-Type: application/json' -d "$PAYLOAD" \
-         | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>{try{console.log(JSON.parse(s).id||'')}catch{console.log('')}})")
+    # ⚠️ access_token 必须放 **form 字段**，不能放 query（`?access_token=`）——
+    # 2026-10-20 实测：query 形式一律返回 40001「登录失效，无权限访问该资源」，
+    # 而 token 本身有效（GET /api/v5/user 返回 200）、git push 也正常 —— 极易误判成
+    # 「权限失效」。附件 attach_files 一直是 form 形式，所以只有建 Release 这一步踩过。
+    #
+    # 用 -F "body=<文件" 让 curl 直接读文件，避免大段正文过 shell 引号。
+    if [ -n "$BODY_FILE" ]; then
+      id=$(curl -s -X POST "https://gitee.com/api/v5/repos/$repo/releases" \
+           -F "access_token=$GT" -F "tag_name=$TAG" -F "target_commitish=main" \
+           -F "name=$VER" -F "prerelease=false" -F "body=<$BODY_FILE" \
+           | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>{try{console.log(JSON.parse(s).id||'')}catch{console.log('')}})")
+    else
+      id=$(curl -s -X POST "https://gitee.com/api/v5/repos/$repo/releases" \
+           -F "access_token=$GT" -F "tag_name=$TAG" -F "target_commitish=main" \
+           -F "name=$VER" -F "prerelease=false" -F "body=$body" \
+           | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>{try{console.log(JSON.parse(s).id||'')}catch{console.log('')}})")
+    fi
     [ -n "$id" ] && ok "Gitee Release 已建（id $id）" || { bad "Gitee Release 建失败"; return 1; }
   else
     ok "Gitee Release 已存在（id $id），跳过创建"

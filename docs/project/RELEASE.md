@@ -16,11 +16,28 @@
 1) 门禁 npm run check
 2) 打包 npm pack（产出带 v 与不带 v 两份 + SHA256SUMS）
 3) 打 tag v<ver>
-4) git 双推（Gitee + AtomGit 的分支与 tag）
-5) 两站 Release + 附件
+4) git 双推（Gitee 主 + AtomGit 备，分支与 tag；复用 scripts/push-all.sh）
+5) 两站 Release + 附件（Gitee + AtomGit）
 6) npm 发布（npm@12 + registry 轮询）
 7) 全渠道回读（npm 可读、两个下载 URL 都 200、两站 tag 就位）
 ```
+
+**渠道拓扑（2026-10-20 起，与姊妹仓 dsh-companion 对齐）**：
+
+```
+gitee    -> Gitee    gitee.com/westanke/dsh-remote-bridge.git        （主站）
+atomgit  -> AtomGit  atomgit.com/westanke163/dsh-workspace.git      （备站）
+origin   -> GitHub   github.com/westanke/dsh-remote-bridge.git       （从站，自动同步）
+```
+
+GitHub 是**从站**：本机到 github.com:443 长期被阻断（实测 `Empty reply from server` /
+`TLS handshake failed`，间歇性），故不手工推；由 `.github/workflows/mirror-sync.yml`
+每 3 小时从 Gitee 自动同步 refs 与 Release（`scripts/ci/mirror-push.sh` +
+`scripts/ci/sync-releases.py`）。
+
+> 手工推送用 `bash scripts/push-all.sh`（默认只推 Gitee + AtomGit；
+> `PUSH_TAGS=1` 加推指向 HEAD 的 tag；`INCLUDE_GITHUB=1` 尽力推 GitHub）。
+> 远端命名用 `bash scripts/setup-remotes.sh` 整理（幂等）。
 
 **每一步都幂等**：tag 在就跳过、Release 在就跳过、附件在就跳过、npm 版本已发就跳过。
 中途失败修完再跑一遍即可，不会重复创建或重复上传。

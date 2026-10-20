@@ -1,0 +1,83 @@
+name: 从 Gitee 同步镜像
+
+# GitHub 为从站：主源 Gitee、备源 AtomGit，都在国内更新，本工作流把代码与
+# Release 单向同步到 GitHub。本机到 github.com:443 长期不通，所以不再手工推。
+#
+# 同步内容：
+#   1) refs（全部分支与 tag，push --mirror，主源删除也跟随删除）
+#   2) Release（正文 + tgz/SHA256SUMS，幂等补缺，源码包由 GitHub 自动生成）
+#
+# 自举说明：本文件首次进入一个空仓时（经 Contents API 引导提交），仓库里还没有
+# scripts/ci/ 下的脚本，所以 mirror job 的首次同步逻辑内嵌于此；push --mirror
+# 完成后，Gitee 版（调用 scripts/ci/mirror-push.sh 的版本）即成为权威，本内嵌段
+# 只是它的等价副本。GITHUB_TOKEN 发起的 push 不会递归触发 workflow（GitHub 官方行为）。
+on:
+  schedule:
+    - cron: '23 */3 * * *'   # 每 3 小时一次（UTC，避开整点；与姊妹仓错开几分钟）
+  workflow_dispatch:          # 重建仓库或临时需要时手工触发
+
+permissions:
+  contents: write
+# 注意：job 级 permissions 没有 workflows 键——GITHUB_TOKEN 按 GitHub 安全设计永远不能
+# 增改 workflow 文件，而 push --mirror 会写入历史中的 .github/workflows/*.yml。
+# 故推送凭证改用 secret MIRROR_PAT（一个带 repo + workflow scope 的 PAT / OAuth token）。
+
+concurrency:
+  group: mirror-sync
+  cancel-in-progress: false   # mirror 推送中途被取消可能留下半截 refs
+
+jobs:
+  mirror:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: 推送镜像（Gitee 主 → AtomGit 备 → GitHub 从，内嵌自举版）
+        env:
+          MIRROR_PAT: ${{ secrets.MIRROR_PAT }}
+        run: |
+          set -euo pipefail
+          WORK="$(mktemp -d)"
+          trap 'rm -rf "$WORK"' EXIT
+          SRC_LABEL=""
+          SRC_URL=""
+          for entry in \
+            "Gitee|https://gitee.com/westanke/dsh-remote-bridge.git" \
+            "AtomGit|https://atomgit.com/westanke163/dsh-workspace.git"; do
+            label="${entry%%|*}"; url="${entry#*|}"
+            echo "探测源站：$label"
+            if git ls-remote --heads "$url" >/dev/null 2>&1; then
+              SRC_LABEL="$label"; SRC_URL="$url"
+              echo "$label 可达，选作本次同步源"
+              break
+            fi
+            echo "$label 不可达，尝试下一个源"
+          done
+          if [ -z "$SRC_URL" ]; then
+            echo "::error::Gitee 与 AtomGit 均不可达，本次跳过"
+            exit 1
+          fi
+          git clone --mirror "$SRC_URL" "$WORK/mirror.git"
+          cd "$WORK/mirror.git"
+          : "${MIRROR_PAT:?仓库 secret MIRROR_PAT 未配置（需带 repo + workflow scope 的 PAT）}"
+          git remote set-url --push origin "https://x-access-token:${MIRROR_PAT}@github.com/${GITHUB_REPOSITORY}.git"
+          git push --mirror origin
+          echo "✅ 镜像完成（源：$SRC_LABEL）"
+
+  releases:
+    needs: mirror              # 必须先有 tag，否则 GitHub 会乱造 tag
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: 回填 Release 与发布资产
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ -f scripts/ci/sync-releases.py ]; then
+            python3 scripts/ci/sync-releases.py
+          else
+            echo "scripts/ci/sync-releases.py 尚不在当前提交（自举竞态），等下一轮定时同步即可"
+          fi
