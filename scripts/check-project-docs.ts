@@ -296,6 +296,60 @@ const trackedText = [
 ].join('\n')
 if (/github\.com\/OWNER\//.test(trackedText)) failures.push('documentation contains an unresolved GitHub owner placeholder')
 
+// ── cordis.patch.yml 的 inject 必须与 src/index.ts 导出的 inject 完全一致 ──────
+//
+// 为什么这条值得单独一个门禁：patch 里的 `inject` **覆盖**插件自己导出的 `inject`，
+// 不是取并集。于是「插件声明了但 patch 漏了」的服务，读起来会报
+// `cannot get property "x" without inject` ——
+// 与「内核压根没有这个服务」的报错**一模一样**，肉眼分不出来。
+//
+// 这条坑长期掩盖过真相：`permissionPresets` 一直被当成「web profile 注不进、
+// 只能走内置兜底目录」，实际是 patch 没声明它。2026-10-20 加 jobController 时
+// 同样注不进，顺着 cordis `_refresh()` 的 INACTIVE 逻辑才反查到这条覆盖规则。
+// 代价是三次重启和一次错误的对外结论，所以用门禁钉死。
+//
+// 双向断言：patch 少了 → 服务读不到；patch 多了 → 声明了一个不存在的依赖，
+// entry 会因此永远 INACTIVE（比少的更糟，插件整个不激活）。
+const patchYaml = await readFile(path.join(root, 'cordis.patch.yml'), 'utf8')
+const patchDoc = parseYaml('cordis.patch.yml', patchYaml) as unknown
+const pluginRow = Array.isArray(patchDoc)
+  ? (patchDoc as Record<string, unknown>[])
+      .flatMap(entry => (Array.isArray((entry as { insert?: unknown }).insert)
+        ? (entry as { insert: Record<string, unknown>[] }).insert
+        : []))
+      .find(row => row['name'] === 'dsh-remote-bridge')
+  : undefined
+if (pluginRow === undefined) {
+  failures.push('cordis.patch.yml has no insert row for dsh-remote-bridge')
+} else {
+  const patchInject = pluginRow['inject']
+  if (!Array.isArray(patchInject)) {
+    failures.push('cordis.patch.yml plugin row has no inject array')
+  } else {
+    const patchNames = patchInject.map(String)
+    // src/index.ts 导出的 inject：直接解析源码里那个数组字面量。
+    // 用正则而不是 import，是因为这个脚本要能被 tsx 单跑、不该拉起整个插件。
+    const indexSource = await readFile(path.join(root, 'src', 'index.ts'), 'utf8')
+    const injectMatch = /export const inject = \[([\s\S]*?)\]/.exec(indexSource)
+    if (injectMatch === null) {
+      failures.push('src/index.ts has no `export const inject = [...]`')
+    } else {
+      const sourceNames = [...(injectMatch[1] as string).matchAll(/'([^']+)'/g)].map(m => m[1] as string)
+      if (sourceNames.length < 10) {
+        failures.push(`src/index.ts 的 inject 只解析出 ${sourceNames.length} 项（预期 ≥ 10），格式可能变了`)
+      }
+      const missingInPatch = sourceNames.filter(name => !patchNames.includes(name))
+      const extraInPatch = patchNames.filter(name => !sourceNames.includes(name))
+      for (const name of missingInPatch) {
+        failures.push(`cordis.patch.yml 的 inject 缺少「${name}」（src/index.ts 声明了它）—— patch 会覆盖插件导出的 inject，漏了这项就读不到，报错与「内核没有该服务」一模一样`)
+      }
+      for (const name of extraInPatch) {
+        failures.push(`cordis.patch.yml 的 inject 多出「${name}」（src/index.ts 没声明）—— 声明不存在的依赖会让整个 entry 永远 INACTIVE`)
+      }
+    }
+  }
+}
+
 function parseYaml(name: string, source: string): Record<string, any> {
   const document = parseDocument(source)
   for (const error of document.errors) failures.push(`${name} YAML is invalid: ${error.message}`)

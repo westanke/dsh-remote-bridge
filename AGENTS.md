@@ -59,7 +59,7 @@ bash scripts/release.sh   # 一键发版：门禁→npm 打包→tag→双推→
 pnpm check          # typecheck → test → docs:check → build（提交前跑这个）
 pnpm test           # vitest run
 pnpm typecheck      # tsc --noEmit
-pnpm docs:check     # 文档一致性（10 必需文档 + ROADMAP 状态 + STATUS 引用 + ADR 索引 + 根 README 双站与 CHANGELOG）
+pnpm docs:check     # 文档一致性（10 必需文档 + ROADMAP 状态 + STATUS 引用 + ADR 索引 + 根 README 双站与 CHANGELOG + patch inject 对齐）
 pnpm build          # clean + tsdown
 pnpm test:e2e       # playwright
 ```
@@ -73,9 +73,11 @@ pnpm test:e2e       # playwright
   目的是让本地产物与 npm 上那份的 shasum/integrity 哈希一致（`RELEASE.md` 新规矩）。
 - **发版时 git 与 npm 必须同批**：只推 git + 建 Release 不算发完，`npm publish` 是同一件事的一部分。
   一键脚本 `scripts/release.sh` 已把两者串起来并逐步回读——**别再手敲清单，会漏**（v2.4.2 漏过一次）。
-- `docs:check` 有**两段**：`docs/project/` 的必需清单式校验（10 份文档 + ADR 索引齐全，
-  新增文档不会让它红），以及根 **README 双站 + CHANGELOG** 的关键口径校验
-  （内核版本范围双语一致且对上 `engines.dsh`、当前版本对上 `package.json`、变更记录有当前版本条目）。
+- `docs:check` 有**三段**：`docs/project/` 的必需清单式校验（10 份文档 + ADR 索引齐全，
+  新增文档不会让它红）；根 **README 双站 + CHANGELOG** 的关键口径校验
+  （内核版本范围双语一致且对上 `engines.dsh`、当前版本对上 `package.json`、变更记录有当前版本条目）；
+  以及 **`cordis.patch.yml` 与 `src/index.ts` 的 inject 双向对齐**（见 `PITFALLS.md`
+  §patch 的 inject 覆盖插件 inject —— 漏一项服务就读不到，报错与「内核没这服务」一模一样）。
   注意 `requiredDocs` 里的 `README.md` 指的是 `docs/project/README.md`（文档索引），
   与仓库根的对外 README 不是一份 —— 前者归 ADR 索引查，后者归第二段查。
 
@@ -171,6 +173,7 @@ docs/api/            ← OpenAPI + AsyncAPI（wire schema 的权威）
 
 - `build 不查类型`
 - `README 双站漂移`
+- `patch 的 inject 覆盖插件 inject`
 - `apiProxy 消失`
 - `前缀契约`
 - `端口 3090 归属`

@@ -1,5 +1,64 @@
 # 开发日志
 
+## 未发布 · 【重要】patch 的 inject 覆盖插件 inject —— 长期掩盖了 4 个服务缺失（2026-10-20）
+
+### 发现过程
+
+加 `jobController` 后重启，探针报：
+
+```
+injectedTotal: 14
+available: 10
+missing: ['permissionPresets', 'jobController', 'fileUploads', 'attachments']
+```
+
+`injectedTotal` 从 13 涨到 14，说明新代码确实加载了；但 `jobController` 仍 MISS。
+顺着 cordis 源码追：
+
+1. `cordis/lib/index.js` L1317 `_refresh()`：inject 里**任一服务缺 impl → epoch = INACTIVE**
+   → 插件不激活。所以「inject 有它 + impl 缺失」应该报
+   `cannot get required service "x" in inactive context`。
+2. 但探针拿到的是 `cannot get property "x" without inject` —— 这是 **prop 根本不在
+   fiber.inject 里** 时的报错（`ReflectService.handler.get` L676）。
+3. 既然 `src/index.ts` 导出了 `jobController`、构建产物里也有，为什么 fiber.inject 里没有？
+4. `dsh --profile web --dump-config` 给出答案 —— 插件行的 `inject` 只有 **10 项**，
+   是 `cordis.patch.yml` 里写的那 10 项，**不是**插件导出的 14 项。
+
+**根因：patch yaml 里的 `inject` 覆盖插件自己导出的 `inject`，不是取并集。**
+
+这解释了全部现象，一一对得上：
+
+| 服务 | patch 里有没有 | 探针结果 |
+|---|---|---|
+| sessionController / workspaceController / workspaceRegistry / settingsController / credentialsController / agentPresets / llm / webServer / agents / commands | 有 | 全部 OK（正好 10 个） |
+| permissionPresets / jobController / fileUploads / attachments | **没有** | 全部 MISS（正好 4 个） |
+
+### 这条坑掩盖了什么
+
+**`permissionPresets` 从来不是「web profile 注不进」。** 此前（2.4.2 的注释、
+`dsh-companion` 的 F1 缺陷分析、多份调研文档）都断言它注不进、只能走
+`FALLBACK_PERMISSION_CATALOG` + BFF 绕行。真相是 patch 里没声明它。
+`fileUploads` 与 `attachments` 同理 —— 它们一直 MISS，不是因为内核没提供，
+是因为**没写进 patch**。
+
+> 这条要写清楚：之前的结论**错得很有说服力**，因为报错一模一样。
+> 「内核没有这个服务」与「patch 没声明这个服务」在运行时报同一个错，
+> 只有 `--dump-config` 看注入清单才能分辨。
+
+### 修了什么
+
+- `cordis.patch.yml` 的 inject 从 10 项补到 14 项（与 `src/index.ts` 对齐）。
+- **新增 `docs:check` 门禁**：patch 的 inject 必须与 `src/index.ts` 的
+  `export const inject` **双向完全一致**。少一项 → 服务读不到；多一项 →
+  声明了不存在的依赖，整个 entry 永久 INACTIVE（比少的更糟）。
+  自测两向都验过：删 `jobController` 报「缺少」；加 `notARealService` 报「多出」。
+
+### 待验证
+
+重启后预期：`available` 从 10 涨到 14（`permissionPresets` / `jobController` /
+`fileUploads` / `attachments` 全部转 OK）。若届时 `permissionPresets` 可用，
+2.4.2 的权限目录 BFF 就从「绕过去」变成「正路」，值得回头简化。
+
 ## 未发布 · 后台任务管理 + snapshot 投影优先 + A1 实测结论（2026-10-20）
 
 ### 1. 后台任务管理（jobs）

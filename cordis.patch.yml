@@ -6,7 +6,38 @@
       # DSH 0.2.x host services (see src/host/dsh-0.2-bridge.ts). The pre-0.2
       # `apiProxy` facade is rebuilt from these; `@deepseek-ai/dsh-host-apiproxy`
       # stopped shipping at 0.1.1-rc.2 and nothing provides `apiProxy` after it.
-      inject: [sessionController, workspaceController, workspaceRegistry, settingsController, credentialsController, agentPresets, llm, webServer, agents, commands]
+      #
+      # ⚠️ 这份列表**必须**与 `src/index.ts` 导出的 `inject` 完全一致。
+      # 原因（2026-10-20 实测，代价是三次重启）：patch 里的 `inject` **覆盖**
+      # 插件自己导出的 `inject`，不是取并集。于是插件声明了、这里漏了的服务
+      # 读起来会报 `cannot get property "x" without inject` ——
+      # 与「内核压根没有这个服务」的报错**一模一样**，肉眼分不出来。
+      #
+      # 这一条曾长期掩盖真相：`permissionPresets` 一直以为「web profile 注不进、
+      # 只能走内置兜底目录」，实际是这里没声明它。`jobController` 加进来之后
+      # 同样注不进，才顺着 `_refresh()` 的 INACTIVE 逻辑反查到这条覆盖规则。
+      inject: [
+        sessionController,
+        workspaceController,
+        workspaceRegistry,
+        settingsController,
+        credentialsController,
+        agentPresets,
+        # 权限档位目录（`ctx.permissionPresets`）：内核把它做成独立的 Typert
+        # 远程服务，会话投影那条 wire 视图只给 currentValue、不带候选项。
+        permissionPresets,
+        llm,
+        webServer,
+        agents,
+        commands,
+        # 后台任务（`ctx.jobController`）：远程场景下任务跑飞了要能停掉。
+        jobController,
+        # 文件上传服务（`ctx.fileUploads`）：用它而不是内核那条只绑 loopback 的
+        # /api/session/uploadFileBinary HTTP 路由。
+        fileUploads,
+        # 附件存储（`ctx.attachments`）：会话历史里的图片以 attachmentId 引用存在。
+        attachments,
+      ]
       config:
         # 状态目录**不改名**：已装的机器上有既有数据库与回收站，换目录等于让用户
         # 的授权根配置和回收站全部消失。改名只动「装的时候叫什么、bundle 叫什么」。

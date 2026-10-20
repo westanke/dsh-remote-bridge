@@ -58,6 +58,37 @@ find tests -type f -name "*.ts" | wc -l                   # 测试文件数
 
 ---
 
+### patch 的 inject 覆盖插件 inject
+
+**症状**：`ctx.someService` 读不到，报
+`cannot get property "someService" without inject` ——
+与「内核压根没提供这个服务」的报错**一模一样**，肉眼分不出来。
+
+**根因**：`cordis.patch.yml` 里插件行的 `inject` **覆盖**插件自己
+`export const inject`，不是取并集。于是「插件声明了、patch 漏了」的服务
+在 fiber.inject 里根本不存在，报的是「没声明」那一档错误。
+
+判别两种错误（cordis `ReflectService.handler.get` L676）：
+
+| 报错 | 含义 |
+|---|---|
+| `cannot get property "x" without inject` | x **不在** fiber.inject 里 → patch 覆盖漏了 |
+| `cannot get required service "x" in inactive context` | x 在 inject 里但 impl 缺失 → 依赖没激活 |
+
+**为什么这条特别阴险**：它长期掩盖了 4 个服务缺失。`permissionPresets` 曾被
+连续多份文档断言为「web profile 注不进、只能走内置兜底目录」，实际是 patch
+没声明它；`fileUploads` / `attachments` 同理。**结论错得很有说服力**，
+因为报错形态完全一致 —— 只有 `dsh --profile web --dump-config` 看注入清单
+才能分辨。
+
+**现在怎么办**：
+1. 加新服务时**两处一起改**：`src/index.ts` 的 `export const inject` 与
+   `cordis.patch.yml` 的 `inject`。
+2. 这条已机检：`pnpm docs:check` 会双向比对两者，少了报「缺少」、
+   多了报「多出」（多了更糟 —— 声明不存在的依赖让整个 entry 永远 INACTIVE）。
+3. 排查服务缺失时，**先 dump 再看源码**：`dsh --profile web --dump-config`
+   里插件行的 inject 才是运行时真值。
+
 ### apiProxy 消失
 
 **症状**：插件在 DSH 0.2.x 上「装上了但不工作」——没有报错日志，
