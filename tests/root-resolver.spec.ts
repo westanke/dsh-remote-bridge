@@ -3,7 +3,8 @@ import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { ApiError } from '../src/host/errors.ts'
-import { inspectResolvedPath, matchAuthorizedRoot } from '../src/host/root-resolver.ts'
+import { realpath } from 'node:fs/promises'
+import { inspectResolvedPath, matchAuthorizedRoot, matchAuthorizedRootResolved } from '../src/host/root-resolver.ts'
 
 /**
  * 会话中文件路径解析的测试。
@@ -117,5 +118,50 @@ describe('inspectResolvedPath', () => {
     const root = await tempDir()
     await expect(inspectResolvedPath({ id: 'r1', realPath: root } as never, '../etc/hostname'))
       .rejects.toBeInstanceOf(ApiError)
+  })
+})
+
+describe('matchAuthorizedRootResolved（符号链接归一）', () => {
+  /**
+   * 2026-10-20 CI 实锤：macOS 上 `os.tmpdir()` 给的是 `/var/folders/...`，
+   * 而它是指向 `/private/var/folders/...` 的**符号链接**。授权根入库时走了
+   * `canonicalRoot()`（解析过符号链接），客户端请求的路径没解析 → 字面不一致
+   * → 匹配不上 → 报 404 `PATH_OUTSIDE_ROOTS`。
+   *
+   * 这不只是测试的事：用户用 symlink 别名加授权根、或客户端经 symlink 请求，
+   * 都会踩到。Linux 的 tmpdir 不带 symlink，所以**只有 macOS 会炸**。
+   */
+  it('matches a request given through a symlinked path', async () => {
+    const base = await mkdtemp(path.join(os.tmpdir(), 'daw-symlink-'))
+    const real = path.join(base, 'real')
+    const alias = path.join(base, 'alias')
+    await mkdir(path.join(real, 'notes'), { recursive: true })
+    await writeFile(path.join(real, 'notes', 'a.md'), '# hi')
+    await symlink(real, alias, 'dir')
+    try {
+      // 根以**真实路径**入库（与 database.addRoot 的 canonicalRoot 一致）
+      const roots = [{ id: 'r1', realPath: await realpath(real) }]
+      // 请求走**别名路径**（未解析）
+      const viaAlias = path.join(alias, 'notes', 'a.md')
+
+      const matched = await matchAuthorizedRootResolved(viaAlias, roots)
+      expect(matched?.rootId).toBe('r1')
+      expect(matched?.path).toBe('notes/a.md')
+    } finally {
+      await rm(base, { recursive: true, force: true })
+    }
+  })
+
+  it('still refuses a path outside every root', async () => {
+    const base = await mkdtemp(path.join(os.tmpdir(), 'daw-symlink-'))
+    const real = path.join(base, 'real')
+    await mkdir(real, { recursive: true })
+    try {
+      const roots = [{ id: 'r1', realPath: await realpath(real) }]
+      const outside = path.join(base, 'elsewhere', 'x.md')
+      expect(await matchAuthorizedRootResolved(outside, roots)).toBeUndefined()
+    } finally {
+      await rm(base, { recursive: true, force: true })
+    }
   })
 })

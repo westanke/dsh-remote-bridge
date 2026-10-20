@@ -30,7 +30,7 @@ import {
   togglePlugin,
   withUpdateCheck,
 } from './plugin-inventory.ts'
-import { inspectResolvedPath, matchAuthorizedRoot } from './root-resolver.ts'
+import { inspectResolvedPath, matchAuthorizedRootResolved } from './root-resolver.ts'
 import type { CustomProviderCreate, DshSettingsAdapter, ProviderPatch } from './settings-adapter.ts'
 import { PLUGIN_VERSION } from '../shared/version.ts'
 import { stringifyWire } from './wire-json.ts'
@@ -250,7 +250,9 @@ export class ApiRouter {
         // 相对路径会被 path.resolve 按服务端 cwd 解析，语义不确定，直接拒绝比猜更安全。
         throw new ApiError(400, 'PATH_NOT_ABSOLUTE', 'path must be an absolute path.')
       }
-      const match = matchAuthorizedRoot(path.resolve(requested), this.authorizedRoots(principal))
+      // 走 realpath 归一版：授权根入库时解析过符号链接，客户端请求的路径通常没解析，
+      // 两侧字面不同就匹配不上（macOS 的 /var → /private/var 尤其明显）。
+      const match = await matchAuthorizedRootResolved(path.resolve(requested), this.authorizedRoots(principal))
       if (match === undefined) {
         throw new ApiError(404, 'PATH_OUTSIDE_ROOTS', 'The path is not inside any root this device may access.')
       }

@@ -1,4 +1,4 @@
-import { lstat } from 'node:fs/promises'
+import { lstat, realpath } from 'node:fs/promises'
 import path from 'node:path'
 import type { StoredRoot } from './database.ts'
 import { ApiError } from './errors.ts'
@@ -55,6 +55,55 @@ export function matchAuthorizedRoot(
     }
   }
   return best === undefined ? undefined : { rootId: best.root.id, path: best.relative }
+}
+
+/**
+ * 与 [matchAuthorizedRoot] 相同，但**两侧都做 realpath 归一**再比较。
+ *
+ * ## 为什么需要它
+ *
+ * 授权根在入库时走了 `canonicalRoot()`（`database.ts` 的 addRoot），存的是**解析过
+ * 符号链接**的路径；而客户端请求里的路径通常**没解析**。两者字面不同就匹配不上，
+ * 结果是「明明在授权根内」却报 404 `PATH_OUTSIDE_ROOTS`。
+ *
+ * 最常见的触发场景就是 **macOS 的临时目录**：`os.tmpdir()` 给的是
+ * `/var/folders/...`，而它是指向 `/private/var/folders/...` 的**符号链接**。
+ * 于是测试里 `mkdtemp(os.tmpdir())` 造出的根与请求路径字面不一致 → 404。
+ * 2026-10-20 CI 在 macOS runner 上实锤（Linux 上 tmpdir 不带 symlink，所以只在 macOS 炸）。
+ *
+ * 这不只是测试问题：用户给一个经 symlink 的路径加授权根、或客户端用 symlink 别名
+ * 请求，都会踩到。**归一后两侧是同一条真实路径**，语义也就正确了。
+ *
+ * ## 安全边界不变
+ *
+ * 归一只解决「同一个目录的两种写法」，**不放宽**任何权限：
+ * 真正的越权校验仍由 [inspectResolvedPath] → `resolveAuthorizedPath` 逐段做
+ * （它会拒绝指向根外的符号链接）。这里只是把「找哪个根」这一步做准。
+ */
+export async function matchAuthorizedRootResolved(
+  absolutePath: string,
+  roots: readonly Pick<StoredRoot, 'id' | 'realPath'>[],
+): Promise<RootMatch | undefined> {
+  const candidate = await canonicalOrSelf(absolutePath)
+  let best: { root: Pick<StoredRoot, 'id' | 'realPath'>; relative: string } | undefined
+  for (const root of roots) {
+    const canonicalRoot = await canonicalOrSelf(root.realPath)
+    const relative = wireRelative(canonicalRoot, candidate)
+    if (relative === undefined) continue
+    if (best === undefined || canonicalRoot.length > best.root.realPath.length) {
+      best = { root, relative }
+    }
+  }
+  return best === undefined ? undefined : { rootId: best.root.id, path: best.relative }
+}
+
+/** 取路径的真实形式；取不到（路径不存在、无权限等）就原样返回。 */
+async function canonicalOrSelf(target: string): Promise<string> {
+  try {
+    return await realpath(target)
+  } catch {
+    return target
+  }
 }
 
 /** 解析结果里允许外传的字段 —— 刻意不含任何绝对路径。 */

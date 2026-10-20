@@ -2,3 +2,8 @@
 *.sh text eol=lf
 kotlin-sdk/gradlew text eol=lf
 *.bat text eol=crlf
+
+# 二维码 SVG 必须是**字节原样**：测试拿仓库里的文件与内联 data URL 逐字节比对
+# （base64 一旦行尾被 CRLF 转换就不同）。`* text=auto` 会把它们当文本，
+# Windows checkout 时转成 CRLF → 2026-10-20 CI 在 windows-latest 上红。
+*.svg binary

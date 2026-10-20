@@ -23,7 +23,7 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { join } from 'node:path'
+import { join, sep } from 'node:path'
 import type { PromptContentPart, RpcResponse, UserQuestionAnswer, UserQuestionView } from './chat-adapter.ts'
 import { DEFAULT_HANDOFF_SUBDIR, HANDOFF_FILE_NAME, HANDOFF_MEDIA_TYPES } from './image-handoff.ts'
 import { wireRelative } from './path-policy.ts'
@@ -1207,7 +1207,11 @@ function writeHandoffFile(dir: string, workspace: string | undefined, mediaType:
   if (!existsSync(absolute)) writeFileSync(absolute, bytes, { mode: 0o600 })
   // 落进工作目录时给人看的是 `.dsh-images/xxx.jpg` 这样的短相对路径；
   // 退回私有目录时只有绝对路径有意义，relative 就用文件名。
-  const relative = workspace !== undefined && absolute.startsWith(workspace + '/')
+  //
+  // ⚠️ 前缀比较必须用 **path.sep**（Windows 上是 '\'），不能写死 '/'：
+  // 写死时 Windows 上判断恒不成立 → relative 退化成裸文件名 → 给模型的提示里
+  // 丢了 `.dsh-images/` 目录，模型按提示找不到图（2026-10-20 CI 实锤）。
+  const relative = workspace !== undefined && absolute.startsWith(workspace + sep)
     ? absolute.slice(workspace.length + 1)
     : fileName
   return { absolute, relative }
