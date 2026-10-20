@@ -639,6 +639,94 @@ paths:
       responses:
         '200': { description: Session archived. }
         '404': { $ref: '#/components/responses/Error' }
+  /chat/sessions/{sessionId}/jobs:
+    parameters:
+      - name: sessionId
+        in: path
+        required: true
+        schema: { type: string }
+    get:
+      operationId: listSessionJobs
+      summary: Background jobs a session can see
+      description: |
+        The roster this session can observe: its own jobs plus every unowned job.
+        The kernel's owner fence is the only access rule, so `sessionId` is
+        required and must not be guessed by the client.
+      responses:
+        '200':
+          description: The complete roster (whole-set, not a page).
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [jobs]
+                properties:
+                  jobs:
+                    type: array
+                    items: { $ref: '#/components/schemas/JobView' }
+        '404': { $ref: '#/components/responses/Error' }
+  /chat/sessions/{sessionId}/jobs/{jobId}/output:
+    parameters:
+      - name: sessionId
+        in: path
+        required: true
+        schema: { type: string }
+      - name: jobId
+        in: path
+        required: true
+        schema: { type: string }
+      - name: from
+        in: query
+        required: false
+        description: Absolute byte offset to resume from (a prior response's `next`). Omitted starts at the oldest retained byte.
+        schema: { type: integer }
+    get:
+      operationId: readJobOutput
+      summary: Retained output of one background job
+      responses:
+        '200':
+          description: Flattened output plus the offset to resume from.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [jobId, text, next, lossy]
+                properties:
+                  jobId: { type: string }
+                  text: { type: string }
+                  next: { type: integer }
+                  lossy: { type: boolean }
+                  status: { $ref: '#/components/schemas/JobStatus' }
+        '404': { $ref: '#/components/responses/Error' }
+  /chat/sessions/{sessionId}/jobs/{jobId}/kill:
+    parameters:
+      - name: sessionId
+        in: path
+        required: true
+        schema: { type: string }
+      - name: jobId
+        in: path
+        required: true
+        schema: { type: string }
+    post:
+      operationId: killSessionJob
+      summary: Stop one background job on a human's behalf
+      description: |
+        Records `cancelled by the user` as the reason. The owning agent still
+        receives its completion notice, because a human kill is not one the
+        model requested.
+      responses:
+        '200':
+          description: The registry's admission.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [jobId, outcome]
+                properties:
+                  jobId: { type: string }
+                  outcome: { type: string, enum: [requested, already-finished] }
+        '404': { $ref: '#/components/responses/Error' }
   /chat/sessions/{sessionId}/messages:
     parameters:
       - name: sessionId
@@ -1385,3 +1473,21 @@ components:
             message: { type: string }
             requestId: { type: string, format: uuid }
             details: { type: object, additionalProperties: true }
+    JobStatus:
+      type: string
+      description: Lifecycle state. `running` and `stopping` are live; the rest are terminal.
+      enum: [running, stopping, completed, killed, failed]
+    JobView:
+      type: object
+      description: Read-only projection of one background job.
+      required: [id, kind, label, status, startedAt]
+      properties:
+        id: { type: string, description: 'Registry-issued id, e.g. `bash-<short-uuid>`.' }
+        kind: { type: string, description: 'Producer kind; `bash` is the only host-registered one today.' }
+        label: { type: string, description: Producer-supplied one-line label. }
+        owner: { type: string, description: Owning session; absent for an unowned job. }
+        status: { $ref: '#/components/schemas/JobStatus' }
+        progress: { type: string, description: 'Live progress line (`3/10`); cleared at settlement.' }
+        detail: { type: string, description: 'Terminal reason (`exit code: 3`); a recorded kill reason is merged in.' }
+        startedAt: { type: integer, format: epoch-ms }
+        finishedAt: { type: integer, format: epoch-ms, description: Absent while live. }

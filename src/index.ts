@@ -8,6 +8,7 @@ import { createDsh02ApiProxy, readHandoffImageFile, type Dsh02HostServices } fro
 import { WorkspaceEventBus } from './host/event-bus.ts'
 import { FileService } from './host/file-service.ts'
 import { probeHostServices, type HostServiceReport } from './host/host-service-probe.ts'
+import { JobAdapter } from './host/job-adapter.ts'
 import { createImageRouteHandler, IMAGE_ROUTE, readHandoffSubdir } from './host/image-handoff.ts'
 import { DEFAULT_REMOTE_HOST, normalizeListenerHost, normalizeListenerPort } from './host/listener-config.ts'
 import { ApiRouter } from './host/router.ts'
@@ -60,6 +61,9 @@ export const inject = [
   'webServer',
   'agents',
   'commands',
+  // 后台任务（ctx.jobController）：远程场景下「任务跑飞了停不掉」是真焦虑 ——
+  // 人不在电脑前，一个卡住的 bash 任务只能干等。见 job-adapter.ts 头部说明。
+  'jobController',
   // 文件上传服务（ctx.fileUploads）：内核以 cordis 服务形式暴露。用它而不是内核那条
   // /api/session/uploadFileBinary HTTP 路由 —— 后者只绑 loopback，手机根本到不了。
   'fileUploads',
@@ -161,6 +165,16 @@ export async function apply(ctx: HostContext, config: Config = {}): Promise<void
     ctx.logger.warn(new Error(`dsh-remote-bridge: host service probe failed: ${String(error)}`))
   }
   let router!: ApiRouter
+  // jobController 注不进来不该让 jobs 端点假装可用：探针已经告诉我们它在不在
+  // （web profile 上它在，但换成不带 job-controller 的 profile 就不一定）。
+  // 注不进时干脆不挂 jobs —— 客户端会收到 404，而不是一个永远空的清单。
+  let jobControllerAvailable = false
+  try {
+    ctx.jobController
+    jobControllerAvailable = true
+  } catch {
+    ctx.logger.warn(new Error('dsh-remote-bridge: ctx.jobController unavailable, background-job endpoints disabled'))
+  }
   const remote = new RemoteApiServer({
     port,
     remoteHost,
@@ -185,6 +199,7 @@ export async function apply(ctx: HostContext, config: Config = {}): Promise<void
     maxUploadBytes,
     imageFallbackDir: imageHandoffDir,
     ...(hostServiceReport === undefined ? {} : { hostServiceReport }),
+    ...(jobControllerAvailable ? { jobs: new JobAdapter({ jobController: ctx.jobController }) } : {}),
   })
 
   try {

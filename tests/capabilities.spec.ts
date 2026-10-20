@@ -57,6 +57,11 @@ const EVIDENCE: Record<string, { openapi?: string[]; asyncapi?: string[] }> = {
   // 它们的依据在源码（history-budget.ts / chat-adapter 的 replay 方法）与 API.md 的说明里。
   'history-byte-budget-v1': {},
   'interaction-replay-v1': {},
+  // 后台任务：三条能力位分别指向自己的端点（list / output / kill 形态不同，
+  // 合并成一条会让「只有 kill 可用」的中间态被误判成完整可用）。
+  'job-list-v1': { openapi: ['/chat/sessions/{sessionId}/jobs'] },
+  'job-output-v1': { openapi: ['/chat/sessions/{sessionId}/jobs/{jobId}/output'] },
+  'job-kill-v1': { openapi: ['/chat/sessions/{sessionId}/jobs/{jobId}/kill'] },
 }
 
 describe('bridge capability declaration', () => {

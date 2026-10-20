@@ -82,6 +82,11 @@ export const BRIDGE_CAPABILITIES: readonly string[] = [
   'history-byte-budget-v1', // 见 history-budget.ts：超预算时从最旧端丢并置 hasMore
   'interaction-replay-v1', // 见 chat-adapter.replayPending*：新连接会补推仍待处理的审批/提问
   'session-snapshot-v1', // chat.session.snapshot：订阅基线（持久 seq 的切点），供断档检测
+  // —— 后台任务（ctx.jobController，2026-10-20 加）——
+  // 远程场景下「任务跑飞了停不掉」是真焦虑：人不在电脑前，卡住的 bash 任务只能干等。
+  'job-list-v1', // GET /chat/sessions/{sessionId}/jobs
+  'job-output-v1', // GET /chat/sessions/{sessionId}/jobs/{jobId}/output
+  'job-kill-v1', // POST /chat/sessions/{sessionId}/jobs/{jobId}/kill
 ]
 
 /**

@@ -1,13 +1,14 @@
 import { describe, expect, it, vi } from 'vitest'
-import { readSessionProjections } from '../src/host/dsh-0.2-bridge.ts'
+import { projectionsOf, readSessionProjections } from '../src/host/dsh-0.2-bridge.ts'
 
 /**
- * `readSessionProjections` 的回归测试（`@patch history-projections-passthrough`）。
+ * `readSessionProjections` / `projectionsOf` 的回归测试
+ * （`@patch history-projections-passthrough`）。
  *
  * ## 这条补的是什么
  *
- * 内核 `sessionController.follow()` 的 snapshot 与 `page()` 都**不返回 projections**
- * （类型上就是 `{ cursor, records, hasMore }`）。而 Android 客户端要靠
+ * 内核 `sessionController.follow()` 的 snapshot 与 `page()` 在 **0.2.0** 上**不返回
+ * projections**（类型上就是 `{ cursor, records, hasMore }`）。而 Android 客户端要靠
  * `projections.values.permissions` 才能显示会话的当前权限档位 ——
  * 拿不到它，发送区的权限档位 Pill 与 ⋯ 菜单的权限项就**从不渲染**。
  *
@@ -17,6 +18,13 @@ import { readSessionProjections } from '../src/host/dsh-0.2-bridge.ts'
  *
  * 所以桥必须自己补一次 `sessionController.projections()`，这里钉住三件事：
  * 取到的形状怎么收敛、取不到时怎么办、以及**绝不能因为它把历史打掉**。
+ *
+ * ## 0.2.1 起的分工
+ *
+ * `SessionFollowFrame` 的 snapshot 分支现在**自带** `projections`，于是 history 首屏
+ * 走 `projectionsOf(snapshot)`，不再打那次 RPC。`readSessionProjections` 降级为
+ * 老内核回落路径 —— 但**它不能被删**：最低支持版本还是 0.2.0，老内核上它仍是
+ * 客户端看到档位的唯一途径。
  */
 
 /** 只造到 `readSessionProjections` 需要的那一个字段，其余不参与。 */
@@ -92,5 +100,47 @@ describe('session projections passthrough', () => {
     await expect(
       readSessionProjections(host, 'session-1', new AbortController().signal),
     ).resolves.toBeUndefined()
+  })
+})
+
+describe('projectionsOf (0.2.1 snapshot 自带 projections)', () => {
+  it('reads the baseline off the snapshot so no extra RPC is needed', () => {
+    // 这是 0.2.1 的正路：snapshot 自带，桥不该再打一次 projections()。
+    const snapshot = {
+      type: 'snapshot',
+      cursor: 7,
+      records: [],
+      hasMore: false,
+      projections: { asOfSeq: 42, values: { permissions: { currentValue: 'workspace-write' } } },
+    }
+
+    expect(projectionsOf(snapshot)).toEqual({
+      asOfSeq: 42,
+      values: { permissions: { currentValue: 'workspace-write' } },
+    })
+  })
+
+  it('returns undefined for a 0.2.0 snapshot so the caller falls back', () => {
+    // 老内核的 snapshot 就是 { cursor, records, hasMore }，没有 projections 字段。
+    // 返回 undefined 让调用方回落去调 readSessionProjections —— 这不是失败，是设计。
+    expect(projectionsOf({ type: 'snapshot', cursor: 7, records: [], hasMore: false })).toBeUndefined()
+  })
+
+  it('omits asOfSeq when the snapshot baseline has none', () => {
+    const result = projectionsOf({ projections: { values: { permissions: {} } } })
+
+    expect(result).toEqual({ values: { permissions: {} } })
+    expect(result !== undefined && 'asOfSeq' in result).toBe(false)
+  })
+
+  it('returns undefined when values is not an object rather than forwarding garbage', () => {
+    expect(projectionsOf({ projections: { values: 'nope' } })).toBeUndefined()
+    expect(projectionsOf({ projections: {} })).toBeUndefined()
+  })
+
+  it('survives null / non-object input', () => {
+    expect(projectionsOf(null)).toBeUndefined()
+    expect(projectionsOf(undefined)).toBeUndefined()
+    expect(projectionsOf('snapshot')).toBeUndefined()
   })
 })

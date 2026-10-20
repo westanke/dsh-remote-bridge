@@ -10,6 +10,7 @@ import type { PromptContentPart, UserQuestionAnswer } from './chat-adapter.ts'
 import type { StoredRoot, WorkspaceDatabase } from './database.ts'
 import { handoffLocaleOf } from './dsh-0.2-bridge.ts'
 import type { HostServiceReport } from './host-service-probe.ts'
+import { JobAdapter } from './job-adapter.ts'
 import { ApiError, asApiError } from './errors.ts'
 import type { CloudflaredTunnelManager } from './cloudflared.ts'
 import { ensureCloudflared } from './cloudflared.ts'
@@ -90,6 +91,12 @@ interface RouterOptions {
    * 因为 cordis 的注入属性只在 apply 执行期间可读（见探针文件头注释）。
    */
   hostServiceReport?: HostServiceReport
+  /**
+   * 后台任务（`/chat/sessions/{sessionId}/jobs`）。
+   *
+   * 可选：不注入则这些端点返回 404，测试不必每条都补一个字段。
+   */
+  jobs?: JobAdapter
 }
 
 export class ApiRouter {
@@ -500,6 +507,49 @@ export class ApiRouter {
       this.audit(principal, 'chat.session.archive', undefined, undefined, requestId, { sessionId })
       sendJson(res, 200, { archived: true })
       return
+    }
+
+    // ── 后台任务（jobs）──────────────────────────────────────────────────
+    //
+    // 为什么挂在会话维度：内核的 `list` / `kill` 都要 sessionId，owner fence
+    // 是唯一的访问规则。详见 job-adapter.ts 头部说明。
+    const jobsRoute = pathname.match(/^\/api\/v1\/chat\/sessions\/([^/]+)\/jobs$/)
+    const jobRoute = pathname.match(/^\/api\/v1\/chat\/sessions\/([^/]+)\/jobs\/([^/]+)$/)
+    const jobOutputRoute = pathname.match(/^\/api\/v1\/chat\/sessions\/([^/]+)\/jobs\/([^/]+)\/output$/)
+    if (jobsRoute !== null || jobRoute !== null || jobOutputRoute !== null) {
+      const jobs = this.options.jobs
+      if (jobs === undefined) throw new ApiError(404, 'NOT_FOUND', 'Background jobs are not available in this build.')
+      if (method === 'GET' && jobsRoute !== null) {
+        this.options.auth.requireScope(principal, 'chat.read')
+        const sessionId = decodeURIComponent(jobsRoute[1] as string)
+        // 客户端断开（abort）时要能取消内核订阅，否则每次刷新都漏一个流。
+        const result = await jobs.list(sessionId, AbortSignal.timeout(15_000))
+        sendJson(res, 200, result)
+        return
+      }
+      if (method === 'GET' && jobOutputRoute !== null) {
+        this.options.auth.requireScope(principal, 'chat.read')
+        const sessionId = decodeURIComponent(jobOutputRoute[1] as string)
+        const jobId = decodeURIComponent(jobOutputRoute[2] as string)
+        const from = url.searchParams.get('from')
+        const offset = from === null ? undefined : Number(from)
+        if (offset !== undefined && !Number.isFinite(offset)) {
+          throw new ApiError(400, 'QUERY_INVALID', 'from must be a finite byte offset.')
+        }
+        const result = await jobs.follow(sessionId, jobId, offset, AbortSignal.timeout(30_000))
+        sendJson(res, 200, result)
+        return
+      }
+      if (method === 'POST' && jobRoute !== null && pathname.endsWith('/kill')) {
+        this.options.auth.requireScope(principal, 'chat.write')
+        const sessionId = decodeURIComponent(jobRoute[1] as string)
+        const jobId = decodeURIComponent(jobRoute[2] as string)
+        const result = jobs.kill(sessionId, jobId)
+        this.audit(principal, 'chat.job.kill', undefined, undefined, requestId, { sessionId, jobId })
+        sendJson(res, 200, result)
+        return
+      }
+      throw new ApiError(405, 'METHOD_NOT_ALLOWED', 'Unsupported method for the jobs resource.')
     }
 
     const messagesRoute = pathname.match(/^\/api\/v1\/chat\/sessions\/([^/]+)\/messages$/)

@@ -224,6 +224,47 @@ export interface PermissionPresetsLike {
   catalog(): Promise<unknown>
 }
 
+/**
+ * 内核 `dsh-api-job-controller`（cordis 服务名 `jobController`）。
+ *
+ * 后台任务（目前只有 bash 一种 producer kind）的只读观察 + 人类取消。
+ *
+ * **`list` 与 `follow` 是流，不是一次性查询** —— 内核类型上就是
+ * `AsyncIterable<JobListFrame>` / `AsyncIterable<JobFollowFrame>`。但 list 的首帧
+ * 就是全量 truth（内核注释原文：「Whole-set replacement, so a reconnect's first
+ * frame is already the truth」），所以 REST 侧读**第一帧**即可得到完整清单，
+ * 不必把 HTTP 变成长连接（手机端耗电、断线重连都更难）。
+ *
+ * 只有 `kill` 是同步的，且它的返回只有两种：`requested` / `already-finished`
+ * —— 没有「不存在」这一档，未知 job 走 `job/not-found` 远程错误。
+ *
+ * 结构类型照 `dsh-api-job-controller/lib/types/{index,types}.d.ts` 与
+ * `dsh-jobs/lib/types/view.d.ts` 抄，只留本插件真用到的那部分。
+ */
+export interface JobControllerLike {
+  /** 流：首帧全量，随后每次生命周期提交后一帧。 */
+  list(request: { sessionId: string }, signal: AbortSignal): AsyncIterable<{
+    type?: string
+    jobs?: readonly unknown[]
+  }>
+  /** 流：opened 锚点 → 若干 output 批次 → 终态 status，之后正常关闭。 */
+  follow(request: { sessionId?: string; jobId: string; from?: number }, signal: AbortSignal): AsyncIterable<{
+    type?: string
+    job?: unknown
+    from?: number
+    chunks?: readonly unknown[]
+    next?: number
+    lossy?: true
+  }>
+  /**
+   * 人类取消。返回 `requested`（已受理）或 `already-finished`（已终态，无需再杀）。
+   *
+   * 注意它**不是** Promise：内核类型上就是同步返回。调用方 `await` 它也合法
+   * （await 非 Promise 返回原值），所以这里按内核原样声明成同步。
+   */
+  kill(request: { sessionId: string; jobId: string }): { outcome: 'requested' | 'already-finished' }
+}
+
 export interface LlmLike {
   /** Live routes, as `{ id, name }` rows. */
   listProviders(): readonly { id: string }[]
@@ -261,6 +302,16 @@ export interface Dsh02HostServices {
   credentialsController: CredentialsControllerLike
   agentPresets: AgentPresetsLike
   permissionPresets: PermissionPresetsLike
+  /**
+   * 后台任务控制器（`ctx.jobController`，`@deepseek-ai/dsh-api-job-controller`）。
+   *
+   * 为什么要它：远程场景下「任务跑飞了停不掉」是真焦虑 —— 人不在电脑前，
+   * 一个卡住的 bash 任务只能干等。手机端需要能看到清单并终止它。
+   *
+   * 与 `sessionController` 不同，这个是 `TypertRemoteService`（不是 `@Remote`
+   * 控制器集合），但结构类型消费方式完全一样：只声明用到的成员，缺了就明确报错。
+   */
+  jobController: JobControllerLike
   llm: LlmLike
   /**
    * 内核附件存储（`ctx.attachments`）；会话历史里的图片要经它取字节。
@@ -1269,12 +1320,39 @@ export const FALLBACK_PERMISSION_CATALOG = {
 }
 
 /**
+ * 从 follow 的 snapshot 帧里取投影基线。
+ *
+ * 0.2.1 起 `SessionFollowFrame` 的 snapshot 分支自带
+ * `projections: SessionProjectionBaseline`，所以正常情况下**不需要**再打一次
+ * `sessionController.projections()`。这个函数就是那个判断：有就用，没有返回 undefined
+ * 让调用方回落。
+ *
+ * 为什么用结构探测而不是类型收窄：本插件刻意不 import `@deepseek-ai/*`，
+ * `snapshot` 在这里是结构类型，看不到内核的判别联合。按形状判断是唯一办法，
+ * 也与本文件其余部分的风格一致。
+ */
+export function projectionsOf(
+  snapshot: unknown,
+): { asOfSeq?: number; values: Record<string, unknown> } | undefined {
+  if (snapshot === null || typeof snapshot !== 'object') return undefined
+  const projections = (snapshot as { projections?: unknown }).projections
+  if (projections === null || typeof projections !== 'object') return undefined
+  const values = (projections as { values?: unknown }).values
+  if (values === null || typeof values !== 'object') return undefined
+  const asOfSeq = (projections as { asOfSeq?: unknown }).asOfSeq
+  return {
+    ...(typeof asOfSeq === 'number' ? { asOfSeq } : {}),
+    values: values as Record<string, unknown>,
+  }
+}
+
+/**
  * 读会话的**投影基线**（`permissions` / `modelSelection` / `title` …）。
  *
  * @patch
  * id: history-projections-passthrough
  * for: 内核 `sessionController.follow()` 的 snapshot 与 `page()` 都**不返回 projections**
- *      （类型上就是 `{ cursor, records, hasMore }`），而客户端要靠
+ *      （0.2.0 的类型上就是 `{ cursor, records, hasMore }`），而客户端要靠
  *      `projections.values.permissions` 才能显示会话的当前权限档位。
  *      内核那边确实注册了这条投影（`dsh-permission-presets` 里
  *      `ctx.sessionProjections.register({ key: 'permissions', … })`），
@@ -1283,6 +1361,9 @@ export const FALLBACK_PERMISSION_CATALOG = {
  *      不补的后果是 Android 客户端的权限档位 Pill 与 ⋯ 菜单权限项**从不渲染**
  *      —— v2.2.44 真机验收实测到了这个，而当时 `PARITY.md` 还把它标成 `done`。
  * until: 内核把 projections 并进 follow/page 的返回。
+ *       **0.2.1 已达成**：snapshot 分支现在自带 `projections`，history 首屏走
+ *       `projectionsOf(snapshot)`，不再打这次 RPC。本函数降级为**老内核回落路径**，
+ *       保留到最低支持版本升过 0.2.1 之后再删。
  * test: tests/history-projections.spec.ts
  */
 export async function readSessionProjections(
@@ -1613,10 +1694,17 @@ export function createDsh02ApiProxy(
           if (snapshot === undefined || snapshot.type !== 'snapshot') {
             return { events: [], hasMore: false } as never
           }
-          // 投影单独取一次：follow/page 都不带它，而客户端要靠
-          // `values.permissions` 显示当前权限档位（见 readSessionProjections 的 @patch）。
-          // 放在两条分支之前取一次，分页回来的那一页也带得上，客户端不必为它多打一次请求。
-          const projections = await readSessionProjections(host, sessionId, controller.signal)
+          // 投影：**优先用 snapshot 自带的**，取不到才单独问一次。
+          //
+          // 为什么改：0.2.1 起 `SessionFollowFrame` 的 snapshot 分支自带
+          // `projections: SessionProjectionBaseline`（`dsh-api-session-controller`
+          // 的 types.d.ts），`@patch history-projections-passthrough` 的 until
+          // 条件（「内核把 projections 并进 follow/page 的返回」）已达成 ——
+          // 于是每次 history 读取都少打一次 RPC。
+          //
+          // 仍然保留回落：老内核（0.2.0）的 snapshot 不带它，那时
+          // `readSessionProjections` 补的那一次调用仍是客户端看到权限档位的唯一途径。
+          const projections = projectionsOf(snapshot) ?? await readSessionProjections(host, sessionId, controller.signal)
           const withProjections = <T extends object>(payload: T): T | (T & { projections: unknown }) =>
             projections === undefined ? payload : { ...payload, projections }
           // When beforeSeq is not provided, return the follow snapshot (current behavior)

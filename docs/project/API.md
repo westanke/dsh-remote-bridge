@@ -269,6 +269,87 @@ JSON 读进内存才谈得上解析 —— 不设闸，「翻一次历史」就�
 （`node_modules` 下没有 `@deepseek-ai/*`：那些包随 DSH 主包安装，本仓只把它们列为 peer 依赖）。
 按猜出来的字段名写裁剪最坏结果是**静默无效**。实现见 `src/host/history-budget.ts`。
 
+## 后台任务
+
+远程场景下有个真焦虑：在手机上让 agent 跑个长任务（bash 构建、批量处理），然后切走或放下手机 —— 此时没有任何地方能看到「它还在跑吗」，更没有地方能「让它停下」。
+
+三个端点，全部挂在**会话维度**下（内核的 `list` / `kill` 都要 `sessionId`，owner fence 是唯一的访问规则）：
+
+```sh
+# 这个会话可见的任务清单（它自己的 + 所有无主任务）
+curl http://127.0.0.1:3090/api/v1/chat/sessions/{sessionId}/jobs \
+  -H "Authorization: Bearer <device-token>"
+
+# 读一个任务已保留的输出；from 省略时从最旧的保留字节开始
+curl "http://127.0.0.1:3090/api/v1/chat/sessions/{sessionId}/jobs/{jobId}/output?from=0" \
+  -H "Authorization: Bearer <device-token>"
+
+# 终止
+curl -X POST http://127.0.0.1:3090/api/v1/chat/sessions/{sessionId}/jobs/{jobId}/kill \
+  -H "Authorization: Bearer <device-token>"
+```
+
+清单响应：
+
+```json
+{
+  "jobs": [
+    {
+      "id": "bash-3f9a1c",
+      "kind": "bash",
+      "label": "npm run build",
+      "owner": "session-1",
+      "status": "running",
+      "progress": "3/10",
+      "startedAt": 1760000000000
+    },
+    {
+      "id": "bash-7d2e04",
+      "kind": "bash",
+      "label": "cargo test",
+      "status": "completed",
+      "detail": "exit code: 0",
+      "startedAt": 1759999990000,
+      "finishedAt": 1760000042000
+    }
+  ]
+}
+```
+
+`status` 的取值：`running` / `stopping`（存活中）与 `completed` / `killed` / `failed`（终态）。
+`progress` 是生产者的实时进度行，终态时被清空；`detail` 是终态原因（`exit code: 3`），
+记录过的人工取消原因会并进来。
+
+输出响应：
+
+```json
+{ "jobId": "bash-3f9a1c", "text": "building...\ndone\n", "next": 15, "lossy": false, "status": "completed" }
+```
+
+`next` 是**绝对字节偏移**，客户端想增量续读就把它当 `from` 再调一次，不必从头拉。
+`lossy: true` 表示「请求偏移与返回内容之间有字节被留存策略吃掉了」——此时这段输出
+**不是完整的**，客户端应当提示用户，而不是把它当成全部。
+
+终止响应只有两种：
+
+```json
+{ "jobId": "bash-3f9a1c", "outcome": "requested" }
+{ "jobId": "bash-3f9a1c", "outcome": "already-finished" }
+```
+
+`already-finished` 表示它已经是终态、无需再杀 —— 客户端应显示「它已经结束了」，
+而不是「已终止」。任务不存在或该会话看不到它时返回 `404 JOB_NOT_FOUND`。
+
+### 为什么 REST 只读一帧，不做长连接
+
+内核的 `list` 是流（`AsyncIterable`），但内核注释写得很清楚：
+「Whole-set replacement, so a reconnect's first frame is already the truth」——
+**首帧就是完整真相**。所以 REST 读第一帧就够，不把 HTTP 变成长连接（手机端耗电、
+断线重连复杂，而且清单本来就该「拉一次就是真的」）。
+
+同理，`output` 读到终态帧就收：内核让终态与输出走同一条流，就是为了避免
+「输出没读全就被告知结束」。
+
 ## 工具审批
 
 `GET /chat/sessions/{sessionId}/approvals` 返回当前授权会话的待审批操作；要求 `chat.read` 及对应 root grant。响应只包含公开 `approvalId`、工具名、风险等级，以及可选的脱敏原因和限长命令预览，不返回 DSH 私有 `rpcId`、原始工具参数或未脱敏正文。

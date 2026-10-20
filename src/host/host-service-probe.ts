@@ -50,6 +50,18 @@ export const OBSERVED_ONLY_SERVICE_NAMES = [
    * 列在这里是为了让探针顺手回答「要接的时候它在不在」。
    */
   'workingDirectory',
+  /**
+   * `@deepseek-ai/dsh-api-workspace-files` 的 cordis 服务（`ctx.workspaceFiles`）。
+   *
+   * 2026-10-20 实测结论：它在 web profile 里**挂着但注不进** —— 原因与
+   * `workingDirectory` 同源，`WorkspaceFiles.static inject` 里有 `fs`，
+   * 而 web profile 没有 `dsh-fs` 这一行。所以「dump 里有这行」不等于
+   * 「服务可用」，只有这个探针能回答后者。
+   *
+   * 列在观测区而不是 inject：**A1 文件变更监听因此做不了**（见 file-watch 的结论），
+   * 留着这条是为了让后来的排查者一眼看到「不是忘了接，是接不上」。
+   */
+  'workspaceFiles',
 ] as const
 
 export type ObservedServiceName = (typeof OBSERVED_ONLY_SERVICE_NAMES)[number]
