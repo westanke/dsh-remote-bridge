@@ -243,9 +243,17 @@ export class JobAdapter {
 
 /** 内核 `job/not-found` 远程错误的识别。
  *
- * 不靠 error.message 猜（文案会变），看内核在 `RemoteErrorDetailsMap` 里登记的
- * 那个 code 有没有出现在错误对象上。认不出来就当普通失败转 502 ——
- * 宁可让客户端看到「杀失败」，也不要谎称「不存在」。
+ * 内核的「任务不存在」有**两种错误形态**，判别必须都覆盖（2026-10-20 真机实测）：
+ *
+ * 1. **`kill`（同步 Remote 调用）**：抛带 `code: 'job/not-found'` 的 Remote 错误
+ *    （`RemoteErrorDetailsMap` 里登记的那种）。看 code，不猜文案。
+ * 2. **`follow` / `list`（AsyncIterable 流）**：流里 throw 的是普通
+ *    `Error("unknown job <id>")`，**没有 code 元数据** —— 流帧协议里没有
+ *    Remote 错误通道。只能认 message 前缀 `unknown job`。
+ *
+ * 这条曾漏过第二形态：output 对不存在的 job 返回 502 JOB_FOLLOW_FAILED
+ * （「内核失败」）而非 404 JOB_NOT_FOUND（「任务不存在」）——
+ * 客户端会把一次查错当成一次内核故障。真机一打就现形。
  */
 function isJobNotFound(error: unknown): boolean {
   if (error === null || typeof error !== 'object') return false
@@ -255,5 +263,6 @@ function isJobNotFound(error: unknown): boolean {
   if (details !== null && typeof details === 'object' && (details as { code?: unknown }).code === 'job/not-found') {
     return true
   }
-  return typeof candidate.message === 'string' && candidate.message.includes('job/not-found')
+  if (typeof candidate.message !== 'string') return false
+  return candidate.message.includes('job/not-found') || candidate.message.startsWith('unknown job')
 }

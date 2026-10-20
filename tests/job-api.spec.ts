@@ -371,3 +371,42 @@ describe('matchJobRoute（路由可达性回归）', () => {
     expect(matchJobRoute('/api/v1/roots')).toBeNull()
   })
 })
+
+describe('流形态的 job/not-found（真机实测补充）', () => {
+  /**
+   * 内核的「任务不存在」有两种错误形态：kill（同步 Remote）抛带
+   * `code: 'job/not-found'` 的 Remote 错误；follow/list（AsyncIterable 流）
+   * 里 throw 的是普通 `Error("unknown job <id>")`，没有 code 元数据。
+   * 后者曾漏判 —— output 对不存在的 job 返回 502「内核失败」而非
+   * 404「任务不存在」，客户端会把一次查错当成一次内核故障。
+   */
+  it('turns the stream-shaped unknown-job error into a 404', async () => {
+    const host = {
+      jobController: {
+        follow: vi.fn(async function* () {
+          throw new Error('unknown job bash-nope')
+        }),
+      } as unknown as JobControllerLike,
+    }
+    const adapter = new JobAdapter(host)
+
+    await expect(
+      adapter.follow('session-1', 'bash-nope', undefined, new AbortController().signal),
+    ).rejects.toThrow(expect.objectContaining({ status: 404, code: 'JOB_NOT_FOUND' }))
+  })
+
+  it('still reports 502 for stream failures that are not about existence', async () => {
+    const host = {
+      jobController: {
+        follow: vi.fn(async function* () {
+          throw new Error('disk on fire')
+        }),
+      } as unknown as JobControllerLike,
+    }
+    const adapter = new JobAdapter(host)
+
+    await expect(
+      adapter.follow('session-1', 'bash-abc', undefined, new AbortController().signal),
+    ).rejects.toThrow(expect.objectContaining({ status: 502, code: 'JOB_FOLLOW_FAILED' }))
+  })
+})
