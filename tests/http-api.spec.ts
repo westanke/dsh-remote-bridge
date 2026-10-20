@@ -10,6 +10,7 @@ import { WorkspaceDatabase } from '../src/host/database.ts'
 import { WorkspaceEventBus } from '../src/host/event-bus.ts'
 import { FileService } from '../src/host/file-service.ts'
 import { ApiRouter } from '../src/host/router.ts'
+import { PLUGIN_VERSION } from '../src/shared/version.ts'
 import { RemoteApiServer } from '../src/host/server.ts'
 import { DshSettingsAdapter } from '../src/host/settings-adapter.ts'
 
@@ -193,7 +194,8 @@ describe('remote HTTP API', () => {
       await remote.start()
       const baseUrl = `http://127.0.0.1:${remote.status().port}/api/v1`
       const health = await (await fetch(`${baseUrl}/healthz`)).json() as { pluginVersion: string }
-      expect(health.pluginVersion).toBe('2.4.2')
+      // 引用常量而不是写死字面量：写死过一次，发版时它成了唯一红的断言。
+      expect(health.pluginVersion).toBe(PLUGIN_VERSION)
 
       expect((await fetch(`${baseUrl}/chat/workspaces/workspace-1`, {
         method: 'PATCH', headers, body: JSON.stringify({ title: 'Renamed workspace' }),

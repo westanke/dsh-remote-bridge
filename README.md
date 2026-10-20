@@ -9,7 +9,7 @@
 </p>
 
 <p align="center">
-  <img alt="Version" src="https://img.shields.io/badge/version-v2.4.2-087f8c">
+  <img alt="Version" src="https://img.shields.io/badge/version-v2.4.3-087f8c">
   <img alt="DSH plugin" src="https://img.shields.io/badge/DeepSeek_Harness-plugin-1f2328">
   <img alt="Platforms" src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-586069">
   <img alt="License" src="https://img.shields.io/badge/license-AGPL--3.0-2da44e">
@@ -85,10 +85,10 @@ dsh plugin --profile web add dsh-remote-bridge
 dsh plugin --profile web add dsh-remote-bridge --registry https://registry.npmmirror.com
 
 # ② GitHub Release 的 tarball
-dsh plugin --profile web add https://github.com/westanke/dsh-remote-bridge/releases/download/v2.4.2/dsh-remote-bridge-v2.4.2.tgz
+dsh plugin --profile web add https://github.com/westanke/dsh-remote-bridge/releases/download/v2.4.3/dsh-remote-bridge-v2.4.3.tgz
 
 # ③ Gitee Release 的 tarball（国内访问更快）
-dsh plugin --profile web add https://gitee.com/westanke/dsh-remote-bridge/releases/download/v2.4.2/dsh-remote-bridge-v2.4.2.tgz
+dsh plugin --profile web add https://gitee.com/westanke/dsh-remote-bridge/releases/download/v2.4.3/dsh-remote-bridge-v2.4.3.tgz
 
 npx @deepseek-ai/dsh web
 ```
@@ -104,7 +104,7 @@ npx @deepseek-ai/dsh web
 从 GitHub Release 下载离线安装包时，可直接安装 tarball：
 
 ```sh
-dsh plugin --profile web add ./dsh-remote-bridge-v2.4.2.tgz
+dsh plugin --profile web add ./dsh-remote-bridge-v2.4.3.tgz
 ```
 
 ## 第一次使用
@@ -332,15 +332,15 @@ pnpm pack
 
 `pnpm check` 覆盖类型检查、文档一致性与测试；当前 **30 个测试文件 / 226 个用例**，外加 **4 个浏览器层用例**（Playwright 实测量出的计算样式），全部通过。
 
-`npm pack` 的产物约 **0.53 MB**（v2.4.2 实测 558,704 字节，SHA-256 `0260fe57…e3067f`）：2.2.0 删除独立页及其编辑器依赖、并关闭 source map 之后从 1.72 MB 降下来，之后随投影透传与权限 BFF 小幅增长。
+`npm pack` 的产物约 **0.55 MB**（v2.4.3 实测 572,951 字节，SHA-256 `38f25c10…299c93`）：2.2.0 删除独立页及其编辑器依赖、并关闭 source map 之后从 1.72 MB 降下来，之后随投影透传与权限 BFF 小幅增长。
 
-v2.4.2 基于 DSH `master@47f943859bef60e4160492346772ded9b24f765a`（内核 **0.2.0-rc.2**）开发，
-并已在 2026-10-20 对 **0.2.1-rc.2** 完成静态接口核对（`inject` 服务名与方法签名全部未变，见上文
-兼容性说明）。CI 覆盖 Windows、Ubuntu 和 macOS。
+v2.4.3 在 DSH **0.2.1-rc.2** 上完成真机验证：14/14 宿主服务全部可注入、三个 jobs 端点实测通过、
+权限档位目录返回内核真实三档。开发基线为 `master@47f943859bef60e4160492346772ded9b24f765a`（内核 0.2.0-rc.2），
+兼容范围见上文 `engines.dsh`。CI 覆盖 Windows、Ubuntu 和 macOS。
 
 ## 项目信息
 
-- 当前版本：`v2.4.2`
+- 当前版本：`v2.4.3`
 - 作者：上游 [Hakunm](https://github.com/Hakunm)，本 fork 维护 [westanke](https://github.com/westanke)
 - 仓库：[GitHub](https://github.com/westanke/dsh-remote-bridge) · [Gitee](https://gitee.com/westanke/dsh-remote-bridge)
 - npm：[`dsh-remote-bridge`](https://www.npmjs.com/package/dsh-remote-bridge)（[国内镜像](https://registry.npmmirror.com/dsh-remote-bridge)）

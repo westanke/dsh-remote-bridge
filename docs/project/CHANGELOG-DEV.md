@@ -1,6 +1,6 @@
 # 开发日志
 
-## 未发布 · 【重要】patch 的 inject 覆盖插件 inject —— 长期掩盖了 4 个服务缺失（2026-10-20）
+## 2.4.3 · jobs 端点 + patch inject 修复 + 宿主服务探针（2026-10-20）
 
 ### 发现过程
 
@@ -59,7 +59,7 @@ missing: ['permissionPresets', 'jobController', 'fileUploads', 'attachments']
 `fileUploads` / `attachments` 全部转 OK）。若届时 `permissionPresets` 可用，
 2.4.2 的权限目录 BFF 就从「绕过去」变成「正路」，值得回头简化。
 
-## 未发布 · 后台任务管理 + snapshot 投影优先 + A1 实测结论（2026-10-20）
+### 子批一 · 后台任务管理 + snapshot 投影优先 + A1 实测结论
 
 ### 1. 后台任务管理（jobs）
 
@@ -154,7 +154,7 @@ docs:check 两段均过。
 - jobs 三个端点的真机响应（需重启 web profile 后验证 admin 路径）。
 - C3 Goal 入口（App 侧，服务端 API 已就绪，纯 UI）。
 
-## 未发布 · 宿主服务注入面探针 `GET /debug/host-services`（2026-10-20）
+### 子批二 · 宿主服务注入面探针 `GET /debug/host-services`
 
 ### 基于什么
 
