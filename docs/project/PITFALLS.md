@@ -33,14 +33,19 @@
 
 **症状**：`pnpm docs:check` 全绿，但 README 双站的版本号、测试数、插件基线停在几个版本之前。
 
-**根因**：`docs:check` 只覆盖 `docs/project/` 下 10 份必需文档与 ADR 索引，
-**完全不覆盖 README**。所以「改文档再发版」这道闸在 README 是空的。
+**根因**：`docs:check` 的 `requiredDocs` 里第一项 `'README.md'` 读的是
+**`docs/project/README.md`（文档索引）**，不是仓库根的对外 README —— 所以根 README 长期
+不在任何机检范围内，「改文档再发版」这道闸在它这里是空的。
 
 **实发案例**（姊妹仓 `dsh-companion`，2026-10-14 commit `d61cad9`）：
 v2.2.33 → v2.2.35 三版发布时 README 未同步，中文停在 `v2.2.32`，英文更老（测试数写 24 类/256，中文写 25 类/271，
 **两份自己就对不上**）；bridge 版本要求还出现一处 ≥2.3.3、一处 ≥2.3.1 的自相矛盾。
 
-**现在怎么办**：本仓发版前除 `docs:check` 外，另跑一次对账——
+**现在怎么办**：2026-10-20 起这条已**部分机检化**（`scripts/check-project-docs.ts` 新增
+「根 README 双站与 CHANGELOG」一节，独立成节、不动 `requiredDocs` 语义）：根 README 双语必须都在、
+DSH 内核版本范围（形如 `>=0.2.0-rc.2 <0.3.0`）双语一致且对上 `package.json` 的 `engines.dsh`、
+「项目信息 / Project」小节的当前版本对上 `package.json`、变更记录里有当前版本条目。
+**没被机检的**仍是测试文件数/用例数、APK 体积与 SHA-256、截图说明 —— 这些照旧人工对账：
 
 ```sh
 grep -n '"version"' package.json                          # 真值来源
@@ -49,6 +54,7 @@ find tests -type f -name "*.ts" | wc -l                   # 测试文件数
 ```
 
 **铁律**：英文版最容易漏——它是「没人同步的那一份」。中英一起改。
+新增口径时先问一句「这条能不能进 `docs:check`」，能进就别只靠人眼。
 
 ---
 

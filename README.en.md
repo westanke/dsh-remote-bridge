@@ -27,6 +27,18 @@ The interface is bilingual and defaults to Chinese. Prebuilt packages run on Win
 > with `dsh-api-gateway`, leaving the upstream release unable to start on 0.2.x — it surfaces as
 > "adding an authorized root returns 405". Background, rationale, changes, and test results are in
 > [DSH 0.2.x compatibility notes](./docs/project/DSH-0.2-COMPAT.md).
+>
+> **Adaptation to DSH 0.2.1-rc.2** (rechecked 2026-10-20; see `docs/project/DSH-0.2.1-ADAPTATION.md`):
+> this plugin **deliberately imports no `@deepseek-ai/*` package** — every host service is consumed
+> through a structural type injected by the running Host (see the header comment in
+> `src/host/dsh-0.2-bridge.ts`). Checked one by one against the installed `0.2.1-rc.2` packages:
+> all 10 `inject` service names in `cordis.patch.yml` **still exist with unchanged signatures**, and
+> `engines.dsh` is recognized by the 0.2.1 kernel (`prepareProfileEntries` in
+> `dsh-app-boot/lib/index.js`) — an unmet range only sets that entry to `disabled` and prints to
+> stderr; **the host process does not exit**. So no code change is needed to run on `0.2.1-rc.2`.
+> The only point still needing on-device confirmation is the injection surface of
+> `permissionPresets` (never injectable on 0.2.0 either, where the plugin already falls back to a
+> built-in catalog).
 
 ## What it looks like
 
@@ -63,7 +75,12 @@ So seeing `dsh-workspace` in a REST address or the state directory is **expected
 ### Requirements
 
 - A working DeepSeek Harness WebUI installation
-- DSH kernel `0.1.x` or `0.2.x` (0.2.x is supported by this branch's compatibility layer — see [DSH 0.2.x compatibility notes](./docs/project/DSH-0.2-COMPAT.md))
+- DSH kernel **`>=0.2.0-rc.2 <0.3.0`** (compatible with `0.2.0-rc.2` and every later `0.2.x`, including
+  `0.2.1-rc.2`; supported by this branch's compatibility layer — see
+  [DSH 0.2.x compatibility notes](./docs/project/DSH-0.2-COMPAT.md)).
+  `package.json` declares the same range under `engines.dsh`; the kernel resolves it with semver and
+  only **disables** the plugin when unmet (the host process keeps running), with the user able to
+  grant an exact-version exemption as the kernel suggests.
 - Node.js `^22.19.0` or `>=24.0.0`
 - Port `3090`, or another available port
 

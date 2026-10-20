@@ -25,6 +25,14 @@
 > 0.2.x 用 `dsh-api-gateway` 替换了提供 `apiProxy` 服务的 `dsh-host-apiproxy`，导致上游版本在
 > 0.2.x 上无法启动（表现为「添加根目录返回 405」）。兼容层的完整说明——基于什么、为什么、改了什么、
 > 测了什么——见 [DSH 0.2.x 兼容性适配说明](./docs/project/DSH-0.2-COMPAT.md)。
+>
+> **对 DSH 0.2.1-rc.2 的适配结论**（2026-10-20 复核，依据 `/media/wangke/OFFICE/workspace/dsh-remote-bridge/docs/project/DSH-0.2.1-ADAPTATION.md`）：
+> 本插件**刻意不 import 任何 `@deepseek-ai/*` 包**，全部宿主服务经结构类型 + Host 注入消费
+> （见 `src/host/dsh-0.2-bridge.ts` 头注释）。逐一到 `0.2.1-rc.2` 实装包核对：`cordis.patch.yml`
+> 的 10 项 `inject` 服务名**全部仍存在且签名未变**，`engines.dsh` 在 0.2.1 被内核识别
+> （`dsh-app-boot/lib/index.js` 的 `prepareProfileEntries`），不满足时只把该 entry 置
+> `disabled` 并打 stderr，**宿主进程不退出**。故本插件无需改码即可运行于 `0.2.1-rc.2`。
+> 唯一需真机定论的是 `permissionPresets` 的注入面（0.2.0 上即注不进，已降级到内置目录）。
 
 ## 实际效果
 
@@ -62,7 +70,8 @@
 ### 环境要求
 
 - 已安装并能正常启动的 DeepSeek Harness WebUI
-- DSH 内核 `0.1.x` 或 `0.2.x`（0.2.x 由本分支的兼容层支持，见 [DSH 0.2.x 兼容性适配说明](./docs/project/DSH-0.2-COMPAT.md)）
+- DSH 内核 **`>=0.2.0-rc.2 <0.3.0`**（兼容 `0.2.0-rc.2` 及其后全部 `0.2.x`，含 `0.2.1-rc.2`；由本分支的兼容层支持，见 [DSH 0.2.x 兼容性适配说明](./docs/project/DSH-0.2-COMPAT.md)）。
+  `package.json` 的 `engines.dsh` 已声明同一范围 —— 内核按 semver 裁决，不满足时该插件被**禁用**（宿主进程不退出），用户可按内核提示授予精确版本豁免。
 - Node.js `^22.19.0` 或 `>=24.0.0`
 - 默认端口 `3090` 可用，或准备一个其他端口
 
@@ -325,7 +334,9 @@ pnpm pack
 
 `npm pack` 的产物约 **0.53 MB**（v2.4.2 实测 558,704 字节，SHA-256 `0260fe57…e3067f`）：2.2.0 删除独立页及其编辑器依赖、并关闭 source map 之后从 1.72 MB 降下来，之后随投影透传与权限 BFF 小幅增长。
 
-v2.4.2 基于 DSH `master@47f943859bef60e4160492346772ded9b24f765a` 开发，CI 覆盖 Windows、Ubuntu 和 macOS。
+v2.4.2 基于 DSH `master@47f943859bef60e4160492346772ded9b24f765a`（内核 **0.2.0-rc.2**）开发，
+并已在 2026-10-20 对 **0.2.1-rc.2** 完成静态接口核对（`inject` 服务名与方法签名全部未变，见上文
+兼容性说明）。CI 覆盖 Windows、Ubuntu 和 macOS。
 
 ## 项目信息
 

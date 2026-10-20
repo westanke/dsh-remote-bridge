@@ -59,7 +59,7 @@ bash scripts/release.sh   # 一键发版：门禁→npm 打包→tag→双推→
 pnpm check          # typecheck → test → docs:check → build（提交前跑这个）
 pnpm test           # vitest run
 pnpm typecheck      # tsc --noEmit
-pnpm docs:check     # 文档一致性（10 必需文档 + ROADMAP 状态 + STATUS 引用 + ADR 索引）
+pnpm docs:check     # 文档一致性（10 必需文档 + ROADMAP 状态 + STATUS 引用 + ADR 索引 + 根 README 双站与 CHANGELOG）
 pnpm build          # clean + tsdown
 pnpm test:e2e       # playwright
 ```
@@ -73,8 +73,11 @@ pnpm test:e2e       # playwright
   目的是让本地产物与 npm 上那份的 shasum/integrity 哈希一致（`RELEASE.md` 新规矩）。
 - **发版时 git 与 npm 必须同批**：只推 git + 建 Release 不算发完，`npm publish` 是同一件事的一部分。
   一键脚本 `scripts/release.sh` 已把两者串起来并逐步回读——**别再手敲清单，会漏**（v2.4.2 漏过一次）。
-- `docs:check` 是**必需清单式**校验（10 份文档 + ADR 索引齐全），新增文档不会让它红；
-  README 双站**不在**覆盖范围内（`PITFALLS.md` §README 双站漂移）。
+- `docs:check` 有**两段**：`docs/project/` 的必需清单式校验（10 份文档 + ADR 索引齐全，
+  新增文档不会让它红），以及根 **README 双站 + CHANGELOG** 的关键口径校验
+  （内核版本范围双语一致且对上 `engines.dsh`、当前版本对上 `package.json`、变更记录有当前版本条目）。
+  注意 `requiredDocs` 里的 `README.md` 指的是 `docs/project/README.md`（文档索引），
+  与仓库根的对外 README 不是一份 —— 前者归 ADR 索引查，后者归第二段查。
 
 ---
 
@@ -138,7 +141,7 @@ docs/api/            ← OpenAPI + AsyncAPI（wire schema 的权威）
 |---|---|---|
 | 类型 | `pnpm typecheck` | `tsc --noEmit` |
 | 单元 | `pnpm test` | vitest；当前 37 个测试文件 / 275 用例（随代码变化，勿当常量） |
-| 文档 | `pnpm docs:check` | 10 文档 / ROADMAP 状态 / STATUS 引用 / ADR 索引 |
+| 文档 | `pnpm docs:check` | 10 文档 / ROADMAP 状态 / STATUS 引用 / ADR 索引 / 根 README 双站 + CHANGELOG 口径 |
 | e2e | `pnpm test:e2e` | playwright；**4 个样式契约用例**，渲染真实 DOM 量计算样式，**不需要服务器**（插件已无可访问的独立页），只需 chromium。本机 `pnpm` 坏时用 `node_modules/.bin/playwright test` |
 | 真机 | 人工 | **单测绿 ≠ 行为对**。涉及内核交互、审批、问答卡片的一律真机确认 |
 
@@ -200,7 +203,7 @@ docs/api/            ← OpenAPI + AsyncAPI（wire schema 的权威）
 | 语言 | TypeScript | Kotlin |
 | 命令口径 | `pnpm check`（四道门一条命令） | `scripts/build.sh <task>` |
 | 行数预算 | **600**/文件 | 800/文件 |
-| 文档门禁 | `pnpm docs:check`（10 文档 + ADR 索引） | `docsCheck`（8 文档） |
+| 文档门禁 | `pnpm docs:check`（10 文档 + ADR 索引 + 根 README 双站/CHANGELOG） | `docsCheck`（8 文档） |
 | 独有坑位 | apiProxy 消失、前缀契约、抢答委托、pack 差异 | WebView 双实现、熄屏断流、图片附件元数据与字节读取 |
 | 共有坑位 | README 双站漂移、端口 3090 归属、对外表述三态 | 同 |
 
