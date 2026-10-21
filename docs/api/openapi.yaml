@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: DeepSeek Harness Mobile API
-  version: 2.4.3
+  version: 2.5.0
   description: Versioned file and chat BFF for mobile and third-party DSH clients. HTTP and HTTPS are both supported.
 servers:
   - url: http://127.0.0.1:3090/api/v1
@@ -1408,8 +1408,26 @@ components:
         configurable: { type: boolean }
         configured: { type: boolean }
         removable: { type: boolean }
+        defaultBaseURL: { type: string, description: '目录供应商的适配器默认 API 地址（未配置时使用）。' }
+        baseURLEnv:
+          type: array
+          items: { type: string }
+          description: '可能覆盖默认地址的环境变量，按优先级排序。'
+        nativeAuth: { $ref: '#/components/schemas/NativeAuthHint' }
+        settingsNs:
+          type: string
+          description: 目录条目的设置命名空间；客户端用它捕获 expectedRevision（打开卡片那一刻的 revision）。
         credential: { $ref: '#/components/schemas/CredentialState' }
         config: { $ref: '#/components/schemas/ProviderConfig' }
+    NativeAuthHint:
+      type: object
+      required: [env, oauth]
+      properties:
+        env:
+          type: array
+          items: { type: string }
+          description: '适配器原生认证依赖的环境变量。'
+        oauth: { type: boolean, description: '是否支持 OAuth 登录。' }
     ProviderSettings:
       type: object
       required: [writable, revisionByNamespace, customProvider, providers]
@@ -1433,7 +1451,8 @@ components:
         thinking: { type: [string, 'null'] }
         reasoningEffort: { type: [string, 'null'] }
         models:
-          type: array
+          type: [array, 'null']
+          description: '数组=整体替换模型目录（空数组=自定义空目录）；`null`=恢复适配器默认目录（unset）。'
           items: { $ref: '#/components/schemas/ProviderModel' }
         expectedRevision: { type: integer, minimum: 0 }
     CustomProviderCapability:

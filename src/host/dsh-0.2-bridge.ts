@@ -279,6 +279,11 @@ export interface LlmLike {
     settingsNs: string
     settingsPath: readonly string[]
     declared?: boolean
+    defaultBaseURL?: string
+    /** Environment variables that may override the default base URL, in priority order. */
+    baseURLEnv?: readonly string[]
+    /** Native authentication the adapter can fall back to when no key is stored. */
+    nativeAuth?: { env?: readonly string[]; oauth?: boolean }
     error?: string
   }[]
   discoverModels(settingsNs: string, request: unknown, signal?: AbortSignal): Promise<readonly unknown[]>
@@ -2114,6 +2119,9 @@ export function createDsh02ApiProxy(
             settingsPath: [...entry.settingsPath],
             active: live.has(entry.provider),
             ...(entry.declared === undefined ? {} : { declared: entry.declared }),
+            ...(entry.defaultBaseURL === undefined ? {} : { defaultBaseURL: entry.defaultBaseURL }),
+            ...(entry.baseURLEnv === undefined ? {} : { baseURLEnv: [...entry.baseURLEnv] }),
+            ...(entry.nativeAuth === undefined ? {} : { nativeAuth: { ...entry.nativeAuth, ...(entry.nativeAuth.env === undefined ? {} : { env: [...entry.nativeAuth.env] }) } }),
           })),
         } as never
       }),

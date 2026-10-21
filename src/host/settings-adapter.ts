@@ -19,6 +19,9 @@ interface ConfigurableProvider {
   settingsPath: string[]
   active: boolean
   declared?: boolean
+  defaultBaseURL?: string
+  baseURLEnv?: string[]
+  nativeAuth?: { env?: string[]; oauth?: boolean }
 }
 
 export interface SettingsApiProxy extends DshApiProxy {
@@ -82,6 +85,11 @@ export interface ProviderView {
   configurable: boolean
   configured: boolean
   removable: boolean
+  defaultBaseURL?: string
+  baseURLEnv?: string[]
+  nativeAuth?: { env?: string[]; oauth?: boolean }
+  /** 目录条目的设置命名空间；客户端用它捕获 expectedRevision（打开卡片那一刻的 revision）。 */
+  settingsNs?: string
   credential: { ref: string; configured: boolean; source?: string; writable: boolean }
   config: ProviderConfigView
 }
@@ -93,7 +101,8 @@ export interface ProviderPatch {
   apiKey?: string | null
   thinking?: string | null
   reasoningEffort?: string | null
-  models?: ProviderModelView[]
+  /** `null` 恢复适配器默认模型目录（unset），`[]` 写入自定义空目录。 */
+  models?: ProviderModelView[] | null
   expectedRevision?: number
 }
 
@@ -166,6 +175,10 @@ export class DshSettingsAdapter {
           configurable: entry.settingsNs !== '',
           configured,
           removable,
+          ...(entry.defaultBaseURL === undefined ? {} : { defaultBaseURL: entry.defaultBaseURL }),
+          ...(entry.baseURLEnv === undefined ? {} : { baseURLEnv: entry.baseURLEnv }),
+          ...(entry.nativeAuth === undefined ? {} : { nativeAuth: entry.nativeAuth }),
+          ...(entry.settingsNs === '' ? {} : { settingsNs: entry.settingsNs }),
           credential: { ref, ...credential },
           config: projectConfig(profile, inheritedModels),
         }
@@ -190,8 +203,12 @@ export class DshSettingsAdapter {
         : { op: 'set', path: [...context.entry.settingsPath, field], value })
     }
     if (patch.models !== undefined) {
-      validateModels(patch.models)
-      ops.push({ op: 'set', path: [...context.entry.settingsPath, 'models'], value: patch.models })
+      if (patch.models === null) {
+        ops.push({ op: 'unset', path: [...context.entry.settingsPath, 'models'] })
+      } else {
+        validateModels(patch.models)
+        ops.push({ op: 'set', path: [...context.entry.settingsPath, 'models'], value: patch.models })
+      }
     }
     const ref = text(context.profile?.apiKeyEnv) ?? keyRef(providerId)
     if (context.entry.settingsPath.length > 0 && context.profile === undefined) {

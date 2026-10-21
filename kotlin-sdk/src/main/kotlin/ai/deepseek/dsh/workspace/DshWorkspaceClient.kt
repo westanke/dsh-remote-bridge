@@ -207,6 +207,12 @@ data class CredentialState(
 )
 
 @Serializable
+data class NativeAuthHint(
+    val env: List<String> = emptyList(),
+    val oauth: Boolean = false,
+)
+
+@Serializable
 data class ProviderView(
     val id: String,
     val displayName: String,
@@ -215,6 +221,11 @@ data class ProviderView(
     val configurable: Boolean,
     val configured: Boolean,
     val removable: Boolean,
+    val defaultBaseURL: String? = null,
+    val baseURLEnv: List<String>? = null,
+    val nativeAuth: NativeAuthHint? = null,
+    /** 目录条目的设置命名空间；客户端用它捕获 expectedRevision（打开卡片那一刻的 revision）。 */
+    val settingsNs: String? = null,
     val credential: CredentialState,
     val config: ProviderConfig,
 )
@@ -242,6 +253,7 @@ data class ProviderPatch(
     val apiKey: String? = null,
     val thinking: String? = null,
     val reasoningEffort: String? = null,
+    /** 数组=整体替换（空数组=自定义空目录）；恢复默认目录用 [DshWorkspaceClient.resetProviderModels]（wire `models: null`）。 */
     val models: List<ProviderModel>? = null,
     val expectedRevision: Int? = null,
 )
@@ -424,6 +436,27 @@ class DshWorkspaceClient(
     fun updateProvider(providerId: String, patch: ProviderPatch): ProviderSettings {
         val body = json.encodeToString(ProviderPatch.serializer(), patch)
         return executeJson("settings/providers/$providerId", "PATCH", body, ProviderSettings.serializer())
+    }
+
+    /**
+     * 恢复供应商的适配器默认模型目录（wire `models: null`）。data class 无法把
+     * null 默认值与「字段缺席」区分开，所以这里手工拼 body。
+     */
+    fun resetProviderModels(providerId: String, expectedRevision: Int? = null): ProviderSettings {
+        val body = buildString {
+            append("{\"models\":null")
+            if (expectedRevision != null) append(",\"expectedRevision\":").append(expectedRevision)
+            append('}')
+        }
+        return executeJson("settings/providers/$providerId", "PATCH", body, ProviderSettings.serializer())
+    }
+
+    fun deleteProvider(providerId: String, expectedRevision: Int? = null) {
+        val relative = buildString {
+            append("settings/providers/").append(providerId)
+            if (expectedRevision != null) append("?expectedRevision=").append(expectedRevision)
+        }
+        executeUnit(relative, "DELETE", null)
     }
 
     fun createCustomProvider(provider: CustomProviderCreate): ProviderSettings {

@@ -34,6 +34,21 @@ describe('DSH provider settings', () => {
     expect(JSON.stringify(result)).not.toContain('server-secret')
   })
 
+  it('projects adapter catalog metadata (defaultBaseURL, baseURLEnv, nativeAuth) onto provider rows', async () => {
+    const calls = createFakeApi()
+    const adapter = new DshSettingsAdapter(calls.api as never)
+
+    const result = await adapter.listProviders()
+
+    expect(result.providers[0]).toMatchObject({
+      id: 'custom-openai',
+      defaultBaseURL: 'https://api.openai.com/v1',
+      baseURLEnv: ['OPENAI_BASE_URL'],
+      nativeAuth: { env: ['OPENAI_API_KEY'], oauth: false },
+      settingsNs: 'llm-pi-ai',
+    })
+  })
+
   it('mutates provider settings, writes credentials separately, and discovers models', async () => {
     const calls = createFakeApi()
     const adapter = new DshSettingsAdapter(calls.api as never)
@@ -54,6 +69,13 @@ describe('DSH provider settings', () => {
     })
     expect(calls.credential).toEqual({ ref: 'CUSTOM_OPENAI_API_KEY', value: 'new-secret' })
 
+    await adapter.updateProvider('custom-openai', { models: null, expectedRevision: 8 })
+    expect(calls.mutation).toMatchObject({
+      ns: 'llm-pi-ai',
+      expectedRevision: 8,
+      ops: [{ op: 'unset', path: ['providers', 'custom-openai', 'models'] }],
+    })
+
     await expect(adapter.discover('custom-openai', {
       baseURL: 'https://api.example/v1',
       api: 'openai-completions',
@@ -68,8 +90,7 @@ describe('DSH provider settings', () => {
     })
   })
 
-  it('creates a custom provider using the DSH pi-ai namespace and stores its key separately', async () => {
-    const calls = createFakeApi()
+  it('creates a custom provider using the DSH pi-ai namespace and stores its key separately', async () => {    const calls = createFakeApi()
     const adapter = new DshSettingsAdapter(calls.api as never)
 
     await adapter.createProvider({
@@ -125,6 +146,9 @@ function createFakeApi() {
         settingsPath: ['providers', 'custom-openai'],
         active: true,
         declared: true,
+        defaultBaseURL: 'https://api.openai.com/v1',
+        baseURLEnv: ['OPENAI_BASE_URL'],
+        nativeAuth: { env: ['OPENAI_API_KEY'], oauth: false },
       }] }),
       models: async () => ok({
         groups: [{ id: 'custom-openai', name: 'Custom OpenAI', models: [{ id: 'model-a', name: 'Catalog Model A' }] }],

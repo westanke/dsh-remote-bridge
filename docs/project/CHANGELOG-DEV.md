@@ -1,5 +1,32 @@
 # 开发日志
 
+## 2.5.0 · 模型设置对齐官方目录元数据（2026-10-21）
+
+### 基于什么
+
+dsh-companion 设置页要对照官方 Web 界面（`dsh-client-ui-settings-models`）补齐
+「添加模型提供商」目录流与编辑器提示。官方目录卡依赖三个内核字段
+（`llm/listConfigurableProviders` zod 声明里有，bridge 代理此前丢弃）：
+`defaultBaseURL` / `baseURLEnv` / `nativeAuth`；「恢复默认模型」需要
+`PATCH models: null` 的 unset 语义（此前只支持整体替换）。
+
+### 干了什么
+
+- `dsh-0.2-bridge.ts`：`LlmLike.listConfigurableProviders()` 返回类型补三个可选字段；
+  `llm.providers` 代理原样透传。
+- `settings-adapter.ts`：`ConfigurableProvider` / `ProviderView` 补三字段并投影到
+  `GET /settings/providers` 每行；`ProviderPatch.models` 收 `null` → unset op
+  （`[]` 仍是「写入自定义空目录」）。
+- wire 五处同步：`docs/project/API.md`（§模型与供应商）、`docs/api/openapi.yaml`
+  （Provider +3 optional 字段、新增 `NativeAuthHint`、ProviderPatch.models nullable）、
+  `kotlin-sdk`（ProviderView/NativeAuthHint/`resetProviderModels`/`deleteProvider`）、
+  `tests/settings-adapter.spec.ts`（透传 + unset 用例）。
+
+### 测了什么
+
+- `pnpm exec vitest run tests/settings-adapter.spec.ts`：4 例全绿。
+- `pnpm exec tsc --noEmit` 无错误。
+
 ## 未发布 · 推送拓扑改为「国内源为主」（2026-10-20）
 
 ### 基于什么

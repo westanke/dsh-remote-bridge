@@ -167,7 +167,9 @@ curl "http://192.168.1.20:3090/api/v1/roots/resolve?path=%2Fmedia%2Fdata%2Fproje
 
 `GET /settings/providers` 只返回供应商有效配置和凭据是否已配置，不返回 API 密钥正文。有效配置会合并 DSH 模板默认值与用户覆盖值；未显式固化模型时从实时 `llm.models` 目录投影并标记 `modelsInherited: true`。响应中的 `customProvider` 同时说明当前 DSH 是否允许自定义供应商和可用协议。
 
-`POST /settings/providers` 使用自定义 route、显示名、Base URL、协议与至少一个模型创建 DSH 自定义供应商；route 必须匹配 DSH WebUI 的小写短横线规则。`PATCH /settings/providers/{providerId}` 可更新 Base URL、协议、模型和写入/清除凭据；`POST .../discover` 使用草稿配置发现模型。读取与修改分别要求 `settings.read`、`settings.write`，并由 DSH 设置服务决定配置是否可写。
+目录型供应商（含未配置的休眠条目）还会携带适配器目录元数据：`defaultBaseURL`（适配器默认 API 地址）、`baseURLEnv`（可覆盖默认地址的环境变量，按优先级排序）、`nativeAuth`（`{env?, oauth}`，适配器原生认证回退）。另有 `settingsNs`（条目设置命名空间；客户端捕获打开卡片那一刻的 `revisionByNamespace[settingsNs]` 作为 `expectedRevision`）。以上字段都是可选的，缺席即「该供应商没有这项目录信息」。
+
+`POST /settings/providers` 使用自定义 route、显示名、Base URL、协议与至少一个模型创建 DSH 自定义供应商；route 必须匹配 DSH WebUI 的小写短横线规则。`PATCH /settings/providers/{providerId}` 可更新 Base URL、协议、模型和写入/清除凭据；`POST .../discover` 使用草稿配置发现模型。`PATCH` 的 `models` 字段：数组=整体替换（空数组=自定义空目录），`null`=恢复适配器默认目录（unset，2.5.0 起）。读取与修改分别要求 `settings.read`、`settings.write`，并由 DSH 设置服务决定配置是否可写；`expectedRevision` 不匹配时返回 409 `SETTINGS_CONFLICT`。
 
 ## 插件清单
 
