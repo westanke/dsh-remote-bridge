@@ -13,6 +13,8 @@
 1. 阅读 [STATUS.md](STATUS.md)，确认当前基线、正在进行的任务和阻塞项。
 2. 阅读 [ROADMAP.md](ROADMAP.md)，只处理状态为 `in-progress` 或下一项 `planned` 的任务。
 3. 按任务需要阅读 [ARCHITECTURE.md](ARCHITECTURE.md)、[API.md](API.md)、[SECURITY.md](SECURITY.md) 和相关 ADR。
+   不知道**某个文件/目录是干什么的、新文件该放哪** → [STRUCTURE.md](STRUCTURE.md)；
+   不知道**某个模块导出什么、接口签名长什么样** → [INTERFACES.md](INTERFACES.md)。
 4. 检查 `git status --short`，不覆盖来源不明的修改。
 5. **改代码前**按名字读 [PITFALLS.md](PITFALLS.md) 对应坑位；超行数预算前先入 [TECH-DEBT.md](TECH-DEBT.md)。
 
@@ -21,6 +23,8 @@
 - 任务完成、失败或验收条件变化时立即更新 `ROADMAP.md`。
 - 当前任务、阻塞、验证命令和下一步变化时更新 `STATUS.md`。
 - 公共 wire schema 变化时同步更新 `API.md`、OpenAPI、AsyncAPI、Kotlin SDK 和测试。
+- 新增/移动/删除 `src/` 下文件，或改导出符号/签名/REST 路由时，**同一提交**更新
+  `STRUCTURE.md` / `INTERFACES.md` 的机检锚点（`docs:check` 双向校验，见 `AGENTS.md` §3.4）。
 - 跨平台结论变化时更新 `COMPATIBILITY.md`；安全边界变化时更新 `SECURITY.md`。
 - 不可逆的架构或协议决定写入 `decisions/ADR-NNNN-*.md`，并加入下方索引。
 - 每次提交前运行 `pnpm docs:check`（本机 pnpm store 不可用时用 `./node_modules/.bin/tsx scripts/check-project-docs.ts`），把已运行命令追加到 `TESTING.md` 和 `CHANGELOG-DEV.md`。
@@ -28,6 +32,16 @@
 - 因内核/上游行为写的适配代码必须打 `@patch` 四要素标（`AGENTS.md` §3.3），存量见 [TECH-DEBT.md](TECH-DEBT.md) DEBT-003/004。
 - 准备发版、发布 npm 或建双站 Release 时，先读 [RELEASE.md](RELEASE.md) —— 版本号清单、打包器差异、npm 的 2FA 与首次发布暂存审核、发完必做的实测都在那里。
 - 排查「某个功能不工作」之前，先读 [RETRO-question-card.md](RETRO-question-card.md) 的「该记住的」一节。
+
+## 导航文档
+
+| 文档 | 记的是 |
+| --- | --- |
+| [STRUCTURE.md](STRUCTURE.md) | **代码地图**：顶层目录树、分层与依赖方向、逐目录职责、关键文件速查、新增东西放哪里。文末锚点归 `docs:check` 双向校验。 |
+| [INTERFACES.md](INTERFACES.md) | **契约与签名**：对外 REST/流/能力位、内部模块导出与逐字签名、改接口检查清单。文末锚点归 `docs:check` 双向校验。 |
+
+> 这两份是给「要改代码的人与 AI」用的。对外正式契约仍是 [API.md](API.md) +
+> `../api/openapi.yaml` + `../api/asyncapi.yaml`；设计动机仍是 [ARCHITECTURE.md](ARCHITECTURE.md)。
 
 ## 复盘
 

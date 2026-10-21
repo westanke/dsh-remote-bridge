@@ -1,4 +1,4 @@
-import { readdir, readFile } from 'node:fs/promises'
+import { readdir, readFile, stat } from 'node:fs/promises'
 import path from 'node:path'
 import { parseDocument } from 'yaml'
 
@@ -15,6 +15,10 @@ const requiredDocs = [
   'TESTING.md',
   'CHANGELOG-DEV.md',
   'RELEASE.md',
+  // 2026-10-21 新增：给 AI 与改代码的人用的两张导航图。
+  // 它们**不是**散文型文档，末尾带机检锚点区，由下面「目录结构与接口说明」一节双向校验。
+  'STRUCTURE.md',
+  'INTERFACES.md',
 ]
 const validStatuses = new Set(['planned', 'in-progress', 'blocked', 'done'])
 
@@ -80,6 +84,140 @@ if (indexed.length < 10) failures.push(`AGENTS.md 坑位索引只解析出 ${ind
 if (titled.length < 10) failures.push(`PITFALLS.md 只解析出 ${titled.length} 个 ### 标题（预期 ≥ 10）`)
 for (const name of indexed) if (!titled.includes(name)) failures.push(`AGENTS.md 索引里的「${name}」在 PITFALLS.md 里没有同名标题`)
 for (const name of titled) if (!indexed.includes(name)) failures.push(`PITFALLS.md 的「${name}」没有登记进 AGENTS.md 的坑位索引`)
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 目录结构与接口说明（2026-10-21 新增）
+//
+// ## 为什么要有这一节
+//
+// 用户的要求是「加目录结构与接口说明，方便 AI 阅读改代码，**后期改代码要同步改**」。
+// 前两句写两份 md 就够，难的是第三句：没有门禁的「请记得同步」等于没写 ——
+// 本仓已有实锤先例（README 双站漂移连续三版无人发现，见 PITFALLS.md 同名条目），
+// 所以这里把它做成机检。
+//
+// ## 为什么是**双向**
+//
+// - 只查「文档 → 源码」（锚点里的路径/文件必须存在）时，**新增文件不会被发现** ——
+//   新加一个 `src/host/foo.ts` 压根没登记，文档侧的旧条目全部有效，检查照样全绿。
+//   那样的门禁只会惩罚「删文件忘删条目」，而漏掉真正高频的那一半。
+// - 只查「源码 → 文档」（src 下每个文件都必须在锚点里）时，锚点里写错路径、
+//   指向一个不存在的文件同样发现不了。
+// 两向都查才是「清单与事实一致」。
+//
+// ## 为什么要**下限断言**
+//
+// 解析失败（标记被改、表格格式变了、把代码块套在了锚点上）会让两个集合**双双为空而一致**，
+// 于是「零解析」被当成「零问题」—— 这正是本仓坑位索引那一节最初撞上的假绿。
+// 下限断言直接对「解析出几条」报警，与上面的坑位检查同一套写法。
+const structureDoc = await readOrReport('STRUCTURE.md')
+const interfacesDoc = await readOrReport('INTERFACES.md')
+
+// `readOrReport` 而不是从 `contents` 取：`contents` 只缓存必需文档，缺文件时不报错直接缺键，
+// 用 `?? ''` 取会静默变成 0 条 —— 那正是下面下限断言要抓的假绿。
+async function readOrReport(name: string): Promise<string> {
+  try {
+    return await readFile(path.join(projectDir, name), 'utf8')
+  } catch {
+    // 必需文档缺失在上面已经报过一条，这里不重复刷屏。
+    return ''
+  }
+}
+
+/** 取出 begin/end 标记之间的正文；缺任意一个标记都返回 undefined（调用方按解析失败处理）。 */
+function anchorBlock(text: string, begin: string, end: string): string | undefined {
+  const from = text.indexOf(begin)
+  if (from === -1) return undefined
+  const to = text.indexOf(end, from + begin.length)
+  if (to === -1) return undefined
+  return text.slice(from + begin.length, to)
+}
+
+/** 从「签名片段」里取出最后一个标识符 —— 锚点用 `export function apply` 这种半行写法也认得。 */
+function lastIdentifier(symbol: string): string | undefined {
+  return [...symbol.matchAll(/[A-Za-z_][A-Za-z0-9_]*/g)].at(-1)?.[0]
+}
+
+const structureCount = { rows: 0 }
+const structureBlock = anchorBlock(structureDoc, '<!-- structure-check:begin -->', '<!-- structure-check:end -->')
+if (structureBlock === undefined) {
+  failures.push('STRUCTURE.md 缺少 `<!-- structure-check:begin/end -->` 机检锚点（格式见文末），解析不出任何条目')
+} else {
+  const declared = new Set<string>()
+  // 只认带反引号路径的数据行：表头 `| 路径 | 类型 | 职责 |` 与分隔行 `| --- |` 都不匹配。
+  for (const match of structureBlock.matchAll(/^\|\s*`([^`]+)`\s*\|\s*(file|dir)\s*\|/gm)) {
+    const relative = (match[1] as string).trim()
+    const kind = match[2] as string
+    declared.add(relative)
+    structureCount.rows += 1
+    let info
+    try {
+      info = await stat(path.join(root, relative))
+    } catch {
+      failures.push(`STRUCTURE.md 锚点里的 \`${relative}\` 不存在 —— 文件已删除/移动，请同步锚点`)
+      continue
+    }
+    if (kind === 'file' && !info.isFile()) failures.push(`STRUCTURE.md 锚点把 \`${relative}\` 标成 file，但它不是文件`)
+    if (kind === 'dir' && !info.isDirectory()) failures.push(`STRUCTURE.md 锚点把 \`${relative}\` 标成 dir，但它不是目录`)
+  }
+  if (structureCount.rows < 30) {
+    failures.push(`STRUCTURE.md 锚点只解析出 ${structureCount.rows} 行（预期 ≥ 30），表格格式可能变了 —— 不许静默通过`)
+  }
+  // **反向**：src 下每个源文件都必须登记。这条才是「新增文件必须同步文档」的兑现。
+  for (const relative of await collectSourceFiles()) {
+    if (!declared.has(relative)) {
+      failures.push(`\`${relative}\` 未登记进 STRUCTURE.md 机检锚点 —— 新增/移动/删除 src 下源文件时请同步（AGENTS.md §3.4）`)
+    }
+  }
+}
+
+const interfaceCount = { rows: 0 }
+const interfaceBlock = anchorBlock(interfacesDoc, '<!-- interfaces-check:begin -->', '<!-- interfaces-check:end -->')
+if (interfaceBlock === undefined) {
+  failures.push('INTERFACES.md 缺少 `<!-- interfaces-check:begin/end -->` 机检锚点（格式见文末），解析不出任何条目')
+} else {
+  const sourceCache = new Map<string, string>()
+  for (const match of interfaceBlock.matchAll(/^\|\s*`([^`]+)`\s*\|\s*`([^`]+)`\s*\|\s*([a-z]+)\s*\|/gm)) {
+    const symbol = match[1] as string
+    const relative = (match[2] as string).trim()
+    interfaceCount.rows += 1
+    let body = sourceCache.get(relative)
+    if (body === undefined) {
+      try {
+        body = await readFile(path.join(root, relative), 'utf8')
+        sourceCache.set(relative, body)
+      } catch {
+        failures.push(`INTERFACES.md 锚点里的 \`${relative}\` 不存在 —— 文件已删除/移动，请同步锚点`)
+        continue
+      }
+    }
+    const identifier = lastIdentifier(symbol)
+    if (identifier === undefined) {
+      failures.push(`INTERFACES.md 锚点条目「${symbol}」里取不出标识符，格式应为 \`<签名片段>\` | \`<文件路径>\` | <类型>`)
+      continue
+    }
+    if (!new RegExp(`\\b${identifier}\\b`).test(body)) {
+      failures.push(`INTERFACES.md 锚点说 \`${relative}\` 有「${identifier}」，但源码里找不到 —— 导出改名/搬文件后请同步（AGENTS.md §3.4）`)
+    }
+  }
+  if (interfaceCount.rows < 25) {
+    failures.push(`INTERFACES.md 锚点只解析出 ${interfaceCount.rows} 行（预期 ≥ 25），表格格式可能变了 —— 不许静默通过`)
+  }
+}
+
+/** 递归收集 `src/` 下的 `.ts` / `.tsx`，返回仓库相对的 posix 路径（与锚点写法一致）。 */
+async function collectSourceFiles(directory = path.join(root, 'src')): Promise<string[]> {
+  const found: string[] = []
+  for (const entry of await readdir(directory, { withFileTypes: true })) {
+    const full = path.join(directory, entry.name)
+    if (entry.isDirectory()) {
+      found.push(...await collectSourceFiles(full))
+    } else if (entry.isFile() && /\.tsx?$/.test(entry.name)) {
+      found.push(path.relative(root, full).split(path.sep).join('/'))
+    }
+  }
+  return found
+}
+
 
 // ─────────────────────────────────────────────────────────────────────────────
 // 根 README 双站与 CHANGELOG（2026-10-20 新增）
@@ -363,5 +501,8 @@ if (failures.length > 0) {
   // 两段各自的通过数都要报：只报第一段的话，「第二段到底跑没跑」从输出上看不出来，
   // 而那正是 2026-10-20 之前 README 双站漂移没人发现的原因 —— 门禁在跑，但没人知道它没查 README。
   console.log(`docs:check: ${requiredDocs.length} project docs, ${tasks.size} tasks, ${decisionFiles.length} ADRs, and API/SDK versions are consistent`)
+  // 锚点条数单独打出来：与根 README 那行同理 —— 只报「总数一致」的话，
+  // 「目录/接口这节到底跑没跑」从输出上看不出来，而它恰恰是最容易被写成假绿的一节。
+  console.log(`docs:check: STRUCTURE.md ${structureCount.rows} anchors (src files all registered) / INTERFACES.md ${interfaceCount.rows} anchors, both directions consistent`)
   console.log(`docs:check: root README bilingual (${rootCheckCount} checks) and CHANGELOG are consistent`)
 }

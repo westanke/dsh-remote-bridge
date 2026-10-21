@@ -1,0 +1,422 @@
+# 接口说明（契约与签名）
+
+本文回答：**对外接口长什么样、模块之间怎么调用、改接口要同步什么**。
+
+- **外部 REST/流的权威仍在** [`docs/api/openapi.yaml`](../api/openapi.yaml) +
+  [`docs/api/asyncapi.yaml`](../api/asyncapi.yaml) + [API.md](API.md)。
+  本文与它们**不互为替代**：那三份是给客户端与第三方看的正式契约，本文是给
+  改代码的人（与 AI）看的**模块调用地图**。两者冲突时以源码为准，然后两边都改。
+- 签名一律**逐字照抄源码**。本文没写到的符号不代表不存在 —— 只收「跨模块会用到」的那些。
+- 目录与分层见 [STRUCTURE.md](STRUCTURE.md)；设计动机见 [ARCHITECTURE.md](ARCHITECTURE.md)。
+
+> **同步纪律**：改导出符号、签名、REST 路由或流事件字段，**同一提交**内更新本文与文末锚点，
+> 否则 `pnpm docs:check` 变红（见 [AGENTS.md](../../AGENTS.md) §3.4）。
+
+---
+
+## 1. 接口分层总览
+
+| 层 | 代表接口 | 权威文件 |
+| --- | --- | --- |
+| 对外 REST（设备/第三方） | `GET /api/v1/…`、`POST /api/v1/…` | `docs/api/openapi.yaml`、[API.md](API.md) |
+| 对外管理面（仅回环） | `GET/POST /manage/…` | 本文 §3.2、`workspace.tsx` 调用处 |
+| 事件流（WebSocket） | `/api/v1/events` 的 `WorkspaceEvent` | `docs/api/asyncapi.yaml` |
+| 只读图片路由 | `GET /plugin/dsh-remote-bridge/raw` | [ARCHITECTURE.md](ARCHITECTURE.md)、`image-handoff.ts` |
+| 跨仓 SDK | `kotlin-sdk` 的 `DshWorkspaceClient` | `kotlin-sdk/README.md` |
+| 内部模块 | 各 adapter / 服务类的导出 | 本文 §4 |
+
+### 1.1 wire schema 五处同步（跨仓铁律）
+
+改任何 REST 形状或事件字段，**五处一起改**，缺一处就是下游静默失配：
+
+1. `docs/project/API.md`（文字说明）
+2. `docs/api/openapi.yaml` / `docs/api/asyncapi.yaml`（机器契约，`docs:check` 核对路径与版本）
+3. `kotlin-sdk/`（给 App 的 SDK）
+4. `tests/` 的合约测试（`http-api` / `approval-api` / `command-api` / `job-api` 等）
+5. 本文 [INTERFACES.md](INTERFACES.md) 的正文与文末锚点
+
+---
+
+## 2. 对外 REST：路径前缀与鉴权
+
+### 2.1 两个入口，两套信任模型
+
+| 入口 | 前缀 | 挂载方式 | 鉴权 |
+| --- | --- | --- | --- |
+| 版本化 API | `/api/v1` | 独立监听器（默认 `3090`）+ DSH 同源嵌入 `/dsh-workspace-api` | 设备 token 或 loopback admin |
+| 回环管理面 | `/manage` | 同上 | **必须是回环 + admin 头** |
+| 只读图片 | `/plugin/dsh-remote-bridge/raw` | 只挂 DSH 同源嵌入 | 回环 + 同源 + 裸文件名白名单 + 字节自证 |
+
+- **`/dsh-workspace-api` 前缀是已发布 App 写死的契约，不可改**（`server.ts:320` 注释）。
+  嵌入路由把它在 DSH WebUI 同源上再暴露一次，`stripPrefix` 后走同一套 router。
+- 鉴权头：`Authorization: Bearer <device-token>`；回环管理用 `X-Dsh-Workspace-Admin: 1`。
+- 能力位与 `connection.ready` 见 §3.4。
+
+### 2.2 REST 路由总表
+
+`auth` 列的取值：`—` 无鉴权 · `token` 设备 token · `admin` 回环 admin ·
+`scope:<x>` 需要该 scope · `root` 还需请求的 rootId 在该设备授权范围内。
+
+| 方法 | 路径 | auth | 说明 | handler |
+| --- | --- | --- | --- | --- |
+| GET | `/api/v1/healthz` | — | 存活探针，只回 `{ok,version,pluginVersion}` | `router.ts:178` |
+| GET | `/api/v1/debug/host-services` | token | 宿主服务注入面报告（不可用时 404） | `router.ts:192` |
+| POST | `/api/v1/pairings/exchange` | — | 配对码换设备 token（限流） | `router.ts:201` |
+| GET | `/api/v1/devices/self` | token | 当前设备身份与 scope | `router.ts:220` |
+| GET | `/api/v1/roots` | `scope:files.read` | **只含 id/label/createdAt**，刻意不返回绝对路径 | `router.ts:229` |
+| GET | `/api/v1/roots/resolve?path=` | `scope:files.read` | 绝对路径 → `{rootId, 相对路径}` | `router.ts:243` |
+| GET | `/api/v1/roots/{rootId}/entries?path=&limit=&cursor=` | `scope:files.read`+root | 列目录（分页） | `router.ts:1064` |
+| POST | `/api/v1/roots/{rootId}/entries` | `scope:files.write`+root | 新建文件/目录 `{path, kind}` | `router.ts:1064` |
+| PATCH | `/api/v1/roots/{rootId}/entries` | `scope:files.write`+root | 移动/改名 `{path, destinationPath}` | `router.ts:1064` |
+| DELETE | `/api/v1/roots/{rootId}/entries?path=` | `scope:files.delete`+root | 移入回收站 | `router.ts:1064` |
+| GET | `/api/v1/roots/{rootId}/content?path=` | `scope:files.read`+root | 读文件（支持 Range / ETag） | `router.ts:1117` |
+| PUT | `/api/v1/roots/{rootId}/content?path=` | `scope:files.write`+root | 写文件（`If-Match` / `If-None-Match`） | `router.ts:1117` |
+| GET | `/api/v1/trash` | `scope:files.read` | 回收站列表（按设备 root 过滤） | `router.ts:276` |
+| POST | `/api/v1/trash/{trashId}/restore` | `scope:files.delete` | 恢复 | `router.ts:288` |
+| GET | `/api/v1/image-handoff?sessionId=&name=` | `scope:files.read` | 取交接图片字节 | `router.ts:666` |
+| GET | `/api/v1/attachments/{attachmentId}?sessionId=` | `scope:chat.read` | 取会话附件字节 | `router.ts:643` |
+| GET | `/api/v1/chat/workspaces` | `scope:chat.read` | 工作区列表（按设备可见范围） | `router.ts:295` |
+| POST | `/api/v1/chat/workspaces` | `scope:chat.write` | 新建工作区 `{rootId, path}` | `router.ts:295` |
+| PATCH | `/api/v1/chat/workspaces/{workspaceId}` | token | 改名 | `router.ts:314` |
+| DELETE | `/api/v1/chat/workspaces/{workspaceId}` | token | 删除工作区 | `router.ts:314` |
+| GET | `/api/v1/chat/agent-presets` | token | 智能体预设清单 | `router.ts:335` |
+| GET | `/api/v1/chat/permission-presets` | token | 权限档位清单 + 默认档 | `router.ts:343` |
+| GET | `/api/v1/chat/sessions` | `scope:chat.read` | 会话列表（`archived=true` 列出归档） | `router.ts:471` |
+| POST | `/api/v1/chat/sessions` | `scope:chat.write` | 新建会话 | `router.ts:471` |
+| PATCH | `/api/v1/chat/sessions/{sessionId}` | token | 改名 | `router.ts:515` |
+| POST | `/api/v1/chat/sessions/{sessionId}/fork` | token | 从 `atSeq` 分叉 | `router.ts:528` |
+| POST | `/api/v1/chat/sessions/{sessionId}/archive` | token | 归档 | `router.ts:543` |
+| GET | `/api/v1/chat/sessions/{sessionId}/jobs` | token | 后台任务 roster | `router.ts:556` |
+| GET | `/api/v1/chat/sessions/{sessionId}/jobs/{jobId}/output` | token | 任务输出（增量） | `router.ts:556` |
+| POST | `/api/v1/chat/sessions/{sessionId}/jobs/{jobId}/kill` | token | 人类取消 | `router.ts:556` |
+| GET | `/api/v1/chat/sessions/{sessionId}/messages` | token | 历史（`beforeSeq` 分页、字节预算） | `router.ts:588` |
+| POST | `/api/v1/chat/sessions/{sessionId}/messages` | token | 发消息 / prompt（`queue` 或 `steer`） | `router.ts:588` |
+| GET | `/api/v1/chat/sessions/{sessionId}/approvals` | token | 待处理审批 | `router.ts:787`（分支在 sessions 段） |
+| POST | `/api/v1/chat/sessions/{sessionId}/approvals/{approvalId}/decision` | token | 审批决定 | 同上 |
+| GET | `/api/v1/chat/sessions/{sessionId}/questions` | token | 待答问题 | 同上 |
+| POST | `/api/v1/chat/sessions/{sessionId}/questions/{callId}/answer` | token | 提交答案 | 同上 |
+| GET | `/api/v1/chat/sessions/{sessionId}/commands` | token | 斜杠命令清单 | `router.ts:881` 经 adapter |
+| POST | `/api/v1/chat/sessions/{sessionId}/commands` | token | 执行命令 | 同上 |
+| GET | `/api/v1/chat/sessions/{sessionId}/models` | token | 会话可选模型 | 同上 |
+| PUT | `/api/v1/chat/sessions/{sessionId}/model` | token | 选择模型 | 同上 |
+| PUT | `/api/v1/chat/sessions/{sessionId}/agent-preset` | token | 选择智能体预设 | `router.ts:506` 经 adapter |
+| POST | `/api/v1/chat/runs/{id}/cancel` | token | 取消当前轮 | `router.ts` cancel 分支 |
+| GET | `/api/v1/settings/providers` | token | 提供商配置 | `router.ts:349` |
+| POST | `/api/v1/settings/providers` | token | 新建自定义提供商 | `router.ts:349` |
+| PATCH | `/api/v1/settings/providers/{providerId}` | token | 改提供商 | `router.ts:429` |
+| DELETE | `/api/v1/settings/providers/{providerId}` | token | 删提供商 | `router.ts:429` |
+| POST | `/api/v1/settings/providers/{providerId}/discover` | token | 发现可用模型 | `router.ts:456` |
+| GET | `/api/v1/settings/models` | token | 模型目录 | `router.ts:380` |
+| GET | `/api/v1/settings/plugins` | token | 插件清单 | `router.ts:388` |
+| PATCH | `/api/v1/settings/plugins` | token | 插件启停 | `router.ts:402` |
+
+> 路径的机器真值：`docs/api/openapi.yaml` 的 `paths`。`tests/capabilities.spec.ts`
+> 会拿能力位宣称的路径去那里逐条核对。**改路由先改那里的三处（openapi/asyncapi/API.md）**，
+> 再改 `router.ts`。
+
+### 2.3 回环管理面 `/manage`（仅 `admin`）
+
+先 `requireAdmin`，再进 `dispatchManagement`（`router.ts:848`）：
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| GET | `/manage/status` | 远程访问状态与运行中的操作 |
+| GET / POST | `/manage/roots` | 列/加授权根 |
+| DELETE | `/manage/roots/{rootId}` | 删授权根 |
+| GET | `/manage/devices` | 设备清单 |
+| PATCH / DELETE | `/manage/devices/{deviceId}` | 改 scope/root · 撤销（直接删行） |
+| POST | `/manage/pairings` | 生成配对码 |
+| POST | `/manage/config/text` | 生成 `DSH1:` 配置文本 |
+| POST | `/manage/remote/enable` · `/disable` | 开关远程监听 |
+| PUT | `/manage/remote/listener` | 改绑定 IP/端口（失败回滚） |
+| GET | `/manage/audit` | 审计日志 |
+| GET / PUT | `/manage/image` | 识图路径设置 |
+| DELETE | `/manage/trash/{trashId}` | 彻底删除回收站条目 |
+| GET / HEAD | `/manage/cloudflare/status` · `/activity` | 隧道状态与活动 |
+| POST | `/manage/cloudflare/create` · `/stop` | 建/停隧道 |
+
+---
+
+## 3. 事件流、能力位与跨仓契约
+
+### 3.1 WebSocket 事件
+
+- 端点：`/api/v1/events`（AsyncAPI channel `events`），升级时 Bearer 鉴权。
+- 帧形状：`{ id, type, time, data }`（`WorkspaceEvent`，见 `src/shared/contracts.ts:62`）。
+- 事件类型（`type`）：
+  `file.changed` · `file.trashed` · `chat.message.delta` · `chat.message.committed` ·
+  `chat.session.status` · `chat.session.snapshot` · `chat.deliverables.presented` ·
+  `chat.approval.requested` · `chat.approval.resolved` · `chat.turn.failed` ·
+  `connection.ready`（首帧）· `chat.userQuestions/requested`。
+- 授权过滤在 `server.ts` 的 `eventAllowed`：按 scope（`files.read` / `chat.read`）、
+  设备 root 范围、会话归属三层判；设备被撤销时该连接以 `4001` 关闭。
+- `seq` 只表示**会话持久事件序号**；流式 delta 不输出它（ADR-0008）。
+
+### 3.2 订阅基线与补推
+
+| 事件 | 作用 |
+| --- | --- |
+| `chat.session.snapshot` | 订阅基线：`cursor` 是增量起点。**不带正文**（双通道会造两份基线） |
+| `chat.approval.requested` / `chat.userQuestions/requested` | 连接建立时**只补推给这条连接**仍待处理的交互，`data.replayed = true` |
+
+### 3.3 只读图片路由
+
+`GET /plugin/dsh-remote-bridge/raw?sessionId=&name=` —— 走
+`createImageRouteHandler`（`image-handoff.ts:239`），信任模型是
+「回环 + 插件页 Referer/同源 + 64 位 hex 文件名白名单 + 字节嗅探」，
+**不接受目录参数**（目录由宿主按会话工作目录推出）。
+
+### 3.4 能力位（`connection.ready`）
+
+- 载荷：`{ bridgeVersion, capabilities: string[] }`（`capabilities.ts` 的 `connectionReadyData()`）。
+- 当前 26 项，命名固定 `<能力>-v<主版本>`；只增不撤，语义变更升 `-v2`。
+- **每项必须能指出契约依据**（一个 OpenAPI 路径+方法，或一个 AsyncAPI 事件），
+  `tests/capabilities.spec.ts` 逐条核对。
+- 客户端只把 `approvals-v1` / `questions-v1` 当必需项（详见
+  `dsh-companion` 的 `BridgeCapabilities.kt`）；其余全是特性探测。
+- 最高频的新增动作：加 REST 路由 → 加能力位 → 写依据 → 跑 `capabilities.spec`。
+
+### 3.5 与 `dsh-companion` 的门槛
+
+README 双站的「要求 bridge ≥ X.Y.Z」是**安装门槛**，不是功能判据；
+功能判据一律走能力位。改门槛要同步：根 README 双站两处、`docs/project/PITFALLS.md`
+的 bridge 版本基线表、姊妹仓同款文案（`docs:check` 会比对 README 双站与基线表）。
+
+---
+
+## 4. 内部模块接口
+
+> 只列跨模块会用到的导出。私有实现细节请看源码，别在这里抄。
+
+### 4.1 插件入口 `src/index.ts`
+
+```ts
+export const name = 'dsh-remote-bridge'
+export const inject = [/* 10 项硬依赖，必须与 cordis.patch.yml 双向对齐 */]
+export interface Config { dataDir?: string; port?: number; remoteHost?: string; maxUploadBytes?: number }
+export async function apply(ctx: HostContext, config: Config = {}): Promise<void>
+export default apply
+```
+
+- `inject` **只能放两个支持版本上都存在的服务**；可选服务（`permissionPresets` /
+  `jobController` / `fileUploads` / `attachments`）用 `ctx.reflect.get(name, false)` 运行时读。
+- `apply` 的装配顺序：数据库 → 内置根 → 事件总线 → 鉴权 → 文件服务 →
+  `apiProxy`（适配层）→ chat/settings adapter → 注入面探针 → 监听器 → 图片路由 → 生命周期注册。
+
+### 4.2 `src/host/server.ts`
+
+```ts
+export class RemoteApiServer implements RemoteControl
+export interface EmbeddedRoute { kind: 'exact' | 'prefix'; path: string; handler: (req, res) => void | Promise<void> }
+export function attachEmbeddedRoutes(webServer, router, remote, extraRoutes?): () => void
+```
+
+`RemoteApiServer` 方法：`start()` / `stop()` / `status(operationId?)` /
+`enable(rootIds, scopes)` / `disable()` / `configure(host, port)` —— 全部返回或操作
+`RemoteOperationView`。`attachEmbeddedRoutes` 负责挂 `/dsh-workspace-api` 与图片路由。
+
+### 4.3 `src/host/router.ts`
+
+```ts
+export interface RemoteOperationView   // 远程操作的对外视图（id/state/target/code/pairingCode…）
+export interface RemoteControl         // 管理面依赖的控制接口（status/enable/disable/configure）
+export type JobRouteMatch              // { kind: 'list' | 'output' | 'kill' | 'detail', … }
+export function matchJobRoute(pathname: string): JobRouteMatch | null
+export class ApiRouter {
+  constructor(options: RouterOptions)
+  handle(req, res, stripPrefix = ''): Promise<void>
+}
+```
+
+新增路由 = 在 `dispatch`（版本化 REST）或 `dispatchManagement`（`/manage`）里加分支；
+文件子路由走 `dispatchEntries` / `dispatchContent`。
+
+### 4.4 `src/host/dsh-0.2-bridge.ts`（适配层）
+
+```ts
+export interface Dsh02HostServices        // 全部宿主服务的结构类型集合
+export function createDsh02ApiProxy(ctx: Dsh02HostServices, options): DshApiProxy
+export async function readHandoffImageFile(ctx, roots, fallbackDir, subdir, sessionId, name)
+export function normalizePermissionCatalog(raw: unknown)
+export const FALLBACK_PERMISSION_CATALOG
+export function projectionsOf(...) / export async function readSessionProjections(...)
+export function handoffLocaleOf(acceptLanguage: string | undefined): HandoffLocale
+export type PromptContentPartLike / FileUploadsLike / AttachmentStoreLike / SessionControllerLike /
+  WorkspaceControllerLike / WorkspaceRegistryLike / SettingsControllerLike /
+  CredentialsControllerLike / AgentPresetsLike / PermissionPresetsLike / JobControllerLike / LlmLike /
+  UserQuestionsLike / UserQuestionRequestLike
+```
+
+**这个文件的任何内核适配补丁都必须带 `@patch` 四要素**（for/why/until/test），
+`tests/patch-discipline.spec.ts` 校验五要素齐全且 `test` 指向的用例真实存在。
+
+### 4.5 `src/host/chat-adapter.ts`
+
+类 `DshChatAdapter`（`chat-adapter.ts:364`）的公开方法，全部以 `principal: Principal` 开头做授权：
+
+```txt
+listSessions(principal, { archived? })        listWorkspaces(principal)      createWorkspace(principal, rootId, relativePath)
+renameWorkspace(principal, workspaceId, title) deleteWorkspace(principal, workspaceId)
+listAgentPresets()                            listPermissionPresets()        selectAgentPreset(principal, sessionId, agentPreset)
+createSessionInWorkspace(principal, workspaceId, …)  createSession(principal, rootId, …)
+history(principal, sessionId, { beforeSeq, maxMessages })
+prompt(principal, sessionId, parts, mode)     uploadAttachment(principal, sessionId, bytes, name)
+readAttachment(principal, sessionId, attachmentId)   readHandoffImage(principal, sessionId, name)
+cancel(principal, sessionId)                  renameSession(principal, sessionId, title)
+forkSession(principal, sessionId, atSeq?)     archiveSession(principal, sessionId)
+listPendingApprovals(principal, sessionId)    replayPendingApprovals(principal)
+replayPendingQuestions(principal)            decideApproval(principal, sessionId, approvalId, allowOnce)
+listUserQuestions(principal, sessionId)      answerUserQuestion(principal, sessionId, callId, answers)
+models(principal, sessionId)                  selectModel(principal, sessionId, selection)
+listCommands(principal, sessionId)            executeCommand(principal, sessionId, line)
+isSessionAuthorized(principal, sessionId)     startEvents(signal, emit)
+```
+
+模块级导出：`unwrapDsh`（拆 DSH RPC 壳并映射错误）、`normalizeDshEvent`（帧归一）、
+`turnFailureOf`、`approvalReplayEvents`、`questionReplayEvents`、`redactApprovalText`。
+
+### 4.6 `src/host/database.ts`
+
+```ts
+export class WorkspaceDatabase {  // node:sqlite；构造参数 dataDir
+  close() / dumpSchema()
+  getSetting(key) / setSetting(key, value)
+  addRoot(inputPath, label?, options?) / listRoots() / getRoot(id) / ensureBuiltinRoot(realPath, label) / removeRoot(id)
+  createPairing(rootIds, scopes, ttlMs?) / exchangePairing(code, deviceName) / authenticate(token)
+  getActiveDevice(id) / listDevices() / isDeviceActive(id) / updateDevice(id, scopes, rootIds)
+  revokeDevice(id) / purgeRevokedDevices()
+  insertTrash(record) / getTrash(id) / listTrash(rootIds?) / updateTrashStatus(id, status) / deleteTrashRecord(id)
+  audit(...) / listAudit(limit?) / readIdempotent(deviceId, key) / saveIdempotent(deviceId, key, status, body)
+}
+export function hashSecret(secret: string): string
+export interface StoredRoot / AuthenticatedDevice / TrashRecord
+```
+
+### 4.7 `src/host/file-service.ts`
+
+```ts
+export class FileService {  // 构造 (database, emit)
+  list(root, relativePath, limit?, cursor?) / inspectContent(root, relativePath) / streamContent(descriptor, range?)
+  writeContent(root, relativePath, bytes, opts) / createEntry(root, relativePath, kind)
+  moveEntry(root, sourcePath, destinationPath) / trashEntry(root, relativePath)
+  listTrash(rootIds?) / restoreTrash(root, trashId) / purgeTrash(trashId)
+}
+```
+
+### 4.8 其余宿主模块（一行一条，签名以源码为准）
+
+| 导出 | 位置 | 用途 |
+| --- | --- | --- |
+| `AuthService`（`principal` / `requireAdmin` / `requireScope` / `requireRoot`） | `auth.ts` | 身份与 scope 校验、限流桶 |
+| `BRIDGE_CAPABILITIES` / `HISTORY_FORMAT_VERSION` / `connectionReadyData()` | `capabilities.ts` | 能力位与历史格式版本 |
+| `DshSettingsAdapter`（`listProviders` / `catalog` / `updateProvider` / `createProvider` / `removeProvider` / `discover`） | `settings-adapter.ts` | 提供商与模型目录 |
+| `readPluginInventory` / `withUpdateCheck` / `resolveState` / `togglePlugin` / `PluginToggleError` / `resolveDshHome` / `resolveProfileName` / `normalizeProfileName` | `plugin-inventory.ts` | 插件清单与启停 |
+| `JobAdapter`（`list` / `follow` / `kill`）、`JobApiError` | `job-adapter.ts` | 后台任务 |
+| `WorkspaceEventBus`（`emit` / `subscribe`） | `event-bus.ts` | 进程内事件总线 |
+| `FixedWindowLimiter`（`consume`） | `rate-limit.ts` | 限流 |
+| `ApiError` / `asApiError` | `errors.ts` | 错误载体 |
+| `stringifyWire` / `sanitizeLoneSurrogates` | `wire-json.ts` | 出网 JSON 安全序列化 |
+| `validateRelativePath` / `canonicalRoot` / `resolveAuthorizedPath` / `isPathInside` / `wireRelative` / `parentWirePath` | `path-policy.ts` | 路径策略 |
+| `matchAuthorizedRoot` / `matchAuthorizedRootResolved` / `inspectResolvedPath` | `root-resolver.ts` | 绝对路径 → 授权根 |
+| `HISTORY_BYTE_BUDGET` / `HISTORY_EVENT_BYTE_BUDGET` / `HISTORY_KEEP_CHARS` / `clampHistoryEvents` / `applyHistoryBudget` | `history-budget.ts` | 历史字节预算 |
+| `normalizeHandoffSubdir` / `readHandoffSubdir` / `saveHandoffSubdir` / `imageHandoffView` / `declaredMediaType` / `sniffMediaType` / `loopbackHost` / `pluginPageReferer` / `sameOrigin` / `createImageRouteHandler` / `IMAGE_ROUTE` / `HANDOFF_FILE_NAME` / `HANDOFF_MEDIA_TYPES` | `image-handoff.ts` | 识图路径与只读图片路由 |
+| `CloudflaredTunnelManager` / `ensureCloudflared` / `downloadUrlFor` / `archSuffix` / `extractQuickTunnelUrl` / `downloadHttps` / `isDebSource` | `cloudflared.ts` | 隧道管理 |
+| `classifyHost` / `detectEndpoints` / `normalizeBaseUrl` / `encodeConfigText` / `defaultDisplayName` / `DEFAULT_PORT` / `KIND_LABEL` | `config-text.ts` | 配置文本 |
+| `normalizeListenerHost` / `normalizeListenerPort` / `loopbackFor` / `DEFAULT_REMOTE_HOST` | `listener-config.ts` | 监听配置 |
+| `probeHostServices` / `INJECTED_SERVICE_NAMES` / `OPTIONAL_SERVICE_NAMES` / `HostServiceReport` | `host-service-probe.ts` | 注入面探针 |
+
+### 4.9 共享层 `src/shared/`
+
+```ts
+export const DEVICE_SCOPES         // 'files.read' | 'files.write' | 'files.delete' | 'chat.read' | 'chat.write' …
+export type DeviceScope
+export interface RootView / DeviceView / FileEntryView / ImageHandoffSettings / WorkspaceEvent / AdminPrincipal / DevicePrincipal
+export type Principal = AdminPrincipal | DevicePrincipal
+export const ADMIN_PRINCIPAL
+export const PLUGIN_VERSION: string          // shared/version.ts，与 package.json 同步
+```
+
+### 4.10 浏览器半边 `src/client/`
+
+| 导出/入口 | 位置 | 用途 |
+| --- | --- | --- |
+| `WorkspaceApiError` / `DirectoryPage` / `ContentResult` | `api.ts` | 浏览器侧 REST 客户端 |
+| 客户端插件入口（slot 注册） | `index.tsx` | 面板与图片交接渲染的注册点 |
+| 手机设置面板组件 | `workspace.tsx` | 七张折叠卡片 |
+| 交接消息解析 | `handoff.tsx` | 用户消息行首标记 → 图片 |
+| 语言 store 与文案 | `i18n.tsx` | `zh-CN` / `en` |
+| `AppQrCode` | `app-qr.ts` | 应用下载二维码（生成物） |
+
+---
+
+## 5. 改接口的检查清单
+
+按顺序做，**不要跳步**：
+
+1. **先改契约文档**：`docs/project/API.md` + `docs/api/openapi.yaml` / `asyncapi.yaml`。
+2. **能力位**：若客户端要据此分支，加 `<能力>-v1` 并在注释里写出契约依据；
+   不需要分支的（收到就用、没有就晚一点）**不要加**。
+3. **Kotlin SDK**：`kotlin-sdk/src/main/kotlin/ai/deepseek/dsh/workspace/DshWorkspaceClient.kt`。
+4. **实现**：`router.ts` 分支 + 对应 adapter。
+5. **合约测试**：`tests/` 下补正向与拒绝路径；修 bug 必须带回归用例。
+6. **本文与锚点**：更新上面相应小节 + 文末 `interfaces-check` 区。
+7. **`pnpm check`**：typecheck → test → docs:check → build，全绿再提交。
+8. 跨仓影响：需要 `dsh-companion` 跟进的，先在本仓发版，再改 App（App 只消费公开 API）。
+
+---
+
+## 6. 机检锚点（docs:check 读取，勿改格式）
+
+> 本区由 `scripts/check-project-docs.ts` 解析：第二列文件必须存在，
+> 且该文件包含第一列里提取出的标识符（取最后一串 `[A-Za-z_][A-Za-z0-9_]*`）。
+> 改导出名或搬文件时同步这里，否则 `pnpm docs:check` 变红。
+
+<!-- interfaces-check:begin -->
+| 符号 | 位置 | 类型 |
+| --- | --- | --- |
+| `export const name` | `src/index.ts` | const |
+| `export const inject` | `src/index.ts` | const |
+| `export interface Config` | `src/index.ts` | interface |
+| `export async function apply` | `src/index.ts` | function |
+| `export class RemoteApiServer` | `src/host/server.ts` | class |
+| `export interface EmbeddedRoute` | `src/host/server.ts` | interface |
+| `export function attachEmbeddedRoutes` | `src/host/server.ts` | function |
+| `export class ApiRouter` | `src/host/router.ts` | class |
+| `export interface RemoteControl` | `src/host/router.ts` | interface |
+| `export function matchJobRoute` | `src/host/router.ts` | function |
+| `export interface Dsh02HostServices` | `src/host/dsh-0.2-bridge.ts` | interface |
+| `export function createDsh02ApiProxy` | `src/host/dsh-0.2-bridge.ts` | function |
+| `export async function readHandoffImageFile` | `src/host/dsh-0.2-bridge.ts` | function |
+| `export function normalizePermissionCatalog` | `src/host/dsh-0.2-bridge.ts` | function |
+| `export interface DshApiProxy` | `src/host/chat-adapter.ts` | interface |
+| `export class DshChatAdapter` | `src/host/chat-adapter.ts` | class |
+| `export function unwrapDsh` | `src/host/chat-adapter.ts` | function |
+| `export function normalizeDshEvent` | `src/host/chat-adapter.ts` | function |
+| `export class WorkspaceDatabase` | `src/host/database.ts` | class |
+| `export function hashSecret` | `src/host/database.ts` | function |
+| `export class FileService` | `src/host/file-service.ts` | class |
+| `export class AuthService` | `src/host/auth.ts` | class |
+| `export const BRIDGE_CAPABILITIES` | `src/host/capabilities.ts` | const |
+| `export function connectionReadyData` | `src/host/capabilities.ts` | function |
+| `export class DshSettingsAdapter` | `src/host/settings-adapter.ts` | class |
+| `export class JobAdapter` | `src/host/job-adapter.ts` | class |
+| `export class WorkspaceEventBus` | `src/host/event-bus.ts` | class |
+| `export class FixedWindowLimiter` | `src/host/rate-limit.ts` | class |
+| `export class ApiError` | `src/host/errors.ts` | class |
+| `export function stringifyWire` | `src/host/wire-json.ts` | function |
+| `export function validateRelativePath` | `src/host/path-policy.ts` | function |
+| `export function matchAuthorizedRoot` | `src/host/root-resolver.ts` | function |
+| `export function clampHistoryEvents` | `src/host/history-budget.ts` | function |
+| `export function createImageRouteHandler` | `src/host/image-handoff.ts` | function |
+| `export class CloudflaredTunnelManager` | `src/host/cloudflared.ts` | class |
+| `export function encodeConfigText` | `src/host/config-text.ts` | function |
+| `export function normalizeListenerPort` | `src/host/listener-config.ts` | function |
+| `export function probeHostServices` | `src/host/host-service-probe.ts` | function |
+| `export async function readPluginInventory` | `src/host/plugin-inventory.ts` | function |
+| `export async function togglePlugin` | `src/host/plugin-inventory.ts` | function |
+| `export const DEVICE_SCOPES` | `src/shared/contracts.ts` | const |
+| `export interface WorkspaceEvent` | `src/shared/contracts.ts` | interface |
+| `export const PLUGIN_VERSION` | `src/shared/version.ts` | const |
+| `export class WorkspaceApiError` | `src/client/api.ts` | class |
+| `export interface AppQrCode` | `src/client/app-qr.ts` | interface |
+<!-- interfaces-check:end -->

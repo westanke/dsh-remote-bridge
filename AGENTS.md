@@ -15,6 +15,8 @@
 | 我想… | 先读 |
 |---|---|
 | 知道现在到哪了 | `docs/project/STATUS.md` → `ROADMAP.md` |
+| 知道某文件/目录干什么、新文件该放哪 | `docs/project/STRUCTURE.md` |
+| 知道某模块导出什么、接口签名长什么样 | `docs/project/INTERFACES.md` |
 | 知道某个接口长什么样 | `docs/project/API.md` + `docs/api/openapi.yaml` + `docs/api/asyncapi.yaml` |
 | 知道为什么这么设计 | `docs/project/ARCHITECTURE.md` → `docs/project/decisions/`（9 条 ADR，其中 ADR-0009 为 **proposed**） |
 | 改 wire schema | 先改 `API.md` + OpenAPI + AsyncAPI + Kotlin SDK + 测试，**再**改实现 |
@@ -61,7 +63,7 @@ bash scripts/setup-remotes.sh  # 整理三远端命名（幂等）
 pnpm check          # typecheck → test → docs:check → build（提交前跑这个）
 pnpm test           # vitest run
 pnpm typecheck      # tsc --noEmit
-pnpm docs:check     # 文档一致性（10 必需文档 + ROADMAP 状态 + STATUS 引用 + ADR 索引 + 根 README 双站与 CHANGELOG + patch inject 对齐）
+pnpm docs:check     # 文档一致性（12 必需文档 + ROADMAP 状态 + STATUS 引用 + ADR 索引 + 根 README 双站与 CHANGELOG + patch inject 对齐 + 目录/接口锚点双向）
 pnpm build          # clean + tsdown
 pnpm test:e2e       # playwright
 ```
@@ -75,11 +77,13 @@ pnpm test:e2e       # playwright
   目的是让本地产物与 npm 上那份的 shasum/integrity 哈希一致（`RELEASE.md` 新规矩）。
 - **发版时 git 与 npm 必须同批**：只推 git + 建 Release 不算发完，`npm publish` 是同一件事的一部分。
   一键脚本 `scripts/release.sh` 已把两者串起来并逐步回读——**别再手敲清单，会漏**（v2.4.2 漏过一次）。
-- `docs:check` 有**三段**：`docs/project/` 的必需清单式校验（10 份文档 + ADR 索引齐全，
+- `docs:check` 有**四段**：`docs/project/` 的必需清单式校验（12 份文档 + ADR 索引齐全，
   新增文档不会让它红）；根 **README 双站 + CHANGELOG** 的关键口径校验
   （内核版本范围双语一致且对上 `engines.dsh`、当前版本对上 `package.json`、变更记录有当前版本条目）；
   以及 **`cordis.patch.yml` 与 `src/index.ts` 的 inject 双向对齐**（见 `PITFALLS.md`
   §patch 的 inject 覆盖插件 inject —— 漏一项服务就读不到，报错与「内核没这服务」一模一样）。
+  **第四段**（2026-10-21 加）是 `STRUCTURE.md` / `INTERFACES.md` 的**双向**锚点校验，
+  见 §3.4。
   注意 `requiredDocs` 里的 `README.md` 指的是 `docs/project/README.md`（文档索引），
   与仓库根的对外 README 不是一份 —— 前者归 ADR 索引查，后者归第二段查。
 
@@ -137,6 +141,33 @@ docs/api/            ← OpenAPI + AsyncAPI（wire schema 的权威）
 - 没有 `@patch` 的适配代码 = 没人认领的补丁，后来者不敢删，只会在上面继续堆。
 - 本项目已有先例可照：`cordis.patch.yml` 的 patch 行、`DSH-0.2-COMPAT.md` 的适配说明。
 
+### 3.4 目录结构与接口说明的同步纪律
+
+用户要求（2026-10-21）：「加目录结构与接口说明，方便 AI 阅读改代码，**后期改代码要同步改**。」
+「请记得同步」没有门禁等于没写（README 双站漂移就是这么漂了三版），所以它是**机检**的。
+
+| 改动 | **同一提交**内必须同步 |
+|---|---|
+| 新增 / 移动 / 删除 `src/` 下的 `.ts` / `.tsx` | `docs/project/STRUCTURE.md` 的 `<!-- structure-check -->` 锚点 |
+| 改导出符号名、签名、搬模块 | `docs/project/INTERFACES.md` 的 `<!-- interfaces-check -->` 锚点与正文 |
+| 加 / 改 / 删 REST 路由或流事件 | `INTERFACES.md` §2/§3 + 上面 §3.1 的 wire schema 五处 |
+| 新增一类文件（测试 / 脚本 / 文档） | `STRUCTURE.md` 的「新增东西放哪里」表与对应小节 |
+
+门禁是**双向**的，`pnpm docs:check` 的第四段：
+
+1. **文档 → 源码**：锚点里的路径必须存在且类型对得上（`file` / `dir`）；
+   `INTERFACES.md` 锚点声明的标识符必须真能在指出的文件里 grep 到。
+2. **源码 → 文档**：`src/` 下每个源文件都必须登记在 `STRUCTURE.md` 锚点里。
+   这条才是「新增文件必须同步文档」的兑现 —— 只查第一向的话，新文件根本不会被发现。
+3. **下限断言**：锚点解析出的条目数低于阈值（STRUCTURE < 30 / INTERFACES < 25）时**直接红**，
+   报「表格格式可能变了」。防的是「解析失败 → 两个集合双双为空 → 被当成一致」的假绿。
+
+**铁律**：
+- **先改文档再提交，不允许「下个提交补」**。门禁红着提交等于把红转给下一个人。
+- 明细只写在 `STRUCTURE.md` / `INTERFACES.md` 一处；本文件**不抄文件清单和签名**
+  （抄了必然漂，见 §3.2 行数那段的教训）。
+- 锚点区的标题与标记是**机器契约**，改格式要同批改 `scripts/check-project-docs.ts`。
+
 ---
 
 ## 4. 测试纪律
@@ -145,7 +176,7 @@ docs/api/            ← OpenAPI + AsyncAPI（wire schema 的权威）
 |---|---|---|
 | 类型 | `pnpm typecheck` | `tsc --noEmit` |
 | 单元 | `pnpm test` | vitest；当前 37 个测试文件 / 275 用例（随代码变化，勿当常量） |
-| 文档 | `pnpm docs:check` | 10 文档 / ROADMAP 状态 / STATUS 引用 / ADR 索引 / 根 README 双站 + CHANGELOG 口径 |
+| 文档 | `pnpm docs:check` | 12 文档 / ROADMAP 状态 / STATUS 引用 / ADR 索引 / 根 README 双站 + CHANGELOG 口径 / 目录与接口锚点双向 |
 | e2e | `pnpm test:e2e` | playwright；**4 个样式契约用例**，渲染真实 DOM 量计算样式，**不需要服务器**（插件已无可访问的独立页），只需 chromium。本机 `pnpm` 坏时用 `node_modules/.bin/playwright test` |
 | 真机 | 人工 | **单测绿 ≠ 行为对**。涉及内核交互、审批、问答卡片的一律真机确认 |
 | 推送 | `bash scripts/push-all.sh` | **Gitee 主 + AtomGit 备**；GitHub 是从站，由 `.github/workflows/mirror-sync.yml` 从 Gitee 自动同步（本机到 github.com:443 长期被阻断，不手工推） |
@@ -200,6 +231,7 @@ docs/api/            ← OpenAPI + AsyncAPI（wire schema 的权威）
 - `Quick 隧道地址漂移后不会自动更新`
 - `创建隧道无提示`
 - `CI 判活把 401 当没起来`
+- `目录结构与接口说明漂移`
 
 > 新坑位：名字加进上面清单 + 原文写进 `PITFALLS.md` 并补 `### 同名` 锚点。
 
@@ -212,7 +244,7 @@ docs/api/            ← OpenAPI + AsyncAPI（wire schema 的权威）
 | 语言 | TypeScript | Kotlin |
 | 命令口径 | `pnpm check`（四道门一条命令） | `scripts/build.sh <task>` |
 | 行数预算 | **600**/文件 | 800/文件 |
-| 文档门禁 | `pnpm docs:check`（10 文档 + ADR 索引 + 根 README 双站/CHANGELOG + patch inject 对齐） | `docsCheck`（8 文档 + 根 README 双站/CHANGELOG） |
+| 文档门禁 | `pnpm docs:check`（12 文档 + ADR 索引 + 根 README 双站/CHANGELOG + patch inject 对齐 + 目录/接口锚点双向） | `docsCheck`（10 文档 + 根 README 双站/CHANGELOG + 目录/接口锚点双向） |
 | 独有坑位 | apiProxy 消失、前缀契约、抢答委托、pack 差异 | WebView 双实现、熄屏断流、图片附件元数据与字节读取 |
 | 共有坑位 | README 双站漂移、端口 3090 归属、对外表述三态 | 同 |
 
@@ -223,9 +255,9 @@ docs/api/            ← OpenAPI + AsyncAPI（wire schema 的权威）
 
 ## 8. 制度来源
 
-本文件借鉴 [dsh-web-mobile](https://github.com/mexiaosqwq/dsh-web-mobile) 的 `AGENTS.md` 制度设计
-（文档路由表、补丁四要素、债务台账只许收紧、坑位索引），
+本文件借鉴的 `AGENTS.md` 制度设计（文档路由表、补丁四要素、债务台账只许收紧、坑位索引），
 与 `dsh-companion/AGENTS.md` 同批建立、按各自特色裁剪。
 
 **本项目已有的好底子**（立宪时保留并显式化）：`pnpm check` 四道门、
-`docs:check` 含 ADR 索引校验、9 条 ADR、`RELEASE.md` 发版清单、`RETRO-question-card.md` 复盘。
+`docs:check` 含 ADR 索引校验、9 条 ADR、`RELEASE.md` 发版清单、`RETRO-question-card.md` 复盘，
+以及 2026-10-21 新增的 `STRUCTURE.md` / `INTERFACES.md` 双向锚点门禁。
