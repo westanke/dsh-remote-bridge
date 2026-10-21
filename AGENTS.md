@@ -108,6 +108,10 @@ docs/api/            ← OpenAPI + AsyncAPI（wire schema 的权威）
   0.2.x 上**没有任何东西再提供 `apiProxy`**）。适配代码见下节 `@patch` 制度。
 - 路由鉴权分两类：`/dsh-workspace-api` 前缀上的请求要**设备 token 或 loopback admin**；
   另一条不能并进该前缀（`server.ts:320` 注释）。
+- **「loopback admin」不是「来源是回环」**（2.5.1 起）：判据是四层（隧道未运行 / 无转发头 /
+  `Host` 回环 / socket 与 Origin 回环），实现在 `auth.ts` 的 `adminRefusal`，
+  `requireAdmin` 与 `principal({allowAdmin})` **共用同一份**。改它必须同时看这两条路径，
+  并跑 `tests/admin-loopback-escalation.spec.ts`。见 `PITFALLS.md` §隧道让回环判据失效。
 
 ### 3.2 债务台账（只许收紧）
 
@@ -185,6 +189,23 @@ docs/api/            ← OpenAPI + AsyncAPI（wire schema 的权威）
 - 修 bug 必须带回归用例（`TESTING.md` 记录演进）。
 - `prepack` 比 `build` 严格——发版前务必 dry-run。
 - 不许为凑数加空断言测试。
+- **改桥必测安全**（用户 2026-10-21 定下，长期纪律）：任何对 bridge 的调整或修改，
+  提交前**必须**把安全面纳入测试，不能只跑功能用例。最低要求：
+
+  | 触发 | 必须复核 |
+  |---|---|
+  | 动 `auth.ts` / `router.ts` / `server.ts` 的任何判据分支 | `/manage` 与 `principal({allowAdmin})` 两处**同时**生效、不出现一严一松 |
+  | 新增或修改对外端点 | 未带凭据必须 401/403；越权 scope 必须 403；系统错误不回显绝对路径 |
+  | 动隧道 / 反代 / 监听地址 | 回环判据是否被转发流量「洗白」（本仓踩过，见 `PITFALLS.md` §隧道让回环判据失效） |
+  | 动令牌 / 配对 / 设备撤销 | 256 位随机、库内只存 SHA-256、撤销即时生效、审计不落令牌 |
+  | 动图片交接 / 文件路由 | 免令牌路由的每条守门条件（Host 回环、跨站 403、文件名正则、魔术字节一致、体积上限）仍有断言 |
+
+  跑法：`pnpm test` 中与安全相关的 spec（`security` / `websocket-security` / `database-auth` /
+  `device-revocation` / `path-policy` / `admin-loopback-escalation` / `token-storage` /
+  `handoff-extension-consistency` / `rate-limit-tunnel`）必须全绿。
+  **新增安全性质必须同步在 `docs/project/SECURITY.md` 写成一条可证伪的断言并有测试认领** ——
+  宁可少写一条，也不许写「已具备」而实际没有判据：2026-10-21 的审计就是这么漂出 28% 覆盖率的，
+  而漏掉的那条恰好是「谁算管理员」。
 
 ---
 
@@ -232,6 +253,7 @@ docs/api/            ← OpenAPI + AsyncAPI（wire schema 的权威）
 - `创建隧道无提示`
 - `CI 判活把 401 当没起来`
 - `目录结构与接口说明漂移`
+- `隧道让回环判据失效`
 
 > 新坑位：名字加进上面清单 + 原文写进 `PITFALLS.md` 并补 `### 同名` 锚点。
 

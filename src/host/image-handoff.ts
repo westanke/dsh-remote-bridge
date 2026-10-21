@@ -133,6 +133,31 @@ export function declaredMediaType(name: string): string | undefined {
 }
 
 /**
+ * 「扩展名声明」与「字节自证」是否属于同一图片家族。
+ *
+ * 为什么需要这一层而不是直接 `declared === sniffed`：**HEIC 与 HEIF 在字节层面无法区分**。
+ * 两者都是 ISO-BMFF，靠 `ftyp` 后面的 brand 认家族，而 `heic`/`heif`/`mif1`/`hevc`
+ * 都在同一套 `hei*` / `hev*` / `mif*` 前缀里 —— 嗅探器只能诚实地报出「这是 HEI 家族」，
+ * 也就是 `image/heic`；它**不该**为了迁就某条扩展名而返回一个自己无法自证的值。
+ *
+ * 于是把「等价」这件事放在一致性校验这一侧：
+ * - 写盘表（`dsh-0.2-bridge.ts`）按内核给的 mediaType 原样产 `<hash>.heif`；
+ * - 读取表把 `heif` 声明成 `image/heif`；
+ * - 嗅探器对同一份字节返回 `image/heic`；
+ * - 两者同族 → 放行。
+ *
+ * 这不是把闸门拆了：**跨家族的错配仍然全部 415**（png 字节配 `.jpg` 名、
+ * `image/png` 配 `.avif` 名、heic 字节配 `.avif` 名）。只放开这一对无法在字节层
+ * 区分的「同一家族两个名字」。
+ */
+function sameImageFamily(declared: string, sniffed: string): boolean {
+  if (declared === sniffed) return true
+  // HEI 家族：HEIC 与 HEIF 是同一份 ISO-BMFF 字节的两种命名，浏览器都按 HEIF 容器解。
+  const heifFamily = new Set(['image/heic', 'image/heif'])
+  return heifFamily.has(declared) && heifFamily.has(sniffed)
+}
+
+/**
  * 从文件头认出真实格式。扩展名只是**声明**，这里才是内容自证。
  * @param head - 文件前至少 12 个字节。
  */
@@ -162,8 +187,7 @@ export function sniffMediaType(head: Uint8Array): string | undefined {
   return undefined
 }
 
-/** 请求的 `Host` 是否指向回环（DNS 重绑定防护）。 */
-export function loopbackHost(req: IncomingMessage): boolean {
+/** 请求的 `Host` 是否指向回环（DNS 重绑定防护）。 */export function loopbackHost(req: IncomingMessage): boolean {
   const host = req.headers.host
   if (typeof host !== 'string' || host === '') return false
   if (host.startsWith('[')) return host.startsWith('[::1]')
@@ -283,7 +307,7 @@ export function createImageRouteHandler(options: ImageRouteOptions) {
       refuse(res, 415, 'content is not a supported image')
       return
     }
-    if (declared !== undefined && sniffed !== declared) {
+    if (declared !== undefined && !sameImageFamily(declared, sniffed)) {
       refuse(res, 415, 'content does not match the file extension')
       return
     }

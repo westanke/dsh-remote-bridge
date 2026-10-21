@@ -4,7 +4,7 @@ import path from 'node:path'
 import type { DeviceScope, Principal } from '../shared/contracts.ts'
 import { DEVICE_SCOPES } from '../shared/contracts.ts'
 import type { AuthService } from './auth.ts'
-import { requestAddress } from './auth.ts'
+import { adminRefusal, requestAddress } from './auth.ts'
 import type { DshChatAdapter } from './chat-adapter.ts'
 import type { PromptContentPart, UserQuestionAnswer } from './chat-adapter.ts'
 import type { StoredRoot, WorkspaceDatabase } from './database.ts'
@@ -12,7 +12,7 @@ import { handoffLocaleOf } from './dsh-0.2-bridge.ts'
 import type { HostServiceReport } from './host-service-probe.ts'
 import { JobAdapter } from './job-adapter.ts'
 import { ApiError, asApiError } from './errors.ts'
-import type { CloudflaredTunnelManager } from './cloudflared.ts'
+import type { CloudflaredTunnelManager, TunnelPublicState } from './cloudflared.ts'
 import { ensureCloudflared } from './cloudflared.ts'
 import type { FileService } from './file-service.ts'
 import { imageHandoffView, saveHandoffSubdir } from './image-handoff.ts'
@@ -137,6 +137,26 @@ export function matchJobRoute(pathname: string): JobRouteMatch | null {
   return null
 }
 
+/**
+ * 隧道运行期间**仍然可达**的管理端点（豁免判据 0）。
+ *
+ * 为什么存在这个集合：判据 0（隧道开着 → 管理面整体关门）会让「隧道状态」这个信号
+ * 本体也 403，于是面板没法告诉用户「隧道开着所以管理面停用」—— 只剩一个没法解读的
+ * 失败。这两个端点进来的目的就是解掉这个矛盾。
+ *
+ * 为什么是安全的：它们**只读、无副作用**（不写库、不发令牌、不改监听），返回的
+ * `running`/`channel`/`error`/阶段进度都不构成攻击面。**唯一敏感的是 `url`** ——
+ * Quick Tunnel 地址本身是一次对外入口。
+ *
+ * 豁免**只针对判据 0**。判据 1/2/3（转发头+Cloudflare 边缘头 / Host / Origin）对它们
+ * 照旧全部生效，所以真实隧道来源的请求连这两个端点也是 403、拿不到隧道地址。
+ * 「远程能读到 running 但读不到 url」这个方案被**否决**了：那需要在判据 1 上再开一个口子，
+ * 而那正是本次修复要消灭的东西。`tunnelStateFor` 里还留了一层不变量检查作双保险。
+ */
+const TUNNEL_MODE_EXEMPT_PATHS = new Set(['/manage/cloudflare/status', '/manage/cloudflare/activity'])
+
+
+
 export class ApiRouter {
   constructor(private readonly options: RouterOptions) {}
 
@@ -210,7 +230,14 @@ export class ApiRouter {
     }
 
     if (pathname.startsWith('/manage')) {
-      this.options.auth.requireAdmin(req)
+      // 隧道状态类端点是**唯一**的例外：隧道一开，判据 0 会让整个管理面关门，
+      // 而「隧道开着」正是面板必须读到的信号 —— 否则它只能显示一个含糊的未知错误，
+      // 连「去把隧道停了」这句人话都给不出。这条例外只豁免判据 0，
+      // 判据 1/2/3（转发头 / Host / Origin）照旧全部生效，且这两个端点只读、无副作用。
+      // 见 `TUNNEL_MODE_EXEMPT_PATHS` 与 `auth.ts` 的 `adminRefusal`。
+      this.options.auth.requireAdmin(req, {
+        ...(TUNNEL_MODE_EXEMPT_PATHS.has(pathname) ? { allowTunnelMode: true } : {}),
+      })
       await this.dispatchManagement(req, res, url, requestId)
       return
     }
@@ -1015,9 +1042,13 @@ export class ApiRouter {
     // /manage/cloudflare/stop    → 停隧道。
     //
     // 端点只有在注入了 `tunnels` 时才可用；未注入（测试、未启用的构建）返回 404。
+    //
+    // `status` / `activity` 是**唯一豁免判据 0** 的两个端点（见 `TUNNEL_MODE_EXEMPT_PATHS`）：
+    // 隧道一开，其余管理面全 403，而**本机面板**必须靠这个信号才能给出「隧道开着，
+    // 管理面停用」的人话提示。判据 1/2/3 对它们照旧生效 —— 隧道来源的请求连这里也是 403。
     if (this.options.tunnels !== undefined && pathname === '/manage/cloudflare/status') {
       if (method === 'GET' || method === 'HEAD') {
-        sendJson(res, 200, this.options.tunnels.publicState)
+        sendJson(res, 200, this.tunnelStateFor(req))
         return
       }
     }
@@ -1059,6 +1090,32 @@ export class ApiRouter {
     }
 
     throw new ApiError(404, 'ROUTE_NOT_FOUND', 'The requested management route does not exist.')
+  }
+
+  /**
+   * 隧道状态视图。
+   *
+   * **这里不做脱敏，因为用不上**：判据 1 已经把 Cloudflare 边缘头（`Cf-Connecting-IP` /
+   * `Cf-Ray` / …）算作「前面有代理」的证据，于是任何真实隧道来源的请求在
+   * `requireAdmin` 就被 403 挡住了，根本到不了这个方法。能走到这里的只有真·本机请求
+   * （判据 1/2/3 全过），所以 `url` 可以照常给它 —— 那是桌面端「用隧道地址生成配置文本」
+   * 的依据。
+   *
+   * 为什么仍然保留这个方法而不是直接 `publicState`：脱敏的位置要留在一个**语义明确**的
+   * 出口上。将来若有人为了「让远程客户端也能读到隧道是否开着」而放宽判据 1，
+   * 必须在这里重新定义脱敏，而不是顺手把 `url` 一起放出去。
+   * 评估结论见报告：本轮选择「远程一律 403」而不是「远程读得到但 `url` 为 null」，
+   * 因为后者需要为状态端点在判据 1 上再开一个口子，而那正是这次修复要消灭的东西。
+   */
+  private tunnelStateFor(req: IncomingMessage): TunnelPublicState {
+    const tunnels = this.options.tunnels
+    if (tunnels === undefined) throw new ApiError(404, 'ROUTE_NOT_FOUND', 'The requested management route does not exist.')
+    // 状态端点豁免的只有判据 0；判据 1/2/3 已经在 `requireAdmin` 生效。这里再算一次是
+    // **不变量检查**：万一将来有人绕过 `requireAdmin` 直接调 dispatchManagement，
+    // 这一行会替他把非本机请求退化成「没有 url 的状态」，而不是直接泄露地址。
+    const state = tunnels.publicState
+    const localCaller = adminRefusal(req, { tunnelActive: false }) === undefined
+    return localCaller ? state : { ...state, url: null }
   }
 
   private async dispatchEntries(

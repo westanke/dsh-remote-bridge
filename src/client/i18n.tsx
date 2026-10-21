@@ -187,6 +187,12 @@ const zh = {
   errorNotFound: '请求的文件或资源不存在。',
   errorConflict: '目标已存在或当前状态发生冲突。',
   errorRateLimited: '请求过于频繁，请稍后重试。',
+  // 管理面拒绝（v2.5.1）。四种原因对用户的可操作含义完全不同，所以各给一句人话 ——
+  // 都是一个「去本机操作」的变体，但说法必须对得上各自的成因，否则用户会去错地方。
+  errorTunnelModeAdminDisabled: '云隧道正在运行，管理面已停用。请先在本机面板里停止隧道，或直接在本机 WebUI 操作。',
+  errorAdminProxyForwarded: '管理面不接受经代理转发的请求。请在本机用 127.0.0.1 或 localhost 直接打开。',
+  errorAdminHostNotLoopback: '管理面只在本机回环地址下可用。请用 127.0.0.1 或 localhost 打开本页。',
+  errorAdminLoopbackRequired: '此操作只能在本机执行。',
   author: '作者 Github@Hakunm',
   version: '当前版本',
 } as const
@@ -366,6 +372,10 @@ const en: Messages = {
   errorNotFound: 'The requested file or resource was not found.',
   errorConflict: 'The target already exists or its state has changed.',
   errorRateLimited: 'Too many requests. Try again shortly.',
+  errorTunnelModeAdminDisabled: 'The Cloudflare tunnel is running, so management endpoints are disabled. Stop the tunnel in the local panel, or use the local WebUI.',
+  errorAdminProxyForwarded: 'Management endpoints do not accept proxied requests. Open them locally via 127.0.0.1 or localhost.',
+  errorAdminHostNotLoopback: 'Management endpoints are available only under a loopback address. Open this page via 127.0.0.1 or localhost.',
+  errorAdminLoopbackRequired: 'This operation is available only from the local machine.',
   author: 'Author Github@Hakunm',
   version: 'Current version',
 }

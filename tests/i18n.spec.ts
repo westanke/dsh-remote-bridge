@@ -109,6 +109,32 @@ describe('workspace translations', () => {
     }
   })
 
+  // 管理面四种拒绝（v2.5.1）。它们都必须有**各不相同**的人话：用户看到
+  // `TUNNEL_MODE_ADMIN_DISABLED` 该去停隧道，看到 `ADMIN_HOST_NOT_LOOPBACK` 该换地址打开 ——
+  // 混成一句「没有权限」会把人引向错误的操作。这里同时钉住「码确实被映射了」与「文案不重复」。
+  it('explains each management-refusal code with its own actionable sentence', () => {
+    const source = readFileSync(new URL('../src/client/workspace.tsx', import.meta.url), 'utf8')
+    const codes = ['TUNNEL_MODE_ADMIN_DISABLED', 'ADMIN_PROXY_FORWARDED', 'ADMIN_HOST_NOT_LOOPBACK', 'ADMIN_LOOPBACK_REQUIRED']
+    const seen = new Set<string>()
+    for (const code of codes) {
+      // 映射表里必须真有这个码对应到一个 MessageKey（从源码里抠，防止「加了码没加文案」）。
+      const mapped = new RegExp(`error\\.code === '${code}'\\) return '([\\w]+)'`).exec(source)
+      expect(mapped, `${code} 没有在 workspace.tsx 里映射到文案键`).not.toBeNull()
+      const key = mapped![1] as MessageKey
+      expect(translate('zh-CN', key), key).not.toBe(key)
+      expect(translate('en', key), key).not.toBe(key)
+      expect(translate('en', key), `${key} 的英文仍是中文原文`).not.toBe(translate('zh-CN', key))
+      // 隧道模式的那句必须提到「隧道」，否则它就退化成了一句通用的「没权限」。
+      if (code === 'TUNNEL_MODE_ADMIN_DISABLED') {
+        expect(translate('zh-CN', key)).toContain('隧道')
+        expect(translate('en', key).toLowerCase()).toContain('tunnel')
+      }
+      seen.add(translate('zh-CN', key))
+    }
+    // 四句话不能互相撞车。
+    expect(seen.size).toBe(codes.length)
+  })
+
   // 缺键不该让整个面板白屏：最坏情况是这一行露出键名，其余照常。
   it('falls back to the key name instead of throwing on an unknown key', () => {
     const missing = 'rootsDesc' as MessageKey

@@ -9,7 +9,7 @@
 </p>
 
 <p align="center">
-  <img alt="Version" src="https://img.shields.io/badge/version-v2.5.0-087f8c">
+  <img alt="Version" src="https://img.shields.io/badge/version-v2.5.1-087f8c">
   <img alt="DSH plugin" src="https://img.shields.io/badge/DeepSeek_Harness-plugin-1f2328">
   <img alt="Platforms" src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-586069">
   <img alt="License" src="https://img.shields.io/badge/license-AGPL--3.0-2da44e">
@@ -102,10 +102,10 @@ dsh plugin --profile web add dsh-remote-bridge
 dsh plugin --profile web add dsh-remote-bridge --registry https://registry.npmmirror.com
 
 # 2. tarball from the GitHub release
-dsh plugin --profile web add https://github.com/westanke/dsh-remote-bridge/releases/download/v2.5.0/dsh-remote-bridge-v2.5.0.tgz
+dsh plugin --profile web add https://github.com/westanke/dsh-remote-bridge/releases/download/v2.5.1/dsh-remote-bridge-v2.5.1.tgz
 
 # 3. tarball from the Gitee release (faster from mainland China)
-dsh plugin --profile web add https://gitee.com/westanke/dsh-remote-bridge/releases/download/v2.5.0/dsh-remote-bridge-v2.5.0.tgz
+dsh plugin --profile web add https://gitee.com/westanke/dsh-remote-bridge/releases/download/v2.5.1/dsh-remote-bridge-v2.5.1.tgz
 
 npx @deepseek-ai/dsh web
 ```
@@ -122,7 +122,7 @@ Restart DSH after installation, then open settings — The section is titled **�
 To install a downloaded release archive:
 
 ```sh
-dsh plugin --profile web add ./dsh-remote-bridge-v2.5.0.tgz
+dsh plugin --profile web add ./dsh-remote-bridge-v2.5.1.tgz
 ```
 
 ## First connection
@@ -358,9 +358,22 @@ pnpm pack
 
 v2.5.0 was verified on DSH **0.2.1-rc.2** on real hardware: all 14/14 host services injected, the three jobs endpoints exercised, and the permission catalog returned the kernel's real three presets. The development baseline is upstream `dsh-v0.2.1-rc.2` (commit `687f282e8625c6b8d11ff58211a90524be2e4317`); see `engines.dsh` above for the supported range. CI covers Windows, Ubuntu, and macOS.
 
+**v2.5.1 verification status**: 47 test files / 398 cases green (including the tunnel-topology
+management regression, the desktop-panel pass-through assertion, and the `it.fails` conversions),
+`typecheck` and `docs:check` pass, and the audit report's §3.1 attack chain was replayed against a real
+`RemoteApiServer` (now 403 for every step). **Not yet verified on real hardware**, and not published to
+npm or either release site — i.e. "not published ≠ not verified ≠ users have it".
+
 ## Project
 
-- Version: `v2.5.0`
+- Version: `v2.5.1`
+- **v2.5.1 is a security release**: it closes a remote privilege escalation where `/manage/**`
+  and the loopback admin header were granted to any request whose TCP source looked like loopback —
+  which is exactly what a Cloudflare tunnel (or any reverse proxy) makes every public request look like.
+  It also fixes `.heif` handoff images, which were always rejected with 415 by the read-only route.
+  After upgrading, **`/manage` returns 403 whenever the tunnel is running** (the only exceptions are the
+  read-only tunnel-status endpoints, which hide the tunnel URL from non-local callers); the desktop panel
+  is unaffected. See `docs/project/SECURITY.md` §「管理面的信任边界」.
 - Author: upstream [Hakunm](https://github.com/Hakunm); this fork maintained by [westanke](https://github.com/westanke)
 - Repository: [GitHub](https://github.com/westanke/dsh-remote-bridge) · [Gitee](https://gitee.com/westanke/dsh-remote-bridge)
 - npm: [`dsh-remote-bridge`](https://www.npmjs.com/package/dsh-remote-bridge) ([mainland-China mirror](https://registry.npmmirror.com/dsh-remote-bridge))

@@ -113,7 +113,14 @@ export async function apply(ctx: HostContext, config: Config = {}): Promise<void
   // 让手机浏览一路报错，比不显示更糟。
   await registerBuiltinWorkspaceRoot(ctx, database)
   const events = new WorkspaceEventBus()
-  const auth = new AuthService(database)
+  // Cloudflare 隧道管理器：进程状态全部收敛在这一个实例里，router 只当 HTTP 门面。
+  // 二进制不随插件发布，需按需下载（见 cloudflared.ts），位置在 `dataDir/cloudflared-bin`。
+  //
+  // 它**必须先于 AuthService 创建**：管理面鉴权的判据 0 是「隧道在跑就整体关门」，
+  // 而那条判据读的是这个实例的实时状态。所有请求都发生在 `remote.start()` 之后，
+  // 那时实例一定已就绪；auth 里存的是闭包而不是快照，所以隧道后来启停也能跟上。
+  const tunnels = new CloudflaredTunnelManager()
+  const auth = new AuthService(database, { tunnelActive: () => tunnels.tunnelActive })
   const files = new FileService(database, event => events.emit(event))
   // Rebuild the pre-0.2 `apiProxy` facade over the 0.2.x host services so both
   // adapters keep the contract they were written against.
@@ -176,9 +183,6 @@ export async function apply(ctx: HostContext, config: Config = {}): Promise<void
     events,
     handle: (req, res) => router.handle(req, res),
   })
-  // Cloudflare 隧道管理器：进程状态全部收敛在这一个实例里，router 只当 HTTP 门面。
-  // 二进制不随插件发布，需按需下载（见 cloudflared.ts），位置在 `dataDir/cloudflared-bin`。
-  const tunnels = new CloudflaredTunnelManager()
   router = new ApiRouter({
     database,
     auth,

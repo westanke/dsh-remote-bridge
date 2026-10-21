@@ -62,9 +62,15 @@ curl -X POST http://127.0.0.1:3090/manage/config/text \
 `tunnels`（`CloudflaredTunnelManager`）的构建上可用；未注入时返回 `404 ROUTE_NOT_FOUND`。
 `GET /manage/cloudflare/status` 带 `HEAD`/`GET` 任一。`create`/`stop` 为 `POST`，均走回环管理面。
 
+**v2.5.1 起隧道运行时会禁用整个管理面**（`403 TUNNEL_MODE_ADMIN_DISABLED`）——
+因为隧道把公网流量转成 127.0.0.1 出站，回环判据会被它洗白。
+`status` 与 `activity` 是仅有的两个豁免项（只读、无副作用），好让**本机**面板还能读到
+「隧道开着」并给出人话提示；`create` / `stop` **不在豁免之列**，且豁免只针对判据 0 ——
+隧道来源的请求即使打豁免端点也 403。见 `SECURITY.md` §管理面的信任边界与「残余风险」。
+
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
-| `GET` | `/manage/cloudflare/status` | 当前隧道状态：`{ channel, url, running, error? }`。未启动时 `running:false`、`url:null` |
+| `GET` | `/manage/cloudflare/status` | 当前隧道状态：`{ channel, url, running, error? }`。未启动时 `running:false`、`url:null`。**唯一豁免「隧道模式禁用管理面」的端点之一**，供本机面板读「隧道开着」；隧道来源的请求仍被判据 1/2/3 挡住（403），读不到隧道地址 |
 | `POST` | `/manage/cloudflare/create` | 查/建 `cloudflared` 可执行文件并启动 **Quick Tunnel**（转发到配置的监听端口，常为 `3090`），响应 `201` 返回与 `status` 同构的状态 |
 | `POST` | `/manage/cloudflare/stop` | 停止当前隧道，返回 `200` 与状态 |
 | `GET` | `/manage/cloudflare/activity` | 创建期间的阶段进度（用户侧用它轮询画进度条）：`{ stage, label, percent }`；`create` 结束即清空 |
@@ -416,6 +422,21 @@ curl http://127.0.0.1:3090/api/v1/debug/host-services \
 ```
 
 结构性元数据不会返回服务器绝对路径。聊天正文和工具输出属于会话内容，可能包含用户或模型主动写出的路径文本。
+
+### 管理面拒绝码（v2.5.1 起，`403`）
+
+管理面（`/manage/**`）与回环 admin 头（`X-Dsh-Workspace-Admin: 1`）不再只看「TCP 来源是否回环」。
+四层判据各给**一个独立的码**，客户端应按码给不同提示，不要把它们糊成一个：
+
+| `error.code` | 含义 | 用户该怎么办 |
+| --- | --- | --- |
+| `TUNNEL_MODE_ADMIN_DISABLED` | 隧道正在运行，管理面整体停用 | 到本机 WebUI 操作，或在面板里停掉隧道 |
+| `ADMIN_PROXY_FORWARDED` | 请求带了转发头（经代理/反代） | 管理面只能从本机直连访问 |
+| `ADMIN_HOST_NOT_LOOPBACK` | `Host` 不是回环（公网域名 / DNS 重绑定 / 缺失） | 用 `127.0.0.1` 或 `localhost` 打开 |
+| `ADMIN_LOOPBACK_REQUIRED` | socket 来源或 `Origin` 不是回环 | 只能在本机操作（2.5.0 就有的码，保留作兜底） |
+
+判定顺序即上表顺序（短路）。`Origin` **缺失时不因此被拒** —— 详见
+`INTERFACES.md` §2.1.1 与 `SECURITY.md` §管理面的信任边界。
 
 ## 事件
 

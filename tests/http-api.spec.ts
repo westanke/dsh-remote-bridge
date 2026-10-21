@@ -105,10 +105,15 @@ describe('remote HTTP API', () => {
         headers: {
           Origin: 'https://untrusted.example',
           'X-Dsh-Workspace-Admin': '1',
+          // `X-Forwarded-For: 127.0.0.1` 是最典型的「洗白」写法：声称自己是本机。
+          // 2.5.1 起「出现任何转发头」本身就等于「前面有一层代理」，直接按
+          // ADMIN_PROXY_FORWARDED 拒（403）。修复前这里靠那个坏 Origin 才落到 401 ——
+          // 这条测试因此给了错误的安心感（见审计报告 §3.1「为什么测试没抓到」）。
           'X-Forwarded-For': '127.0.0.1',
         },
       })
-      expect(forwardedAdmin.status).toBe(401)
+      expect(forwardedAdmin.status).toBe(403)
+      await expect(forwardedAdmin.json()).resolves.toMatchObject({ error: { code: 'ADMIN_PROXY_FORWARDED' } })
 
       const addRoot = await fetch(`${baseUrl}/manage/roots`, {
         method: 'POST',

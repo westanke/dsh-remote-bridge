@@ -1,5 +1,83 @@
 # 开发日志
 
+## 2.5.1 · 堵住隧道/反代下的管理面提权（安全修复，2026-10-21）
+
+### 基于什么
+
+2026-10-21 的安全审计报告 §3.1 与 §3.6 定案的两条真 bug（报告：
+`研究类/安全与界面优化-20261021/安全审计-dsh-remote-bridge.md`）：
+
+- **高危｜远程提权**：`/manage/**` 与回环 admin 头（`X-Dsh-Workspace-Admin: 1`）的唯一判据
+  是「TCP 来源是否回环 + Origin 是否回环」。而插件自带的 cloudflared Quick Tunnel 用
+  `--url http://127.0.0.1:PORT` 转发，**公网请求进到 bridge 时 `remoteAddress` 恒为 127.0.0.1**，
+  回环校验对隧道流量完全失效。实测无凭据 `POST /manage/pairings` → 201 → 兑换出完整设备令牌
+  （scopes 含 `files.write`）；`GET /manage/roots` 直接吐全部授权根的绝对路径。
+  同类拓扑：ngrok、frp、Caddy/Nginx `proxy_pass 127.0.0.1`、SSH 端口转发、Tailscale Serve。
+  放大器另有两条：`isLoopbackOrigin(undefined) === true`（curl 天然不带 Origin 即为「同源」），
+  以及 Host 头完全没人校验（DNS 重绑定不设防）。
+- **中危｜`.heif` 交接图 100% 打不开**：写盘表把 `image/heif` 映射成扩展名 `heif`，
+  读取表把 `heif` 声明成 `image/heif`，而嗅探器对 ISO-BMFF 的 `hei*`/`hev*`/`mif*` 一律返回
+  `image/heic`；一致性校验要求完全相等，于是恒 415。
+
+### 干了什么
+
+- **`src/host/auth.ts`**：新增统一判据 `adminRefusal` / `isLocalAdminRequest`，
+  四层纵深（0 隧道运行中整体拒 → 1 出现任何转发头按代理拒 → 2 `Host` 必须回环、缺失也拒 →
+  3 socket 与 Origin 回环）。`requireAdmin` 与 `principal({allowAdmin})` **共用同一份**，
+  并各自给出**分明的错误码**：`TUNNEL_MODE_ADMIN_DISABLED` / `ADMIN_PROXY_FORWARDED` /
+  `ADMIN_HOST_NOT_LOOPBACK` / `ADMIN_LOOPBACK_REQUIRED`（后者是 2.5.0 就有的码，
+  安卓端只消费它的文案，保留作兜底）。
+  **`Origin` 缺失仍然放行**，这是刻意的：它不再是信任来源，真正确立信任的是判据 0/1/2；
+  翻严只会打死 `curl` 与本机脚本调试，挡不住隧道（隧道流量先撞判据 0）。理由写进了源码注释。
+- **`src/host/cloudflared.ts`**：新增 `tunnelActive` getter（与 `publicState.running`
+  同一个表达式），作为判据 0 的真相来源。
+- **`src/index.ts`**：把 `CloudflaredTunnelManager` 的创建提前到 `AuthService` 之前，
+  并以闭包 `() => tunnels.tunnelActive` 注入 —— 请求时刻现读，隧道后来启停也能跟上。
+- **`src/host/router.ts`**：解掉「隧道一开，面板连隧道状态都读不到」的自相矛盾。
+  `TUNNEL_MODE_EXEMPT_PATHS` 让 `GET /manage/cloudflare/status|activity` 豁免判据 0
+  （供本机面板读「隧道开着」；判据 1/2/3 照旧生效，所以隧道来源连这两个端点也 403、
+  读不到隧道地址 —— 「远程读得到 running 但读不到 url」被明确否决，那要在判据 1 上再开口子）。
+- **判据 1 增加了 Cloudflare 边缘头**（`Cf-Connecting-IP`/`Cf-Ray`/`Cf-IpCountry`/`Cf-Visitor`）：
+  因为 cloudflared 的 `httpHostHeader` 默认为空、会把 `Host` 改写成回环地址，真实隧道下
+  判据 2 挡不住它。实测确认（只改 Host 能拿到 200，加边缘头才被挡）。
+- **`src/host/image-handoff.ts`**：一致性校验改为按**图片家族**比较（`sameImageFamily`），
+  `image/heic` 与 `image/heif` 同族放行。**没有**让嗅探器伪造 `image/heif` ——
+  HEIC/HEIF 在字节层无法区分，让嗅探器返回它无法自证的值等于让内容自证这道闸门说谎。
+  跨家族错配（png 字节配 `.jpg` 名、heic 字节配 `.avif` 名）仍然全部 415。
+- **版本**：`package.json` 与 `src/shared/version.ts` 同步 2.5.0 → **2.5.1**（安全修复，patch 版）；
+  OpenAPI / AsyncAPI 的 `info.version` 同步。
+
+### 测了什么
+
+- `tests/admin-loopback-escalation.spec.ts`：原有 **5 个 `it.fails` 全部改回 `it` 并真实通过**；
+  文件从 6 例扩到 **16 例**，新增：判据 0 的整体拒绝、桌面端（回环 Origin + 回环 Host +
+  admin 头）**仍然放行**、隧道状态可读但 `url` 被隐去、转发头被拒、
+  `requireAdmin` 与 `principal({allowAdmin})` 对同一请求结论**一致**、判据矩阵（纯函数层，
+  含四种码与「允许缺 Origin、绝不允许缺 Host」）。
+- `tests/handoff-extension-consistency.spec.ts`：`.heif` 由「断言 415」改为「断言 200」，
+  并保留「嗅探器永远不会返回 `image/heif`」这条根因断言（现在它是**性质**而非 bug）。
+- `tests/security.spec.ts` / `tests/http-api.spec.ts`：按新契约更新（转发头场景由 401 改 403 并断言码）。
+- 全量：**47 个测试文件 / 396 个用例 / 0 失败 / 0 expected fail**（修复前 386 例含 5 个 expected fail）。
+  `typecheck` 与 `docs:check` 均通过。
+
+### 未做的事（明确边界）
+
+- **外部反代 / SSH 转发这条路径仍未堵死（如实记录，不是遗漏）**：判据 0 只反映本插件
+  自己拉的 cloudflared；SSH `-L`、他人的 frp、剥了头的 Caddy 转进来的请求 `tunnelActive`
+  是 `false`，而裸 TCP 不加转发头、`Host` 由客户端自填、`Origin` 缺失放行 —— 四层全过。
+  实测 `POST /manage/pairings` → 201（设备数 0 → 1）。**原理上无法靠判据修掉**：
+  「本机进程能做的事，SSH 转发进来的攻击者也能做」，socket 层面无法区分；
+  再加请求头判据也是自欺（头能伪造）。准确表述是「本插件自带隧道已堵死，
+  外部反代/SSH 在特定配置下仍可提权」。根治方向：管理面认凭据（独立管理令牌）或端口分离。
+- **分端口（管理面与数据面分离拓扑）**：审计报告的「中期档」。代价是新增监听器、迁移
+  `/manage` 全部路由、改监听器生命周期与回滚逻辑，并同步 API 文档与客户端——本次记为后续项，
+  不在 patch 版里做。判据 0 已经把「隧道把外部流量洗成回环」这条**真实拓扑**堵死，
+  分端口的收益是「即使判据写错也物理不可达」，属于纵深加固而非补洞。
+- 判据 2 在真实 cloudflared 下不可靠这一点**没有**靠改判据解决（那需要 `httpHostHeader`
+  或分端口），本次是靠判据 0 兜住 + 判据 1 的 `Cf-*` 边缘头。已在 SECURITY.md 与 PITFALLS.md 写明。
+- **没有**实现「缺失 Origin 时额外要求一个标记头」这类加固 —— 它**无效**：标记头本身就能伪造，
+  而这条路径的攻击者能自由设头。写出来只会制造虚假安全感。
+
 ## 2.5.0 · 模型设置对齐官方目录元数据（2026-10-21）
 
 ### 基于什么

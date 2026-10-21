@@ -9,7 +9,7 @@
 </p>
 
 <p align="center">
-  <img alt="Version" src="https://img.shields.io/badge/version-v2.5.0-087f8c">
+  <img alt="Version" src="https://img.shields.io/badge/version-v2.5.1-087f8c">
   <img alt="DSH plugin" src="https://img.shields.io/badge/DeepSeek_Harness-plugin-1f2328">
   <img alt="Platforms" src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-586069">
   <img alt="License" src="https://img.shields.io/badge/license-AGPL--3.0-2da44e">
@@ -93,10 +93,10 @@ dsh plugin --profile web add dsh-remote-bridge
 dsh plugin --profile web add dsh-remote-bridge --registry https://registry.npmmirror.com
 
 # ② GitHub Release 的 tarball
-dsh plugin --profile web add https://github.com/westanke/dsh-remote-bridge/releases/download/v2.5.0/dsh-remote-bridge-v2.5.0.tgz
+dsh plugin --profile web add https://github.com/westanke/dsh-remote-bridge/releases/download/v2.5.1/dsh-remote-bridge-v2.5.1.tgz
 
 # ③ Gitee Release 的 tarball（国内访问更快）
-dsh plugin --profile web add https://gitee.com/westanke/dsh-remote-bridge/releases/download/v2.5.0/dsh-remote-bridge-v2.5.0.tgz
+dsh plugin --profile web add https://gitee.com/westanke/dsh-remote-bridge/releases/download/v2.5.1/dsh-remote-bridge-v2.5.1.tgz
 
 npx @deepseek-ai/dsh web
 ```
@@ -112,7 +112,7 @@ npx @deepseek-ai/dsh web
 从 GitHub Release 下载离线安装包时，可直接安装 tarball：
 
 ```sh
-dsh plugin --profile web add ./dsh-remote-bridge-v2.5.0.tgz
+dsh plugin --profile web add ./dsh-remote-bridge-v2.5.1.tgz
 ```
 
 ## 第一次使用
@@ -346,9 +346,19 @@ v2.5.0 在 DSH **0.2.1-rc.2** 上完成真机验证：14/14 宿主服务全部�
 权限档位目录返回内核真实三档。开发基线为上游 `dsh-v0.2.1-rc.2`（commit `687f282e8625c6b8d11ff58211a90524be2e4317`），
 兼容范围见上文 `engines.dsh`。CI 覆盖 Windows、Ubuntu 和 macOS。
 
+**v2.5.1 的验证状态**：47 个测试文件 / 398 个用例全绿（含隧道拓扑下的管理面回归、
+桌面端放行断言、`it.fails` 转正）、`typecheck` 与 `docs:check` 通过，并用真实
+`RemoteApiServer` 重打了审计报告 §3.1 的攻击链（逐条 403）。**尚未做真机验收**，
+也未发布到 npm / 两站 Release —— 按「未发布 ≠ 已验证 ≠ 用户吃到了」记三态。
+
 ## 项目信息
 
-- 当前版本：`v2.5.0`
+- 当前版本：`v2.5.1`
+- **v2.5.1 是安全修复版**：堵住「开隧道/反代后管理面免凭据对公网开放」的远程提权（`/manage/**`
+  与回环 admin 头此前只按「TCP 来源是否回环」判定，而隧道转发进来的请求来源恒为 `127.0.0.1`），
+  并修复 `.heif` 交接图必被只读路由 415 的问题。升级后**开隧道时 `/manage` 一律 403**
+  （唯一例外是只读的隧道状态端点，且对非本机调用方隐去隧道地址）；桌面端面板不受影响。
+  见 `docs/project/SECURITY.md` §管理面的信任边界。
 - 作者：上游 [Hakunm](https://github.com/Hakunm)，本 fork 维护 [westanke](https://github.com/westanke)
 - 仓库：[GitHub](https://github.com/westanke/dsh-remote-bridge) · [Gitee](https://gitee.com/westanke/dsh-remote-bridge)
 - npm：[`dsh-remote-bridge`](https://www.npmjs.com/package/dsh-remote-bridge)（[国内镜像](https://registry.npmmirror.com/dsh-remote-bridge)）

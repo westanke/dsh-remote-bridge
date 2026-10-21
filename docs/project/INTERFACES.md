@@ -44,13 +44,33 @@
 | 入口 | 前缀 | 挂载方式 | 鉴权 |
 | --- | --- | --- | --- |
 | 版本化 API | `/api/v1` | 独立监听器（默认 `3090`）+ DSH 同源嵌入 `/dsh-workspace-api` | 设备 token 或 loopback admin |
-| 回环管理面 | `/manage` | 同上 | **必须是回环 + admin 头** |
+| 回环管理面 | `/manage` | 同上 | **必须是本机来源**（四层判据，见 2.1.1） |
 | 只读图片 | `/plugin/dsh-remote-bridge/raw` | 只挂 DSH 同源嵌入 | 回环 + 同源 + 裸文件名白名单 + 字节自证 |
 
 - **`/dsh-workspace-api` 前缀是已发布 App 写死的契约，不可改**（`server.ts:320` 注释）。
   嵌入路由把它在 DSH WebUI 同源上再暴露一次，`stripPrefix` 后走同一套 router。
 - 鉴权头：`Authorization: Bearer <device-token>`；回环管理用 `X-Dsh-Workspace-Admin: 1`。
 - 能力位与 `connection.ready` 见 §3.4。
+
+#### 2.1.1 「本机管理请求」的四层判据（v2.5.1 起）
+
+实现在 `src/host/auth.ts` 的 `adminRefusal` / `isLocalAdminRequest`，
+`requireAdmin`（`/manage`）与 `principal({allowAdmin})`（`/api/v1`）**共用同一份** ——
+一严一松就是这次修复要消灭的那类 bug。
+
+| # | 判据 | 拒绝时的 `error.code` |
+| --- | --- | --- |
+| 0 | 没有自管隧道在运行（`CloudflaredTunnelManager.tunnelActive === false`） | `TUNNEL_MODE_ADMIN_DISABLED` |
+| 1 | 不带任何转发头（`forwarded` / `x-forwarded-for` / `x-forwarded-host` / `x-forwarded-proto` / `x-real-ip`） | `ADMIN_PROXY_FORWARDED` |
+| 2 | `Host` 是回环（`127.0.0.1` / `localhost` / `[::1]`；**缺失也拒**） | `ADMIN_HOST_NOT_LOOPBACK` |
+| 3 | socket 来源回环；`Origin` 存在时必须回环（**缺失仍放行**，见下） | `ADMIN_LOOPBACK_REQUIRED` |
+
+- **`Origin` 缺失仍放行是刻意的**：它不再构成信任来源，真正确立信任的是判据 0/1/2。
+  翻严只会打死 `curl` 与本机脚本调试，挡不住隧道（隧道流量先撞判据 0）。
+- **唯一豁免判据 0 的端点**：`GET /manage/cloudflare/status|activity`（只读、无副作用），
+  目的是让本机面板读到「隧道开着」这个信号；判据 1/2/3 对它们**照旧生效**，
+  所以隧道来源的请求连它们也是 403（读不到隧道地址）。详见 `SECURITY.md` §管理面的信任边界。
+- 隧道模式下 `POST /manage/cloudflare/create|stop` **仍然 403**（它们不是豁免项）。
 
 ### 2.2 REST 路由总表
 
@@ -132,7 +152,7 @@
 | GET | `/manage/audit` | 审计日志 |
 | GET / PUT | `/manage/image` | 识图路径设置 |
 | DELETE | `/manage/trash/{trashId}` | 彻底删除回收站条目 |
-| GET / HEAD | `/manage/cloudflare/status` · `/activity` | 隧道状态与活动 |
+| GET / HEAD | `/manage/cloudflare/status` · `/activity` | 隧道状态与活动（**唯一豁免判据 0**，供本机面板读取；判据 1/2/3 仍生效） |
 | POST | `/manage/cloudflare/create` · `/stop` | 建/停隧道 |
 
 ---
@@ -307,7 +327,8 @@ export class FileService {  // 构造 (database, emit)
 
 | 导出 | 位置 | 用途 |
 | --- | --- | --- |
-| `AuthService`（`principal` / `requireAdmin` / `requireScope` / `requireRoot`） | `auth.ts` | 身份与 scope 校验、限流桶 |
+| `AuthService`（`principal` / `requireAdmin` / `requireScope` / `requireRoot`） | `auth.ts` | 身份与 scope 校验、限流桶；`tunnelActive` 注入驱动判据 0 |
+| `adminRefusal` / `isLocalAdminRequest` / `hasForwardingHeader` | `auth.ts` | 「本机管理请求」四层判据（§2.1.1），两个入口共用 |
 | `BRIDGE_CAPABILITIES` / `HISTORY_FORMAT_VERSION` / `connectionReadyData()` | `capabilities.ts` | 能力位与历史格式版本 |
 | `DshSettingsAdapter`（`listProviders` / `catalog` / `updateProvider` / `createProvider` / `removeProvider` / `discover`） | `settings-adapter.ts` | 提供商与模型目录 |
 | `readPluginInventory` / `withUpdateCheck` / `resolveState` / `togglePlugin` / `PluginToggleError` / `resolveDshHome` / `resolveProfileName` / `normalizeProfileName` | `plugin-inventory.ts` | 插件清单与启停 |
@@ -396,6 +417,9 @@ export const PLUGIN_VERSION: string          // shared/version.ts，与 package.
 | `export function hashSecret` | `src/host/database.ts` | function |
 | `export class FileService` | `src/host/file-service.ts` | class |
 | `export class AuthService` | `src/host/auth.ts` | class |
+| `export function adminRefusal` | `src/host/auth.ts` | function |
+| `export function isLocalAdminRequest` | `src/host/auth.ts` | function |
+| `export function hasForwardingHeader` | `src/host/auth.ts` | function |
 | `export const BRIDGE_CAPABILITIES` | `src/host/capabilities.ts` | const |
 | `export function connectionReadyData` | `src/host/capabilities.ts` | function |
 | `export class DshSettingsAdapter` | `src/host/settings-adapter.ts` | class |

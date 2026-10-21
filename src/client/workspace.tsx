@@ -645,6 +645,13 @@ function apiErrorKey(error: WorkspaceApiError): MessageKey | undefined {
   if (error.code === 'REMOTE_ENABLED') return 'disableToEditListener'
   // Detecting no non-loopback NIC is not a dead end: the user can type an address and retry.
   if (error.code === 'NO_ENDPOINT') return 'configTextNoEndpoints'
+  // 管理面四种拒绝（v2.5.1）：隧道开着 / 经代理 / Host 不是回环 / 只能本机。
+  // 四句提示各不相同 —— 「去把隧道停了」和「用 127.0.0.1 打开」是两件事，
+  // 混成一句「没有权限」会让用户去错地方（见 SECURITY.md §管理面的信任边界）。
+  if (error.code === 'TUNNEL_MODE_ADMIN_DISABLED') return 'errorTunnelModeAdminDisabled'
+  if (error.code === 'ADMIN_PROXY_FORWARDED') return 'errorAdminProxyForwarded'
+  if (error.code === 'ADMIN_HOST_NOT_LOOPBACK') return 'errorAdminHostNotLoopback'
+  if (error.code === 'ADMIN_LOOPBACK_REQUIRED') return 'errorAdminLoopbackRequired'
   if (error.code.includes('PATH') || error.code.includes('SYMLINK') || error.code.includes('REPARSE')) return 'errorPathInvalid'
   if (error.status === 403) return 'errorForbidden'
   if (error.status === 404) return 'errorNotFound'

@@ -337,11 +337,25 @@ export class CloudflaredTunnelManager {
     this.emit()
   }
 
+  /**
+   * 是否有隧道在运行 —— 管理面鉴权的**判据 0**。
+   *
+   * 判据取自**进程持有状态**，不是请求头，所以它对「隧道把外部流量转进 127.0.0.1」
+   * 这条绕过路径 100% 可靠：不管转发进来的请求长什么样，只要隧道开着，管理面就关门。
+   * 见 `auth.ts` 的 `adminRefusal` 与 `PITFALLS.md` §隧道让回环判据失效。
+   *
+   * `running` 与 `publicState.running` 是同一个表达式（同一份真相），这里单独暴露是为了
+   * 让鉴权层不必构造一个含 url 的视图对象 —— 少一处把地址带进意外地方的机会。
+   */
+  get tunnelActive(): boolean {
+    return this.process !== null && !this.process.killed
+  }
+
   get publicState(): TunnelPublicState {
     return {
       channel: this.channel,
       url: this.url,
-      running: this.process !== null && !this.process.killed,
+      running: this.tunnelActive,
       ...(this.errorText === undefined ? {} : { error: this.errorText }),
     }
   }

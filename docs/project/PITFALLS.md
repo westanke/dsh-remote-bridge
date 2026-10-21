@@ -663,3 +663,64 @@ DSH 0.2.x 起 WebUI **对 loopback 也要求 token**，裸请求 `GET /` 返回 
   `scripts/check-project-docs.ts`，否则整段解析成空 → 被下限断言抓红。
 - 判据要**双向**且**带下限**。只查一向或只查「非空」的写法，
   在「新增文件」与「格式变更」这两个真实场景下都会静默放行。
+
+### 隧道让回环判据失效
+
+**症状**：开隧道（或任何反代）后，`/manage/**` 的全部管理端点对公网**无凭据**开放。
+`curl https://xxx.trycloudflare.com/manage/roots` 一个头都不加就返回 200，
+`POST /manage/config/text` 直接吐出一枚设备令牌（含任意 scope）。关掉隧道、只用局域网
+直连则一切正常 —— 于是这个洞很难在「本地开发」中被发现。
+
+**根因**：管理面（`/manage`）与回环管理员身份（`X-Dsh-Workspace-Admin: 1`）修复前的
+唯一判据是 `req.socket.remoteAddress` 是否回环 + `Origin` 是否回环。而插件自带的
+cloudflared Quick Tunnel 用 `--url http://127.0.0.1:PORT` 转发，**公网请求进到 bridge 时
+`remoteAddress` 恒为 `127.0.0.1`** —— 回环校验对隧道流量完全失效。
+同一类拓扑：ngrok、frp、Caddy/Nginx `proxy_pass 127.0.0.1`、SSH 端口转发、Tailscale Serve。
+
+放大器有两个：`isLoopbackOrigin(undefined) === true`（curl 天然不带 Origin，于是天然
+「同源」）；以及 Host 头**完全没人校验**（DNS 重绑定同样不设防）。
+
+**为什么测试没抓到**：`tests/http-api.spec.ts` 有一条看起来同类的用例，它塞了
+`X-Forwarded-For: 127.0.0.1` 与一个坏 Origin，断言 401。但它**从本机直连**服务器
+（`remoteAddress` 本来就是 127.0.0.1），于是测的是「坏 Origin 被拒」「转发头不被信任」，
+而真实攻击不需要坏 Origin、也不依赖转发头。**测试存在，但性质没被钉住** —— 这是本仓
+最典型的假绿形态。
+
+**修法（v2.5.1）**：判据从「只看 socket」扩成四层，写进 `src/host/auth.ts` 的
+`adminRefusal`，`requireAdmin` 与 `principal({allowAdmin})` 共用（一严一松是同族 bug）：
+
+0. 隧道运行中（`CloudflaredTunnelManager.tunnelActive`）→ 整体拒绝；
+1. 出现任何转发头 → 按代理处理；
+2. `Host` 必须回环（缺失也拒）；
+3. socket 回环 + `Origin` 存在时回环。
+
+**坑位不是「改完了」而是这几条**：
+
+- **判据 0 才是那条硬的**。判据 2（Host）在**真实** cloudflared 下未必挡得住：
+  `httpHostHeader` 默认为空，会把 `Host` 改写成源站地址。集成测试里那个「转发器不改写
+  任何头」的模型是**简化**的，别拿它当真实拓扑的证据。
+- 改判据必须**同时**改 `/manage` 与 `/api/v1` 两条路径，并写一条「两者对同一请求结论一致」
+  的断言。只改一处等于把洞挪到另一处。
+- 隧道模式一关，面板就读不到「隧道开着」这个信号（它自己在 `/manage` 前缀下）——
+  所以状态端点必须显式豁免判据 0，并对非本机调用方隐去 `url`。见
+  `router.ts` 的 `TUNNEL_MODE_EXEMPT_PATHS` 与 `tunnelStateFor`。
+- 桌面端不是「豁免」，而是**恰好通过**：它跑在只绑回环的 WebUI 里，Origin 与 Host 天然回环。
+  改判据前先确认这一点，别用「给桌面端开个白名单」的方式绕过。
+
+**这条坑没被修完（2026-10-21 实测，必须知道）**：判据 0 只管**本插件自己拉的**隧道。
+外部反代 / SSH `-L` / 他人的 frp 转进来的请求，`tunnelActive` 是 `false`，于是判据 0 不触发；
+而判据 1（裸 TCP 转发不加头）、判据 2（`Host` 由客户端自填）、判据 3（缺 `Origin` 放行）
+**全都能被绕过**。实测 `POST /manage/pairings` → **201**，兑换后设备数 0 → 1。
+
+**为什么值得单独写一段**：它很容易被误读成「洞已经堵死了」。准确表述是
+**本插件自带隧道已堵死，外部反代/SSH 在特定配置下仍可提权**。
+「本机进程能做的事，SSH 转发进来的攻击者也能做」—— socket 层面无法区分，
+所以**任何再加一层请求头 / Host / Origin 判据的「加固」都是自欺**（头本身能伪造）。
+根治只有「认凭据」（独立管理令牌）或「端口分离」两条。详见
+`SECURITY.md` §信任边界的两个前提 / §残余风险 与实施记录 §7。
+
+`docs/project/SECURITY.md` 里旧版「在 listener 前使用…**可信隧道**」那句是本坑位的
+反向建议（照做就中招），2.5.1 已改写。
+
+**回归断言**：`tests/admin-loopback-escalation.spec.ts`（16 例，含隧道拓扑、判据矩阵、
+桌面端放行、两者一致）。该文件原有的 5 条 `it.fails` 在 2.5.1 全部转正为 `it`。
