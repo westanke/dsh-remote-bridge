@@ -130,7 +130,10 @@ gitee_release() {
     say "  创建 Gitee Release $TAG…"
     [ "$DRY_RUN" = "1" ] && return 0
     local body
-    body=$( [ -n "$BODY_FILE" ] && cat "$BODY_FILE" || sed -n '/^## /,$p' docs/project/CHANGELOG-DEV.md | head -60 )
+    # `sed … | head` 会在 60 行处 SIGPIPE，配合 `set -o pipefail` 直接中断发版
+    # （2026-10-21 v2.5.0 实测：脚本死在"创建 Gitee Release"前，退出码 4）。
+    # 改用 awk 限定行数，不产生管道早退。
+    body=$( [ -n "$BODY_FILE" ] && cat "$BODY_FILE" || awk 'f||/^## /{f=1; if(n++<60) print}' docs/project/CHANGELOG-DEV.md )
     # ⚠️ access_token 必须放 **form 字段**，不能放 query（`?access_token=`）——
     # 2026-10-20 实测：query 形式一律返回 40001「登录失效，无权限访问该资源」，
     # 而 token 本身有效（GET /api/v5/user 返回 200）、git push 也正常 —— 极易误判成
