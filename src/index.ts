@@ -250,32 +250,49 @@ export async function apply(ctx: HostContext, config: Config = {}): Promise<void
   ])
   // `/tunnel`：从 IM（微信/飞书/钉钉/企微…）里远程开隧道并取回配置文本。**只开不停**，
   // 门禁依赖 IM 插件自身的访问策略（allowlist + canExecuteCommands）—— 见 im-command.ts 头注释。
-  ctx.effect(
-    () => registerTunnelCommand(ctx.commands as unknown as TunnelCommandRegistry, {
-      openTunnel: () => router.openTunnelForCommand(),
-      logger: {
-        info: (message) => ctx.logger.info(message),
-        warn: (error) => ctx.logger.warn(error),
-      },
-    }),
-    'dsh-remote-bridge /tunnel command',
-  )
-  // 同一件事的第二个入口：**工具**。IM 插件的斜杠命令表是封闭的（只有内置 31 条 +
-  // `/compact` `/clear` `/permission` 三条委派宿主，没有通用派发），所以 IM 里发 `/tunnel`
-  // 到不了命令处理函数；用户用自然语言说「帮我开隧道」时，智能体调这个工具即可。
-  // `tools` 不在 inject 里（硬依赖会让插件在其他构建上整个起不来），缺了就不注册。
-  const toolsService = reflect?.get?.('tools', false)
-  if (toolsService !== undefined) {
+  // 注册失败只降级「没有 /tunnel」，绝不能让 apply 抛错 —— apply 抛错会让 cordis 拆掉整个
+  // fiber：HTTP 服务器已经 bind、端口还占着，但 ctx 变成 inactive，于是每个需要内核服务的
+  // 端点都返回 `cannot get required service "x" in inactive context`，客户端看起来像「全挂了」。
+  // 2026-10-22 真机实测踩过这个坑（热替换产物 + 重启时序）。
+  try {
     ctx.effect(
-      () => registerTunnelTool(toolsService as unknown as TunnelToolRegistry, {
+      () => registerTunnelCommand(ctx.commands as unknown as TunnelCommandRegistry, {
         openTunnel: () => router.openTunnelForCommand(),
         logger: {
           info: (message) => ctx.logger.info(message),
           warn: (error) => ctx.logger.warn(error),
         },
       }),
-      'dsh-remote-bridge open_tunnel_config tool',
+      'dsh-remote-bridge /tunnel command',
     )
+  } catch (error) {
+    ctx.logger.warn(new Error(`dsh-remote-bridge: /tunnel command registration failed (ignored): ${String(error)}`))
+  }
+  // 同一件事的第二个入口：**工具**。IM 插件的斜杠命令表是封闭的（只有内置 31 条 +
+  // `/compact` `/clear` `/permission` 三条委派宿主，没有通用派发），所以 IM 里发 `/tunnel`
+  // 到不了命令处理函数；用户用自然语言说「帮我开隧道」时，智能体调这个工具即可。
+  // `tools` 不在 inject 里（硬依赖会让插件在其他构建上整个起不来），缺了就不注册。
+  let toolsService: unknown
+  try {
+    toolsService = reflect?.get?.('tools', false)
+  } catch {
+    toolsService = undefined
+  }
+  if (toolsService !== undefined) {
+    try {
+      ctx.effect(
+        () => registerTunnelTool(toolsService as unknown as TunnelToolRegistry, {
+          openTunnel: () => router.openTunnelForCommand(),
+          logger: {
+            info: (message) => ctx.logger.info(message),
+            warn: (error) => ctx.logger.warn(error),
+          },
+        }),
+        'dsh-remote-bridge open_tunnel_config tool',
+      )
+    } catch (error) {
+      ctx.logger.warn(new Error(`dsh-remote-bridge: open_tunnel_config registration failed (ignored): ${String(error)}`))
+    }
   }
   ctx.effect(() => async () => {
     disposeEmbedded()

@@ -100,7 +100,11 @@ describe('workspace translations', () => {
     const table = /TAB_DESC_KEYS: Record<AdminTab, MessageKey> = \{([\s\S]*?)\}/.exec(source)
     if (table === null) throw new Error('workspace.tsx 里找不到 TAB_DESC_KEYS 映射表')
     const pairs = [...table[1]!.matchAll(/(\S+?):\s*'(\w+)'/g)]
-    expect(pairs.length).toBe(7)
+    // 卡的张数以 ADMIN_TABS 为准，不写死数字：删掉一个卡（例如 2026-10-22 移除审计，
+    // 用户理由是「就自己用、暂时没必要」）时，这条断言不该变成一处需要手工同步的常数。
+    const tabs = /ADMIN_TABS: readonly AdminTab\[\] = \[([^\]]*)\]/.exec(source)
+    if (tabs === null) throw new Error('workspace.tsx 里找不到 ADMIN_TABS')
+    expect(pairs.length).toBe(tabs[1]!.split(',').filter(item => item.trim().length > 0).length)
 
     for (const [, tab, key] of pairs) {
       // 键名回显成 `key` 本身即表示字典里查不到 —— 这正是白屏那次的表现。

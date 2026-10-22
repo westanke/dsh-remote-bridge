@@ -21,10 +21,10 @@ import { LanguageToggle, type MessageKey, scopeLabel, type Translate, useWorkspa
 import { installWorkspaceStyles } from './styles.ts'
 import { PLUGIN_VERSION } from '../shared/version.ts'
 
-export type AdminTab = 'roots' | 'remote' | 'devices' | 'image' | 'trash' | 'audit' | 'app-download'
+export type AdminTab = 'roots' | 'remote' | 'devices' | 'image' | 'trash' | 'app-download'
 export type PanelSection = AdminTab
 
-export const ADMIN_TABS: readonly AdminTab[] = ['roots', 'remote', 'devices', 'image', 'trash', 'audit', 'app-download']
+export const ADMIN_TABS: readonly AdminTab[] = ['roots', 'remote', 'devices', 'image', 'trash', 'app-download']
 
 /** What the settings-page launcher opens: authorized roots, the first section. */
 export const DEFAULT_PANEL_SECTION: AdminTab = 'roots'
@@ -97,7 +97,6 @@ const TAB_DESC_KEYS: Record<AdminTab, MessageKey> = {
   devices: 'devicesTabDesc',
   image: 'imageTabDesc',
   trash: 'trashTabDesc',
-  audit: 'auditTabDesc',
   'app-download': 'appDownloadTabDesc',
 }
 
@@ -197,7 +196,6 @@ export function AdminPanel(props: { api: WorkspaceApi; initialOpen: AdminTab }):
   const { locale, t } = useWorkspaceI18n()
   const [status, setStatus] = useState<Awaited<ReturnType<WorkspaceApi['status']>>>()
   const [trash, setTrash] = useState<Awaited<ReturnType<WorkspaceApi['trashItems']>>['items']>([])
-  const [audit, setAudit] = useState<Record<string, unknown>[]>([])
   const [path, setPath] = useState('')
   const [label, setLabel] = useState('')
   const [listenerHost, setListenerHost] = useState('0.0.0.0')
@@ -221,9 +219,10 @@ export function AdminPanel(props: { api: WorkspaceApi; initialOpen: AdminTab }):
   // 创建云隧道的进行中阶段进度（下载/解包/启动），busy 期间由轮询填充。
   const [activity, setActivity] = useState<CloudflareTunnelActivity>()
   // 审计列表客户端分页（UI-12）：服务端一次给最多 200 条，这里控制「加载更多」每次再放 50 条。
-  const [auditLimit, setAuditLimit] = useState(50)
-  const [auditLoading, setAuditLoading] = useState(false)
   // 当前时间（每分钟走一格），只用于配对码倒计时（UI-10）。
+  // 一键清理未使用设备：天数由用户填，默认 30 天。
+  const [pruneDays, setPruneDays] = useState(30)
+  const [pruneBusy, setPruneBusy] = useState(false)
   const [now, setNow] = useState(() => Date.now())
 
   // 成功反馈条：换内容时重新计时；3.5s 后自动清掉，不挡下一次操作。
@@ -302,8 +301,6 @@ export function AdminPanel(props: { api: WorkspaceApi; initialOpen: AdminTab }):
       // 分区数据只在**对应卡片展开时**才拉。全量平铺后七张卡都在 DOM 里，
       // 无条件全拉等于打开设置页就打七个请求，其中五个用户根本不会点开。
       if (openCards.has('trash')) setTrash((await props.api.trashItems()).items)
-      // 审计一次拿满 200 条存在本地，渲染时按 auditLimit 切片（「加载更多」不再打网络）。
-      if (openCards.has('audit')) setAudit((await props.api.audit()).items)
       // 识图设置是这一节自己的数据：只在真正打开这一节时取，别让每次状态刷新都多一次往返。
       if (openCards.has('image')) {
         const settings = await props.api.imageSettings()
@@ -698,6 +695,36 @@ export function AdminPanel(props: { api: WorkspaceApi; initialOpen: AdminTab }):
             {configText !== undefined && <ConfigTextPanel result={configText} />}
           </SettingsCard>
           <SettingsCard key="devices" tab="devices" nameKey={tabLabelKey('devices')} descKey={tabDescKey('devices')} open={isOpen('devices')} onToggle={() => toggleCard('devices')}>
+            <div className="daw-inline-command">
+              <label className="daw-field"><span>{t('pruneInactiveDays')}</span>
+                <input
+                  className="daw-input"
+                  type="number"
+                  min={1}
+                  max={3650}
+                  value={pruneDays}
+                  disabled={managementLocked || pruneBusy}
+                  onChange={event => setPruneDays(Math.max(1, Math.min(3650, Number(event.target.value) || 1)))}
+                />
+              </label>
+              <button
+                className="daw-command"
+                disabled={managementLocked || pruneBusy}
+                onClick={() => {
+                  if (!confirm(t('pruneInactiveConfirm', { days: String(pruneDays) }))) return
+                  setPruneBusy(true)
+                  setError(undefined)
+                  void props.api.pruneInactiveDevices(pruneDays)
+                    .then(result => {
+                      if (result.pruned === 0) notify('pruneInactiveNone')
+                      else notify('pruneInactiveDone', { count: String(result.pruned) })
+                      return refresh()
+                    })
+                    .catch(setError)
+                    .finally(() => setPruneBusy(false))
+                }}
+              >{pruneBusy ? t('pruneInactiveBusy') : t('pruneInactiveAction', { days: String(pruneDays) })}</button>
+            </div>
             <div className="daw-list">{(status?.devices ?? []).map(device => <DeviceRow key={device.id} api={props.api} device={device} roots={roots} onChanged={refresh} onError={setError} onNotice={notify} />)}</div>
           </SettingsCard>
           {/*
@@ -755,24 +782,6 @@ export function AdminPanel(props: { api: WorkspaceApi; initialOpen: AdminTab }):
             {trash.length === 0
               ? <div className="daw-list-meta daw-empty">{t('trashEmpty')}</div>
               : <div className="daw-list">{trash.map(item => <div className="daw-list-row" key={item.id}><div><div className="daw-list-title">{item.path}</div><div className="daw-list-meta">{item.kind} · {formatBytes(item.size)} · {new Date(item.createdAt).toLocaleString(locale)}</div></div><div><button className="daw-command" onClick={() => { setError(undefined); void props.api.restoreTrash(item.id).then(() => { notify('trashRestored'); return refresh() }).catch(setError) }}>{t('restore')}</button><button className="daw-icon danger" title={t('deletePermanently')} aria-label={t('deletePermanently')} onClick={() => { if (confirm(t('purgeConfirm'))) void props.api.purgeTrash(item.id).then(() => { notify('trashPurged'); return refresh() }).catch(setError) }}><Trash2 size={15} /></button></div></div>)}</div>}
-          </SettingsCard>
-          <SettingsCard key="audit" tab="audit" nameKey={tabLabelKey('audit')} descKey={tabDescKey('audit')} open={isOpen('audit')} onToggle={() => toggleCard('audit')}>
-            {audit.length === 0
-              ? <div className="daw-list-meta daw-empty">{t('auditEmpty')}</div>
-              : <>
-                <div className="daw-list">{audit.slice(0, auditLimit).map((item, index) => <div className="daw-list-row" key={String(item.id ?? index)}><div><div className="daw-list-title">{String(item.action ?? t('event'))}</div><div className="daw-list-meta">{new Date(Number(item.time ?? 0)).toLocaleString(locale)} · {String(item.actorType ?? '')}:{String(item.actorId ?? '')} · {String(item.relativePath ?? '')}</div></div></div>)}</div>
-                {auditLimit < audit.length && (
-                  <button
-                    className="daw-command daw-inline-command"
-                    disabled={auditLoading}
-                    onClick={() => {
-                      setAuditLoading(true)
-                      // 本地切片扩展：下一帧就完成，loading 态主要给「按钮确实有反应」。
-                      window.setTimeout(() => { setAuditLimit(value => value + 50); setAuditLoading(false) }, 0)
-                    }}
-                  >{auditLoading ? t('auditLoading') : t('auditLoadMore')}</button>
-                )}
-              </>}
           </SettingsCard>
           <AppDownloadSection open={isOpen('app-download')} onToggle={() => toggleCard('app-download')} />
         </main>
@@ -927,7 +936,6 @@ function tabIcon(tab: string): JSX.Element {
   if (tab === 'devices') return <Smartphone size={15} />
   if (tab === 'image') return <ImageIcon size={15} />
   if (tab === 'trash') return <Trash2 size={15} />
-  if (tab === 'audit') return <ScrollText size={15} />
   if (tab === 'remote') return <Upload size={15} />
   // A download arrow, not a phone: the phone glyph already belongs to 设备, and this page is about
   // getting the app onto one.

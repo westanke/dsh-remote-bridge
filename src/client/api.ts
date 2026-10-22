@@ -235,6 +235,18 @@ export class WorkspaceApi {
     await this.manageJson(`/devices/${encodeURIComponent(deviceId)}`, { method: 'DELETE' })
   }
 
+  /**
+   * 一键清理「N 天没动过」的设备。天数由用户填，服务端再夹一次 1..3650。
+   *
+   * 返回真正删掉的条数 —— 0 也是一次合法结果（「没有可清理的」），界面不该把它当失败。
+   */
+  async pruneInactiveDevices(olderThanDays: number): Promise<{ pruned: number }> {
+    return this.manageJson('/devices/prune', {
+      method: 'POST',
+      body: JSON.stringify({ olderThanDays }),
+    })
+  }
+
   async trashItems(): Promise<{ items: { id: string; rootId: string; path: string; kind: string; size: number; createdAt: number }[] }> {
     return this.json('/trash')
   }

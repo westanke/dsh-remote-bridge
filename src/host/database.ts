@@ -488,8 +488,71 @@ export class WorkspaceDatabase {
    * 干净的办法制造这种行，而它不该走生产代码路径 —— 所以显式开一个测试专用入口，
    * 并起一个自见其明的名字，免得有人把它当成正常 API。
    */
+  /**
+   * 仅供测试：把某台设备的「最后使用时间/创建时间」拨到过去。
+   *
+   * 生产路径没法造出「30 天没动过」的设备（认证一次就刷新 `last_seen_at`），而
+   * `pruneInactiveDevices` 的核心语义恰恰只在这种时间跨度上才看得见。与
+   * `markRevokedForTest` 同样的理由：显式开一个自见其明的测试入口，别让人误当 API。
+   */
+  backdateDeviceForTest(id: string, options: { lastSeenAt?: number; createdAt?: number }): void {
+    if (options.lastSeenAt !== undefined) {
+      this.db.prepare('UPDATE devices SET last_seen_at = ? WHERE id = ?').run(options.lastSeenAt, id)
+    }
+    if (options.createdAt !== undefined) {
+      this.db.prepare('UPDATE devices SET created_at = ? WHERE id = ?').run(options.createdAt, id)
+    }
+  }
+
   markRevokedForTest(id: string): void {
     this.db.prepare('UPDATE devices SET revoked_at = ? WHERE id = ?').run(Date.now(), id)
+  }
+
+  /**
+   * 按「最后使用时间」批量清掉长期没动过的设备。
+   *
+   * 「最后使用」取 `last_seen_at`（每次令牌认证成功都会刷新），从没认证过的设备退回
+   * `created_at` —— 否则一条配好就再没开过的设备会永远躲过清理，而那恰恰是用户最想
+   * 一键清掉的那类（换手机、临时配对、旧测试探针）。
+   *
+   * 与 `purgeRevokedDevices` 的区别：后者清的是历史遗留的「标记式撤销」脏行，这里清的是
+   * **仍然有效、但已经不用了**的设备 —— 用户的原话是「一键清理多少天未使用设备」。
+   *
+   * 语义边界（故意这么定）：
+   * - 只删设备行 + 级联的 `device_roots`，不碰审计（审计的 `actor_id` 不是外键）；
+   * - **不删本机正在用的那台**（`keepDeviceId`）：调用方就是它，删掉自己会让当前
+   *   客户端立刻 401，看起来像「点一下清理把手机踢下线了」；
+   * - 天数被夹在 1..3650，避免 `0` 或负数变成「清空所有设备」；
+   * - 返回真正删掉的条数，0 也是一次合法结果。
+   */
+  pruneInactiveDevices(olderThanDays: number, options: { keepDeviceId?: string; requestId?: string } = {}): number {
+    const days = Math.min(3650, Math.max(1, Math.trunc(olderThanDays)))
+    const cutoff = Date.now() - days * 24 * 60 * 60 * 1000
+    const rows = this.db
+      .prepare('SELECT id, name FROM devices WHERE COALESCE(last_seen_at, created_at) < ? AND id IS NOT ?')
+      .all(cutoff, options.keepDeviceId ?? null) as { id: string; name: string }[]
+    if (rows.length === 0) {
+      // 没删任何行也要递增版本号：这是「可能改变设备集合」的写，漏递增的代价是
+      // 客户端拿着旧缓存继续推事件；多递增一次的代价只是一次多余的水化。
+      this.devicesRevisionCounter += 1
+      return 0
+    }
+    this.db.exec('BEGIN IMMEDIATE')
+    try {
+      const statement = this.db.prepare('DELETE FROM devices WHERE id = ?')
+      for (const row of rows) statement.run(row.id)
+      this.audit('admin', 'loopback-admin', 'device.prune', undefined, undefined, {
+        olderThanDays: days,
+        pruned: rows.length,
+        names: rows.map(row => row.name),
+      }, options.requestId)
+      this.db.exec('COMMIT')
+    } catch (error) {
+      this.db.exec('ROLLBACK')
+      throw error
+    }
+    this.devicesRevisionCounter += 1
+    return rows.length
   }
 
   purgeRevokedDevices(): number {

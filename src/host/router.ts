@@ -1002,6 +1002,20 @@ export class ApiRouter {
       sendJson(res, 200, { items: this.options.database.listDevices() })
       return
     }
+    // 一键清理「N 天没动过」的设备。放在 `/manage/devices` 的**精确路径**上，
+    // 不放进 `/manage/devices/:id` 通配里 —— 后者会把 `prune` 当成设备 id 去解析。
+    if (method === 'POST' && pathname === '/manage/devices/prune') {
+      const body = await readJson(req, 64_000) as Record<string, unknown>
+      const raw = body.olderThanDays
+      if (typeof raw !== 'number' || !Number.isFinite(raw) || !Number.isInteger(raw) || raw < 1 || raw > 3650) {
+        throw new ApiError(400, 'INVALID_OLDER_THAN_DAYS', 'olderThanDays must be an integer between 1 and 3650.')
+      }
+      // 不传 keepDeviceId：管理面是回环管理员，本身不是设备；而任何**正在用**的设备
+      // 每次认证都会刷新 last_seen_at，因此在 N>=1 天的口径下天然不会被误删。
+      const pruned = this.options.database.pruneInactiveDevices(raw, { requestId })
+      sendJson(res, 200, { pruned })
+      return
+    }
     const deviceRoute = pathname.match(/^\/manage\/devices\/([^/]+)$/)
     if (deviceRoute !== null && method === 'PATCH') {
       const body = await readJson(req, 64_000) as Record<string, unknown>

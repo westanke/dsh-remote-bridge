@@ -222,6 +222,14 @@ const zh = {
   configCreated: '配置文本已生成',
   // 危险操作确认（UI-06：原先一点即发的三处补齐确认）
   revokeConfirm: '吊销后这台手机的令牌立即失效，必须重新配对才能访问。确定吊销「{name}」吗？',
+  // 一键清理「N 天没动过」的设备：口径是「最后使用时间」（令牌认证成功即刷新），
+  // 从没认证过的设备按创建时间算 —— 否则配好就再没开过的那些会永远清不掉。
+  pruneInactiveDays: '清理超过（天）未使用',
+  pruneInactiveAction: '清理 {days} 天未使用设备',
+  pruneInactiveBusy: '正在清理…',
+  pruneInactiveConfirm: '将删除 {days} 天没有使用过的设备（它们需要重新配对才能访问）。最近用过的设备不受影响。继续吗？',
+  pruneInactiveDone: '已清理 {count} 台设备',
+  pruneInactiveNone: '没有需要清理的设备',
   removeRootConfirm: '移除根目录「{label}」不会删除磁盘上的文件，但所有手机将立刻失去对它的访问权。确定移除吗？',
   disableRemoteConfirm: '关闭远程访问后，所有手机连接立即断开，需要重新启用并配对。确定关闭吗？',
   // 操作成功反馈（UI-07：原先除识图保存外全部静默）
@@ -459,6 +467,12 @@ const en: Messages = {
   configCreated: 'Config text generated',
   // Danger confirmations (UI-06: three actions that used to fire on a single click)
   revokeConfirm: 'Revoking invalidates this phone’s token at once; it must pair again to regain access. Revoke “{name}”?',
+  pruneInactiveDays: 'Unused for more than (days)',
+  pruneInactiveAction: 'Prune devices unused for {days} days',
+  pruneInactiveBusy: 'Pruning…',
+  pruneInactiveConfirm: 'This deletes devices unused for {days} days (they must pair again to regain access). Recently used devices are untouched. Continue?',
+  pruneInactiveDone: 'Pruned {count} device(s)',
+  pruneInactiveNone: 'No devices to prune',
   removeRootConfirm: 'Removing “{label}” does not delete files on disk, but every phone immediately loses access to it. Remove it?',
   disableRemoteConfirm: 'Disabling remote access drops every phone connection right away; it must be re-enabled and re-paired. Disable it?',
   // Success feedback (UI-07: every action but the image-path save used to be silent)
