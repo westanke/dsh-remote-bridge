@@ -122,6 +122,15 @@
 | POST | `/api/v1/chat/sessions/{sessionId}/questions/{callId}/answer` | `scope:chat.write` | 提交答案 | `router.ts` questionAnswerRoute 块 |
 | GET | `/api/v1/chat/sessions/{sessionId}/commands` | `scope:chat.read` | 斜杠命令清单 | `router.ts` commandsRoute 块 |
 | POST | `/api/v1/chat/sessions/{sessionId}/commands` | `scope:chat.write` | 执行命令 | 同上 |
+
+**宿主命令 `/tunnel` 与工具 `open_tunnel_config`（2.6.0 起）** 都不在上表里：它不是 REST 路由，而是注册进内核命令表
+（`ctx.commands.register`，全局层）的一条人类命令，供 IM 适配器（`@xmanrui/dsh-im`）在聊天窗口里直接执行。
+语义：开 Cloudflare 隧道 → 等随机域名 → 回一行 `DSH1:` 配置文本；隧道已在运行时复用当前地址。
+两者共用 `ApiRouter.openTunnelForCommand()`；命令给「能发 `/tunnel` 的客户端」，
+工具给「IM 里只会说自然语言」的场景（dsh-im 的斜杠命令表封闭，无通用派发）。
+实现 `src/host/im-command.ts`，宿主侧入口 `ApiRouter.openTunnelForCommand()`（与 `POST /manage/cloudflare/create`
+共用 `createTunnel()`）；审计 `action=cloudflare.create`、来源标签 `im-command`。
+**身份校验不在这里**：由 IM 插件的访问策略（allowlist + `canExecuteCommands`）在派发前完成，见 SECURITY.md。
 | GET | `/api/v1/chat/sessions/{sessionId}/models` | `scope:chat.read` | 会话可选模型 | `router.ts` sessionModelsRoute 块 |
 | GET | `/api/v1/chat/sessions/{sessionId}/model` | `scope:chat.read` | 同上的别名（路由正则 `model(?:s)?$` 同时收两种拼法，新客户端请用 `/models`） | 同上 |
 | PUT | `/api/v1/chat/sessions/{sessionId}/model` | `scope:chat.write` | 选择模型 `{provider, model, reasoningEffort?}` | 同上 |
@@ -133,6 +142,8 @@
 | DELETE | `/api/v1/settings/providers/{providerId}` | `scope:settings.write` | 删提供商 | 同上 |
 | POST | `/api/v1/settings/providers/{providerId}/discover` | `scope:settings.write` | 发现可用模型 | `router.ts` discoverProviderRoute 块 |
 | GET | `/api/v1/settings/models` | `scope:settings.read` | 模型目录 | `router.ts` dispatch settings/models 分支 |
+| GET | `/api/v1/settings/namespaces` | `scope:settings.read` | 全部插件设置命名空间（按 schema 生成表单） | `router.ts` dispatch settings/namespaces 分支 |
+| PATCH | `/api/v1/settings/namespaces/{ns}` | `scope:settings.write` | 按路径改一个命名空间（`ui-*` / `*locale` 默认可写） | `router.ts` settingsNamespaceRoute 块 |
 | GET | `/api/v1/settings/plugins` | `scope:settings.read` | 插件清单（`checkUpdates=1`） | `router.ts` dispatch settings/plugins 分支 |
 | PATCH | `/api/v1/settings/plugins` | `scope:settings.write` | 插件启停 `{name, loaded}` | 同上 |
 
@@ -347,7 +358,8 @@ export class FileService {  // 构造 (database, emit)
 | `AuthService`（`principal` / `requireAdmin` / `requireScope` / `requireRoot`） | `auth.ts` | 身份与 scope 校验、限流桶；`tunnelActive` 注入驱动判据 0 |
 | `adminRefusal` / `isLocalAdminRequest` / `hasForwardingHeader` | `auth.ts` | 「本机管理请求」四层判据（§2.1.1），两个入口共用 |
 | `BRIDGE_CAPABILITIES` / `HISTORY_FORMAT_VERSION` / `connectionReadyData()` | `capabilities.ts` | 能力位与历史格式版本 |
-| `DshSettingsAdapter`（`listProviders` / `catalog` / `updateProvider` / `createProvider` / `removeProvider` / `discover`） | `settings-adapter.ts` | 提供商与模型目录 |
+| `DshSettingsAdapter`（`listProviders` / `catalog` / `updateProvider` / `createProvider` / `removeProvider` / `discover` / `describeNamespaces` / `mutateNamespace`） | `settings-adapter.ts` | 提供商与模型目录、通用设置命名空间读写 |
+| `isSettingsNamespaceWriteAllowed` / `settingsNamespaceReason` / `redactSettingsSecrets` / `parseSettingsNamespaceOps` / `settingsNamespaceOpFields` / `settingsNamespaceCredentialChanged` / `projectSettingsNamespace` | `settings-namespace.ts` | 命名空间写策略、密钥脱敏、ops 校验与响应投影（纯函数） |
 | `readPluginInventory` / `withUpdateCheck` / `resolveState` / `togglePlugin` / `PluginToggleError` / `resolveDshHome` / `resolveProfileName` / `normalizeProfileName` | `plugin-inventory.ts` | 插件清单与启停 |
 | `JobAdapter`（`list` / `follow` / `kill`）、`JobApiError` | `job-adapter.ts` | 后台任务 |
 | `WorkspaceEventBus`（`emit` / `subscribe`） | `event-bus.ts` | 进程内事件总线 |
@@ -440,6 +452,10 @@ export const PLUGIN_VERSION: string          // shared/version.ts，与 package.
 | `export const BRIDGE_CAPABILITIES` | `src/host/capabilities.ts` | const |
 | `export function connectionReadyData` | `src/host/capabilities.ts` | function |
 | `export class DshSettingsAdapter` | `src/host/settings-adapter.ts` | class |
+| `export interface SettingsNamespaceView` | `src/host/settings-namespace.ts` | interface |
+| `export interface SettingsNamespacesView` | `src/host/settings-namespace.ts` | interface |
+| `export function isSettingsNamespaceWriteAllowed` | `src/host/settings-namespace.ts` | function |
+| `export function parseSettingsNamespaceOps` | `src/host/settings-namespace.ts` | function |
 | `export class JobAdapter` | `src/host/job-adapter.ts` | class |
 | `export class WorkspaceEventBus` | `src/host/event-bus.ts` | class |
 | `export class FixedWindowLimiter` | `src/host/rate-limit.ts` | class |

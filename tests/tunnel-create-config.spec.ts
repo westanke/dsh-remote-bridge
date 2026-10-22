@@ -85,7 +85,7 @@ interface Harness {
   close: () => Promise<void>
 }
 
-async function startHarness(tunnelActive: boolean): Promise<Harness & { database: WorkspaceDatabase; tunnels: ReturnType<typeof makeFakeTunnels> }> {
+async function startHarness(tunnelActive: boolean): Promise<Harness & { database: WorkspaceDatabase; tunnels: ReturnType<typeof makeFakeTunnels>; router: ApiRouter }> {
   const base = await mkdtemp(path.join(os.tmpdir(), 'daw-tunnel-create-'))
   cleanup.dir(base)
   const project = path.join(base, 'project')
@@ -135,6 +135,7 @@ async function startHarness(tunnelActive: boolean): Promise<Harness & { database
     port,
     database,
     tunnels,
+    router,
     close: async () => { await remote.stop() },
   }
 }
@@ -234,6 +235,58 @@ describe('POST /manage/cloudflare/create 一键搭车出令牌', () => {
       })
       expect(response.status).toBe(403)
       expect((JSON.parse(response.body) as { error?: { code?: string } }).error?.code).toBe('TUNNEL_MODE_ADMIN_DISABLED')
+    } finally {
+      await harness.close()
+    }
+  })
+})
+
+describe('IM /tunnel 命令的宿主入口 openTunnelForCommand', () => {
+  it('隧道未运行：起一次隧道、等地址、产出可粘贴的 DSH1 配置文本', async () => {
+    const harness = await startHarness(false)
+    try {
+      const result = await harness.router.openTunnelForCommand()
+      expect(result.url).toBe('https://fake-example.trycloudflare.com')
+      expect(result.text.startsWith('DSH1:')).toBe(true)
+      expect(result.deviceName.length).toBeGreaterThan(0)
+      expect(harness.tunnels.startQuickCalls).toBe(1)
+      expect(harness.tunnels.waitForUrlCalls).toBe(1)
+    } finally {
+      await harness.close()
+    }
+  })
+
+  it('隧道已在运行：复用当前地址，不再 spawn 第二个进程（IM 连发两条的常见情形）', async () => {
+    const harness = await startHarness(false)
+    try {
+      const first = await harness.router.openTunnelForCommand()
+      const second = await harness.router.openTunnelForCommand()
+      expect(second.url).toBe(first.url)
+      expect(second.text.startsWith('DSH1:')).toBe(true)
+      expect(harness.tunnels.startQuickCalls).toBe(1)
+    } finally {
+      await harness.close()
+    }
+  })
+
+  it('12 秒内等不到地址：抛出可读错误，而不是返回半截结果', async () => {
+    const harness = await startHarness(false)
+    harness.tunnels.giveUrlOnWait = false
+    try {
+      await expect(harness.router.openTunnelForCommand()).rejects.toThrow(/12 秒内没拿到公网地址/)
+    } finally {
+      await harness.close()
+    }
+  })
+
+  it('审计留痕：IM 来源记为 im-command，能和本机管理面分开查', async () => {
+    const harness = await startHarness(false)
+    try {
+      await harness.router.openTunnelForCommand()
+      const created = harness.database.listAudit(50).filter(entry => entry.action === 'cloudflare.create')
+      expect(created.length).toBeGreaterThan(0)
+      // 第二参数（来源标签）落库为 actor_id；actor_type 恒为 admin（两条入口都等价于本机管理员）。
+      expect(created.some(entry => entry.actorId === 'im-command')).toBe(true)
     } finally {
       await harness.close()
     }

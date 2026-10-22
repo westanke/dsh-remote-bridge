@@ -579,6 +579,68 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ModelCatalog' }
+  /settings/namespaces:
+    get:
+      operationId: listSettingsNamespaces
+      summary: Read every DSH plugin settings namespace
+      description: |
+        Returns the host's per-plugin settings document as one entry per namespace, so a
+        mobile client can build a form from `schema` without a dedicated endpoint per
+        plugin. Requires `settings.read`.
+
+        The top-level `writable` mirrors the host settings document. Each entry's
+        `writable` is that value AND the bridge's write policy: namespaces starting with
+        `ui-` or ending in `locale` are writable by default; high-risk ones (`llm-*`,
+        `permission`, `agent-default-model`, `subagent-*`, …) are read-only unless the
+        deployment explicitly allows them through `settingsWriteNamespaces`. When an
+        entry is not writable, `reason` says why: `HOST_READONLY` (the whole settings
+        document is read-only) or `HIGH_RISK_NAMESPACE` (write policy).
+
+        Secret values never leave the host: the kernel already redacts fields declared as
+        secrets, and the bridge additionally masks string values whose key matches
+        `apiKey|secret|token|password|credential|apiKeyEnv` with `***`.
+      responses:
+        '200':
+          description: All namespaces, with secret values redacted and per-namespace writability.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SettingsNamespaces' }
+        '403': { $ref: '#/components/responses/Error' }
+  /settings/namespaces/{ns}:
+    parameters:
+      - name: ns
+        in: path
+        required: true
+        schema: { type: string }
+        description: Namespace id (a plugin name such as `ui-chat`).
+    patch:
+      operationId: mutateSettingsNamespace
+      description: |
+        Applies path-addressed `set` / `unset` operations to one namespace, mirroring the
+        kernel's `settings.mutate`. Requires `settings.write`; at most 32 operations per
+        request. A successful mutation is audited as `settings.namespace.mutate` with the
+        touched field paths only — never the values.
+
+        Only namespaces allowed by the write policy can be changed; others answer
+        403 `SETTINGS_NAMESPACE_READONLY`. `expectedRevision` is optimistic concurrency:
+        a mismatch answers 409 `SETTINGS_CONFLICT`; an invalid ops body answers
+        400 `SETTINGS_OPS_INVALID`; a missing host settings service answers
+        503 `SETTINGS_UNAVAILABLE`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SettingsNamespaceOps' }
+      responses:
+        '200':
+          description: The mutated namespace, in the same shape as one entry of `SettingsNamespaces.namespaces`.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SettingsNamespaceSummary' }
+        '400': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
+        '503': { $ref: '#/components/responses/Error' }
   /settings/providers/{providerId}:
     parameters:
       - name: providerId
@@ -1624,6 +1686,83 @@ components:
         providers:
           type: array
           items: { $ref: '#/components/schemas/Provider' }
+    SettingsNamespaceSecret:
+      type: object
+      description: One secret slot reported by the host. Only its path and whether it is set are exposed, never the value.
+      required: [path, set]
+      properties:
+        path:
+          type: array
+          items: { type: string }
+        set: { type: boolean }
+    SettingsNamespaceSummary:
+      type: object
+      description: One DSH settings namespace as seen by a remote client, with secret values redacted.
+      required: [ns, revision, value, writable]
+      properties:
+        ns: { type: string, examples: [ui-chat, ui-theme] }
+        revision: { type: integer, minimum: 0 }
+        schema:
+          type: object
+          additionalProperties: true
+          description: Kernel schema tree for form generation; its shape is kernel-defined.
+        value:
+          description: Effective value (base merged with user overrides), recursively redacted.
+        base:
+          description: Built-in default value, recursively redacted.
+        user:
+          description: User overrides only, recursively redacted.
+        autoGenerate:
+          type: object
+          additionalProperties: true
+          description: Kernel-reported fields that are generated automatically.
+        applies:
+          type: object
+          additionalProperties: true
+          description: Kernel-reported applicability conditions for this namespace.
+        secrets:
+          type: array
+          items: { $ref: '#/components/schemas/SettingsNamespaceSecret' }
+        writable:
+          type: boolean
+          description: The host document is writable AND this namespace passes the bridge's write policy.
+        reason:
+          type: string
+          enum: [HOST_READONLY, HIGH_RISK_NAMESPACE]
+          description: Present only when `writable` is false.
+    SettingsNamespaces:
+      type: object
+      required: [writable, namespaces]
+      properties:
+        writable:
+          type: boolean
+          description: Whether the host settings document itself is writable.
+        namespaces:
+          type: array
+          items: { $ref: '#/components/schemas/SettingsNamespaceSummary' }
+    SettingsNamespaceOps:
+      type: object
+      description: Path-addressed operations and optional optimistic-concurrency revision.
+      required: [ops]
+      properties:
+        ops:
+          type: array
+          minItems: 1
+          maxItems: 32
+          items:
+            oneOf:
+              - type: object
+                required: [op, path, value]
+                properties:
+                  op: { type: string, const: set }
+                  path: { type: array, items: { type: string } }
+                  value: {}
+              - type: object
+                required: [op, path]
+                properties:
+                  op: { type: string, const: unset }
+                  path: { type: array, items: { type: string } }
+        expectedRevision: { type: integer, minimum: 0 }
     ProviderPatch:
       type: object
       properties:

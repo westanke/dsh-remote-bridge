@@ -1,5 +1,63 @@
 # 开发日志
 
+## 2.6.0 · 通用设置命名空间面（进行中，未发版）
+
+**基于**：v2.5.2。目标是不再为每个插件写专用设置接口 —— 手机端直接读内核按插件
+划分的设置命名空间、按 `schema` 自行生成表单，新装插件无需改 App。
+
+**改动**：
+
+- 新增 `GET /api/v1/settings/namespaces`（`settings.read`）与
+  `PATCH /api/v1/settings/namespaces/{ns}`（`settings.write`），形状与错误码见
+  `docs/project/API.md` 同名小节与 `openapi.yaml` 的 `SettingsNamespace*`。
+- 写策略默认只放行 `ui-*` 与以 `locale` 结尾的命名空间；`llm-*`/`permission`/
+  `agent-default-model`/`subagent-*` 只读，唯一放宽入口是插件配置
+  `settingsWriteNamespaces`（精确 ns 或 `前缀*`，默认空）。理由见 `SECURITY.md`。
+- 密钥两道脱敏（内核 `redactSecrets` + 桥按 `secrets[].path`/键名兜底），审计
+  `settings.namespace.mutate` 只记字段路径，不记值。
+- 纯逻辑拆到新文件 `src/host/settings-namespace.ts`（写策略/脱敏/ops 校验/投影），
+  `settings-adapter.ts` 只保留 RPC 调用与错误映射，避免越过 600 行单文件预算。
+- 新增 `tests/settings-namespaces.spec.ts`：鉴权、策略、脱敏、revision 冲突、
+  ops 校验、审计，以及「非允许 ns 不触达内核 mutate」。
+
+**未做**：未升 `package.json` 版本号、未发版；真实内核的 `settings.mutate` 已由桥代理，
+真机验收待发版后由用户执行。
+
+## 2.6.0 · IM 远程开隧道 `/tunnel`（进行中，未发版）
+
+**动机**：真实场景的缺口 —— 人已出门，才发现电脑上的隧道没开、配置文本也没发给自己。
+此时没有任何入站通路，WebUI 与 App 都够不着；但 IM 机器人是**本机主动连出去**的长连接，
+不需要入站端口，正好是这条「反向开机」通道。
+
+**改动**：
+
+- 新增宿主命令 `/tunnel`（全局层 `ctx.commands.register`）**与**工具 `open_tunnel_config`
+  （全局层 `ctx.tools.register`，`tools` 服务缺失时静默跳过），实现在新文件
+  `src/host/im-command.ts`。两者共用 `ApiRouter.openTunnelForCommand()`，回的都是
+  「隧道地址 + 设备名 + 一行 `DSH1:` 配置文本」。
+- **为什么两个入口都要**：`@xmanrui/dsh-im` 5.4.0 的斜杠命令表封闭（内置 31 条 +
+  `/compact`/`/clear`/`/permission` 三条固定委派），没有「未知命令转交宿主命令表」的通用派发、
+  也从不查 `commands.list` —— IM 里发 `/tunnel` 只会变成一句普通消息。所以命令给能发命令的
+  客户端，工具给只会说话的 IM 窗口（用户说「帮我开隧道」→ 模型调工具）。
+- `src/host/router.ts` 把 `POST /manage/cloudflare/create` 的实体抽成私有
+  `createTunnel(createBody, requestId, actorLabel)`，新增公有 `openTunnelForCommand()`；
+  HTTP 入口与命令入口共用同一条实现，避免「一键出令牌」在两条路径上漂移。
+- 能力边界：**只开不停、不接受参数、不读文件**。隧道已在运行时复用当前地址出配置，
+  不重复 `startQuick`（`createTunnel` 里第二次 spawn 会撞 `TUNNEL_ALREADY_RUNNING`）。
+- 审计：`action=cloudflare.create`，来源标签 `im-command`（本机管理面是 `loopback-admin`），
+  复用场景额外记 `details.reused=true`。
+- **不新增任何 REST 端点、不给管理面判据开任何口子**：命令在进程内直接调用路由方法，
+  所以不需要（也不应该）为它豁免 `TUNNEL_MODE_ADMIN_DISABLED`。
+- 测试：`tests/im-tunnel-command.spec.ts`（8 例：成功文案/参数拒绝/失败降级/并发保护/注册注销）
+  与 `tests/tunnel-create-config.spec.ts` 新增 4 例（起隧道+等地址、复用不 spawn、等不到地址抛错、
+  审计来源标签）。
+- 文档：README 新增「在聊天窗口里远程开隧道」一节（含 allowlist 告警框）、
+  SECURITY.md 新增「IM 命令 `/tunnel` 的信任边界」、INTERFACES.md 注明宿主命令不在 REST 表内、
+  STRUCTURE.md 补文件行。
+
+**未做**：未升版本号、未发版；口令/白名单门禁**不在本仓**——依赖 `@xmanrui/dsh-im` 的
+访问策略（allowlist + `canExecuteCommands`），部署侧必须保持白名单模式。
+
 ## 2.5.2 · 五维全量治疗 + 隧道一键出令牌（2026-10-22）
 
 本版基于 v2.5.1 的五维代码审计（安全/功能/性能/界面/按钮反馈）做全量落地，

@@ -14,10 +14,43 @@
 - DSH 工作区列表必须同时通过设备 `chat.read` 和 root grant；响应使用 `workspaceId` 与根内相对路径，不返回 DSH 工作区绝对路径。Agent Preset 只暴露选择所需元数据，损坏详情等宿主内部诊断不进入外部响应。
 - WebSocket 使用 Upgrade Authorization 或 `bearer.<token>` 子协议，不接受会进入代理日志的 query token。每条事件重新读取设备状态，并同时检查实时 root grant 与 `files.read`/`chat.read` scope。连接级闸口（真值在 `src/host/server.ts`）：默认最多 32 条连接（可配置），**鉴权先于计数**——超额连接在通过鉴权后才于 Upgrade 阶段收到 HTTP 429（`Retry-After: 5`），未鉴权请求不消耗名额；单帧上限 1 MiB，超限 close(1009)；30 秒 ping 心跳，连续 2 个周期缺 pong 即 terminate；每连接发送队列 512 帧，背压溢出时优先丢可重建的 `chat.message.delta` 并补发 `connection.resyncRequired` 通知客户端改走 REST 补历史，状态帧也塞不进时 close(1013,'Backpressure')。
 - Provider 列表只返回凭据的 `configured/source/writable` 元数据，绝不读取或回传 API 密钥。供应商读取和修改分别要求 `settings.read`、`settings.write`；密钥只通过 DSH credential service 写入或清除，审计不记录正文。
+- 通用设置命名空间（`/settings/namespaces`）要求 `settings.read` / `settings.write`，但**默认只有 `ui-*` 与以 `locale` 结尾的命名空间可写**；`llm-*`、`permission`、`agent-default-model`、`subagent-*` 等一律只读。理由、放宽开关与两道脱敏见下节「通用设置命名空间的写权限（2.6.0 起）」。
 - 待审批列表要求 `chat.read`，决定要求 `chat.write`，两者还会重新检查会话所属 root grant。插件仅在 Host 内保存 DSH `rpcId`，向设备返回独立审批 ID；工具参数按 API Key、token、密码、Bearer 等常见形式脱敏并限长，审计不记录原因或命令。`danger-full-access` 标记为高风险，Android 必须二次确认且只允许单次授权。
 - 诊断端点 `GET /api/v1/debug/host-services` 与其它 `/api/v1` 路由同级鉴权：先过 `principal()`，再要求 `settings.read` scope（admin 身份自动继承）；本构建未注入报告时回 404。2.5.2 修复（SEC-H1）：它此前位于 `principal()` 之前、无需任何凭据即可读到宿主注入面与内核原始错误文本，而 openapi 全局 `bearerAuth` 从未给它豁免——属于契约违约。新增的运行期 metrics 字段挂在这份报告上而**不另开路由**（另开一条就再造一个要单独守的鉴权面）。回归断言见 `tests/security-h1.spec.ts`；免设备令牌的端点集合由 `scripts/docs-contract.ts` 在 `docs:check` 中与 openapi 的 `security: []` 集合双向核对，目前恰好只有 `GET /healthz` 与 `POST /pairings/exchange`。
 - 图片交接的**只读**路由（`GET /plugin/dsh-remote-bridge/raw`）不要求设备令牌 —— 浏览器不会给 `<img>` 加 `Authorization`，这条口子也无法进 REST 前缀（那条前缀上的每个请求都需要令牌或回环管理身份）。它的守门条件是：`Host` 必须回环（DNS 重绑定防护）、**浏览器带 `Sec-Fetch-Site` 时跨站一律 403**（仅 `same-origin` 与 `none` 放行）、同源 `/plugin/` 前缀页面的 `Referer` 放行、文件名必须匹配 `^[0-9a-f]{64}\.(png|jpe?g|webp|gif|heic|heif|bmp|avif)$`、**目录永远由宿主按会话推出**（客户端只递会话与裸文件名，递不进目录或绝对路径）、扩展名声明必须与魔术字节一致、体积上限 32 MiB。取不到一律 404 且不区分「会话不存在」与「文件不存在」。**刻意的口子（SEC-H8，与代码对齐）**：无 `Sec-Fetch-Site` 且无 `Origin` 的调用方不是浏览器页面（`curl`、脚本、测试），此时回环可达性本身就是访问模型（与本地 GUI 其余部分一致），直接放行——浏览器一定发这两个头之一，所以这条口子对网页攻击不成立。判定真值在 `image-handoff.ts` 的 `sameOrigin()`。把 GUI 绑到非回环网卡时必须同步放宽 `image-handoff.ts` 的 `loopbackHost`。
 - 识图路径（交接目录名）只接受**单段**目录名：空值、超长、`/`、`\`、NUL、`.`、`..` 一律拒绝（`400 IMAGE_SUBDIR_INVALID`）。因此它无法把图片落点带出会话工作目录。改动进审计（`image.subdir`），记录的是新目录名，不含任何路径正文。
+
+## 通用设置命名空间的写权限（2.6.0 起）
+
+DSH 的设置是一份**按插件命名空间划分**的文档。桥把它整份暴露给手机端是必要的
+（否则每装一个插件都要为它加一个专用接口），但**能读**不等于**能写**：
+
+| 命名空间 | 默认 | 为什么 |
+|---|---|---|
+| `ui-*`（如 `ui-chat`、`ui-theme`） | 可写 | 改的是界面偏好（`transcriptView`、`fontSize`），最坏结果是界面难看 |
+| 以 `locale` 结尾 | 可写 | 语言/区域偏好，可随时改回 |
+| `llm-*`（供应商、模型、Base URL） | **只读** | 手机能改 Base URL = 把模型请求引到攻击者的端点；令牌泄露后这是最直接的数据外泄路径 |
+| `permission`（审批档位/策略） | **只读** | 手机能改权限 = 把审批闸门拆掉，之后所有危险工具调用都无人拦截 |
+| `agent-default-model` / `subagent-*` | **只读** | 同样是把「用哪个大脑、放多少自主权」交给远端 |
+
+一句话：**让手机改模型和权限，等于把遥控器连同保险柜钥匙一起交出去。** 这些设置
+仍然可以读（客户端要显示当前值），只在写入侧拒绝。
+
+放宽只能由部署方在插件配置里显式做：`settingsWriteNamespaces` 接受精确 ns 或
+`前缀*`，默认空数组。它是**唯一的**放宽入口，不经客户端、不进 REST 请求体。
+
+可证伪的判据与回归断言：
+
+- `GET` 对每个不可写 ns 返回 `writable: false` 与 `reason`；`reason` 只有
+  `HOST_READONLY`（整份宿主文档只读）与 `HIGH_RISK_NAMESPACE`（策略拒绝）两值。
+- `PATCH` 不在策略内的 ns 返回 403 `SETTINGS_NAMESPACE_READONLY`，**且一次内核
+  `settings.mutate` 都不会发生**（否则「先写后拒」等于已经改坏）；由
+  `tests/settings-namespaces.spec.ts` 的「拒绝非允许命名空间」用例盯着。
+- 密钥有两道脱敏：内核以 `redactSecrets` 报告 `value`/`user`；桥再按内核给出的
+  `secrets[].path` **与**键名正则 `apiKey|secret|token|password|credential|apiKeyEnv`
+  把字符串值替换成 `***`（`apiKeyEnv` 是变量名不是密钥，但它暴露供应商配置）。
+- 成功写入的审计是 `settings.namespace.mutate`，`details` 只含 `ns`、`fields`
+  （字段路径）与 `credentialChanged`（路径是否命中 `secrets[].path`）；**绝不记录值**。
 
 ## 管理面的信任边界（2.5.1 起）
 
@@ -67,6 +100,35 @@
   加上边缘头才被挡住）。
 - 隧道只用于 `/api/v1` 数据面；管理面永不暴露。隧道地址是**公开可猜的**（会出现在日志与
   配置文本里），必须与「管理面不可达」配合，不能只靠地址保密。
+
+### IM 命令 `/tunnel` 的信任边界（2.5.2 起）
+
+`/tunnel` 是**宿主命令**（`ctx.commands.register`），`open_tunnel_config` 是**工具**
+（`ctx.tools.register`），两者实现同在 `src/host/im-command.ts`、共用同一个
+`ApiRouter.openTunnelForCommand()`。它们让用户把隧道拉起来并取回一行 `DSH1:` 配置文本。
+存在的理由是它绕开了本插件的整个入站面：IM 机器人是**本机主动连出去**的长连接，
+所以「没有隧道」时这条路照样通。
+
+两个入口都要有，是因为 `@xmanrui/dsh-im` 5.4.0 的斜杠命令表是**封闭的**（内置 31 条 +
+`/compact` `/clear` `/permission` 三条固定委派，没有通用派发，也从不调用 `commands.list`）：
+IM 里发 `/tunnel` 只会当成普通消息交给智能体。所以命令服务于「能发命令的客户端」，
+工具服务于「只会说话的 IM 窗口」。
+
+它对管理面判据 **没有任何豁免**，也不新增任何 REST 端点：
+
+- 命令在插件进程内直接调用 `ApiRouter.openTunnelForCommand()`，走的是与
+  `POST /manage/cloudflare/create` **同一套** `createTunnel()` 实现（审计标签为 `im-command`，
+  便于和本机管理面的 `loopback-admin` 分开查）。因此它不需要、也不应该给 `/manage` 开口子。
+- 隧道**已在运行时**复用当前地址出配置文本，不再 `startQuick` —— 这一条同样不是提权：
+  它签发的新设备令牌与面板上点一次「生成配置文本」完全等价（一样的 scope、一样要落审计）。
+- **能力边界**：只开不停、不接受参数、不读文件。刻意不提供 `/tunnel stop`：停机已经有面板
+  出口，再开一个远程入口只会把「关掉公网入口」变成一个可被滥用的动作。
+
+> ⚠️ **本命令的身份校验不在本仓**。它依赖 `@xmanrui/dsh-im` 的访问策略
+> （`canExecuteCommands` / `defaultCanExecuteCommands` + allowlist）：非白名单发送者的消息
+> 在 IM 插件里就被拒，根本到不了命令处理函数。因此**部署前提**是机器人保持 allowlist 模式，
+> 且白名单只包含自己。若把机器人设为「允许所有用户执行命令」，本命令就是一个公开的开机按钮 ——
+> 这一点写进 README「在聊天窗口里远程开隧道」一节的告警框。
 
 ### 信任边界的两个前提（2.5.1）
 

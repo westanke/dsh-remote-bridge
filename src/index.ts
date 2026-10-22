@@ -8,6 +8,12 @@ import { createDsh02ApiProxy, readHandoffImageFile, type Dsh02HostServices } fro
 import { WorkspaceEventBus } from './host/event-bus.ts'
 import { FileService } from './host/file-service.ts'
 import { probeHostServices, type HostServiceReport } from './host/host-service-probe.ts'
+import {
+  registerTunnelCommand,
+  registerTunnelTool,
+  type TunnelCommandRegistry,
+  type TunnelToolRegistry,
+} from './host/im-command.ts'
 import { runStartupRetention } from './host/retention.ts'
 import { JobAdapter } from './host/job-adapter.ts'
 import { createImageRouteHandler, IMAGE_ROUTE, readHandoffSubdir } from './host/image-handoff.ts'
@@ -70,6 +76,14 @@ export interface Config {
   port?: number
   remoteHost?: string
   maxUploadBytes?: number
+  /**
+   * 额外允许手机端写入的设置命名空间（默认空）。
+   *
+   * 精确 ns（`ui-chat`）或通配前缀（`llm-*`）。与内置策略叠加：`ui-*` 与以
+   * `locale` 结尾的命名空间本来就可写；其余默认只读，因为改模型/权限等于把
+   * 遥控器交出去（理由见 docs/project/SECURITY.md）。
+   */
+  settingsWriteNamespaces?: readonly string[]
 }
 
 interface HostContext extends Dsh02HostServices {
@@ -152,7 +166,9 @@ export async function apply(ctx: HostContext, config: Config = {}): Promise<void
     handoffSubdir: () => readHandoffSubdir(database),
   })
   const chat = new DshChatAdapter(apiProxy, database, { agents: ctx.agents, commands: ctx.commands })
-  const settings = new DshSettingsAdapter(apiProxy)
+  const settings = new DshSettingsAdapter(apiProxy, {
+    writeNamespaces: config.settingsWriteNamespaces ?? [],
+  })
   // 宿主服务注入面探针：在 apply 期间（cordis 注入属性仍可读）采集一份快照。
   //
   // 为什么必须在这里采、不能留到 HTTP 回调里：注入属性是有生命周期的惰性访问器，
@@ -232,6 +248,35 @@ export async function apply(ctx: HostContext, config: Config = {}): Promise<void
   const disposeEmbedded = attachEmbeddedRoutes(ctx.webServer, router, remote, [
     { kind: 'prefix', path: IMAGE_ROUTE, handler: imageRoute },
   ])
+  // `/tunnel`：从 IM（微信/飞书/钉钉/企微…）里远程开隧道并取回配置文本。**只开不停**，
+  // 门禁依赖 IM 插件自身的访问策略（allowlist + canExecuteCommands）—— 见 im-command.ts 头注释。
+  ctx.effect(
+    () => registerTunnelCommand(ctx.commands as unknown as TunnelCommandRegistry, {
+      openTunnel: () => router.openTunnelForCommand(),
+      logger: {
+        info: (message) => ctx.logger.info(message),
+        warn: (error) => ctx.logger.warn(error),
+      },
+    }),
+    'dsh-remote-bridge /tunnel command',
+  )
+  // 同一件事的第二个入口：**工具**。IM 插件的斜杠命令表是封闭的（只有内置 31 条 +
+  // `/compact` `/clear` `/permission` 三条委派宿主，没有通用派发），所以 IM 里发 `/tunnel`
+  // 到不了命令处理函数；用户用自然语言说「帮我开隧道」时，智能体调这个工具即可。
+  // `tools` 不在 inject 里（硬依赖会让插件在其他构建上整个起不来），缺了就不注册。
+  const toolsService = reflect?.get?.('tools', false)
+  if (toolsService !== undefined) {
+    ctx.effect(
+      () => registerTunnelTool(toolsService as unknown as TunnelToolRegistry, {
+        openTunnel: () => router.openTunnelForCommand(),
+        logger: {
+          info: (message) => ctx.logger.info(message),
+          warn: (error) => ctx.logger.warn(error),
+        },
+      }),
+      'dsh-remote-bridge open_tunnel_config tool',
+    )
+  }
   ctx.effect(() => async () => {
     disposeEmbedded()
     await remote.stop()

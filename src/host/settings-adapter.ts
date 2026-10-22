@@ -2,15 +2,18 @@ import { randomUUID } from 'node:crypto'
 import type { DshApiProxy, ModelProviderGroupView, RpcResponse } from './chat-adapter.ts'
 import { unwrapDsh } from './chat-adapter.ts'
 import { ApiError } from './errors.ts'
+import type {
+  SettingsNamespaceEntry,
+  SettingsNamespacesView,
+  SettingsNamespaceView,
+} from './settings-namespace.ts'
+import {
+  isSettingsNamespaceWriteAllowed,
+  parseSettingsNamespaceOps,
+  projectSettingsNamespace,
+} from './settings-namespace.ts'
 
-interface SettingsNamespaceView {
-  ns: string
-  schema?: unknown
-  value: unknown
-  base?: unknown
-  user?: unknown
-  revision: number
-}
+export type { SettingsNamespaceView } from './settings-namespace.ts'
 
 interface ConfigurableProvider {
   provider: string
@@ -134,7 +137,77 @@ const PROVIDER_CONTEXT_TTL_MS = 1_000
 const PROVIDER_CONTEXT_CACHE_LIMIT = 128
 
 export class DshSettingsAdapter {
-  constructor(private readonly api: SettingsApiProxy) {}
+  /**
+   * @param options.writeNamespaces 额外允许手机端写入的设置命名空间（精确 ns 或
+   *   `前缀*`），与内置策略（`ui-*` / 以 `locale` 结尾）叠加；默认为空。
+   */
+  constructor(
+    private readonly api: SettingsApiProxy,
+    private readonly options: { writeNamespaces?: readonly string[] } = {},
+  ) {}
+
+  /**
+   * 列出全部设置命名空间（通用设置面的读侧）。
+   *
+   * 与 `listProviders()` 的区别：它不理解任何 provider 语义，原样透出内核按插件
+   * 划分的命名空间，由手机端按 `schema` 自己长表单 —— 新装插件不必等 App 发版。
+   */
+  async describeNamespaces(): Promise<SettingsNamespacesView> {
+    const described = unwrapDsh(await this.settingsService().describe({ rpcId: randomUUID(), payload: {} }))
+    return {
+      writable: described.writable,
+      namespaces: described.namespaces.map(view =>
+        projectSettingsNamespace(view, described.writable, this.writeNamespaces),
+      ),
+    }
+  }
+
+  /**
+   * 按路径改一个命名空间（通用设置面的写侧）。
+   *
+   * 校验顺序是刻意的：ns 策略 → ops 结构 → 内核 describe（host 可写性）→ mutate。
+   * 先验策略既省一次内核往返，也保证「高危命名空间」无论 ops 怎么错都先得到 403。
+   */
+  async mutateNamespace(ns: string, ops: unknown, expectedRevision?: number): Promise<SettingsNamespaceEntry> {
+    if (!isSettingsNamespaceWriteAllowed(ns, this.writeNamespaces)) {
+      throw new ApiError(
+        403,
+        'SETTINGS_NAMESPACE_READONLY',
+        `The settings namespace "${ns}" is not writable from this bridge.`,
+        { ns, reason: 'HIGH_RISK_NAMESPACE' },
+      )
+    }
+    const normalized = parseSettingsNamespaceOps(ops)
+    const described = unwrapDsh(await this.settingsService().describe({ rpcId: randomUUID(), payload: {} }))
+    if (!described.writable) throw new ApiError(409, 'SETTINGS_READ_ONLY', 'DSH settings are read-only.')
+    let mutated: SettingsNamespaceView
+    try {
+      mutated = unwrapDsh(await this.settingsService().mutate({
+        rpcId: randomUUID(),
+        payload: {
+          ns,
+          ops: normalized,
+          ...(expectedRevision === undefined ? {} : { expectedRevision }),
+        },
+      }))
+    } catch (error) {
+      throw mapSettingsMutationError(error)
+    }
+    return projectSettingsNamespace(mutated, described.writable, this.writeNamespaces)
+  }
+
+  private get writeNamespaces(): readonly string[] {
+    return this.options.writeNamespaces ?? []
+  }
+
+  /** 内核 settings 服务缺失时给 503（而不是把 `TypeError` 漏成 500）。 */
+  private settingsService(): SettingsApiProxy['settings'] {
+    const settings = (this.api as { settings?: SettingsApiProxy['settings'] }).settings
+    if (settings === undefined) {
+      throw new ApiError(503, 'SETTINGS_UNAVAILABLE', 'The DSH settings service is not available.')
+    }
+    return settings
+  }
 
   async listProviders(): Promise<{
     writable: boolean
@@ -380,6 +453,30 @@ export class DshSettingsAdapter {
     const namespace = settings.namespaces.find(item => item.ns === entry.settingsNs)
     return { entry, writable: settings.writable, namespace, profile: recordAt(namespace?.value, entry.settingsPath) }
   }
+}
+
+/**
+ * 把内核 `settings.mutate` 的错误翻成契约错误码。
+ *
+ * `unwrapDsh()` 的通用映射只认 `busy` / `locked` 为 409，所以内核的
+ * `settings/conflict` 会落到 400 `DSH_SETTINGS_CONFLICT` —— 这里按契约改回
+ * 409 `SETTINGS_CONFLICT`（客户端据此提示「刷新后重试」而不是「参数不对」）。
+ * `settings/rejected` 是 ops 在 schema 上不合法，落回 400 `SETTINGS_OPS_INVALID`。
+ */
+function mapSettingsMutationError(error: unknown): unknown {
+  if (!(error instanceof ApiError)) return error
+  if (error.code.includes('SETTINGS') && error.code.includes('CONFLICT')) {
+    return new ApiError(
+      409,
+      'SETTINGS_CONFLICT',
+      'Settings changed since they were read; refresh and retry.',
+      error.details,
+    )
+  }
+  if (error.code.includes('SETTINGS') && error.code.includes('REJECTED')) {
+    return new ApiError(400, 'SETTINGS_OPS_INVALID', error.message, error.details)
+  }
+  return error
 }
 
 function projectConfig(

@@ -180,6 +180,60 @@ curl "http://192.168.1.20:3090/api/v1/roots/resolve?path=%2Fmedia%2Fdata%2Fproje
 
 `POST /settings/providers` 使用自定义 route、显示名、Base URL、协议与至少一个模型创建 DSH 自定义供应商；route 必须匹配 DSH WebUI 的小写短横线规则。`PATCH /settings/providers/{providerId}` 可更新 Base URL、协议、模型和写入/清除凭据；`POST .../discover` 使用草稿配置发现模型。`PATCH` 的 `models` 字段：数组=整体替换（空数组=自定义空目录），`null`=恢复适配器默认目录（unset，2.5.0 起）。读取与修改分别要求 `settings.read`、`settings.write`，并由 DSH 设置服务决定配置是否可写；`expectedRevision` 不匹配时返回 409 `SETTINGS_CONFLICT`。
 
+## 通用设置命名空间（2.6.0 起）
+
+DSH 的设置是**一份按插件命名空间划分的文档**（`ui-chat` 的 `transcriptView`、`ui-theme` 的 `fontSize` 等）。本桥不再为每个插件写专用接口，而是暴露一对通用端点，客户端按返回的 `schema` 自行生成表单：
+
+- `GET /settings/namespaces`（`settings.read`）→ `{ writable, namespaces: SettingsNamespaceSummary[] }`。
+- `PATCH /settings/namespaces/{ns}`（`settings.write`）→ 与上面数组里的**单个条目同形**。
+
+条目的形状：
+
+```json
+{
+  "ns": "ui-chat",
+  "revision": 3,
+  "schema": { "...": "内核 schema 树，供客户端生成表单" },
+  "value": { "transcriptView": "compact" },
+  "base": { "transcriptView": "compact" },
+  "user": { "transcriptView": "detailed" },
+  "secrets": [{ "path": ["apiKey"], "set": true }],
+  "writable": true
+}
+```
+
+`schema` / `base` / `user` / `secrets` 都可能缺席；缺席即「内核没报这一项」，不是空对象。条目的 `revision` 就是 `settings.mutate` 的 `expectedRevision` 来源。
+
+**写策略**（两层与关系）：顶层 `writable` = 内核 `settings.describe().writable`（宿主设置文档整体可不可写）；条目 `writable` = 顶层可写 **且** 该 ns 命中桥的写允许策略。策略默认放行 `ui-*` 与以 `locale` 结尾的命名空间，其余（`llm-*`、`permission`、`agent-default-model`、`subagent-*` 等）只读；部署方可用插件配置 `settingsWriteNamespaces`（精确 ns 或 `前缀*`）显式放宽。不可写时条目带 `reason`：`HOST_READONLY`（整份文档只读）或 `HIGH_RISK_NAMESPACE`（策略拒绝）。理由与安全含义见 `SECURITY.md`。
+
+**PATCH 请求体**：
+
+```json
+{
+  "ops": [
+    { "op": "set", "path": ["transcriptView"], "value": "detailed" },
+    { "op": "unset", "path": ["collapseTiming"] }
+  ],
+  "expectedRevision": 3
+}
+```
+
+`ops` 必须是 1~32 项、每项 `op` 为 `set`/`unset`、`path` 为字符串数组（空数组代表该命名空间的根，等于整份替换）；`set` 必须带 `value`。`expectedRevision` 可选（不匹配即 409，防止两个客户端互相覆盖）。
+
+**错误码**：
+
+| 状态 | code | 含义 |
+|---|---|---|
+| 403 | `SETTINGS_NAMESPACE_READONLY` | 该 ns 不在写允许策略内；`details` 带 `ns` 与 `reason` |
+| 400 | `SETTINGS_OPS_INVALID` | `ops` 非数组/空/超过 32 项/单项非法，或 `expectedRevision` 不是非负整数 |
+| 409 | `SETTINGS_CONFLICT` | `expectedRevision` 与内核当前 revision 不一致 |
+| 409 | `SETTINGS_READ_ONLY` | 宿主设置文档整体不可写（与 provider 写入沿用同一错误码） |
+| 503 | `SETTINGS_UNAVAILABLE` | 运行的内核没有设置服务 |
+
+**脱敏是两道**：内核本身以 `redactSecrets` 报告 `value`/`user`；桥在序列化前再递归遮蔽键名匹配 `apiKey|secret|token|password|credential|apiKeyEnv` 的字符串值为 `***`（`apiKeyEnv` 本身是环境变量名、不是密钥，但它会暴露供应商配置，一并遮蔽）。两次都不碰非字符串值——数字/布尔不是密钥。
+
+**审计**：每次成功写入记一条 `settings.namespace.mutate`，`details = { ns, fields: string[], credentialChanged: boolean }`。`fields` 只是被触碰的路径（`path.join('.')`），**绝不记录值**；`credentialChanged` 在内核报告的 `secrets[].path` 被命中时为 `true`。
+
 ## 插件清单
 
 `GET /settings/plugins` 返回当前 profile 的插件状况，要求 `settings.read`：

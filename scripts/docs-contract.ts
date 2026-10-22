@@ -122,6 +122,7 @@ const PARAM_NAMES_BY_SOURCE: Readonly<Record<string, readonly string[]>> = {
   '^/api/v1/chat/workspaces/([^/]+)$': ['workspaceId'],
   '^/api/v1/settings/providers/([^/]+)$': ['providerId'],
   '^/api/v1/settings/providers/([^/]+)/discover$': ['providerId'],
+  '^/api/v1/settings/namespaces/([^/]+)$': ['ns'],
   '^/api/v1/chat/sessions/([^/]+)$': ['sessionId'],
   '^/api/v1/chat/sessions/([^/]+)/fork$': ['sessionId'],
   '^/api/v1/chat/sessions/([^/]+)/archive$': ['sessionId'],

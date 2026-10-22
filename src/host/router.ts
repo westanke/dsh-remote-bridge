@@ -34,6 +34,11 @@ import { getMetricsSnapshot } from './metrics.ts'
 import type { MetricsSnapshot } from './metrics.ts'
 import { inspectResolvedPath, matchAuthorizedRootResolved } from './root-resolver.ts'
 import type { CustomProviderCreate, DshSettingsAdapter, ProviderPatch } from './settings-adapter.ts'
+import {
+  parseSettingsNamespaceOps,
+  settingsNamespaceCredentialChanged,
+  settingsNamespaceOpFields,
+} from './settings-namespace.ts'
 import { PLUGIN_VERSION } from '../shared/version.ts'
 import { stringifyWire } from './wire-json.ts'
 
@@ -459,6 +464,39 @@ export class ApiRouter {
     if (method === 'GET' && pathname === '/api/v1/settings/models') {
       this.options.auth.requireScope(principal, 'settings.read')
       sendJson(res, 200, await this.options.settings.catalog())
+      return
+    }
+
+    // 通用设置命名空间面（2.6.0）：手机端不必为每个插件写专用端点，就能读到、
+    // 改到本机 DSH 按插件划分的设置（ui-chat 的 transcriptView、ui-theme 的 fontSize…）。
+    // 能不能写由 adapter 的策略裁决（高危 ns 默认只读，见 docs/project/SECURITY.md）。
+    if (method === 'GET' && pathname === '/api/v1/settings/namespaces') {
+      this.options.auth.requireScope(principal, 'settings.read')
+      sendJson(res, 200, await this.options.settings.describeNamespaces())
+      return
+    }
+
+    const settingsNamespaceRoute = pathname.match(/^\/api\/v1\/settings\/namespaces\/([^/]+)$/)
+    if (settingsNamespaceRoute !== null && method === 'PATCH') {
+      this.options.auth.requireScope(principal, 'settings.write')
+      const ns = decodePathSegment(settingsNamespaceRoute[1] as string)
+      const body = await readJson(req, 256_000)
+      const record = typeof body === 'object' && body !== null ? body as Record<string, unknown> : {}
+      // 先在这里规范化一遍：adapter 需要它，审计的 fields 也需要；adapter 内部仍会再验一次
+      // （它也可能被别的调用方直接使用），两次都是纯内存操作。
+      const ops = parseSettingsNamespaceOps(record.ops)
+      const entry = await this.options.settings.mutateNamespace(
+        ns,
+        ops,
+        settingsExpectedRevision(record.expectedRevision),
+      )
+      // 审计只落字段路径，**绝不落值**；credentialChanged 用内核给的 secrets 路径判定。
+      this.audit(principal, 'settings.namespace.mutate', undefined, undefined, requestId, {
+        ns,
+        fields: settingsNamespaceOpFields(ops),
+        credentialChanged: settingsNamespaceCredentialChanged(ops, entry.secrets),
+      })
+      sendJson(res, 200, entry)
       return
     }
 
@@ -1088,69 +1126,8 @@ export class ApiRouter {
       // 请求体必须在任何长耗时操作（下载 cloudflared、spawn、等地址）**之前**读完：
       // 请求体是一条随时间关闭的流，等 startQuick 之后再读会挂住或读到空。
       const createBody = (await readJson(req, 64_000).catch(() => ({}))) as Record<string, unknown>
-      const wantConfig = createBody.configText === true
-      const binDir = this.options.cloudflaredBinDir
-      let exe: string
-      try {
-        exe = await ensureCloudflared(binDir ?? this.options.database.dataDir, (a) => {
-          this.options.tunnels!.reportActivity(a)
-        })
-        // 下载/解包结束但仍要继续：进入「启动"阶段由 startQuick 自己上报」。
-      } catch (cause) {
-        this.options.tunnels!.clearActivity()
-        // 下载/解包失败要**给得出原因**，否则 fallback 到泛型 500，前端只看到「内部错误」。
-        //
-        // 但原因必须**脱敏**（2.5.2 / H7）：`cause.message` 可能含完整镜像 URL
-        // （带 token）与绝对路径（`execFile('dpkg-deb')` 的错误里有两个）。
-        // 上游 `cloudflared.ts` 已经脱敏过一次（`sanitizeDownloadError`），
-        // 这里再兜一次 —— 纵深，且防的是「以后有人在上游加回未脱敏的消息」。
-        throw new ApiError(
-          502,
-          'TUNNEL_DOWNLOAD_FAILED',
-          'Failed to download or unpack cloudflared. Check the network and retry, or set CLOUDFLARED_MIRROR.',
-          {
-            errorKey: 'tunnelErrorDownload',
-            ...(cause instanceof Error ? { reason: sanitizeDownloadError(cause.message) } : {}),
-          },
-        )
-      }
-      // 转发到「配置的监听端口」（不是实际绑定的 127.0.0.1 探测端口）。
-      // oc隧道入口即桥接给客户端连，client 连的是 wss:// 边缘 → cloudflared → localhost:port。
-      const remoteStatus = this.options.remote.status()
-      const port = remoteStatus.configuredPort ?? DEFAULT_PORT
-      const state = await this.options.tunnels.startQuick(exe, port)
-
-      // 一键「开隧道并出令牌」（2.5.2）：这次请求发生在隧道**起来之前**，管理面尚未被
-      // 判据 0 关门。若客户端请求了 configText，就在这里等随机域名出来并直接带出令牌
-      // 配置文本——否则客户端得在隧道运行后再打一次 /manage/config/text，而那时该端点
-      // 必然 403（v2.5.1 的安全模型），一键串联因此断裂。
-      //
-      // 等待是有界的（waitForUrl 默认 12s）：等不到就照常返回 state（running、url 可能为 null），
-      // 客户端仍可轮询 /cloudflare/status（该端点豁免判据 0）拿到地址后再走自己的补一步路径。
-      let configText: Record<string, unknown> | undefined
-      // startQuick 的快照在 stdout 抓到域名前就返回（url 多为 null）。wantConfig 时等到的
-      // 地址回填进响应，让客户端这一次调用就同时拿到 state.url 与配置文本，不必再轮询。
-      let resolvedUrl: string | null = state.url
-      if (wantConfig) {
-        const tunnelUrl = state.url ?? await this.options.tunnels.waitForUrl()
-        resolvedUrl = tunnelUrl
-        if (tunnelUrl !== null) {
-          // 显式端点只用隧道地址；rootIds 与 deviceName 透传（沿用 config/text 的窄语义）。
-          configText = this.buildConfigText(
-            {
-              endpoints: [{ label: readOptionalText(createBody.endpointLabel) ?? '云隧道', baseUrl: tunnelUrl }],
-              ...(createBody.rootIds === undefined ? {} : { rootIds: createBody.rootIds }),
-              ...(createBody.deviceName === undefined ? {} : { deviceName: createBody.deviceName }),
-            },
-            requestId,
-          )
-        }
-      }
-
-      this.options.tunnels!.clearActivity()
-      this.options.database.audit('admin', 'loopback-admin', 'cloudflare.create', undefined, undefined, {}, requestId)
-      const responseState = resolvedUrl === state.url ? state : { ...state, url: resolvedUrl }
-      sendJson(res, 201, configText === undefined ? responseState : { ...responseState, configText })
+      const { state, configText } = await this.createTunnel(createBody, requestId, 'loopback-admin')
+      sendJson(res, 201, configText === undefined ? state : { ...state, configText })
       return
     }
     if (this.options.tunnels !== undefined && method === 'POST' && pathname === '/manage/cloudflare/stop') {
@@ -1161,6 +1138,131 @@ export class ApiRouter {
     }
 
     throw new ApiError(404, 'ROUTE_NOT_FOUND', 'The requested management route does not exist.')
+  }
+
+  /**
+   * 打开隧道并（可选）顺带产出配置文本 —— HTTP `POST /manage/cloudflare/create` 与
+   * IM `/tunnel` 命令**共用**这一条实现。
+   *
+   * 抽出来的原因：两条入口的前半段完全一致（确保 cloudflared → startQuick → 等随机域名 →
+   * 建配置文本），差别只在「谁在调用」——HTTP 侧要先把请求体读干净（流会随时间关闭），
+   * 命令侧没有请求体。复制一份会让「一键出令牌」在两条路径上慢慢漂移。
+   *
+   * @param createBody - 已解析的请求体（HTTP 侧）或 `{ configText: true }`（命令侧）。
+   * @param requestId - 审计与配对记录共用的请求 ID。
+   * @param actorLabel - 审计里的操作者标签：`loopback-admin`（本机管理面）或 `im-command`。
+   * @returns 合并了「等到地址」的 state，以及（wantConfig 且拿到地址时）配置文本。
+   */
+  private async createTunnel(
+    createBody: Record<string, unknown>,
+    requestId: string,
+    actorLabel: string,
+  ): Promise<{ state: TunnelPublicState; configText?: Record<string, unknown> }> {
+    const wantConfig = createBody.configText === true
+    const binDir = this.options.cloudflaredBinDir
+    let exe: string
+    try {
+      exe = await ensureCloudflared(binDir ?? this.options.database.dataDir, (a) => {
+        this.options.tunnels!.reportActivity(a)
+      })
+      // 下载/解包结束但仍要继续：进入「启动"阶段由 startQuick 自己上报」。
+    } catch (cause) {
+      this.options.tunnels!.clearActivity()
+      // 下载/解包失败要**给得出原因**，否则 fallback 到泛型 500，前端只看到「内部错误」。
+      //
+      // 但原因必须**脱敏**（2.5.2 / H7）：`cause.message` 可能含完整镜像 URL
+      // （带 token）与绝对路径（`execFile('dpkg-deb')` 的错误里有两个）。
+      // 上游 `cloudflared.ts` 已经脱敏过一次（`sanitizeDownloadError`），
+      // 这里再兜一次 —— 纵深，且防的是「以后有人在上游加回未脱敏的消息」。
+      throw new ApiError(
+        502,
+        'TUNNEL_DOWNLOAD_FAILED',
+        'Failed to download or unpack cloudflared. Check the network and retry, or set CLOUDFLARED_MIRROR.',
+        {
+          errorKey: 'tunnelErrorDownload',
+          ...(cause instanceof Error ? { reason: sanitizeDownloadError(cause.message) } : {}),
+        },
+      )
+    }
+    // 转发到「配置的监听端口」（不是实际绑定的 127.0.0.1 探测端口）。
+    // oc隧道入口即桥接给客户端连，client 连的是 wss:// 边缘 → cloudflared → localhost:port。
+    const remoteStatus = this.options.remote.status()
+    const port = remoteStatus.configuredPort ?? DEFAULT_PORT
+    const state = await this.options.tunnels!.startQuick(exe, port)
+
+    // 一键「开隧道并出令牌」（2.5.2）：这次请求发生在隧道**起来之前**，管理面尚未被
+    // 判据 0 关门。若调用方请求了 configText，就在这里等随机域名出来并直接带出令牌
+    // 配置文本——否则客户端得在隧道运行后再打一次 /manage/config/text，而那时该端点
+    // 必然 403（v2.5.1 的安全模型），一键串联因此断裂。
+    //
+    // 等待是有界的（waitForUrl 默认 12s）：等不到就照常返回 state（running、url 可能为 null），
+    // 客户端仍可轮询 /cloudflare/status（该端点豁免判据 0）拿到地址后再走自己的补一步路径。
+    let configText: Record<string, unknown> | undefined
+    // startQuick 的快照在 stdout 抓到域名前就返回（url 多为 null）。wantConfig 时等到的
+    // 地址回填进响应，让调用方这一次就同时拿到 state.url 与配置文本，不必再轮询。
+    let resolvedUrl: string | null = state.url
+    if (wantConfig) {
+      const tunnelUrl = state.url ?? await this.options.tunnels!.waitForUrl()
+      resolvedUrl = tunnelUrl
+      if (tunnelUrl !== null) {
+        // 显式端点只用隧道地址；rootIds 与 deviceName 透传（沿用 config/text 的窄语义）。
+        configText = this.buildConfigText(
+          {
+            endpoints: [{ label: readOptionalText(createBody.endpointLabel) ?? '云隧道', baseUrl: tunnelUrl }],
+            ...(createBody.rootIds === undefined ? {} : { rootIds: createBody.rootIds }),
+            ...(createBody.deviceName === undefined ? {} : { deviceName: createBody.deviceName }),
+          },
+          requestId,
+        )
+      }
+    }
+
+    this.options.tunnels!.clearActivity()
+    // 审计标签跟着入口走：本机管理面与 IM 命令要能分开查。
+    // 注意第一条参数 `actor` 恒为 `admin`：两个入口都等价于本机管理员，第二参数才是来源标签。
+    this.options.database.audit('admin', actorLabel, 'cloudflare.create', undefined, undefined, {}, requestId)
+    return {
+      state: resolvedUrl === state.url ? state : { ...state, url: resolvedUrl },
+      ...(configText === undefined ? {} : { configText }),
+    }
+  }
+
+  /**
+   * IM `/tunnel` 命令的宿主侧入口：开隧道并返回一行可粘贴的配置文本。
+   *
+   * 与 HTTP 路径的两点差别：
+   *
+   * 1. **隧道已在运行时直接复用当前地址**，不重复 spawn（第二次 `startQuick` 会撞
+   *    `TUNNEL_ALREADY_RUNNING`，而用户在 IM 里连发两条是很常见的）。
+   * 2. 配置文本的 endpoint 只用隧道地址，设备名缺省由 `buildConfigText` 决定 —— 命令
+   *    不接受参数，所以没有 `endpointLabel` / `rootIds` 的透传面。
+   *
+   * @throws 当 12 秒内没拿到公网地址，或 cloudflared 下载失败时。
+   */
+  async openTunnelForCommand(): Promise<{ url: string; text: string; deviceName: string }> {
+    const tunnels = this.options.tunnels
+    if (tunnels === undefined) throw new Error('隧道功能未启用。')
+    const requestId = randomUUID()
+
+    const current = tunnels.publicState
+    if (current.running === true && current.url !== null) {
+      const reused = this.buildConfigText(
+        { endpoints: [{ label: '云隧道', baseUrl: current.url }] },
+        requestId,
+      )
+      this.options.database.audit('admin', 'im-command', 'cloudflare.create', undefined, undefined, {
+        reused: true,
+      }, requestId)
+      return { url: current.url, text: reused.text, deviceName: reused.deviceName }
+    }
+
+    const { state, configText } = await this.createTunnel({ configText: true }, requestId, 'im-command')
+    if (configText === undefined || state.url === null) {
+      throw new Error('隧道已启动，但 12 秒内没拿到公网地址。稍等片刻再发一次 /tunnel 可复用当前地址。')
+    }
+    const text = typeof configText.text === 'string' ? configText.text : ''
+    const deviceName = typeof configText.deviceName === 'string' ? configText.deviceName : 'Android 设备'
+    return { url: state.url, text, deviceName }
   }
 
   /**
@@ -1654,6 +1756,20 @@ function optionalInteger(value: string | null): number | undefined {
   const parsed = Number(value)
   if (!Number.isSafeInteger(parsed) || parsed < 0) throw new ApiError(400, 'NUMBER_INVALID', 'A query parameter must be a non-negative integer.')
   return parsed
+}
+
+/**
+ * 请求体里的 `expectedRevision`。
+ *
+ * 不复用 `optionalInteger()`：它读的是查询串（字符串）且错误码是 `NUMBER_INVALID`；
+ * 这里是 JSON 数字，非法时属于「ops 请求体不合法」，契约要求 `SETTINGS_OPS_INVALID`。
+ */
+function settingsExpectedRevision(value: unknown): number | undefined {
+  if (value === undefined) return undefined
+  if (!Number.isSafeInteger(value) || (value as number) < 0) {
+    throw new ApiError(400, 'SETTINGS_OPS_INVALID', 'expectedRevision must be a non-negative integer.')
+  }
+  return value as number
 }
 
 function commandName(line: string): string {

@@ -118,7 +118,8 @@ host services 之上重建 0.1.x 的 `apiProxy` 面容，让 `chat-adapter` / `s
 | --- | --- | --- |
 | `chat-adapter.ts` | `DshChatAdapter`：会话、历史、prompt、附件、审批与提问、命令、模型选择 | `router.ts` |
 | `file-service.ts` | `FileService`：授权根内的列目录/读写/移动/回收站，含路径策略落地 | `router.ts` |
-| `settings-adapter.ts` | `DshSettingsAdapter`：提供商与模型目录（`SettingsApiProxy` 面） | `router.ts` |
+| `settings-adapter.ts` | `DshSettingsAdapter`：提供商与模型目录（`SettingsApiProxy` 面）、通用设置命名空间读写 | `router.ts` |
+| `settings-namespace.ts` | 通用设置命名空间的纯逻辑：写允许策略、密钥脱敏、ops 校验、对外视图投影（不碰内核 RPC） | `settings-adapter.ts` |
 | `plugin-inventory.ts` | 插件清单读取、状态裁决（`resolveState`）、启停（`togglePlugin`）、更新检查 | `router.ts` |
 | `job-adapter.ts` | `JobAdapter`：后台任务 roster / 输出 / kill（依赖可选服务 `jobController`） | `router.ts` |
 
@@ -221,6 +222,7 @@ host services 之上重建 0.1.x 的 `apiProxy` 面容，让 `chat-adapter` / `s
 | `src/host/plugin-inventory.ts` | ≈640 行 | 插件清单与启停；profile 解析相关 |
 | `src/host/server.ts` | ≈450 行 | 监听器、`/dsh-workspace-api` 前缀（**不可动契约**）、WS 扇出与授权过滤 |
 | `src/host/settings-adapter.ts` | ≈430 行 | 提供商/模型设置页 |
+| `src/host/settings-namespace.ts` | ≈200 行 | 通用设置命名空间的策略/脱敏/校验（纯函数） |
 | `src/host/cloudflared.ts` | ≈430 行 | 隧道与二进制下载 |
 | `src/client/workspace.tsx` | ≈660 行 | 面板全部交互 |
 | `src/shared/version.ts` | 1 行 | 版本号；与 `package.json`、两站 README、OpenAPI/AsyncAPI 版本同源 |
@@ -272,6 +274,7 @@ host services 之上重建 0.1.x 的 `apiProxy` 面容，让 `chat-adapter` / `s
 | `src/host/history-budget.ts` | file | 历史字节预算与裁剪 |
 | `src/host/host-service-probe.ts` | file | 宿主服务注入面探针 |
 | `src/host/image-handoff.ts` | file | 识图路径设置与只读图片路由 |
+| `src/host/im-command.ts` | file | IM `/tunnel` 命令：开隧道并回传 DSH1 配置文本（门禁依赖 IM 插件白名单，见 SECURITY.md） |
 | `src/host/job-adapter.ts` | file | 后台任务 adapter |
 | `src/host/listener-config.ts` | file | 监听地址/端口归一化 |
 | `src/host/metrics.ts` | file | 进程内薄指标收集器（计数 + 固定样本环分位数） |
@@ -283,6 +286,7 @@ host services 之上重建 0.1.x 的 `apiProxy` 面容，让 `chat-adapter` / `s
 | `src/host/router.ts` | file | 唯一路由分派点 |
 | `src/host/server.ts` | file | 监听器与嵌入路由 |
 | `src/host/settings-adapter.ts` | file | 提供商/模型设置 adapter |
+| `src/host/settings-namespace.ts` | file | 通用设置命名空间的写策略、脱敏与 ops 校验（纯函数） |
 | `src/host/wire-json.ts` | file | 出网 JSON 安全序列化 |
 | `src/client/` | dir | DSH WebUI 浏览器半边 |
 | `src/client/api.ts` | file | 浏览器侧 REST 客户端 |
