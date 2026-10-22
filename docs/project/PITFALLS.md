@@ -762,3 +762,20 @@ node /usr/local/nodejs/bin/dsh plugin --profile web add <workspace>/pack/<tgz>
 **纪律**：凡在 `apply` 里注册可选入口（命令/工具/服务），一律 `try/catch` 降级成
 「少一个入口 + 一条 warn」，绝不让 `apply` 抛错。代价不对等：一个入口不可用 vs 整桥假死。
 回归口径见 `src/index.ts` 的 `/tunnel` 命令与 `open_tunnel_config` 工具注册块。
+
+### 产物校验值必须在打 tag 之前提交（否则 tag 里的哈希是上一版的）
+
+`scripts/pack-release.sh` 是**打完包才知道哈希**的，它把结果写进 `artifacts/SHA256SUMS.txt`；
+而这个文件是被 git 跟踪的（`.gitignore` 里 `artifacts/*` 唯独放行它）。于是有一个顺序陷阱：
+
+- 若「人工发版提交」排在打包之前（v2.6.0 的实际顺序），那么打包后重算出来的
+  `SHA256SUMS.txt` 只是一份**工作区改动**，tag 指向的提交里仍是**上一版**的哈希；
+- 症状极隐蔽：Release 附件、npm 包、远端 tag 全部正确，只有
+  `git checkout vX.Y.Z && cat artifacts/SHA256SUMS.txt` 会读到旧值；
+- 而 tag 一旦推出去就**不能改指**（要 `--force`，本仓明令禁止），只能另起提交补，
+  于是「tag 指向的树」与「main 最新树」永久多出一条无意义差异。
+
+**纪律**：`release.sh` 的顺序固定为 打包 → **提交 `artifacts/SHA256SUMS.txt`** → 打 tag → 双推。
+脚本在打 tag 后立刻用 `git show "$TAG:artifacts/SHA256SUMS.txt" | cmp -s - artifacts/SHA256SUMS.txt`
+自检：不一致就 `exit 1`（tag 未推送，`git tag -d` 后重跑即可）。
+姊妹仓 `dsh-companion` 的 `release.sh` 在阶段 B 打 tag 后做同一道闸。

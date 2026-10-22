@@ -73,6 +73,8 @@ fi
 say ""
 
 # ── 2. 打包（一律 npm）─────────────────────────────────────────────
+# 注意顺序：打包 → 提交校验值（2.5）→ 打 tag（3）。产物哈希只有打完包才知道，
+# 而它必须落在 tag 指的那次提交里，所以「先提交、后打 tag」。v2.6.0 就踩过反例。
 say "2) 打包（npm pack，产出带 v 与不带 v 两份 + SHA256SUMS）"
 SKIP_CHECK=1 run bash scripts/pack-release.sh
 TGZ="artifacts/dsh-remote-bridge-${VER}.tgz"
@@ -80,13 +82,50 @@ TGZ_V="artifacts/dsh-remote-bridge-v${VER}.tgz"
 [ "$DRY_RUN" = "1" ] || { [ -f "$TGZ" ] && ok "产物 $(stat -c%s "$TGZ") 字节" || { bad "打包没产出 $TGZ"; exit 1; }; }
 say ""
 
+# ── 2.5 把重算出来的产物校验值提交进版本库 ─────────────────────────
+# 为什么必须有这一步：pack-release.sh 在**打包离线之后**才知道产物哈希，所以
+# artifacts/SHA256SUMS.txt 只能在建 tag **之前**写到磁盘上；而它的内容要和 tag
+# 指的那次提交一致。v2.6.0 就踩过：tag 打完才发现 SHA256SUMS.txt 还是上一版的
+# 哈希（工作区脏、tag 内容过期），当时只能另起一个提交补 —— 于是
+# 「tag 指向的树」与「main 的最新树」出现了不该有的差异。
+#
+# 规则：产物哈希一算出来就立刻落库，**先提交、后打 tag**，让 tag 与工作区同源。
+say "2.5) 提交产物校验值（保证 tag 与工作区同源）"
+if git diff --quiet -- artifacts/SHA256SUMS.txt; then
+  ok "artifacts/SHA256SUMS.txt 无变化，无需提交"
+elif [ "$DRY_RUN" = "1" ]; then
+  say "  [dry] git add artifacts/SHA256SUMS.txt && git commit"
+else
+  git add artifacts/SHA256SUMS.txt
+  git commit -q -m "chore(release): 回填 ${PKG} v${VER} 产物校验值"
+  ok "已提交产物校验值（$(git rev-parse --short HEAD)）"
+fi
+say ""
+
 # ── 3. 打 tag ──────────────────────────────────────────────────────
 say "3) 打 tag $TAG"
 if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
   ok "本地已有 $TAG，跳过"
+  # 幂等重跑时，tag 可能指向「校验值还没回填」的旧提交（v2.6.0 就是这样）。
+  # tag 一旦推出去就**不**改指（要 --force，用户明令禁止），所以这里只把话说清楚。
+  if [ "$DRY_RUN" != "1" ] && ! git show "$TAG:artifacts/SHA256SUMS.txt" 2>/dev/null \
+       | cmp -s - artifacts/SHA256SUMS.txt; then
+    warn "$TAG 里的 artifacts/SHA256SUMS.txt 与当前工作区不一致（tag 早于校验值回填）"
+    warn "  → 包与 Release 附件本身是对的；但 checkout 该 tag 会读到旧校验值"
+    warn "  → 下一版起本脚本会先提交校验值再打 tag，不再出现"
+  fi
 else
   run git tag -a "$TAG" -m "${PKG} ${VER}"
   ok "已创建 $TAG"
+  # tag 打完立刻校验：tag 指向的树必须包含当前这份校验值，否则整条发版链
+  # 「文档说的哈希」和「实际产物的哈希」会悄悄分叉。
+  if [ "$DRY_RUN" != "1" ] && ! git show "$TAG:artifacts/SHA256SUMS.txt" 2>/dev/null \
+       | cmp -s - artifacts/SHA256SUMS.txt; then
+    bad "$TAG 里的 artifacts/SHA256SUMS.txt 与工作区不一致 —— 发版中止（tag 未推送）"
+    bad "  修法：git tag -d $TAG，确认工作区干净后重跑本脚本"
+    exit 1
+  fi
+  [ "$DRY_RUN" = "1" ] || ok "tag 内容校验通过（SHA256SUMS.txt 与工作区一致）"
 fi
 say ""
 

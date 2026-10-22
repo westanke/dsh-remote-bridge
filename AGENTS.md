@@ -256,6 +256,7 @@ docs/api/            ← OpenAPI + AsyncAPI（wire schema 的权威）
 - `隧道让回环判据失效`
 - `改 node_modules 里的插件产物不生效（pnpm 硬链接）`
 - `apply 尾部抛错会留下「半死桥」`
+- `产物校验值必须在打 tag 之前提交（否则 tag 里的哈希是上一版的）`
 
 > 新坑位：名字加进上面清单 + 原文写进 `PITFALLS.md` 并补 `### 同名` 锚点。
 

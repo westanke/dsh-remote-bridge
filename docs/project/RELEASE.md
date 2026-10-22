@@ -15,7 +15,8 @@
 0) 前置检查（版本号两处一致、工作区干净）
 1) 门禁 npm run check
 2) 打包 npm pack（产出带 v 与不带 v 两份 + SHA256SUMS）
-3) 打 tag v<ver>
+2.5) **提交** `artifacts/SHA256SUMS.txt`（产物哈希只有打完包才知道，而它必须落在 tag 指的那次提交里）
+3) 打 tag v<ver>（打完立刻 `git show $TAG:artifacts/SHA256SUMS.txt | cmp -s - artifacts/SHA256SUMS.txt` 自检）
 4) git 双推（Gitee 主 + AtomGit 备，分支与 tag；复用 scripts/push-all.sh）
 5) 两站 Release + 附件（Gitee + AtomGit）
 6) npm 发布（npm@12 + registry 轮询）
