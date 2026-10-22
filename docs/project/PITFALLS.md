@@ -730,3 +730,35 @@ cloudflared Quick Tunnel 用 `--url http://127.0.0.1:PORT` 转发，**公网请�
 
 **回归断言**：`tests/admin-loopback-escalation.spec.ts`（16 例，含隧道拓扑、判据矩阵、
 桌面端放行、两者一致）。该文件原有的 5 条 `it.fails` 在 2.5.1 全部转正为 `it`。
+
+### 改 node_modules 里的插件产物不生效（pnpm 硬链接）
+
+2026-10-22 实测：把 `lib/*.js` 直接 `cp` 进
+`~/.dsh/profiles/web/node_modules/dsh-remote-bridge/`，`sha256sum` 当场对得上，
+重启后却跑的还是旧代码 —— 因为该目录里的文件是 **pnpm 内容寻址仓库的硬链接**
+（`link count 2`），重启时 profile 依赖被重新链接，手写的那份被 store 里的原件覆盖。
+
+**正确做法**：走官方安装通道，让 store 里那份本身就是新的。
+
+```bash
+pnpm pack --pack-destination <workspace>/pack          # 产出 dsh-remote-bridge-<version>.tgz
+node /usr/local/nodejs/bin/dsh plugin --profile web add <workspace>/pack/<tgz>
+```
+
+`dsh plugin add` 会把依赖记录改成 `file:…/xxx.tgz` 并重装；装完用
+`grep -c '<新路由片段>' node_modules/dsh-remote-bridge/lib/index.js` 确认，再让用户重启。
+**判据**：重启后新路由仍 404，就说明产物没换成功，别急着改代码。
+
+### apply 尾部抛错会留下「半死桥」
+
+同一个事故的根因侧：`apply()` 里 HTTP 服务器已经 `listen` 成功后，末尾再有一段注册代码
+抛错，cordis 会把整个 fiber 拆掉 —— 但监听端口没人还，于是出现最迷惑的形态：
+
+- `GET /api/v1/healthz`、`/manage/cloudflare/status` 正常 200（不碰内核服务）；
+- **所有**需要内核服务的端点（`/settings/*`、`/chat/*`、`/devices/self`…）
+  一律 `400 cannot get required service "x" in inactive context`；
+- 客户端表现为「连上了，但快照拉不完，一直转圈」。
+
+**纪律**：凡在 `apply` 里注册可选入口（命令/工具/服务），一律 `try/catch` 降级成
+「少一个入口 + 一条 warn」，绝不让 `apply` 抛错。代价不对等：一个入口不可用 vs 整桥假死。
+回归口径见 `src/index.ts` 的 `/tunnel` 命令与 `open_tunnel_config` 工具注册块。

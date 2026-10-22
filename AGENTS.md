@@ -254,6 +254,8 @@ docs/api/            ← OpenAPI + AsyncAPI（wire schema 的权威）
 - `CI 判活把 401 当没起来`
 - `目录结构与接口说明漂移`
 - `隧道让回环判据失效`
+- `改 node_modules 里的插件产物不生效（pnpm 硬链接）`
+- `apply 尾部抛错会留下「半死桥」`
 
 > 新坑位：名字加进上面清单 + 原文写进 `PITFALLS.md` 并补 `### 同名` 锚点。
 
