@@ -9,7 +9,7 @@
 </p>
 
 <p align="center">
-  <img alt="Version" src="https://img.shields.io/badge/version-v2.5.2-087f8c">
+  <img alt="Version" src="https://img.shields.io/badge/version-v2.6.0-087f8c">
   <img alt="DSH plugin" src="https://img.shields.io/badge/DeepSeek_Harness-plugin-1f2328">
   <img alt="Platforms" src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-586069">
   <img alt="License" src="https://img.shields.io/badge/license-AGPL--3.0-2da44e">
@@ -102,10 +102,10 @@ dsh plugin --profile web add dsh-remote-bridge
 dsh plugin --profile web add dsh-remote-bridge --registry https://registry.npmmirror.com
 
 # 2. tarball from the GitHub release
-dsh plugin --profile web add https://github.com/westanke/dsh-remote-bridge/releases/download/v2.5.2/dsh-remote-bridge-v2.5.2.tgz
+dsh plugin --profile web add https://github.com/westanke/dsh-remote-bridge/releases/download/v2.6.0/dsh-remote-bridge-v2.6.0.tgz
 
 # 3. tarball from the Gitee release (faster from mainland China)
-dsh plugin --profile web add https://gitee.com/westanke/dsh-remote-bridge/releases/download/v2.5.2/dsh-remote-bridge-v2.5.2.tgz
+dsh plugin --profile web add https://gitee.com/westanke/dsh-remote-bridge/releases/download/v2.6.0/dsh-remote-bridge-v2.6.0.tgz
 
 npx @deepseek-ai/dsh web
 ```
@@ -122,7 +122,7 @@ Restart DSH after installation, then open settings — The section is titled **�
 To install a downloaded release archive:
 
 ```sh
-dsh plugin --profile web add ./dsh-remote-bridge-v2.5.2.tgz
+dsh plugin --profile web add ./dsh-remote-bridge-v2.6.0.tgz
 ```
 
 ## First connection
@@ -358,7 +358,7 @@ pnpm pack
 
 v2.5.0 was verified on DSH **0.2.1-rc.2** on real hardware: all 14/14 host services injected, the three jobs endpoints exercised, and the permission catalog returned the kernel's real three presets. The development baseline is upstream `dsh-v0.2.1-rc.2` (commit `687f282e8625c6b8d11ff58211a90524be2e4317`); see `engines.dsh` above for the supported range. CI covers Windows, Ubuntu, and macOS.
 
-**v2.5.2 verification status**: 67 test files / 557 cases green, plus 8 Playwright browser cases
+**v2.6.0 verification status**: 70 test files / 593 cases green, plus 8 Playwright browser cases
 (including the 375px narrow-viewport contract); `typecheck`, `docs:check`, and the build all pass.
 All three rounds of real-hardware tunnel regressions were reproduced and verified on a
 React18 + Playwright click harness (one-click token issuance, the stop-tunnel escape hatch, and the
@@ -366,7 +366,8 @@ locked state when re-entering settings), then confirmed by manual testing on the
 
 ## Project
 
-- Version: `v2.5.2`
+- Version: `v2.6.0`
+- **v2.6.0 is the plugin-settings + IM-entry release**: it adds the per-plugin settings namespaces (`GET /api/v1/settings/namespaces`, `PATCH .../{ns}`) so the app can build the form from the kernel schema, and two entry points for "I am out and the desktop is still locked" — the host command `/tunnel` and the tool `open_tunnel_config`; plus one-tap pruning of unused devices, the audit page removed, and a guard so a failing optional registration cannot tear down the whole plugin context.
 - **v2.5.2 is a comprehensive hardening release**: it lands the five-dimension audit
   (security, features, performance, UI, button feedback) — including the unauthenticated
   `debug/host-services` information disclosure fix, dual-bucket rate limiting, broadcast backpressure,

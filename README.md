@@ -9,7 +9,7 @@
 </p>
 
 <p align="center">
-  <img alt="Version" src="https://img.shields.io/badge/version-v2.5.2-087f8c">
+  <img alt="Version" src="https://img.shields.io/badge/version-v2.6.0-087f8c">
   <img alt="DSH plugin" src="https://img.shields.io/badge/DeepSeek_Harness-plugin-1f2328">
   <img alt="Platforms" src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-586069">
   <img alt="License" src="https://img.shields.io/badge/license-AGPL--3.0-2da44e">
@@ -93,10 +93,10 @@ dsh plugin --profile web add dsh-remote-bridge
 dsh plugin --profile web add dsh-remote-bridge --registry https://registry.npmmirror.com
 
 # ② GitHub Release 的 tarball
-dsh plugin --profile web add https://github.com/westanke/dsh-remote-bridge/releases/download/v2.5.2/dsh-remote-bridge-v2.5.2.tgz
+dsh plugin --profile web add https://github.com/westanke/dsh-remote-bridge/releases/download/v2.6.0/dsh-remote-bridge-v2.6.0.tgz
 
 # ③ Gitee Release 的 tarball（国内访问更快）
-dsh plugin --profile web add https://gitee.com/westanke/dsh-remote-bridge/releases/download/v2.5.2/dsh-remote-bridge-v2.5.2.tgz
+dsh plugin --profile web add https://gitee.com/westanke/dsh-remote-bridge/releases/download/v2.6.0/dsh-remote-bridge-v2.6.0.tgz
 
 npx @deepseek-ai/dsh web
 ```
@@ -112,7 +112,7 @@ npx @deepseek-ai/dsh web
 从 GitHub Release 下载离线安装包时，可直接安装 tarball：
 
 ```sh
-dsh plugin --profile web add ./dsh-remote-bridge-v2.5.2.tgz
+dsh plugin --profile web add ./dsh-remote-bridge-v2.6.0.tgz
 ```
 
 ## 第一次使用
@@ -391,14 +391,15 @@ v2.5.0 在 DSH **0.2.1-rc.2** 上完成真机验证：14/14 宿主服务全部�
 权限档位目录返回内核真实三档。开发基线为上游 `dsh-v0.2.1-rc.2`（commit `687f282e8625c6b8d11ff58211a90524be2e4317`），
 兼容范围见上文 `engines.dsh`。CI 覆盖 Windows、Ubuntu 和 macOS。
 
-**v2.5.2 的验证状态**：67 个测试文件 / 557 个用例全绿、8 个 Playwright 浏览器用例
+**v2.6.0 的验证状态**：70 个测试文件 / 593 个用例全绿、8 个 Playwright 浏览器用例
 （含 375px 窄屏契约）、`typecheck`/`docs:check`/构建通过；隧道管理面三轮真机回归均用
 React18 + Playwright 真点击台复现并验证（一键出令牌、停止出口、重进设置页锁定态），
 用户真机手工复测通过。
 
 ## 项目信息
 
-- 当前版本：`v2.5.2`
+- 当前版本：`v2.6.0`
+- **v2.6.0 是通用设置面 + IM 入口版**：新增「按插件划分的设置命名空间」两个端点（手机端照 schema 自建表单，新装插件无需改 App），以及「人已出门、电脑还锁着」时用 IM 一句话开隧道并收回配对配置的双入口（宿主命令 `/tunnel` + 工具 `open_tunnel_config`）；另加一键清理 N 天未使用设备、移除审计页，并把「激活期降级保护」补上（apply 尾部抛错不再拆掉整条插件上下文）。
 - **v2.5.2 是全量完善版**：落地五维审计（安全/功能/性能/界面/按钮反馈）——含高危的
   `debug/host-services` 免鉴权信息泄露修复、限流双桶、广播背压、弱 ETag、审计保留策略等，
   并把「一键开隧道并生成令牌」做成同一次请求内搭车完成；隧道运行时管理面安全锁定，
