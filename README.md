@@ -9,7 +9,7 @@
 </p>
 
 <p align="center">
-  <img alt="Version" src="https://img.shields.io/badge/version-v2.5.1-087f8c">
+  <img alt="Version" src="https://img.shields.io/badge/version-v2.5.2-087f8c">
   <img alt="DSH plugin" src="https://img.shields.io/badge/DeepSeek_Harness-plugin-1f2328">
   <img alt="Platforms" src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-586069">
   <img alt="License" src="https://img.shields.io/badge/license-AGPL--3.0-2da44e">
@@ -93,10 +93,10 @@ dsh plugin --profile web add dsh-remote-bridge
 dsh plugin --profile web add dsh-remote-bridge --registry https://registry.npmmirror.com
 
 # ② GitHub Release 的 tarball
-dsh plugin --profile web add https://github.com/westanke/dsh-remote-bridge/releases/download/v2.5.1/dsh-remote-bridge-v2.5.1.tgz
+dsh plugin --profile web add https://github.com/westanke/dsh-remote-bridge/releases/download/v2.5.2/dsh-remote-bridge-v2.5.2.tgz
 
 # ③ Gitee Release 的 tarball（国内访问更快）
-dsh plugin --profile web add https://gitee.com/westanke/dsh-remote-bridge/releases/download/v2.5.1/dsh-remote-bridge-v2.5.1.tgz
+dsh plugin --profile web add https://gitee.com/westanke/dsh-remote-bridge/releases/download/v2.5.2/dsh-remote-bridge-v2.5.2.tgz
 
 npx @deepseek-ai/dsh web
 ```
@@ -112,7 +112,7 @@ npx @deepseek-ai/dsh web
 从 GitHub Release 下载离线安装包时，可直接安装 tarball：
 
 ```sh
-dsh plugin --profile web add ./dsh-remote-bridge-v2.5.1.tgz
+dsh plugin --profile web add ./dsh-remote-bridge-v2.5.2.tgz
 ```
 
 ## 第一次使用
@@ -338,27 +338,30 @@ pnpm check
 pnpm pack
 ```
 
-`pnpm check` 覆盖类型检查、文档一致性与测试；当前 **66 个测试文件 / 552 个用例**，外加 **8 个浏览器层用例**（Playwright 实测量出的计算样式，含 375px 窄屏契约），全部通过。
+`pnpm check` 覆盖类型检查、文档一致性与测试；当前 **67 个测试文件 / 557 个用例**，外加 **8 个浏览器层用例**（Playwright 实测量出的计算样式，含 375px 窄屏契约），全部通过。
 
-`npm pack` 的产物约 **0.55 MB**（v2.5.0 实测 572,951 字节，SHA-256 `38f25c10…299c93`）：2.2.0 删除独立页及其编辑器依赖、并关闭 source map 之后从 1.72 MB 降下来，之后随投影透传与权限 BFF 小幅增长。
+`npm pack` 的产物约 **0.61 MB**（v2.5.2 实测 635,316 字节，SHA-256 `1779c02e…bdd3bd`）：2.2.0 删除独立页及其编辑器依赖、并关闭 source map 之后从 1.72 MB 降下来，之后随投影透传、权限 BFF 与五维加固小幅增长。
 
 v2.5.0 在 DSH **0.2.1-rc.2** 上完成真机验证：14/14 宿主服务全部可注入、三个 jobs 端点实测通过、
 权限档位目录返回内核真实三档。开发基线为上游 `dsh-v0.2.1-rc.2`（commit `687f282e8625c6b8d11ff58211a90524be2e4317`），
 兼容范围见上文 `engines.dsh`。CI 覆盖 Windows、Ubuntu 和 macOS。
 
-**v2.5.1 的验证状态**：47 个测试文件 / 398 个用例全绿（含隧道拓扑下的管理面回归、
-桌面端放行断言、`it.fails` 转正）、`typecheck` 与 `docs:check` 通过，并用真实
-`RemoteApiServer` 重打了审计报告 §3.1 的攻击链（逐条 403）。**尚未做真机验收**，
-也未发布到 npm / 两站 Release —— 按「未发布 ≠ 已验证 ≠ 用户吃到了」记三态。
+**v2.5.2 的验证状态**：67 个测试文件 / 557 个用例全绿、8 个 Playwright 浏览器用例
+（含 375px 窄屏契约）、`typecheck`/`docs:check`/构建通过；隧道管理面三轮真机回归均用
+React18 + Playwright 真点击台复现并验证（一键出令牌、停止出口、重进设置页锁定态），
+用户真机手工复测通过。
 
 ## 项目信息
 
-- 当前版本：`v2.5.1`
+- 当前版本：`v2.5.2`
+- **v2.5.2 是全量完善版**：落地五维审计（安全/功能/性能/界面/按钮反馈）——含高危的
+  `debug/host-services` 免鉴权信息泄露修复、限流双桶、广播背压、弱 ETag、审计保留策略等，
+  并把「一键开隧道并生成令牌」做成同一次请求内搭车完成；隧道运行时管理面安全锁定，
+  仅保留「停止隧道」出口，停止后自动恢复。v2.5.1 的安全模型（开隧道时 `/manage` 403、
+  四层管理判据）保持不变，见 `docs/project/SECURITY.md` §管理面的信任边界。
 - **v2.5.1 是安全修复版**：堵住「开隧道/反代后管理面免凭据对公网开放」的远程提权（`/manage/**`
   与回环 admin 头此前只按「TCP 来源是否回环」判定，而隧道转发进来的请求来源恒为 `127.0.0.1`），
-  并修复 `.heif` 交接图必被只读路由 415 的问题。升级后**开隧道时 `/manage` 一律 403**
-  （唯一例外是只读的隧道状态端点，且对非本机调用方隐去隧道地址）；桌面端面板不受影响。
-  见 `docs/project/SECURITY.md` §管理面的信任边界。
+  并修复 `.heif` 交接图必被只读路由 415 的问题。
 - 作者：上游 [Hakunm](https://github.com/Hakunm)，本 fork 维护 [westanke](https://github.com/westanke)
 - 仓库：[GitHub](https://github.com/westanke/dsh-remote-bridge) · [Gitee](https://gitee.com/westanke/dsh-remote-bridge)
 - npm：[`dsh-remote-bridge`](https://www.npmjs.com/package/dsh-remote-bridge)（[国内镜像](https://registry.npmmirror.com/dsh-remote-bridge)）

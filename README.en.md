@@ -9,7 +9,7 @@
 </p>
 
 <p align="center">
-  <img alt="Version" src="https://img.shields.io/badge/version-v2.5.1-087f8c">
+  <img alt="Version" src="https://img.shields.io/badge/version-v2.5.2-087f8c">
   <img alt="DSH plugin" src="https://img.shields.io/badge/DeepSeek_Harness-plugin-1f2328">
   <img alt="Platforms" src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-586069">
   <img alt="License" src="https://img.shields.io/badge/license-AGPL--3.0-2da44e">
@@ -102,10 +102,10 @@ dsh plugin --profile web add dsh-remote-bridge
 dsh plugin --profile web add dsh-remote-bridge --registry https://registry.npmmirror.com
 
 # 2. tarball from the GitHub release
-dsh plugin --profile web add https://github.com/westanke/dsh-remote-bridge/releases/download/v2.5.1/dsh-remote-bridge-v2.5.1.tgz
+dsh plugin --profile web add https://github.com/westanke/dsh-remote-bridge/releases/download/v2.5.2/dsh-remote-bridge-v2.5.2.tgz
 
 # 3. tarball from the Gitee release (faster from mainland China)
-dsh plugin --profile web add https://gitee.com/westanke/dsh-remote-bridge/releases/download/v2.5.1/dsh-remote-bridge-v2.5.1.tgz
+dsh plugin --profile web add https://gitee.com/westanke/dsh-remote-bridge/releases/download/v2.5.2/dsh-remote-bridge-v2.5.2.tgz
 
 npx @deepseek-ai/dsh web
 ```
@@ -122,7 +122,7 @@ Restart DSH after installation, then open settings — The section is titled **�
 To install a downloaded release archive:
 
 ```sh
-dsh plugin --profile web add ./dsh-remote-bridge-v2.5.1.tgz
+dsh plugin --profile web add ./dsh-remote-bridge-v2.5.2.tgz
 ```
 
 ## First connection
@@ -352,28 +352,30 @@ pnpm check
 pnpm pack
 ```
 
-`pnpm check` covers type-checking, documentation consistency, and tests. It currently passes **66 test files / 552 cases**, plus **8 browser-layer cases** (Playwright measuring real computed styles, including the 375px narrow-viewport contract).
+`pnpm check` covers type-checking, documentation consistency, and tests. It currently passes **67 test files / 557 cases**, plus **8 browser-layer cases** (Playwright measuring real computed styles, including the 375px narrow-viewport contract).
 
-`npm pack` produces roughly a **0.55 MB** archive (v2.5.0 measured 572,951 bytes, SHA-256 `38f25c10…299c93`): 2.2.0 dropped the standalone page and its editor dependencies and turned source maps off, down from 1.72 MB; it has since grown slightly with projection passthrough and the permission BFF.
+`npm pack` produces roughly a **0.61 MB** archive (v2.5.2 measured 635,316 bytes, SHA-256 `1779c02e…bdd3bd`): 2.2.0 dropped the standalone page and its editor dependencies and turned source maps off, down from 1.72 MB; it has since grown slightly with projection passthrough, the permission BFF, and the five-dimension hardening.
 
 v2.5.0 was verified on DSH **0.2.1-rc.2** on real hardware: all 14/14 host services injected, the three jobs endpoints exercised, and the permission catalog returned the kernel's real three presets. The development baseline is upstream `dsh-v0.2.1-rc.2` (commit `687f282e8625c6b8d11ff58211a90524be2e4317`); see `engines.dsh` above for the supported range. CI covers Windows, Ubuntu, and macOS.
 
-**v2.5.1 verification status**: 47 test files / 398 cases green (including the tunnel-topology
-management regression, the desktop-panel pass-through assertion, and the `it.fails` conversions),
-`typecheck` and `docs:check` pass, and the audit report's §3.1 attack chain was replayed against a real
-`RemoteApiServer` (now 403 for every step). **Not yet verified on real hardware**, and not published to
-npm or either release site — i.e. "not published ≠ not verified ≠ users have it".
+**v2.5.2 verification status**: 67 test files / 557 cases green, plus 8 Playwright browser cases
+(including the 375px narrow-viewport contract); `typecheck`, `docs:check`, and the build all pass.
+All three rounds of real-hardware tunnel regressions were reproduced and verified on a
+React18 + Playwright click harness (one-click token issuance, the stop-tunnel escape hatch, and the
+locked state when re-entering settings), then confirmed by manual testing on the user's machine.
 
 ## Project
 
-- Version: `v2.5.1`
-- **v2.5.1 is a security release**: it closes a remote privilege escalation where `/manage/**`
-  and the loopback admin header were granted to any request whose TCP source looked like loopback —
-  which is exactly what a Cloudflare tunnel (or any reverse proxy) makes every public request look like.
-  It also fixes `.heif` handoff images, which were always rejected with 415 by the read-only route.
-  After upgrading, **`/manage` returns 403 whenever the tunnel is running** (the only exceptions are the
-  read-only tunnel-status endpoints, which hide the tunnel URL from non-local callers); the desktop panel
-  is unaffected. See `docs/project/SECURITY.md` §「管理面的信任边界」.
+- Version: `v2.5.2`
+- **v2.5.2 is a comprehensive hardening release**: it lands the five-dimension audit
+  (security, features, performance, UI, button feedback) — including the unauthenticated
+  `debug/host-services` information disclosure fix, dual-bucket rate limiting, broadcast backpressure,
+  weak ETags, and audit retention — and makes "start tunnel & generate token" complete inside a single
+  request. While the tunnel runs, the management surface is safely locked with only "stop tunnel"
+  available, restoring automatically afterwards. v2.5.1's security model (403 on `/manage` while a tunnel
+  runs, the four-layer admin criteria) is unchanged; see `docs/project/SECURITY.md` §「管理面的信任边界」.
+- **v2.5.1 was the security release**: it closed the remote privilege escalation and the `.heif`
+  handoff-image 415 bug described in the changelog.
 - Author: upstream [Hakunm](https://github.com/Hakunm); this fork maintained by [westanke](https://github.com/westanke)
 - Repository: [GitHub](https://github.com/westanke/dsh-remote-bridge) · [Gitee](https://gitee.com/westanke/dsh-remote-bridge)
 - npm: [`dsh-remote-bridge`](https://www.npmjs.com/package/dsh-remote-bridge) ([mainland-China mirror](https://registry.npmmirror.com/dsh-remote-bridge))
