@@ -108,11 +108,14 @@ if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
   ok "本地已有 $TAG，跳过"
   # 幂等重跑时，tag 可能指向「校验值还没回填」的旧提交（v2.6.0 就是这样）。
   # tag 一旦推出去就**不**改指（要 --force，用户明令禁止），所以这里只把话说清楚。
-  if [ "$DRY_RUN" != "1" ] && ! git show "$TAG:artifacts/SHA256SUMS.txt" 2>/dev/null \
+  # 纯只读，dry-run 也照跑 —— 这样「计划阶段」就能看出历史遗留的 tag 是否已经过期。
+  if ! git show "$TAG:artifacts/SHA256SUMS.txt" 2>/dev/null \
        | cmp -s - artifacts/SHA256SUMS.txt; then
     warn "$TAG 里的 artifacts/SHA256SUMS.txt 与当前工作区不一致（tag 早于校验值回填）"
     warn "  → 包与 Release 附件本身是对的；但 checkout 该 tag 会读到旧校验值"
     warn "  → 下一版起本脚本会先提交校验值再打 tag，不再出现"
+  else
+    ok "$TAG 内容校验通过（SHA256SUMS.txt 与工作区一致）"
   fi
 else
   run git tag -a "$TAG" -m "${PKG} ${VER}"
