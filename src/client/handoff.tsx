@@ -22,6 +22,7 @@
  */
 
 import { useEffect, useState, type CSSProperties } from 'react'
+import { useWorkspaceI18n } from './i18n.tsx'
 
 /** 本插件在 Chat store 里占的节点 kind。 */
 const KIND = 'dsh-remote-bridge-handoff-gallery'
@@ -151,54 +152,175 @@ const FULL_STYLE: CSSProperties = {
   boxShadow: '0 8px 32px rgba(0,0,0,0.5)',
 }
 
+/** 加载失败的缩略图占位（不再像旧版那样整张消失，只留一个问号让人瞎猜）。 */
+const THUMB_BROKEN_STYLE: CSSProperties = {
+  ...THUMB_STYLE,
+  display: 'flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+  width: 160,
+  height: 120,
+  cursor: 'default',
+  fontSize: 12,
+}
+
+const LIGHTBOX_NAV_STYLE: CSSProperties = {
+  position: 'absolute',
+  top: '50%',
+  transform: 'translateY(-50%)',
+  zIndex: 1001,
+  width: 44,
+  height: 44,
+  borderRadius: '50%',
+  border: 'none',
+  background: 'rgba(255,255,255,0.14)',
+  color: '#fff',
+  fontSize: 22,
+  lineHeight: '44px',
+  textAlign: 'center',
+  cursor: 'pointer',
+  padding: 0,
+}
+
+const LIGHTBOX_CLOSE_STYLE: CSSProperties = {
+  position: 'absolute',
+  top: 16,
+  right: 16,
+  zIndex: 1001,
+  width: 40,
+  height: 40,
+  borderRadius: '50%',
+  border: 'none',
+  background: 'rgba(255,255,255,0.14)',
+  color: '#fff',
+  fontSize: 20,
+  lineHeight: '40px',
+  textAlign: 'center',
+  cursor: 'pointer',
+  padding: 0,
+}
+
+const LIGHTBOX_FULL_BROKEN_STYLE: CSSProperties = {
+  ...FULL_STYLE,
+  display: 'flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+  width: 'min(72vw, 560px)',
+  height: 'min(60vh, 360px)',
+  background: 'rgba(127,127,127,0.18)',
+  color: 'rgba(255,255,255,0.92)',
+  fontSize: 14,
+}
+
 /** 某条地址在这条路由上的 URL。 */
 export function imageUrl(path: string, sessionId: string): string {
   return `${ROUTE}?sessionId=${encodeURIComponent(sessionId)}&name=${encodeURIComponent(basenameOf(path))}`
 }
 
 /**
- * 一张图。取不到的（文件已删、会话读不出、格式不符）自己消失，而不是在轮末留一个碎图标。
+ * 缩略图。取不到的（文件已删、会话读不出、格式不符）显示一块「加载失败」占位，
+ * 而不是像旧版那样整张消失——消失了用户只会以为模型没存图，根本不知道该重试。
  */
-function HandoffImage(props: { item: { path: string; label: string }; sessionId: string }): JSX.Element | null {
+function HandoffThumb(props: {
+  item: { path: string; label: string }
+  sessionId: string
+  failedText: string
+  onOpen(): void
+}): JSX.Element {
   const [failed, setFailed] = useState(false)
-  const [open, setOpen] = useState(false)
-
-  useEffect(() => {
-    if (!open) return undefined
-    const onKey = (event: KeyboardEvent): void => { if (event.key === 'Escape') setOpen(false) }
-    document.addEventListener('keydown', onKey)
-    return () => { document.removeEventListener('keydown', onKey) }
-  }, [open])
-
-  if (failed) return null
-  const url = imageUrl(props.item.path, props.sessionId)
-  const thumb = <img
-    src={url}
-    alt={props.item.label}
-    title={props.item.path}
-    loading="lazy"
-    decoding="async"
-    referrerPolicy="no-referrer"
-    style={THUMB_STYLE}
-    onError={() => setFailed(true)}
-    onClick={() => setOpen(true)}
-  />
-  const framed = <div className="daw-handoff-item" style={ITEM_STYLE}>
-    {thumb}
+  if (failed) {
+    return <div className="daw-handoff-item" style={ITEM_STYLE}>
+      <div style={THUMB_BROKEN_STYLE} title={props.item.path}>{props.failedText}</div>
+      <span className="daw-handoff-caption" title={props.item.path} style={CAPTION_STYLE}>{props.item.path}</span>
+    </div>
+  }
+  return <div className="daw-handoff-item" style={ITEM_STYLE}>
+    <img
+      src={imageUrl(props.item.path, props.sessionId)}
+      alt={props.item.label}
+      title={props.item.path}
+      loading="lazy"
+      decoding="async"
+      referrerPolicy="no-referrer"
+      style={THUMB_STYLE}
+      onError={() => setFailed(true)}
+      onClick={props.onOpen}
+    />
     <span className="daw-handoff-caption" title={props.item.path} style={CAPTION_STYLE}>{props.item.path}</span>
   </div>
-  if (!open) return framed
-  return <>
-    {framed}
-    <div
-      style={OVERLAY_STYLE}
-      role="dialog"
-      aria-label={props.item.path}
-      onClick={() => setOpen(false)}
-    >
-      <img src={url} alt={props.item.label} decoding="async" referrerPolicy="no-referrer" style={FULL_STYLE} />
+}
+
+/** 灯箱里的大图；换图时靠 key 重挂载来重置 failed。 */
+function LightboxImage(props: { item: { path: string; label: string }; sessionId: string; failedText: string }): JSX.Element {
+  const [failed, setFailed] = useState(false)
+  if (failed) {
+    return <div style={LIGHTBOX_FULL_BROKEN_STYLE}>{props.failedText}</div>
+  }
+  return <img
+    src={imageUrl(props.item.path, props.sessionId)}
+    alt={props.item.label}
+    decoding="async"
+    referrerPolicy="no-referrer"
+    style={FULL_STYLE}
+    onError={() => setFailed(true)}
+  />
+}
+
+/**
+ * 图集灯箱：点遮罩空白处关闭，但**点图片本身不再误关**（旧版 img 的点击冒泡到 overlay）。
+ * 多图时左右切换，Esc 关闭。
+ */
+function HandoffLightbox(props: {
+  items: { path: string; label: string }[]
+  index: number
+  sessionId: string
+  failedText: string
+  prevLabel: string
+  nextLabel: string
+  onClose(): void
+  onPrev(): void
+  onNext(): void
+}): JSX.Element {
+  const { items, index, onClose, onPrev, onNext } = props
+  const multiple = items.length > 1
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent): void => {
+      if (event.key === 'Escape') onClose()
+      else if (multiple && event.key === 'ArrowLeft') onPrev()
+      else if (multiple && event.key === 'ArrowRight') onNext()
+    }
+    document.addEventListener('keydown', onKey)
+    return () => { document.removeEventListener('keydown', onKey) }
+  }, [multiple, onClose, onPrev, onNext])
+
+  // 调用方（HandoffTurnTail）已保证 openIndex < items.length，这里下标必中。
+  const item = items[index] as { path: string; label: string }
+  return <div
+    style={{ ...OVERLAY_STYLE, cursor: 'zoom-out' }}
+    role="dialog"
+    aria-modal="true"
+    aria-label={item.path}
+    onClick={onClose}
+  >
+    <button type="button" style={LIGHTBOX_CLOSE_STYLE} aria-label="×" onClick={onClose}>×</button>
+    {multiple && index > 0
+      ? <button type="button" style={{ ...LIGHTBOX_NAV_STYLE, left: 24 }} aria-label={props.prevLabel} title={props.prevLabel}
+          onClick={(e) => { e.stopPropagation(); onPrev() }}>‹</button>
+      : null}
+    {multiple && index < items.length - 1
+      ? <button type="button" style={{ ...LIGHTBOX_NAV_STYLE, right: 24 }} aria-label={props.nextLabel} title={props.nextLabel}
+          onClick={(e) => { e.stopPropagation(); onNext() }}>›</button>
+      : null}
+    {/* 内容区拦截冒泡：点图/点计数器都不关，只有点周围黑色遮罩才关。 */}
+    <div style={{ position: 'relative', cursor: 'default' }} onClick={(e) => e.stopPropagation()}>
+      <LightboxImage key={index} item={item} sessionId={props.sessionId} failedText={props.failedText} />
+      {multiple
+        ? <div style={{ position: 'absolute', bottom: -28, left: 0, right: 0, textAlign: 'center', color: 'rgba(255,255,255,0.85)', fontSize: 12 }}>
+            {index + 1} / {items.length}
+          </div>
+        : null}
     </div>
-  </>
+  </div>
 }
 
 /** 把本轮各节点里交接出去的图收成一串（按出现顺序去重）。 */
@@ -239,11 +361,38 @@ export function HandoffTurnTail(props: any): JSX.Element | null {
   const locations = props.useChat((snapshot: any) => snapshot.locations)
   const items = collectTurnItems(nodes, locations, props.turn)
   const sessionId = props.sessionId
+  const { t } = useWorkspaceI18n()
+  // 灯箱打开的是第几张；null = 关闭。索引状态归图集，单张图之间才能左右切换。
+  // 注意：hooks 必须排在所有早退之前，否则 items 从 0 变多张时 hook 顺序会漂移。
+  const [activeIndex, setActiveIndex] = useState<number | null>(null)
   if (items.length === 0) return null
   if (typeof sessionId !== 'string' || sessionId === '') return null
-  return <div className="daw-handoff-gallery" style={WRAP_STYLE}>
-    {items.map(item => <HandoffImage key={item.path} item={item} sessionId={sessionId} />)}
-  </div>
+  // 本轮图片变少（极端情况：节点被替换）时把越界的灯箱收回。
+  const openIndex = activeIndex !== null && activeIndex < items.length ? activeIndex : null
+  return <>
+    <div className="daw-handoff-gallery" style={WRAP_STYLE}>
+      {items.map((item, index) => <HandoffThumb
+        key={item.path}
+        item={item}
+        sessionId={sessionId}
+        failedText={t('imageLoadFailed')}
+        onOpen={() => setActiveIndex(index)}
+      />)}
+    </div>
+    {openIndex !== null
+      ? <HandoffLightbox
+          items={items}
+          index={openIndex}
+          sessionId={sessionId}
+          failedText={t('imageLoadFailed')}
+          prevLabel={t('prevImage')}
+          nextLabel={t('nextImage')}
+          onClose={() => setActiveIndex(null)}
+          onPrev={() => setActiveIndex(i => (i === null ? i : Math.max(0, i - 1)))}
+          onNext={() => setActiveIndex(i => (i === null ? i : Math.min(items.length - 1, i + 1)))}
+        />
+      : null}
+  </>
 }
 
 /**

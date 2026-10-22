@@ -39,8 +39,14 @@ paths:
         `observed` covers services confirmed present in the web profile but not yet
         consumed (currently only `workingDirectory`, added by DSH 0.2.1).
 
-        Requires a device token or loopback admin, like every other authenticated
-        endpoint: it exposes host internals.
+        Requires a device token or loopback admin **with the `settings.read`
+        scope** (a loopback admin inherits all scopes): it exposes host
+        internals. Since 2.5.2 the endpoint sits behind authentication like
+        every other `/api/v1` route (SEC-H1); it previously returned before the
+        principal was resolved. The response may additionally carry a
+        best-effort `metrics` object with runtime diagnostics; it is omitted in
+        builds without the metrics collector (and a missing probe still yields
+        `404`, not `500`).
       responses:
         '200':
           description: Injection probe snapshot taken while the plugin applied.
@@ -79,6 +85,14 @@ paths:
                       injectedAvailable: { type: integer }
                       injectedMissing: { type: array, items: { type: string } }
                       observedAvailable: { type: array, items: { type: string } }
+                  metrics:
+                    type: object
+                    description: |
+                      Optional runtime diagnostics attached to the same
+                      `settings.read`-gated report (no separate route). Omitted
+                      when the build has no metrics collector. Shape is
+                      diagnostic and additive.
+                    additionalProperties: true
         '404':
           description: The probe is not compiled into this build.
   /pairings/exchange:
@@ -134,6 +148,32 @@ paths:
                     type: array
                     items: { $ref: '#/components/schemas/Root' }
         '403': { $ref: '#/components/responses/Error' }
+  /roots/resolve:
+    get:
+      operationId: resolveAbsolutePath
+      summary: Map a host absolute path to its authorized root
+      description: |
+        Chat events carry server-absolute paths while `GET /roots` deliberately
+        omits root absolute paths, so clients cannot perform this mapping
+        themselves. Resolves `path` against the device's authorized roots using
+        realpath-normalized longest-prefix matching, then stat-checks the
+        target (rejecting symlinks inside the path) via the same machinery as
+        file content reads. The response never contains an absolute host path.
+        Requires `files.read`.
+      parameters:
+        - name: path
+          in: query
+          required: true
+          description: Absolute host path. Relative paths are rejected rather than guessed.
+          schema: { type: string, minLength: 1 }
+      responses:
+        '200':
+          description: Root match plus wire-relative metadata for the target.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ResolvedPath' }
+        '400': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
   /roots/{rootId}/entries:
     parameters:
       - $ref: '#/components/parameters/RootId'
@@ -271,6 +311,74 @@ paths:
         '200':
           description: Item restored without overwriting an existing path.
         '409': { $ref: '#/components/responses/Error' }
+  /image-handoff:
+    get:
+      operationId: readImageHandoff
+      summary: Fetch one handoff image for a chat session
+      description: |
+        Returns the raw bytes of an image the agent handed off (content-addressed
+        `sha256.<ext>` files written under the session working directory's
+        image-handoff subdirectory). `name` must be a bare file name only: the
+        directory is always derived by the host from the session working
+        directory, so no directory or absolute path can be supplied. Requires
+        `files.read` plus ownership of the session; "no such session" and "no
+        such file" are indistinguishable (both are 404). This authenticated REST
+        route is the device-side counterpart of the token-less browser route
+        `GET /plugin/dsh-remote-bridge/raw`.
+      parameters:
+        - name: sessionId
+          in: query
+          required: true
+          schema: { type: string }
+        - name: name
+          in: query
+          required: true
+          description: Bare handoff file name, e.g. `a1b2…e9.png`.
+          schema: { type: string, pattern: '^[0-9a-f]{64}\.[A-Za-z0-9]+$' }
+      responses:
+        '200':
+          description: Image bytes; handoff files are temporary artifacts, so the response is private and must be revalidated.
+          headers:
+            Cache-Control: { schema: { type: string }, description: private, max-age=0, must-revalidate }
+          content:
+            application/octet-stream:
+              schema: { type: string, contentEncoding: binary }
+        '400': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+  /attachments/{attachmentId}:
+    get:
+      operationId: readAttachment
+      summary: Fetch one session attachment's bytes
+      description: |
+        Returns the raw bytes of an image attachment referenced by a session
+        event. The attachment store is content-addressed, so `attachmentId`
+        contains a colon (typically `sha256:<hex>`) and **must be
+        percent-encoded in the URL** (`sha256%3A<hex>`). `sessionId` is a
+        required query parameter: the host verifies the session actually
+        references this attachment and validates bytes/media type against the
+        real reference stored in the session event. Requires `files.read` plus
+        ownership of the session. Bytes are immutable and may be cached
+        privately for a year.
+      parameters:
+        - name: attachmentId
+          in: path
+          required: true
+          description: Content-addressed attachment id, e.g. `sha256%3A<hex>` (the raw id is `sha256:<hex>` and must be percent-encoded).
+          schema: { type: string }
+        - name: sessionId
+          in: query
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Attachment bytes; immutable and privately cacheable.
+          headers:
+            Cache-Control: { schema: { type: string }, description: private, max-age=31536000, immutable }
+          content:
+            application/octet-stream:
+              schema: { type: string, contentEncoding: binary }
+        '400': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
   /chat/workspaces:
     get:
       operationId: listChatWorkspaces
@@ -784,6 +892,45 @@ paths:
       responses:
         '202': { description: Prompt accepted by DSH. }
         '409': { $ref: '#/components/responses/Error' }
+  /chat/sessions/{sessionId}/attachments:
+    parameters:
+      - name: sessionId
+        in: path
+        required: true
+        schema: { type: string }
+    post:
+      operationId: uploadSessionAttachment
+      summary: Upload one attachment and receive a receipt
+      description: |
+        Uploads one attachment as base64 text and returns the receipt a later
+        message can reference. Kernel file-type content parts require this
+        `receiptId` (obtained through an upload); only image content parts may
+        be inlined as base64 directly in a message. Requires `chat.write` plus
+        ownership of the session. The request body is limited to 24 MiB.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [data]
+              properties:
+                data:
+                  type: string
+                  contentEncoding: base64
+                  minLength: 1
+                  description: Base64-encoded attachment bytes.
+                name:
+                  type: string
+                  description: Optional original file name; trimmed by the server.
+      responses:
+        '201':
+          description: Stored; the receipt id is referenced by later message file parts.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AttachmentReceipt' }
+        '400': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
   /chat/sessions/{sessionId}/approvals:
     get:
       operationId: listPendingApprovals
@@ -994,6 +1141,24 @@ paths:
               schema: { $ref: '#/components/schemas/SessionModels' }
         '404': { $ref: '#/components/responses/Error' }
   /chat/sessions/{sessionId}/model:
+    get:
+      operationId: getSessionModelAlias
+      description: |
+        Alias of `GET /chat/sessions/{sessionId}/models`; the server route
+        `model(?:s)?$` answers GET on both spellings. New clients should call
+        `/models`.
+      parameters:
+        - name: sessionId
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Current selection and models routable for this DSH session.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SessionModels' }
+        '404': { $ref: '#/components/responses/Error' }
     put:
       operationId: selectSessionModel
       parameters:
@@ -1155,6 +1320,24 @@ components:
         id: { type: string, format: uuid }
         label: { type: string }
         createdAt: { type: integer }
+    ResolvedPath:
+      type: object
+      description: Result of mapping an absolute host path into an authorized root; the root's absolute path itself is never included.
+      required: [rootId, path, kind, size, modifiedAt, contentType]
+      properties:
+        rootId: { type: string, format: uuid }
+        path: { $ref: '#/components/schemas/WirePath' }
+        kind: { type: string, enum: [file, directory] }
+        size: { type: integer, nullable: true }
+        modifiedAt: { type: integer, nullable: true }
+        contentType: { type: string, nullable: true }
+    AttachmentReceipt:
+      type: object
+      description: Upload receipt referenced later as a file-type content part in a message.
+      required: [receiptId, name]
+      properties:
+        receiptId: { type: string }
+        name: { type: string, nullable: true }
     Device:
       type: object
       required: [id, name, scopes, rootIds]

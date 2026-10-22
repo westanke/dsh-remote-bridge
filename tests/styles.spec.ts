@@ -64,4 +64,41 @@ describe('样式的不变量', () => {
     const cardRules = WORKSPACE_CSS.slice(WORKSPACE_CSS.indexOf('.daw-card{'), WORKSPACE_CSS.indexOf('.daw-card-body{'))
     expect(cardRules).not.toMatch(/#[0-9a-f]{3,6}/i)
   })
+
+  it('UI-01 不允许再出现 @mediaa 这种把整条窄屏规则静默丢掉的拼写', () => {
+    // 真实事故：`@mediaa(max-width:720px)` 多一个 a，整条响应式规则被浏览器丢弃，
+    // 375px 下监听表单三列挤压、保存按钮只剩 37px。cssRules 里直接 0 条 media rule。
+    expect(WORKSPACE_CSS).not.toContain('@mediaa')
+    expect(WORKSPACE_CSS).toMatch(/@media\s*\(max-width:720px\)/)
+  })
+
+  it('UI-02 box-sizing 重置同时覆盖内联容器 .daw-settings-section', () => {
+    // 少了它，内联设置页里的 textarea 在窄屏按 content-box 计算，375px 下横向溢出 391>375。
+    expect(WORKSPACE_CSS).toMatch(/box-sizing:border-box/)
+    expect(WORKSPACE_CSS).toContain('.daw-settings-section *')
+  })
+
+  it('UI-04/05 按钮与输入框有令牌化基线，且禁用态明确给 not-allowed', () => {
+    // 旧版普通按钮写死 background:#fff（深色模式白晃晃一块）、禁用按钮只剩浏览器默认的 30% 文字。
+    expect(WORKSPACE_CSS).toMatch(/\.daw-command[^{]*\{[^}]*var\(/)
+    expect(WORKSPACE_CSS).toMatch(/\.daw-command:disabled\{[^}]*cursor:not-allowed/)
+    expect(WORKSPACE_CSS).toMatch(/\.daw-input\{[^}]*var\(/)
+  })
+
+  it('UI-08 不确定进度有 indeterminate 流动动画，不再假装恒定 30%', () => {
+    expect(WORKSPACE_CSS).toContain('.daw-progress-fill.indeterminate')
+    expect(WORKSPACE_CSS).toMatch(/@keyframes\s+daw-indeterminate/)
+  })
+
+  it('UI-07 成功反馈有独立绿条样式，不再只能借用识图保存那一颗 pill', () => {
+    expect(WORKSPACE_CSS).toContain('.daw-success{')
+  })
+
+  it('UI-16 死样式保持删除：版本脚注/文件条/卡片壳/孤立行不再复活', () => {
+    // 这四个类在 tsx 里零引用；若重新出现，先确认是不是真有元素在用，别让样式表继续堆尸。
+    expect(WORKSPACE_CSS).not.toContain('.daw-version')
+    expect(WORKSPACE_CSS).not.toContain('.daw-filebar')
+    expect(WORKSPACE_CSS).not.toContain('.daw-cards{')
+    expect(WORKSPACE_CSS).not.toContain('.daw-inline-row')
+  })
 })

@@ -122,6 +122,17 @@ export interface CustomProviderCapability {
   revision?: number
 }
 
+/**
+ * provider 上下文的复用窗口。
+ *
+ * 1 秒足以覆盖「同一个 PATCH 请求里的连续两次 context 查询」，又短到不会让
+ * 用户可感知地读到旧值（真正的并发控制由 `expectedRevision` 负责）。
+ */
+const PROVIDER_CONTEXT_TTL_MS = 1_000
+
+/** 缓存条目上限；到顶就整表清空（条目数与 provider 数量同阶，很小）。 */
+const PROVIDER_CONTEXT_CACHE_LIMIT = 128
+
 export class DshSettingsAdapter {
   constructor(private readonly api: SettingsApiProxy) {}
 
@@ -231,6 +242,8 @@ export class DshSettingsAdapter {
         unwrapDsh(await this.api.credentials.set({ rpcId: randomUUID(), payload: { ref, value: patch.apiKey } }))
       }
     }
+    // 写成功：让下一次读拿到新值（见 `invalidateProviderContext` 的说明）。
+    this.invalidateProviderContext(providerId)
   }
 
   async createProvider(input: CustomProviderCreate): Promise<void> {
@@ -280,6 +293,7 @@ export class DshSettingsAdapter {
     if (key !== '') {
       unwrapDsh(await this.api.credentials.set({ rpcId: randomUUID(), payload: { ref, value: key } }))
     }
+    this.invalidateProviderContext(id)
   }
 
   async removeProvider(providerId: string, expectedRevision?: number): Promise<void> {
@@ -296,6 +310,7 @@ export class DshSettingsAdapter {
         ...(expectedRevision === undefined ? {} : { expectedRevision }),
       },
     }))
+    this.invalidateProviderContext(providerId)
   }
 
   async discover(providerId: string, draft: { baseURL?: string; api?: string; apiKey?: string }): Promise<ProviderModelView[]> {
@@ -310,7 +325,50 @@ export class DshSettingsAdapter {
     return unwrapDsh(await this.api.llm.discoverModels({ rpcId: randomUUID(), payload })).models
   }
 
+  /**
+   * 取一个 provider 的上下文（目录条目 + 设置命名空间 + 当前 profile）。
+   *
+   * ## 为什么加一层「单请求内复用」
+   *
+   * 修复前 `updateProvider()` 会**连续**调它两次（一次在开头做校验、一次在
+   * `createProvider`/`removeProvider` 里），而每次 `providerContext` 都要打
+   * **两次**内核 RPC（`llm.providers` + `settings.describe`）。于是一次 PATCH
+   * 实际可能产生 4~5 次内核往返 —— 而它们问的是**同一份数据**。
+   *
+   * 这里用一个极短的 TTL（默认 1 秒，覆盖「同一请求内」的连续调用）缓存结果。
+   * 为什么不用「请求作用域」的显式传参：那要改每个方法的签名，而调用点散在
+   * router 与 adapter 两处 —— 收益远不抵这次改动。1 秒 TTL 的副作用是：
+   * 同一秒内两次改同一个 provider 时，第二次读到的是第一次之前的快照 ——
+   * 而 `settings.mutate` 有 `expectedRevision` 做真正的并发控制，所以不会写坏。
+   */
+  private readonly providerContextCache = new Map<string, {
+    at: number
+    value: Awaited<ReturnType<DshSettingsAdapter['loadProviderContext']>>
+  }>()
+
   private async providerContext(providerId: string) {
+    const cached = this.providerContextCache.get(providerId)
+    const now = Date.now()
+    if (cached !== undefined && now - cached.at < PROVIDER_CONTEXT_TTL_MS) return cached.value
+    const value = await this.loadProviderContext(providerId)
+    if (this.providerContextCache.size >= PROVIDER_CONTEXT_CACHE_LIMIT) this.providerContextCache.clear()
+    this.providerContextCache.set(providerId, { at: now, value })
+    return value
+  }
+
+  /**
+   * 写操作之后**必须**让缓存失效。
+   *
+   * 为什么不能只靠 TTL：`updateProvider` 改完 baseURL 之后，同一个请求尾部的
+   * `listProviders()` 要给出新值。靠 TTL 等 1 秒等于把一个「刚刚改成功」的
+   * 界面回滚成旧值 —— 那会被用户当成「改了没生效」。
+   */
+  private invalidateProviderContext(providerId?: string): void {
+    if (providerId === undefined) this.providerContextCache.clear()
+    else this.providerContextCache.delete(providerId)
+  }
+
+  private async loadProviderContext(providerId: string) {
     const [directoryResponse, settingsResponse] = await Promise.all([
       this.api.llm.providers({ rpcId: randomUUID(), payload: {} }),
       this.api.settings.describe({ rpcId: randomUUID(), payload: {} }),

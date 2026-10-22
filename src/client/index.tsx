@@ -47,8 +47,8 @@ export function apply(ctx: ClientContext): void {
   // download all live in the same place instead of being split between a sidebar icon and a page.
   //
   // `order: 2` places it immediately below 手机访问. `conversation.view` (the in-chat file tab)
-  // stays unregistered; `WorkspaceApp` is still exported for the standalone `/dsh-workspace` page
-  // (src/standalone), which is a page of its own rather than a slot.
+  // stays unregistered; this bundle has no standalone page — the whole panel renders inline here
+  // (PhoneSettingsBody), and its language toggle lives in the panel's own top bar.
   ctx.effect(() => localizedSlot(ctx, 'settings.section', {
     name: 'settings.section', id: 'dsh-remote-bridge', order: 2,
   }, SettingsSection, 'phoneSettings'), 'dsh remote bridge settings section')

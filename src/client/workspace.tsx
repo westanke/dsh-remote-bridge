@@ -1,30 +1,23 @@
 import {
-  ChevronDown,
-  ChevronRight,
+  Check,
+  Copy,
   Download,
   File,
-  FilePlus2,
-  FolderCode,
-  Folder,
-  FolderOpen,
-  FolderPlus,
   HardDrive,
   Image as ImageIcon,
-  RefreshCw,
-  Save,
-  Settings,
+  ScrollText,
   Smartphone,
   Trash2,
   Upload,
 } from 'lucide-react'
 import type { ReactNode } from 'react'
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import type { DeviceScope, DeviceView, ImageHandoffSettings, RootView } from '../shared/contracts.ts'
 import { DEVICE_SCOPES } from '../shared/contracts.ts'
 import { APP_QR_CODES } from './app-qr.ts'
 import { WorkspaceApi, WorkspaceApiError } from './api.ts'
 import type { CloudflareTunnelActivity, CloudflareTunnelState, ConfigTextResult } from './api.ts'
-import { type MessageKey, scopeLabel, type Translate, useWorkspaceI18n } from './i18n.tsx'
+import { LanguageToggle, type MessageKey, scopeLabel, type Translate, useWorkspaceI18n } from './i18n.tsx'
 import { installWorkspaceStyles } from './styles.ts'
 import { PLUGIN_VERSION } from '../shared/version.ts'
 
@@ -47,9 +40,44 @@ function tabLabelKey(tab: AdminTab): MessageKey {
   return tab === 'app-download' ? 'appDownloadTab' : `${tab}Tab`
 }
 
-/** 云隧道进度条宽度：有确定百分比则用之，否则给 30% 作「流动中」占位。 */
-function pct(a: CloudflareTunnelActivity): string {
-  return `${a.percent ?? 30}%`
+/** 配对码剩余分钟：向上取整 —— 显示「约 9 分钟」比「约 8 分钟」在最后一刻更诚实。 */
+function pairingMinutesLeft(expiresAt: number, now: number): number {
+  return Math.max(0, Math.ceil((expiresAt - now) / 60000))
+}
+
+/**
+ * 通用复制小按钮：成功后短暂换成对勾 + 「已复制」，2s 自动复位；
+ * 非安全上下文（HTTP/LAN）拿不到 Clipboard API 时退化为选中文本提示，见 copyText 的调用方。
+ */
+function CopyButton(props: {
+  text: string
+  title: string
+  copiedText: string
+  /** 非安全上下文（HTTP/LAN）退化到手动复制时的提示；不传则该态不显示文案。 */
+  manualText?: string
+  copyText(text: string): Promise<'done' | 'manual'>
+  className?: string
+}): JSX.Element {
+  // idle：原样；done：对勾+已复制；manual：浏览器拒绝了 Clipboard API，文本已选中，提示用户自己按 Ctrl+C。
+  const [state, setState] = useState<'idle' | 'done' | 'manual'>('idle')
+  const [inFlight, setInFlight] = useState(false)
+  const label = state === 'done' ? props.copiedText : state === 'manual' ? (props.manualText ?? props.title) : props.title
+  return <button
+    type="button"
+    className={`daw-command icon-as-command${props.className === undefined ? '' : ` ${props.className}`}`}
+    title={props.title}
+    aria-label={props.title}
+    disabled={inFlight || state !== 'idle'}
+    onClick={() => {
+      // 连点防护：第一次点击的 Promise 没回来之前不许再发（旧版无此保护，快速连点会写多次剪贴板）。
+      if (inFlight) return
+      setInFlight(true)
+      void props.copyText(props.text).then(kind => {
+        setState(kind === 'done' ? 'done' : 'manual')
+        window.setTimeout(() => setState('idle'), kind === 'done' ? 2000 : 2500)
+      }).finally(() => setInFlight(false))
+    }}
+  >{state === 'done' ? <Check size={15} /> : <Copy size={15} />}<span className="daw-copy-label">{label}</span></button>
 }
 
 /**
@@ -185,11 +213,66 @@ export function AdminPanel(props: { api: WorkspaceApi; initialOpen: AdminTab }):
   const [openCards, setOpenCards] = useState<Set<AdminTab>>(() => new Set([props.initialOpen]))
   const [imageSaved, setImageSaved] = useState(false)
   const [error, setError] = useState<unknown>()
+  // 操作成功反馈条（UI-07）：和 error 分开存，互不覆盖；3.5s 后自己退场。
+  const [notice, setNotice] = useState<{ id: number; key: MessageKey; params?: Record<string, string | number> }>()
   // Cloudflare 隧道状态：只在远程卡展开时拉取（与 trash/audit/image 同纪律）。
   const [tunnel, setTunnel] = useState<CloudflareTunnelState>()
   const [tunnelBusy, setTunnelBusy] = useState(false)
   // 创建云隧道的进行中阶段进度（下载/解包/启动），busy 期间由轮询填充。
   const [activity, setActivity] = useState<CloudflareTunnelActivity>()
+  // 审计列表客户端分页（UI-12）：服务端一次给最多 200 条，这里控制「加载更多」每次再放 50 条。
+  const [auditLimit, setAuditLimit] = useState(50)
+  const [auditLoading, setAuditLoading] = useState(false)
+  // 当前时间（每分钟走一格），只用于配对码倒计时（UI-10）。
+  const [now, setNow] = useState(() => Date.now())
+
+  // 成功反馈条：换内容时重新计时；3.5s 后自动清掉，不挡下一次操作。
+  const notify = useCallback((key: MessageKey, params?: Record<string, string | number>) => {
+    // params 可能为 undefined：exactOptionalPropertyTypes 下不能把 undefined 显式塞给可选属性。
+    setNotice(params === undefined ? { id: Date.now() + Math.random(), key } : { id: Date.now() + Math.random(), key, params })
+  }, [])
+  useEffect(() => {
+    if (notice === undefined) return
+    const timer = window.setTimeout(() => setNotice(undefined), 3500)
+    return () => window.clearTimeout(timer)
+  }, [notice])
+
+  // 配对码倒计时：每 30s 对一次表即可，配对码有效期是分钟级，不需要秒针。
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(Date.now()), 30000)
+    return () => window.clearInterval(timer)
+  }, [])
+
+  // 复制：安全上下文走 Clipboard API；拿不到（HTTP/LAN 旧 WebView）退化到隐藏 textarea +
+  // execCommand('copy')；连这也失败才返回 'manual'，让按钮提示用户自己按 Ctrl+C。
+  // 旧实现直接返回 'manual'，但 URL/配对码按钮没有可选中的文本，那个提示等于没复制。
+  const copyText = useCallback(async (text: string): Promise<'done' | 'manual'> => {
+    const clipboard = globalThis.navigator?.clipboard
+    if (clipboard !== undefined) {
+      try {
+        await clipboard.writeText(text)
+        return 'done'
+      } catch {
+        // 落到下面的 execCommand 兜底
+      }
+    }
+    try {
+      const node = document.createElement('textarea')
+      node.value = text
+      // 移出可视区但保持「可被选中」：display:none / visibility:hidden 的元素 select() 不生效。
+      node.style.position = 'fixed'
+      node.style.top = '-9999px'
+      node.setAttribute('readonly', '')
+      document.body.append(node)
+      node.select()
+      const ok = document.execCommand('copy')
+      node.remove()
+      if (ok) return 'done'
+    } catch {
+      // 某些 WebView 禁掉了 execCommand；交给调用方提示手动复制。
+    }
+    return 'manual'
+  }, [])
 
   const isOpen = useCallback((card: AdminTab) => openCards.has(card), [openCards])
   const toggleCard = useCallback((card: AdminTab) => {
@@ -207,6 +290,7 @@ export function AdminPanel(props: { api: WorkspaceApi; initialOpen: AdminTab }):
       // 分区数据只在**对应卡片展开时**才拉。全量平铺后七张卡都在 DOM 里，
       // 无条件全拉等于打开设置页就打七个请求，其中五个用户根本不会点开。
       if (openCards.has('trash')) setTrash((await props.api.trashItems()).items)
+      // 审计一次拿满 200 条存在本地，渲染时按 auditLimit 切片（「加载更多」不再打网络）。
       if (openCards.has('audit')) setAudit((await props.api.audit()).items)
       // 识图设置是这一节自己的数据：只在真正打开这一节时取，别让每次状态刷新都多一次往返。
       if (openCards.has('image')) {
@@ -218,40 +302,131 @@ export function AdminPanel(props: { api: WorkspaceApi; initialOpen: AdminTab }):
       if (openCards.has('remote')) {
         setTunnel(await props.api.tunnelStatus())
       }
-      setError(undefined)
+      // 注意：刷新成功**不**清空 error。旧实现这里 setError(undefined)，会把上一个动作的报错
+      // 抹掉（轮询一成功红条就消失，用户根本没看见）。错误由发起动作的人在开头自己清。
     } catch (cause) {
       setError(cause)
     }
   }, [props.api, openCards])
 
-  // 开启云隧道：进入下载/启动流程并轮询进度。开启与未运行时的「生成隧道配置文件」共用此起点。
-  const createTunnel = useCallback(() => {
+  // 把隧道状态翻译成界面上的人话错误：服务端优先给 errorKey（已脱敏、可本地化），
+  // 老版本/兜底才是 error 英文短消息。
+  const tunnelErrorText = useCallback((s: CloudflareTunnelState): string => {
+    if (s.errorKey !== undefined) return t(s.errorKey, s.errorParams ?? {})
+    return s.error ?? t('listenerFailed')
+  }, [t])
+
+  // 活动进度轮询：setTimeout 链「上一拍回来再排下一拍」。旧版用 setInterval(350ms)，
+  // 慢网络下多拍请求会在飞、回调互相覆盖；现在同一时刻最多一拍。
+  const pollActivityOnce = useCallback(async (active: () => boolean): Promise<void> => {
+    while (active()) {
+      try {
+        const a = await props.api.tunnelActivity()
+        if (!active()) return
+        setActivity(a.stage === 'idle' ? undefined : a)
+      } catch { /* 进度轮询失败忽略，主请求才是真实结果 */ }
+      await delay(400)
+    }
+  }, [props.api])
+
+  // 等 cloudflared 子进程把随机域名打印到 stdout。POST /create 在 spawn 后立即 resolve，
+  // 此刻 state.url 几乎总是 null；真正的地址要靠轮询 /status 等出来（最多 ~20s）。
+  const waitForTunnelUrl = useCallback(async (active: () => boolean): Promise<string | null> => {
+    for (let attempt = 0; attempt < 40 && active(); attempt += 1) {
+      await delay(500)
+      const s = await props.api.tunnelStatus()
+      if (!active()) return null
+      setTunnel(s)
+      if (s.errorKey !== undefined || s.error !== undefined) throw new Error(tunnelErrorText(s))
+      if (s.running && s.url !== null) return s.url
+    }
+    return null
+  }, [props.api, tunnelErrorText])
+
+  // 用某个地址（隧道 URL 或手填地址）生成令牌配置文本。成功给绿条，失败给红条，不 refresh
+  // （refresh 与本动作无关，旧版顺带 refresh 反而会把刚生成的面板状态搅一下）。
+  // noticeKey：手动点「生成配置文件」用 configCreated；一键开隧道自动串联用 tunnelConfigAuto
+  // （后者必须只放一条绿条，否则两条通知互相覆盖，用户看到的是后一条、看不出「自动」）。
+  const generateConfigForUrl = useCallback(async (baseUrl: string, noticeKey: MessageKey = 'configCreated'): Promise<boolean> => {
+    setConfigTextBusy(true)
+    setError(undefined)
+    try {
+      // 就地从 status 取根列表：下面 407 行的 roots 常量在本回调声明之后（TDZ）。
+      const currentRoots = status?.roots ?? []
+      const value = await props.api.createConfigText({
+        ...(currentRoots.length === 0 ? {} : { rootIds: currentRoots.map(root => root.id) }),
+        endpoints: [{ label: t('tunnelEndpointLabel'), baseUrl }],
+      })
+      setConfigText(value)
+      notify(noticeKey)
+      return true
+    } catch (cause) {
+      setError(cause)
+      return false
+    } finally {
+      setConfigTextBusy(false)
+    }
+  }, [props.api, status, t, notify])
+  // 注：noticeKey 是每次调用的字面量参数，不进依赖。
+
+  // 开启云隧道：进入下载/启动流程并轮询进度。开启与未运行时的「一键开隧道并出令牌」共用此起点。
+  // thenGenConfig=true 时，隧道地址一出来就**自动**接着生成配置文本 —— 修掉「开完还得再点一次」。
+  const createTunnel = useCallback(async (opts: { thenGenConfig?: boolean } = {}): Promise<void> => {
     // 公网暴露是高风险动作，先弹一次安全确认再动手；取消则不执行。
     if (!window.confirm(t('tunnelStartConfirm'))) return
+    let alive = true
     setTunnelBusy(true)
     setError(undefined)
-    setActivity(undefined)
-    setActivity({ stage: 'locating', label: '正在准备 cloudflared…', percent: null })
-    const poll = window.setInterval(() => {
-      void props.api.tunnelActivity()
-        .then(a => { if (a.stage !== 'idle') setActivity(a) })
-        .catch(() => { /* 轮询失败忽略，主请求才是真实结果 */ })
-    }, 350)
-    void props.api.tunnelCreate()
-      .then(async (next) => { setTunnel(next); setActivity(undefined); await refresh() })
-      .catch(setError)
-      .finally(() => { window.clearInterval(poll); setActivity(undefined); setTunnelBusy(false) })
-  }, [props.api, refresh, t])
+    setConfigText(undefined)
+    // 乐观首帧也走 i18n，不再硬编码中文（UI-03）。
+    setActivity({ stage: 'locating', labelKey: 'tunnelStageLocating', percent: null })
+    void pollActivityOnce(() => alive)
+    try {
+      const created = await props.api.tunnelCreate()
+      setTunnel(created)
+      setActivity(undefined)
+      if (created.errorKey !== undefined || created.error !== undefined) {
+        throw new Error(tunnelErrorText(created))
+      }
+      const url = created.url ?? await waitForTunnelUrl(() => alive)
+      await refresh()
+      if (url === null) {
+        // 进程起来了但 ~20s 内没拿到地址：不谎报成功，提示用户用现成按钮补一步。
+        notify('tunnelUrlPending')
+        return
+      }
+      // 一键串联路径只发「隧道已开启，配置文本已自动生成」一条绿条（见 generateConfigForUrl）；
+      // 单独开隧道才发 tunnelStarted，避免两条绿条先后覆盖。
+      if (opts.thenGenConfig === true) {
+        await generateConfigForUrl(url, 'tunnelConfigAuto')
+      } else {
+        notify('tunnelStarted')
+      }
+    } catch (cause) {
+      setError(cause)
+    } finally {
+      alive = false
+      setActivity(undefined)
+      setTunnelBusy(false)
+    }
+  }, [props.api, refresh, t, notify, pollActivityOnce, waitForTunnelUrl, tunnelErrorText, generateConfigForUrl])
 
-  // 停止云隧道。
-  const stopTunnel = useCallback(() => {
+  // 停止云隧道（停止也有后果：地址立刻失效、手机断开，所以和开启一样要先确认）。
+  const stopTunnel = useCallback(async (): Promise<void> => {
+    if (!window.confirm(t('tunnelStopConfirm'))) return
     setTunnelBusy(true)
     setError(undefined)
-    void props.api.tunnelStop()
-      .then(async (next) => { setTunnel(next); await refresh() })
-      .catch(setError)
-      .finally(() => setTunnelBusy(false))
-  }, [props.api, refresh])
+    try {
+      const next = await props.api.tunnelStop()
+      setTunnel(next)
+      await refresh()
+      notify('tunnelStopped')
+    } catch (cause) {
+      setError(cause)
+    } finally {
+      setTunnelBusy(false)
+    }
+  }, [props.api, refresh, t, notify])
 
   // Refresh on mount and whenever a card opens: trash, audit and image settings are card-local,
   // and `refresh` now depends on `openCards`, so expanding a card fetches its data.
@@ -264,16 +439,6 @@ export function AdminPanel(props: { api: WorkspaceApi; initialOpen: AdminTab }):
     setListenerPort(String(status.configuredPort))
   }, [status?.configuredHost, status?.configuredPort])
   const roots = status?.roots ?? []
-  // 用隧道地址生成配置文本（隧道运行时启用；url 为 null 时是「隧道未开启」态）。
-  const genTunnelConfig = useCallback((baseUrl: string) => {
-    setConfigTextBusy(true)
-    setError(undefined)
-    // 把隧道地址作为唯一端点生成配置文本，客户端拼 /events 时自动升级 wss。
-    void props.api.createConfigText({
-      ...(roots.length === 0 ? {} : { rootIds: roots.map(root => root.id) }),
-      endpoints: [{ label: t('tunnelEndpointLabel'), baseUrl }],
-    }).then(value => { setConfigText(value); return refresh() }).catch(setError).finally(() => setConfigTextBusy(false))
-  }, [props.api, refresh, roots, t])
   // 「启用远程访问」时授予的权限 —— **由用户在这里勾选**。
   //
   // 这条链路是：勾权限 → 生成访问码 → APP 输入码 → 权限随设备一起落库。
@@ -316,18 +481,32 @@ export function AdminPanel(props: { api: WorkspaceApi; initialOpen: AdminTab }):
   }
 
   return <main className="daw-admin">
-          {error !== undefined && <div className="daw-warning">{messageOf(error, t)}</div>}
+          <div className="daw-admin-topbar">
+            <LanguageToggle />
+          </div>
+          {error !== undefined && <div className="daw-warning" role="alert">{messageOf(error, t)}</div>}
+          {notice !== undefined && <div className="daw-success" role="status">{t(notice.key, notice.params)}</div>}
           <SettingsCard key="roots" tab="roots" nameKey={tabLabelKey('roots')} descKey={tabDescKey('roots')} open={isOpen('roots')} onToggle={() => toggleCard('roots')}>
             <div className="daw-form-row">
               <input className="daw-input" placeholder={t('absolutePath')} value={path} onChange={event => setPath(event.target.value)} />
               <input className="daw-input" placeholder={t('displayLabel')} value={label} onChange={event => setLabel(event.target.value)} />
-              <button className="daw-command primary" onClick={() => { void props.api.addRoot(path, label || undefined).then(() => { setPath(''); setLabel(''); return refresh() }).catch(setError) }}>{t('addRoot')}</button>
+              <button className="daw-command primary" onClick={() => {
+                setError(undefined)
+                void props.api.addRoot(path, label || undefined)
+                  .then(() => { setPath(''); setLabel(''); notify('rootAdded'); return refresh() })
+                  .catch(setError)
+              }}>{t('addRoot')}</button>
             </div>
             <div className="daw-list">{roots.map(root => <div className="daw-list-row" key={root.id}><div><div className="daw-list-title">{root.label}{root.builtin === true && <span className="daw-pill on">{t('builtinRootBadge')}</span>}</div><div className="daw-list-meta">{root.realPath}</div></div>{root.builtin === true
               // 内置的 DSH 工作区根不给删除按钮：它在服务端也被 `removeRoot` 拦着，
               // 这里干脆不提供入口，而不是提供一个必然报错的按钮。
               ? <span className="daw-list-meta daw-builtin-hint">{t('builtinRootHint')}</span>
-              : <button className="daw-icon danger" title={t('removeRoot')} onClick={() => { void props.api.removeRoot(root.id).then(refresh).catch(setError) }}><Trash2 size={15} /></button>}</div>)}</div>
+              : <button className="daw-icon danger" title={t('removeRoot')} aria-label={t('removeRoot')} onClick={() => {
+                // 移除根不删文件但会让所有手机立刻失去访问权（UI-06）：先确认。
+                if (!window.confirm(t('removeRootConfirm', { label: root.label }))) return
+                setError(undefined)
+                void props.api.removeRoot(root.id).then(() => { notify('rootRemoved'); return refresh() }).catch(setError)
+              }}><Trash2 size={15} /></button>}</div>)}</div>
             {/*
               `device_roots` 是**配对那一刻的快照**：新登记的内置根默认不发给已配对的手机。
               这是安全侧的默认（不给等于不给），但不说出来的话，用户会以为功能坏了 ——
@@ -342,8 +521,11 @@ export function AdminPanel(props: { api: WorkspaceApi; initialOpen: AdminTab }):
               <label className="daw-field"><span>{t('bindIp')}</span><input className="daw-input" value={listenerHost} disabled={status?.remoteEnabled} spellCheck={false} placeholder="0.0.0.0" onChange={event => setListenerHost(event.target.value)} /></label>
               <label className="daw-field"><span>{t('bindPort')}</span><input className="daw-input" type="number" min={1} max={65535} inputMode="numeric" value={listenerPort} disabled={status?.remoteEnabled} onChange={event => setListenerPort(event.target.value)} /></label>
               <button className="daw-command" disabled={status?.remoteEnabled || listenerHost.trim() === '' || !listenerPortValid || !listenerDirty} onClick={() => {
+                setError(undefined)
                 void props.api.configureListener(listenerHost.trim(), parsedListenerPort)
-                  .then(result => poll(result.id)).then(refresh).catch(setError)
+                  .then(result => poll(result.id))
+                  .then(() => { notify('listenerSaved'); return refresh() })
+                  .catch(setError)
               }}>{t('saveListener')}</button>
             </div>
             <div className="daw-listener-status">
@@ -361,27 +543,53 @@ export function AdminPanel(props: { api: WorkspaceApi; initialOpen: AdminTab }):
               </div>
               <p className="daw-list-meta">{t('tunnelHint')}</p>
               <div className="daw-warning">{t('tunnelSecurityWarning')}</div>
-              {tunnel?.error !== undefined && <div className="daw-warning">{tunnel.error}</div>}
+              {tunnel?.errorKey !== undefined && <div className="daw-warning" role="alert">{t(tunnel.errorKey, tunnel.errorParams ?? {})}</div>}
+              {tunnel?.errorKey === undefined && tunnel?.error !== undefined && <div className="daw-warning" role="alert">{tunnel.error}</div>}
               {tunnel?.url !== undefined && tunnel.url !== null && (
-                <div className="daw-tunnel-url" style={{ marginTop: 8 }}>{tunnel.url}</div>
+                <div className="daw-url-row">
+                  <div className="daw-tunnel-url">{tunnel.url}</div>
+                  <CopyButton text={tunnel.url} title={t('copyUrl')} copiedText={t('copied')} manualText={t('copyManual')} copyText={copyText} />
+                </div>
               )}
-              <button className="daw-command primary" style={{ marginTop: 10 }} disabled={tunnelBusy || roots.length === 0} onClick={() => { if (tunnel?.running === true) stopTunnel(); else createTunnel() }}>{tunnel?.running === true ? t('tunnelStop') : t('tunnelCreate')}</button>
+              <button className="daw-command primary" style={{ marginTop: 10 }} disabled={tunnelBusy || roots.length === 0} onClick={() => { if (tunnel?.running === true) void stopTunnel(); else void createTunnel() }}>{tunnel?.running === true ? t('tunnelStop') : t('tunnelCreate')}</button>
               {activity !== undefined && (
                 <div className="daw-tunnel-progress" style={{ marginTop: 10 }}>
                   <div className="daw-progress-track">
-                    <div className="daw-progress-fill" style={{ width: pct(activity) }} />
+                    {/* percent=null：不确定进度，铺流动高光而不是假装恒定 30%（UI-08）。 */}
+                    <div
+                      className={`daw-progress-fill${activity.percent === null ? ' indeterminate' : ''}`}
+                      style={activity.percent === null ? undefined : { width: `${activity.percent}%` }}
+                    />
                   </div>
-                  <div className="daw-list-meta" style={{ marginTop: 4 }}>{activity.label}</div>
+                  <div className="daw-list-meta" style={{ marginTop: 4 }}>
+                    {activity.labelKey === '' ? '' : t(activity.labelKey, activity.labelParams ?? {})}
+                  </div>
                 </div>
               )}
             </div>
             <div className="daw-scope-grid">{DEVICE_SCOPES.map(scope => <label className="daw-check" key={scope}><input type="checkbox" checked={grantedScopes.includes(scope)} onChange={() => toggleScope(scope)} /> {scopeLabel(locale, scope)}</label>)}</div>
             <div className="daw-list-meta">{grantNotice}</div>
             {status?.remoteEnabled
-              ? <button className="daw-command danger" onClick={() => { void props.api.disableRemote().then(result => poll(result.id)).then(refresh).catch(setError) }}>{t('disableRemote')}</button>
-              : <button className="daw-command primary" disabled={roots.length === 0 || listenerDirty || !listenerPortValid || listenerHost.trim() === '' || grantedScopes.length === 0} onClick={() => { void props.api.enableRemote(roots.map(root => root.id), grantedScopes).then(result => poll(result.id)).catch(setError) }}>{t('enablePairing')}</button>}
+              ? <button className="daw-command danger" onClick={() => {
+                // 关闭远程会立刻断开所有手机（UI-06）：原先一点即发，现在先确认。
+                if (!window.confirm(t('disableRemoteConfirm'))) return
+                setError(undefined)
+                void props.api.disableRemote()
+                  .then(result => poll(result.id))
+                  .then(() => { notify('remoteDisabled'); return refresh() })
+                  .catch(setError)
+              }}>{t('disableRemote')}</button>
+              : <button className="daw-command primary" disabled={roots.length === 0 || listenerDirty || !listenerPortValid || listenerHost.trim() === '' || grantedScopes.length === 0} onClick={() => {
+                setError(undefined)
+                void props.api.enableRemote(roots.map(root => root.id), grantedScopes).then(result => poll(result.id)).catch(setError)
+              }}>{t('enablePairing')}</button>}
             {status?.remoteEnabled && <>
-              <button className="daw-command daw-inline-command" disabled={grantedScopes.length === 0} onClick={() => { void props.api.createPairing(roots.map(root => root.id), grantedScopes).then(value => setPairing(value)).catch(setError) }}>{t('newPairingCode')}</button>
+              <button className="daw-command daw-inline-command" disabled={grantedScopes.length === 0} onClick={() => {
+                setError(undefined)
+                void props.api.createPairing(roots.map(root => root.id), grantedScopes)
+                  .then(value => { setPairing(value); notify('pairingCreated') })
+                  .catch(setError)
+              }}>{t('newPairingCode')}</button>
               <button className="daw-command daw-inline-command" disabled={configTextBusy} onClick={() => {
                 const manual = configEndpoint.trim()
                 setConfigTextBusy(true)
@@ -392,18 +600,27 @@ export function AdminPanel(props: { api: WorkspaceApi; initialOpen: AdminTab }):
                 void props.api.createConfigText({
                   ...(roots.length === 0 ? {} : { rootIds: roots.map(root => root.id) }),
                   ...(manual === '' ? {} : { endpoints: [{ label: t('configTextManualLabel'), baseUrl: manual }] }),
-                }).then(value => { setConfigText(value); return refresh() }).catch(setError).finally(() => setConfigTextBusy(false))
+                }).then(value => { setConfigText(value); notify('configCreated') }).catch(setError).finally(() => setConfigTextBusy(false))
               }}>{t('newConfigText')}</button>
               {tunnel !== undefined && (
                 <button className="daw-command daw-inline-command" disabled={configTextBusy || tunnelBusy} onClick={() => {
-                  // 隧道已运行：用隧道地址生成配置文本；未运行：等同「开启云隧道」。
-                  if (tunnel.running === true && tunnel.url !== null && tunnel.url !== undefined) genTunnelConfig(tunnel.url)
-                  else createTunnel()
-                }}>{tunnel.running === true && tunnel.url !== null && tunnel.url !== undefined ? t('tunnelGenConfigReady') : t('tunnelGenConfigOff')}</button>
+                  // 隧道已运行且地址就绪：直接用隧道地址出令牌；否则一键「开隧道并自动出令牌」
+                  // （createTunnel 内部等 URL、再自动生成配置文本 —— 本次手术的头号病号）。
+                  if (tunnel.running === true && tunnel.url !== null && tunnel.url !== undefined) void generateConfigForUrl(tunnel.url)
+                  else void createTunnel({ thenGenConfig: true })
+                }}>{tunnel.running === true && tunnel.url !== null && tunnel.url !== undefined ? t('tunnelGenConfigReady') : t('tunnelStartAndGenConfig')}</button>
               )}
               <div className="daw-list-meta daw-listener-hint">{t('configTextScopeNote')}</div>
             </>}
-            {pairing !== undefined && <div className="daw-code">{pairing.code}</div>}
+            {pairing !== undefined && <>
+              <div className="daw-code-row">
+                <div className="daw-code">{pairing.code}</div>
+                <CopyButton className="daw-copy-inline" text={pairing.code} title={t('copyPairing')} copiedText={t('copied')} manualText={t('copyManual')} copyText={copyText} />
+              </div>
+              {pairing.expiresAt !== undefined && pairing.expiresAt > now && (
+                <div className="daw-list-meta" style={{ marginTop: -4 }}>{t('pairingExpiresAt', { minutes: pairingMinutesLeft(pairing.expiresAt, now) })}</div>
+              )}
+            </>}
             {status?.remoteEnabled && <div style={{ marginTop: 12, maxWidth: 560 }}>
               <label className="daw-field"><span>{t('configTextManual')}</span><input className="daw-input" value={configEndpoint} spellCheck={false} placeholder={t('configTextManualPlaceholder')} onChange={event => setConfigEndpoint(event.target.value)} /></label>
               <div className="daw-list-meta" style={{ marginTop: 5 }}>{t('configTextManualHint')}</div>
@@ -411,7 +628,7 @@ export function AdminPanel(props: { api: WorkspaceApi; initialOpen: AdminTab }):
             {configText !== undefined && <ConfigTextPanel result={configText} />}
           </SettingsCard>
           <SettingsCard key="devices" tab="devices" nameKey={tabLabelKey('devices')} descKey={tabDescKey('devices')} open={isOpen('devices')} onToggle={() => toggleCard('devices')}>
-            <div className="daw-list">{(status?.devices ?? []).map(device => <DeviceRow key={device.id} api={props.api} device={device} roots={roots} onChanged={refresh} onError={setError} />)}</div>
+            <div className="daw-list">{(status?.devices ?? []).map(device => <DeviceRow key={device.id} api={props.api} device={device} roots={roots} onChanged={refresh} onError={setError} onNotice={notify} />)}</div>
           </SettingsCard>
           {/*
             识图路径：图片交接落在「会话工作目录 + <目录名>」下，识图工具按同一条路径读图。
@@ -465,10 +682,27 @@ export function AdminPanel(props: { api: WorkspaceApi; initialOpen: AdminTab }):
               写清楚来路，比让人对着空列表猜要好。
             */}
             <p className="daw-list-meta">{t('pluginTrashHint')}</p>
-            <div className="daw-list">{trash.map(item => <div className="daw-list-row" key={item.id}><div><div className="daw-list-title">{item.path}</div><div className="daw-list-meta">{item.kind} · {formatBytes(item.size)} · {new Date(item.createdAt).toLocaleString(locale)}</div></div><div><button className="daw-command" onClick={() => { void props.api.restoreTrash(item.id).then(refresh).catch(setError) }}>{t('restore')}</button><button className="daw-icon danger" title={t('deletePermanently')} onClick={() => { if (confirm(t('purgeConfirm'))) void props.api.purgeTrash(item.id).then(refresh).catch(setError) }}><Trash2 size={15} /></button></div></div>)}</div>
+            {trash.length === 0
+              ? <div className="daw-list-meta daw-empty">{t('trashEmpty')}</div>
+              : <div className="daw-list">{trash.map(item => <div className="daw-list-row" key={item.id}><div><div className="daw-list-title">{item.path}</div><div className="daw-list-meta">{item.kind} · {formatBytes(item.size)} · {new Date(item.createdAt).toLocaleString(locale)}</div></div><div><button className="daw-command" onClick={() => { setError(undefined); void props.api.restoreTrash(item.id).then(() => { notify('trashRestored'); return refresh() }).catch(setError) }}>{t('restore')}</button><button className="daw-icon danger" title={t('deletePermanently')} aria-label={t('deletePermanently')} onClick={() => { if (confirm(t('purgeConfirm'))) void props.api.purgeTrash(item.id).then(() => { notify('trashPurged'); return refresh() }).catch(setError) }}><Trash2 size={15} /></button></div></div>)}</div>}
           </SettingsCard>
           <SettingsCard key="audit" tab="audit" nameKey={tabLabelKey('audit')} descKey={tabDescKey('audit')} open={isOpen('audit')} onToggle={() => toggleCard('audit')}>
-            <div className="daw-list">{audit.map((item, index) => <div className="daw-list-row" key={String(item.id ?? index)}><div><div className="daw-list-title">{String(item.action ?? t('event'))}</div><div className="daw-list-meta">{new Date(Number(item.time ?? 0)).toLocaleString(locale)} · {String(item.actorType ?? '')}:{String(item.actorId ?? '')} · {String(item.relativePath ?? '')}</div></div></div>)}</div>
+            {audit.length === 0
+              ? <div className="daw-list-meta daw-empty">{t('auditEmpty')}</div>
+              : <>
+                <div className="daw-list">{audit.slice(0, auditLimit).map((item, index) => <div className="daw-list-row" key={String(item.id ?? index)}><div><div className="daw-list-title">{String(item.action ?? t('event'))}</div><div className="daw-list-meta">{new Date(Number(item.time ?? 0)).toLocaleString(locale)} · {String(item.actorType ?? '')}:{String(item.actorId ?? '')} · {String(item.relativePath ?? '')}</div></div></div>)}</div>
+                {auditLimit < audit.length && (
+                  <button
+                    className="daw-command daw-inline-command"
+                    disabled={auditLoading}
+                    onClick={() => {
+                      setAuditLoading(true)
+                      // 本地切片扩展：下一帧就完成，loading 态主要给「按钮确实有反应」。
+                      window.setTimeout(() => { setAuditLimit(value => value + 50); setAuditLoading(false) }, 0)
+                    }}
+                  >{auditLoading ? t('auditLoading') : t('auditLoadMore')}</button>
+                )}
+              </>}
           </SettingsCard>
           <AppDownloadSection open={isOpen('app-download')} onToggle={() => toggleCard('app-download')} />
         </main>
@@ -499,13 +733,6 @@ function AppDownloadSection(props: { open: boolean; onToggle(): void }): JSX.Ele
   </SettingsCard>
 }
 
-/**
- * Standalone settings overlay kept for the `/dsh-workspace` page (mobile WebView / direct link).
- *
- * The desktop WebUI does **not** use this: its settings live inline inside DSH's own settings page
- * (`PhoneSettingsBody`), so a user never opens a dialog from inside a dialog. This one keeps its own
- * shell because the standalone page has no settings container to render into.
- */
 /**
  * Shows a freshly minted `DSH1:` config text.
  *
@@ -578,25 +805,49 @@ function DeviceRow(props: {
   roots: (RootView & { realPath: string })[]
   onChanged(): Promise<void>
   onError(error: unknown): void
+  onNotice(key: MessageKey, params?: Record<string, string | number>): void
 }): JSX.Element {
   const { locale, t } = useWorkspaceI18n()
   const [editing, setEditing] = useState(false)
   const [scopes, setScopes] = useState<DeviceScope[]>(props.device.scopes)
   const [rootIds, setRootIds] = useState<string[]>(props.device.rootIds)
   const toggle = <T extends string>(list: T[], value: T): T[] => list.includes(value) ? list.filter(item => item !== value) : [...list, value]
+  // 完整 uuid 是一行噪声：列表里只露「前8…后4」，hover/读屏仍可拿到全量（title/aria-label）。
+  const shortId = props.device.id.length > 14
+    ? `${props.device.id.slice(0, 8)}…${props.device.id.slice(-4)}`
+    : props.device.id
+  const lastSeen = props.device.lastSeenAt === undefined
+    ? t('deviceNeverSeen')
+    : t('deviceLastSeen', { time: new Date(props.device.lastSeenAt).toLocaleString(locale) })
   return <div className="daw-list-row">
     <div>
       <div className="daw-list-title">{props.device.name} {props.device.revokedAt !== undefined && <span className="daw-pill">{t('revoked')}</span>}</div>
-      <div className="daw-list-meta">{props.device.id} · {(props.device.scopes.length === 0 ? t('noScopes') : props.device.scopes.map(scope => scopeLabel(locale, scope)).join(' · '))}</div>
+      <div className="daw-list-meta">
+        <span title={props.device.id}>{shortId}</span>
+        {' · '}{lastSeen}
+        {' · '}{(props.device.scopes.length === 0 ? t('noScopes') : props.device.scopes.map(scope => scopeLabel(locale, scope)).join(' · '))}
+      </div>
       {editing && <>
         <div className="daw-scope-grid">{DEVICE_SCOPES.map(scope => <label className="daw-check" key={scope}><input type="checkbox" checked={scopes.includes(scope)} onChange={() => setScopes(current => toggle(current, scope))} />{scopeLabel(locale, scope)}</label>)}</div>
         <div className="daw-scope-grid">{props.roots.map(root => <label className="daw-check" key={root.id}><input type="checkbox" checked={rootIds.includes(root.id)} onChange={() => setRootIds(current => toggle(current, root.id))} />{root.label}</label>)}</div>
       </>}
     </div>
     {props.device.revokedAt === undefined && <div>
-      {editing && <button className="daw-command primary" onClick={() => { void props.api.updateDevice(props.device.id, scopes, rootIds).then(props.onChanged).then(() => setEditing(false)).catch(props.onError) }}>{t('save')}</button>}
+      {editing && <button className="daw-command primary" onClick={() => { void props.api.updateDevice(props.device.id, scopes, rootIds).then(props.onChanged).then(() => { setEditing(false); props.onNotice('permissionsSaved') }).catch(props.onError) }}>{t('save')}</button>}
       <button className="daw-command" onClick={() => setEditing(value => !value)}>{editing ? t('cancel') : t('permissions')}</button>
-      <button className="daw-icon danger" title={t('revokeDevice')} onClick={() => { void props.api.revokeDevice(props.device.id).then(props.onChanged).catch(props.onError) }}><Trash2 size={15} /></button>
+      <button
+        className="daw-icon danger"
+        title={t('revokeDevice')}
+        aria-label={t('revokeDevice')}
+        onClick={() => {
+          // 吊销是不可逆的令牌作废（UI-06）：原来一点即发，现在先确认。
+          if (!window.confirm(t('revokeConfirm', { name: props.device.name }))) return
+          void props.api.revokeDevice(props.device.id)
+            .then(props.onChanged)
+            .then(() => props.onNotice('deviceRevoked'))
+            .catch(props.onError)
+        }}
+      ><Trash2 size={15} /></button>
     </div>}
   </div>
 }
@@ -606,6 +857,7 @@ function tabIcon(tab: string): JSX.Element {
   if (tab === 'devices') return <Smartphone size={15} />
   if (tab === 'image') return <ImageIcon size={15} />
   if (tab === 'trash') return <Trash2 size={15} />
+  if (tab === 'audit') return <ScrollText size={15} />
   if (tab === 'remote') return <Upload size={15} />
   // A download arrow, not a phone: the phone glyph already belongs to 设备, and this page is about
   // getting the app onto one.

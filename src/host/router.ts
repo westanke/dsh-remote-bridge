@@ -13,7 +13,7 @@ import type { HostServiceReport } from './host-service-probe.ts'
 import { JobAdapter } from './job-adapter.ts'
 import { ApiError, asApiError } from './errors.ts'
 import type { CloudflaredTunnelManager, TunnelPublicState } from './cloudflared.ts'
-import { ensureCloudflared } from './cloudflared.ts'
+import { ensureCloudflared, sanitizeDownloadError } from './cloudflared.ts'
 import type { FileService } from './file-service.ts'
 import { imageHandoffView, saveHandoffSubdir } from './image-handoff.ts'
 import {
@@ -30,6 +30,8 @@ import {
   togglePlugin,
   withUpdateCheck,
 } from './plugin-inventory.ts'
+import { getMetricsSnapshot } from './metrics.ts'
+import type { MetricsSnapshot } from './metrics.ts'
 import { inspectResolvedPath, matchAuthorizedRootResolved } from './root-resolver.ts'
 import type { CustomProviderCreate, DshSettingsAdapter, ProviderPatch } from './settings-adapter.ts'
 import { PLUGIN_VERSION } from '../shared/version.ts'
@@ -119,20 +121,20 @@ export type JobRouteMatch =
 
 export function matchJobRoute(pathname: string): JobRouteMatch | null {
   const jobs = pathname.match(/^\/api\/v1\/chat\/sessions\/([^/]+)\/jobs$/)
-  if (jobs !== null) return { kind: 'list', sessionId: decodeURIComponent(jobs[1] as string) }
+  if (jobs !== null) return { kind: 'list', sessionId: decodePathSegment(jobs[1] as string) }
   const output = pathname.match(/^\/api\/v1\/chat\/sessions\/([^/]+)\/jobs\/([^/]+)\/output$/)
   if (output !== null) {
-    return { kind: 'output', sessionId: decodeURIComponent(output[1] as string), jobId: decodeURIComponent(output[2] as string) }
+    return { kind: 'output', sessionId: decodePathSegment(output[1] as string), jobId: decodePathSegment(output[2] as string) }
   }
   const kill = pathname.match(/^\/api\/v1\/chat\/sessions\/([^/]+)\/jobs\/([^/]+)\/kill$/)
   if (kill !== null) {
-    return { kind: 'kill', sessionId: decodeURIComponent(kill[1] as string), jobId: decodeURIComponent(kill[2] as string) }
+    return { kind: 'kill', sessionId: decodePathSegment(kill[1] as string), jobId: decodePathSegment(kill[2] as string) }
   }
   // `/jobs/{jobId}` 本体（无后缀）：没有对应的 REST 动作，但它是**存在的资源路径**
   // —— 打它应该得到 405（方法不允许）而不是 404（资源不存在）。
   const bare = pathname.match(/^\/api\/v1\/chat\/sessions\/([^/]+)\/jobs\/([^/]+)$/)
   if (bare !== null) {
-    return { kind: 'unknown', sessionId: decodeURIComponent(bare[1] as string), jobId: decodeURIComponent(bare[2] as string) }
+    return { kind: 'unknown', sessionId: decodePathSegment(bare[1] as string), jobId: decodePathSegment(bare[2] as string) }
   }
   return null
 }
@@ -165,6 +167,19 @@ export class ApiRouter {
     setCors(req, res)
     res.setHeader('X-Request-Id', requestId)
     if (req.method === 'OPTIONS') {
+      // 带非回环 Origin 的预检直接拒绝 —— 见 `preflightRefused` 的注释。
+      // 修复前这里对**任何**路径、任何 Origin 都 204，连不存在的路由也「预检通过」。
+      if (preflightRefused(req)) {
+        res.writeHead(403, { 'Content-Type': 'application/json; charset=utf-8' })
+        res.end(JSON.stringify({
+          error: {
+            code: 'CORS_ORIGIN_FORBIDDEN',
+            message: 'Cross-origin preflight is accepted only from a loopback origin.',
+            requestId,
+          },
+        }))
+        return
+      }
       res.writeHead(204)
       res.end()
       return
@@ -200,36 +215,27 @@ export class ApiRouter {
       return
     }
 
-    // 宿主服务注入面探针。回答一个此前只能靠猜的问题：**这个内核版本上，
-    // 插件 inject 声明的服务到底有几个真的注进来了。**
-    //
-    // 为什么要单独一个端点而不是塞进 healthz：healthz 是 App 每次连接都轮询的
-    // （见 companion 的 BridgeCapabilities），往里塞一份注入面报告会让它变大、
-    // 且把「服务活着吗」和「服务全吗」两个问题混成一个答案。
-    //
-    // 鉴权与其它 REST 端点同一套（设备 token 或 loopback admin）——
-    // 它暴露的是宿主内部结构，不该对局域网裸奔。
-    if (method === 'GET' && pathname === '/api/v1/debug/host-services') {
-      const report = this.options.hostServiceReport
-      if (report === undefined) {
-        throw new ApiError(404, 'NOT_FOUND', 'host service probe is not available in this build.')
-      }
-      sendJson(res, 200, report)
-      return
-    }
-
     if (method === 'POST' && pathname === '/api/v1/pairings/exchange') {
-      this.options.auth.pairingAttempts.consume(requestAddress(req))
+      // 配对兑换的配额按**对端分类**分开：公网（隧道侧）的暴力尝试不该把
+      // 本机自己的配对锁死 —— 兑换端点是免令牌的，它是唯一一条「无凭据也能
+      // 消耗配额」的路径，共桶时它的连坐效应最直接。
+      this.options.auth.pairingLimiter(req).consume(requestAddress(req))
       const body = await readJson(req, 16_384) as { code?: unknown; deviceName?: unknown }
       if (typeof body.code !== 'string' || typeof body.deviceName !== 'string') {
         throw new ApiError(400, 'BODY_INVALID', 'code and deviceName are required strings.')
       }
-      const result = this.options.database.exchangePairing(body.code, body.deviceName)
+      const result = this.options.database.exchangePairing(body.code, body.deviceName, { requestId })
       sendJson(res, 201, result)
       return
     }
 
-    if (pathname.startsWith('/manage')) {
+    // 精确匹配「/manage」本体或「/manage/...」子路径。
+    //
+    // 修复前是 `pathname.startsWith('/manage')`，于是 `/management`、`/managex`
+    // 也会被吃进管理面（然后 404）。方向上更严、不是漏洞，但语义是笔误级的：
+    // 「哪些路径算管理面」应当是精确的，否则以后有人用「管理面前缀」做别的判断
+    // （例如审计归类、限流分桶）时会连带错。
+    if (pathname === '/manage' || pathname.startsWith('/manage/')) {
       // 隧道状态类端点是**唯一**的例外：隧道一开，判据 0 会让整个管理面关门，
       // 而「隧道开着」正是面板必须读到的信号 —— 否则它只能显示一个含糊的未知错误，
       // 连「去把隧道停了」这句人话都给不出。这条例外只豁免判据 0，
@@ -243,6 +249,39 @@ export class ApiRouter {
     }
 
     const principal = this.options.auth.principal(req, { allowAdmin: true })
+
+    // 宿主服务注入面探针。回答一个此前只能靠猜的问题：**这个内核版本上，
+    // 插件 inject 声明的服务到底有几个真的注进来了。**
+    //
+    // 为什么要单独一个端点而不是塞进 healthz：healthz 是 App 每次连接都轮询的
+    // （见 companion 的 BridgeCapabilities），往里塞一份注入面报告会让它变大、
+    // 且把「服务活着吗」和「服务全吗」两个问题混成一个答案。
+    //
+    // **鉴权（2.5.2 修复）**：它必须与其它 `/api/v1` 端点同级 —— 先 `principal()`，
+    // 再要 `settings.read`。此前它被放在 `principal()` 之前（与刻意免鉴权的
+    // `healthz` / `pairings/exchange` 同处一段），于是**无需任何凭据**即可读到
+    // 宿主注入面与内核原始错误文本；而 openapi.yaml 的全局 `security: [bearerAuth]`
+    // 从未给它 `security: []` 豁免，API.md / INTERFACES.md 也一致写着「需要 token」。
+    // 那是**契约违约**而不是注释笔误。回归断言见 `tests/security-h1.spec.ts`。
+    //
+    // 为什么是 `settings.read` 而不是新造 scope：它本来就是「能看宿主配置」的档位
+    // （`DEVICE_SCOPES` 已有），注入面正是宿主配置的一部分；不新增 scope 就不会
+    // 让已发布的客户端因为「不认识这个 scope」而拿不到它该有的能力。
+    if (method === 'GET' && pathname === '/api/v1/debug/host-services') {
+      this.options.auth.requireScope(principal, 'settings.read')
+      const report = this.options.hostServiceReport
+      if (report === undefined) {
+        throw new ApiError(404, 'NOT_FOUND', 'host service probe is not available in this build.')
+      }
+      // 运行期指标（perf-reader 的 `metrics.ts`）挂在这份诊断报告上，而不是另开路由：
+      // 另开一条新路由 = 再造一个需要单独守住鉴权面（H1 的教训就在这里），
+      // 而这份报告本来就要 `settings.read`，语义上也正是「宿主内部诊断」。
+      //
+      // 读取抛错时省略该字段而不是让整个端点 500 —— 诊断端点自己不能成为新的故障点。
+      const metrics = await readMetricsSnapshot()
+      sendJson(res, 200, metrics === undefined ? report : { ...report, metrics })
+      return
+    }
 
     if (method === 'GET' && pathname === '/api/v1/devices/self') {
       if (principal.kind === 'admin') {
@@ -289,7 +328,7 @@ export class ApiRouter {
 
     const rootRoute = pathname.match(/^\/api\/v1\/roots\/([^/]+)\/(entries|content)$/)
     if (rootRoute !== null) {
-      const rootId = decodeURIComponent(rootRoute[1] as string)
+      const rootId = decodePathSegment(rootRoute[1] as string)
       const resource = rootRoute[2]
       const root = this.requireRoot(principal, rootId)
       if (resource === 'entries') {
@@ -310,7 +349,7 @@ export class ApiRouter {
     const restoreRoute = pathname.match(/^\/api\/v1\/trash\/([^/]+)\/restore$/)
     if (method === 'POST' && restoreRoute !== null) {
       this.options.auth.requireScope(principal, 'files.delete')
-      const record = this.options.database.getTrash(decodeURIComponent(restoreRoute[1] as string))
+      const record = this.options.database.getTrash(decodePathSegment(restoreRoute[1] as string))
       if (record === undefined) throw new ApiError(404, 'TRASH_NOT_FOUND', 'The trash item does not exist.')
       const root = this.requireRoot(principal, record.rootId)
       await this.options.files.restoreTrash(root, record.id)
@@ -340,7 +379,7 @@ export class ApiRouter {
 
     const workspaceRoute = pathname.match(/^\/api\/v1\/chat\/workspaces\/([^/]+)$/)
     if (workspaceRoute !== null) {
-      const workspaceId = decodeURIComponent(workspaceRoute[1] as string)
+      const workspaceId = decodePathSegment(workspaceRoute[1] as string)
       if (method === 'PATCH') {
         this.options.auth.requireScope(principal, 'chat.write')
         const body = await readJson(req, 64_000) as Record<string, unknown>
@@ -455,7 +494,7 @@ export class ApiRouter {
 
     const providerRoute = pathname.match(/^\/api\/v1\/settings\/providers\/([^/]+)$/)
     if (providerRoute !== null) {
-      const providerId = decodeURIComponent(providerRoute[1] as string)
+      const providerId = decodePathSegment(providerRoute[1] as string)
       if (method === 'PATCH') {
         this.options.auth.requireScope(principal, 'settings.write')
         const body = await readJson(req, 1_000_000) as ProviderPatch
@@ -482,7 +521,7 @@ export class ApiRouter {
     const discoverProviderRoute = pathname.match(/^\/api\/v1\/settings\/providers\/([^/]+)\/discover$/)
     if (method === 'POST' && discoverProviderRoute !== null) {
       this.options.auth.requireScope(principal, 'settings.write')
-      const providerId = decodeURIComponent(discoverProviderRoute[1] as string)
+      const providerId = decodePathSegment(discoverProviderRoute[1] as string)
       const body = await readJson(req, 64_000) as { baseURL?: unknown; api?: unknown; apiKey?: unknown }
       const draft = {
         ...(typeof body.baseURL === 'string' ? { baseURL: body.baseURL } : {}),
@@ -542,7 +581,7 @@ export class ApiRouter {
     const sessionRoute = pathname.match(/^\/api\/v1\/chat\/sessions\/([^/]+)$/)
     if (method === 'PATCH' && sessionRoute !== null) {
       this.options.auth.requireScope(principal, 'chat.write')
-      const sessionId = decodeURIComponent(sessionRoute[1] as string)
+      const sessionId = decodePathSegment(sessionRoute[1] as string)
       const body = await readJson(req, 64_000) as Record<string, unknown>
       if (typeof body.title !== 'string') throw new ApiError(400, 'BODY_INVALID', 'title is required.')
       const result = await this.options.chat.renameSession(principal, sessionId, body.title)
@@ -554,7 +593,7 @@ export class ApiRouter {
     const forkSessionRoute = pathname.match(/^\/api\/v1\/chat\/sessions\/([^/]+)\/fork$/)
     if (method === 'POST' && forkSessionRoute !== null) {
       this.options.auth.requireScope(principal, 'chat.write')
-      const sessionId = decodeURIComponent(forkSessionRoute[1] as string)
+      const sessionId = decodePathSegment(forkSessionRoute[1] as string)
       const body = await readJson(req, 16_384) as Record<string, unknown>
       const atSeq = body.atSeq === undefined ? undefined : body.atSeq
       if (atSeq !== undefined && (!Number.isSafeInteger(atSeq) || (atSeq as number) < 0)) {
@@ -569,7 +608,7 @@ export class ApiRouter {
     const archiveSessionRoute = pathname.match(/^\/api\/v1\/chat\/sessions\/([^/]+)\/archive$/)
     if (method === 'POST' && archiveSessionRoute !== null) {
       this.options.auth.requireScope(principal, 'chat.write')
-      const sessionId = decodeURIComponent(archiveSessionRoute[1] as string)
+      const sessionId = decodePathSegment(archiveSessionRoute[1] as string)
       await this.options.chat.archiveSession(principal, sessionId)
       this.audit(principal, 'chat.session.archive', undefined, undefined, requestId, { sessionId })
       sendJson(res, 200, { archived: true })
@@ -613,7 +652,7 @@ export class ApiRouter {
 
     const messagesRoute = pathname.match(/^\/api\/v1\/chat\/sessions\/([^/]+)\/messages$/)
     if (messagesRoute !== null) {
-      const sessionId = decodeURIComponent(messagesRoute[1] as string)
+      const sessionId = decodePathSegment(messagesRoute[1] as string)
       if (method === 'GET') {
         this.options.auth.requireScope(principal, 'chat.read')
         const beforeSeq = optionalInteger(url.searchParams.get('beforeSeq'))
@@ -669,7 +708,7 @@ export class ApiRouter {
     const attachmentRoute = pathname.match(/^\/api\/v1\/attachments\/([^/]+)$/)
     if (attachmentRoute !== null && method === 'GET') {
       this.options.auth.requireScope(principal, 'files.read')
-      const attachmentId = decodeURIComponent(attachmentRoute[1] as string)
+      const attachmentId = decodePathSegment(attachmentRoute[1] as string)
       const sessionId = url.searchParams.get('sessionId')?.trim()
       if (!sessionId) {
         throw new ApiError(400, 'BODY_INVALID', 'sessionId query parameter is required.')
@@ -679,6 +718,7 @@ export class ApiRouter {
       res.setHeader('Content-Type', mediaType)
       res.setHeader('Content-Length', String(bytes.byteLength))
       // 附件内容按 id（内容哈希）寻址，永不变更，可以放心长缓存。
+      // `immutable` 是这里能长缓存的前提：客户端不必回来问「变了没」。
       res.setHeader('Cache-Control', 'private, max-age=31536000, immutable')
       res.end(Buffer.from(bytes))
       return
@@ -701,8 +741,9 @@ export class ApiRouter {
       res.statusCode = 200
       res.setHeader('Content-Type', mediaType)
       res.setHeader('Content-Length', String(bytes.byteLength))
-      // 文件名是内容哈希，内容不变；短缓存即可（这些是临时交接件，不像正式附件那样长留）。
-      res.setHeader('Cache-Control', 'private, max-age=3600')
+      // 文件名是内容哈希，内容不变；但交接件是临时产物（会被清理），
+      // 所以用「短缓存 + 必须重验」而不是 immutable。
+      res.setHeader('Cache-Control', 'private, max-age=0, must-revalidate')
       res.end(Buffer.from(bytes))
       return
     }
@@ -723,7 +764,7 @@ export class ApiRouter {
         201,
         await this.options.chat.uploadAttachment(
           principal,
-          decodeURIComponent(attachmentsRoute[1] as string),
+          decodePathSegment(attachmentsRoute[1] as string),
           body.data,
           name,
         ),
@@ -733,7 +774,7 @@ export class ApiRouter {
 
     const commandsRoute = pathname.match(/^\/api\/v1\/chat\/sessions\/([^/]+)\/commands$/)
     if (commandsRoute !== null) {
-      const sessionId = decodeURIComponent(commandsRoute[1] as string)
+      const sessionId = decodePathSegment(commandsRoute[1] as string)
       if (method === 'GET') {
         this.options.auth.requireScope(principal, 'chat.read')
         sendJson(res, 200, { items: await this.options.chat.listCommands(principal, sessionId) })
@@ -756,7 +797,7 @@ export class ApiRouter {
     const approvalsRoute = pathname.match(/^\/api\/v1\/chat\/sessions\/([^/]+)\/approvals$/)
     if (method === 'GET' && approvalsRoute !== null) {
       this.options.auth.requireScope(principal, 'chat.read')
-      const sessionId = decodeURIComponent(approvalsRoute[1] as string)
+      const sessionId = decodePathSegment(approvalsRoute[1] as string)
       sendJson(res, 200, { items: await this.options.chat.listPendingApprovals(principal, sessionId) })
       return
     }
@@ -766,8 +807,8 @@ export class ApiRouter {
     )
     if (method === 'POST' && approvalDecisionRoute !== null) {
       this.options.auth.requireScope(principal, 'chat.write')
-      const sessionId = decodeURIComponent(approvalDecisionRoute[1] as string)
-      const approvalId = decodeURIComponent(approvalDecisionRoute[2] as string)
+      const sessionId = decodePathSegment(approvalDecisionRoute[1] as string)
+      const approvalId = decodePathSegment(approvalDecisionRoute[2] as string)
       const body = await readJson(req, 16_384) as Record<string, unknown>
       if (body.outcome !== 'allowed-once' && body.outcome !== 'rejected') {
         throw new ApiError(400, 'BODY_INVALID', 'outcome must be allowed-once or rejected.')
@@ -787,7 +828,7 @@ export class ApiRouter {
     const questionsRoute = pathname.match(/^\/api\/v1\/chat\/sessions\/([^/]+)\/questions$/)
     if (method === 'GET' && questionsRoute !== null) {
       this.options.auth.requireScope(principal, 'chat.read')
-      const sessionId = decodeURIComponent(questionsRoute[1] as string)
+      const sessionId = decodePathSegment(questionsRoute[1] as string)
       sendJson(res, 200, { items: await this.options.chat.listUserQuestions(principal, sessionId) })
       return
     }
@@ -797,8 +838,8 @@ export class ApiRouter {
     )
     if (method === 'POST' && questionAnswerRoute !== null) {
       this.options.auth.requireScope(principal, 'chat.write')
-      const sessionId = decodeURIComponent(questionAnswerRoute[1] as string)
-      const callId = decodeURIComponent(questionAnswerRoute[2] as string)
+      const sessionId = decodePathSegment(questionAnswerRoute[1] as string)
+      const callId = decodePathSegment(questionAnswerRoute[2] as string)
       // 故意收 unknown 再校验，而不是 `as Record<string, unknown>`：JSON body 可以是
       // null / 数字 / 数组，直接取字段会抛 TypeError → 500；非法输入必须是 400。
       const answer = readUserQuestionAnswer(await readJson(req, 64_000))
@@ -817,7 +858,7 @@ export class ApiRouter {
 
     const sessionModelsRoute = pathname.match(/^\/api\/v1\/chat\/sessions\/([^/]+)\/model(?:s)?$/)
     if (sessionModelsRoute !== null) {
-      const sessionId = decodeURIComponent(sessionModelsRoute[1] as string)
+      const sessionId = decodePathSegment(sessionModelsRoute[1] as string)
       if (method === 'GET') {
         this.options.auth.requireScope(principal, 'chat.read')
         sendJson(res, 200, await this.options.chat.models(principal, sessionId))
@@ -848,7 +889,7 @@ export class ApiRouter {
     const sessionAgentPresetRoute = pathname.match(/^\/api\/v1\/chat\/sessions\/([^/]+)\/agent-preset$/)
     if (method === 'PUT' && sessionAgentPresetRoute !== null) {
       this.options.auth.requireScope(principal, 'chat.write')
-      const sessionId = decodeURIComponent(sessionAgentPresetRoute[1] as string)
+      const sessionId = decodePathSegment(sessionAgentPresetRoute[1] as string)
       const body = await readJson(req, 64_000) as Record<string, unknown>
       if (typeof body.agentPreset !== 'string') {
         throw new ApiError(400, 'BODY_INVALID', 'agentPreset is required.')
@@ -862,7 +903,7 @@ export class ApiRouter {
     const cancelRoute = pathname.match(/^\/api\/v1\/chat\/runs\/([^/]+)\/cancel$/)
     if (method === 'POST' && cancelRoute !== null) {
       this.options.auth.requireScope(principal, 'chat.write')
-      const sessionId = decodeURIComponent(cancelRoute[1] as string)
+      const sessionId = decodePathSegment(cancelRoute[1] as string)
       await this.options.chat.cancel(principal, sessionId)
       this.audit(principal, 'chat.run.cancel', undefined, undefined, requestId, { sessionId })
       sendJson(res, 202, { accepted: true })
@@ -891,13 +932,17 @@ export class ApiRouter {
     if (method === 'POST' && pathname === '/manage/roots') {
       const body = await readJson(req, 64_000) as Record<string, unknown>
       if (typeof body.path !== 'string') throw new ApiError(400, 'BODY_INVALID', 'path is required.')
-      const root = await this.options.database.addRoot(body.path, typeof body.label === 'string' ? body.label : undefined)
+      const root = await this.options.database.addRoot(
+        body.path,
+        typeof body.label === 'string' ? body.label : undefined,
+        { requestId },
+      )
       sendJson(res, 201, root)
       return
     }
     const rootRoute = pathname.match(/^\/manage\/roots\/([^/]+)$/)
     if (method === 'DELETE' && rootRoute !== null) {
-      this.options.database.removeRoot(decodeURIComponent(rootRoute[1] as string))
+      this.options.database.removeRoot(decodePathSegment(rootRoute[1] as string))
       res.writeHead(204)
       res.end()
       return
@@ -911,11 +956,16 @@ export class ApiRouter {
       const body = await readJson(req, 64_000) as Record<string, unknown>
       const scopes = validateScopes(body.scopes)
       const rootIds = validateStringArray(body.rootIds, 'rootIds')
-      sendJson(res, 200, this.options.database.updateDevice(decodeURIComponent(deviceRoute[1] as string), scopes, rootIds))
+      sendJson(res, 200, this.options.database.updateDevice(
+        decodePathSegment(deviceRoute[1] as string),
+        scopes,
+        rootIds,
+        { requestId },
+      ))
       return
     }
     if (deviceRoute !== null && method === 'DELETE') {
-      this.options.database.revokeDevice(decodeURIComponent(deviceRoute[1] as string))
+      this.options.database.revokeDevice(decodePathSegment(deviceRoute[1] as string), { requestId })
       res.writeHead(204)
       res.end()
       return
@@ -925,6 +975,8 @@ export class ApiRouter {
       sendJson(res, 201, this.options.database.createPairing(
         validateStringArray(body.rootIds, 'rootIds'),
         validateScopes(body.scopes),
+        undefined,
+        { requestId },
       ))
       return
     }
@@ -959,8 +1011,8 @@ export class ApiRouter {
       const deviceName = readOptionalText(body.deviceName) ?? 'Android 设备'
       const displayName = readOptionalText(body.displayName) ?? defaultDisplayName()
 
-      const pairing = this.options.database.createPairing(rootIds, scopes)
-      const exchanged = this.options.database.exchangePairing(pairing.code, deviceName)
+      const pairing = this.options.database.createPairing(rootIds, scopes, undefined, { requestId })
+      const exchanged = this.options.database.exchangePairing(pairing.code, deviceName, { requestId })
 
       sendJson(res, 201, {
         text: encodeConfigText({
@@ -1028,7 +1080,7 @@ export class ApiRouter {
     }
     const purgeRoute = pathname.match(/^\/manage\/trash\/([^/]+)$/)
     if (method === 'DELETE' && purgeRoute !== null) {
-      await this.options.files.purgeTrash(decodeURIComponent(purgeRoute[1] as string))
+      await this.options.files.purgeTrash(decodePathSegment(purgeRoute[1] as string))
       this.options.database.audit('admin', 'loopback-admin', 'trash.purge', undefined, undefined, {}, requestId)
       res.writeHead(204)
       res.end()
@@ -1068,9 +1120,21 @@ export class ApiRouter {
         // 下载/解包结束但仍要继续：进入「启动"阶段由 startQuick 自己上报」。
       } catch (cause) {
         this.options.tunnels!.clearActivity()
-        // 下载/解包失败要透传具体原因，否则 fallback 到泛型 500，前端只看到「内部错误」无提示。
-        const message = cause instanceof Error ? cause.message : String(cause)
-        throw new ApiError(502, 'TUNNEL_DOWNLOAD_FAILED', message)
+        // 下载/解包失败要**给得出原因**，否则 fallback 到泛型 500，前端只看到「内部错误」。
+        //
+        // 但原因必须**脱敏**（2.5.2 / H7）：`cause.message` 可能含完整镜像 URL
+        // （带 token）与绝对路径（`execFile('dpkg-deb')` 的错误里有两个）。
+        // 上游 `cloudflared.ts` 已经脱敏过一次（`sanitizeDownloadError`），
+        // 这里再兜一次 —— 纵深，且防的是「以后有人在上游加回未脱敏的消息」。
+        throw new ApiError(
+          502,
+          'TUNNEL_DOWNLOAD_FAILED',
+          'Failed to download or unpack cloudflared. Check the network and retry, or set CLOUDFLARED_MIRROR.',
+          {
+            errorKey: 'tunnelErrorDownload',
+            ...(cause instanceof Error ? { reason: sanitizeDownloadError(cause.message) } : {}),
+          },
+        )
       }
       // 转发到「配置的监听端口」（不是实际绑定的 127.0.0.1 探测端口）。
       // oc隧道入口即桥接给客户端连，client 连的是 wss:// 边缘 → cloudflared → localhost:port。
@@ -1184,12 +1248,24 @@ export class ApiRouter {
     if (req.method === 'GET') {
       this.options.auth.requireScope(principal, 'files.read')
       const descriptor = await this.options.files.inspectContent(root, relativePath)
-      const range = parseRange(req.headers.range, descriptor.size)
+      // 可缓存端点：文件内容按 ETag 变化，`no-store` 会让客户端每次都重下整份。
+      // 覆盖掉 `setCors` 设的全局默认（`private` = 允许浏览器缓存、禁止中间代理共享）。
+      res.setHeader('Cache-Control', 'private, max-age=0, must-revalidate')
       res.setHeader('Accept-Ranges', 'bytes')
       res.setHeader('ETag', descriptor.etag)
       res.setHeader('Last-Modified', new Date(descriptor.modifiedAt).toUTCString())
       res.setHeader('Content-Type', descriptor.contentType)
       res.setHeader('Content-Disposition', `inline; filename*=UTF-8''${encodeURIComponent(relativePath.split('/').at(-1) ?? 'file')}`)
+      // Range 先解析（非法 Range 要 416，`parseRange` 会抛）。
+      const range = parseRange(req.headers.range, descriptor.size)
+      // `If-None-Match` 命中 → 304（无 body）。**必须在 writeHead 之前**判，
+      // 否则头已经发出去就改不了了。带 Range 的请求不走 304 —— 那是「要一段字节」，
+      // 语义上与「我有整份缓存了，别给我」不冲突但客户端要的是片段，直接服务更清楚。
+      if (range === undefined && etagMatches(req.headers['if-none-match'], descriptor.etag)) {
+        res.writeHead(304, { ETag: descriptor.etag })
+        res.end()
+        return
+      }
       if (range === undefined) {
         res.writeHead(200, { 'Content-Length': descriptor.size })
         this.options.files.streamContent(descriptor).pipe(res)
@@ -1288,16 +1364,74 @@ function sendJson(res: ServerResponse, status: number, body: unknown): void {
   res.end(encoded)
 }
 
+/**
+ * 这个 `Origin` 是否指向回环（`127.0.0.1` / `localhost` / `[::1]`）。
+ *
+ * 与 `auth.ts` 的 `isLoopbackOrigin` **同一个判据**，只是这里需要「是否回环」这个
+ * 布尔值本身（那边是「放不放行」）。两处若各写一套，就会出现「CORS 放行、
+ * 鉴权拒绝」或反之的漂移 —— 2.5.1 的 CORS 缺陷正是这种漂移的一种。
+ */
+function isLoopbackOriginValue(origin: string): boolean {
+  try {
+    const hostname = new URL(origin).hostname.toLowerCase()
+    return hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '[::1]' || hostname === '::1'
+  } catch {
+    // 解不出来的 Origin（`null`、畸形值）一律不算回环 —— 与 `auth.ts` 同口径。
+    return false
+  }
+}
+
+/**
+ * 写 CORS 响应头。**只对回环 Origin 回显**（2.5.2 修复）。
+ *
+ * ## 修复前
+ *
+ * 只要请求带 `Origin` 就原样回显 `Access-Control-Allow-Origin: <它>`，
+ * 且 `Allow-Headers` 里含 `X-Dsh-Workspace-Admin`。那等于在**协议层**对任意网站宣告：
+ * 「你可以跨站调这个服务，连管理头都可以带」。
+ *
+ * 当时没有立刻变成提权，是因为 `adminRefusal` 的判据 3 会看 `Origin` 并 403 ——
+ * **判据替 CORS 兜住了**。但纵深只剩一层：以后任何一次「为兼容放宽判据 3」的改动
+ * （比如允许 `Origin: null`）都会立刻变成 CSRF 敞口。
+ *
+ * ## 修复后
+ *
+ * - 回环 Origin → 回显它（桌面 WebUI 在 `127.0.0.1:3080` 起，同源或跨端口都照常）；
+ * - 非回环 Origin → **不发** ACAO（浏览器自然拒绝跨站读取，不需要服务端 403 也算安全）；
+ * - 无 Origin → 不发（本机 `curl` 不需要 CORS）；
+ * - `Allow-Headers` **去掉** `X-Dsh-Workspace-Admin`：桌面面板是同源的，
+ *   它带这个头根本不需要预检许可，把它写进协议只会误导后人。
+ *
+ * `Cache-Control: no-store` 仍在这里设默认值；少数可缓存的三条端点
+ * （`/roots/:id/content`、`/attachments/:id`、`/image-handoff`）在各自的处理分支里覆盖。
+ */
 function setCors(req: IncomingMessage, res: ServerResponse): void {
   const origin = req.headers.origin
-  if (origin !== undefined) {
+  if (origin !== undefined && isLoopbackOriginValue(origin)) {
     res.setHeader('Access-Control-Allow-Origin', origin)
+    // `Vary: Origin` 必须带 —— 否则中间缓存会把「给回环的 ACAO」复用给别的 Origin。
     res.setHeader('Vary', 'Origin')
   }
-  res.setHeader('Access-Control-Allow-Headers', 'Authorization, Content-Type, If-Match, If-None-Match, X-Request-Id, X-Dsh-Workspace-Admin')
+  res.setHeader('Access-Control-Allow-Headers', 'Authorization, Content-Type, If-Match, If-None-Match, X-Request-Id')
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS')
   res.setHeader('Access-Control-Expose-Headers', 'ETag, Content-Range, X-Request-Id')
   res.setHeader('Cache-Control', 'no-store')
+}
+
+/**
+ * 预检（`OPTIONS`）是否该被回答。
+ *
+ * 浏览器预检一定带 `Origin`。带**非回环** Origin 的预检直接 403 ——
+ * 与「不发 ACAO」相比这条更明确：让攻击者立刻知道跨站不被接受，
+ * 而不是让它在一个「看起来成功但读不到内容」的响应里猜。
+ *
+ * 没有 `Origin` 的 `OPTIONS` 不是浏览器预检（`curl` 常这么探活），照旧 204 ——
+ * 与 `adminRefusal` 放行「缺 Origin」是同一个口径（缺 Origin 不构成声明）。
+ */
+function preflightRefused(req: IncomingMessage): boolean {
+  const origin = req.headers.origin
+  if (typeof origin !== 'string' || origin === '') return false
+  return !isLoopbackOriginValue(origin)
 }
 
 function validateScopes(value: unknown): DeviceScope[] {
@@ -1460,6 +1594,45 @@ function commandName(line: string): string {
   return /^\/([a-z][a-z0-9_-]*)/u.exec(line)?.[1] ?? 'unknown'
 }
 
+/**
+ * 读一份运行期指标快照；读取本身抛错时返回 `undefined`（诊断端点绝不能反过来炸掉）。
+ *
+ * 历史：这里曾是动态 `import('./metrics.ts')`，因为 metrics.ts 与本文件由不同手术台并行落地，
+ * 静态依赖会造成编译顺序耦合。metrics.ts 落地后该动态导入既不省包（server/bridge 已静态引用，
+ * tsdown 会打 INEFFECTIVE_DYNAMIC_IMPORT 警告）也不提供容错，改为静态导入。
+ */
+async function readMetricsSnapshot(): Promise<MetricsSnapshot | undefined> {
+  try {
+    return getMetricsSnapshot()
+  } catch {
+    return undefined
+  }
+}
+
+/**
+ * `If-None-Match` 是否命中当前 ETag。**带弱比较**（忽略 `W/` 前缀）。
+ *
+ * 为什么不用严格相等：ETag 的强弱前缀（`W/`）属于缓存语义的**修饰**，
+ * 不改变「这份内容是不是同一份」。而两端（路由器 / `file-service`）谁加 `W/`
+ * 都可能随实现变化（本仓的 ETag 格式正在被改成 stat-only 的弱校验器），
+ * 写死严格相等会让「格式一改，304 静默失效」—— 那种失效没有任何报错，
+ * 只是客户端永远拿不到 304，悄悄地退回每次重下整份。
+ *
+ * 支持逗号分隔的多值（`If-None-Match: W/"a", "b"`）与通配 `*`。
+ */
+function etagMatches(headerValue: string | string[] | undefined, etag: string): boolean {
+  const raw = Array.isArray(headerValue) ? headerValue.join(',') : headerValue
+  if (raw === undefined || raw === '') return false
+  if (raw.trim() === '*') return true
+  // `+` 量词而不是单次替换：客户端可能把「服务端给的弱 ETag」再包一层，
+  // 于是 `W/"<size>-<mtime>"` 变成 `W/W/"..."`。只削一层会漏命中 —— 而且漏得
+  // **很安静**：状态码还是 200，只是每次都重下整份，没有任何报错。
+  // 对强 ETag（无 `W/`）行为完全不变。
+  const normalize = (value: string): string => value.trim().replace(/^(?:W\/)+/i, '')
+  const target = normalize(etag)
+  return raw.split(',').some(candidate => normalize(candidate) === target)
+}
+
 function parseRange(value: string | undefined, size: number): { start: number; end: number } | undefined {
   if (value === undefined) return undefined
   const match = /^bytes=(\d*)-(\d*)$/.exec(value)
@@ -1482,4 +1655,39 @@ function parseRange(value: string | undefined, size: number): { start: number; e
 function header(req: IncomingMessage, name: string): string | undefined {
   const value = req.headers[name]
   return Array.isArray(value) ? value[0] : value
+}
+
+/**
+ * 解码一个 URL **路径段**（不是 query 参数）。
+ *
+ * ## 为什么要收口成一个函数
+ *
+ * `decodeURIComponent` 对非法百分号（`%ZZ`、`%E0%A4%A`、孤零零的 `%`）抛 `URIError`。
+ * 而 `new URL()` **不会**提前拒绝它们（实测 `pathname` 保留字面 `%ZZ`），
+ * 于是请求真的会走到解码这一步 —— 抛出后一路冒到 `router.handle` 的兜底 `catch`，
+ * 被 `asApiError` 包成 **500 `INTERNAL_ERROR`**。
+ *
+ * 那是**错误的分类**：客户端把 URL 打错，不是桥内部炸了。两层代价：
+ * 1. 排障时把「你 URL 写错了」读成「服务端故障」，方向全错；
+ * 2. 污染 `INTERNAL_ERROR` 这个码 —— 真出 500 时没人能再靠码区分。
+ *
+ * 所以这里把「客户端输入非法」固定成 **400 `PATH_INVALID`**，
+ * 与 `path-policy.ts` 里其它非法路径的码保持一致（客户端只需认一个码）。
+ *
+ * ## 为什么不用 `URLSearchParams` 或 `decodeURI`
+ *
+ * - `URLSearchParams.get()` 会把 `+` 解成空格（那是 **query** 的
+ *   `application/x-www-form-urlencoded` 语义）。路径段里的 `+` 是字面量 ——
+ *   用它会把 `a+b` 这类合法 id 静默改成 `a b`。
+ * - `decodeURI` 不处理保留字符（`%3A` 之类解不出来），语义不对。
+ *
+ * 所以：`decodeURIComponent` + 严格 catch，什么都不额外做。
+ */
+export function decodePathSegment(value: string): string {
+  try {
+    // 注意：这里必须是 `decodeURIComponent` 本身，不能是本函数 —— 否则无限递归。
+    return decodeURIComponent(value)
+  } catch {
+    throw new ApiError(400, 'PATH_INVALID', 'A path segment contains malformed percent-encoding.')
+  }
 }

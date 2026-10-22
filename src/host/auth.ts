@@ -189,15 +189,103 @@ export interface AuthServiceOptions {
   tunnelActive?: () => boolean
 }
 
+/**
+ * 一条请求的「对端分类」。**限流分桶**用它，管理面判据也用它 —— 同源，不另写一套。
+ *
+ * 为什么需要分类：隧道（cloudflared `--url 127.0.0.1:PORT`）把外部请求转进回环，
+ * 于是 `socket.remoteAddress` 对本机浏览器与公网攻击者**都是 `127.0.0.1`**。
+ * 如果限流按 `remoteAddress` 分桶，两边就共用同一个桶 —— 一个外部扫描器打满 120 次，
+ * 本机 WebUI 自己也被 429（2.5.1 前实测）。这不是提权，是**自伤**：
+ * 攻击者能把远程管理面持续锁死。
+ *
+ * ## 两类怎么分
+ *
+ * 只看**请求本身**：
+ *
+ * - `tunnelled`：请求带任何转发头 / Cloudflare 边缘头。这是硬证据 ——
+ *   本机浏览器与 `curl 127.0.0.1` 都不发这些头（与 `adminRefusal` 判据 1
+ *   用**同一份** `FORWARDING_HEADERS`）。
+ * - `local`：其余。
+ *
+ * ## 为什么**不**按 `tunnelActive` 分类（反直觉但必须）
+ *
+ * 隧道运行时，本机浏览器（WebUI / 桌面面板）**也**从 `127.0.0.1` 连进来，
+ * 且**不带** `cf-*`。若判据是「隧道在跑 → 全体 tunnelled」，本机浏览器会被算进
+ * 隧道桶 —— 公网扫描一打满，本机照样被锁死，等于把「共桶」改名为「共隧道桶」，
+ * 什么都没修。
+ *
+ * 而 `cf-*` 是「**这一条请求**真的经过 Cloudflare 边缘」的证据：真实 cloudflared
+ * 一定会注入（`SECURITY.md` 有实测依据），本机浏览器不会发。
+ *
+ * ## 能被骗吗
+ *
+ * 能 —— 攻击者可以**不发** `cf-*` 伪装成本机。但那是**无损**的：分桶只影响
+ * 「谁的配额被扣」，不影响鉴权结论（管理面另有四层判据）。且两份阈值**相等**，
+ * 伪装只会花掉本机那份配额，**没有收益**。最坏情况退回 2.5.1 的共桶行为。
+ */
+export type PeerClass = 'local' | 'tunnelled'
+
+/**
+ * 判定一条请求属于哪一类对端。纯函数（除 `tunnelActive` 探针外不碰任何状态），
+ * 供限流分桶与测试直接调用。
+ *
+ * @param req - 待分类的请求。
+ * @param options.tunnelActive - 隧道是否在跑；缺省视为没有。
+ */
+export function classifyPeer(req: IncomingMessage): PeerClass {
+  if (hasForwardingHeader(req)) return 'tunnelled'
+  return 'local'
+}
+
 export class AuthService {
-  private readonly authFailures = new FixedWindowLimiter(20, 5 * 60_000)
-  readonly pairingAttempts = new FixedWindowLimiter(10, 10 * 60_000)
-  readonly requests = new FixedWindowLimiter(120, 60_000)
+  /**
+   * 两个「按对端分类」分开计的桶（键 = `<class>:<remoteAddress>`）。
+   *
+   * 阈值刻意**两边一致**：分桶的目的是「互不连坐」，不是「给本机开后门」。
+   * 如果本机侧更宽，那它就成了一条「怎么把自己伪装成本机」的动机 —— 而伪装是免费的
+   * （不发头即可），于是更宽的那一侧等于被取消。
+   * 阈值相等时，攻击者伪装成 local 只会消耗 local 配额，**没有额外收益**。
+   *
+   * `requests`：120/60s。`authFailures`：20/5min。
+   */
+  private readonly authFailuresByPeer = {
+    local: new FixedWindowLimiter(20, 5 * 60_000),
+    tunnelled: new FixedWindowLimiter(20, 5 * 60_000),
+  }
+  /** 配对兑换：本机与隧道分开。隧道侧公网暴力尝试不该锁死本机的配对。 */
+  readonly pairingAttemptsByPeer = {
+    local: new FixedWindowLimiter(10, 10 * 60_000),
+    tunnelled: new FixedWindowLimiter(10, 10 * 60_000),
+  }
+  readonly requestsByPeer = {
+    local: new FixedWindowLimiter(120, 60_000),
+    tunnelled: new FixedWindowLimiter(120, 60_000),
+  }
 
   constructor(
     private readonly database: WorkspaceDatabase,
     private readonly options: AuthServiceOptions = {},
   ) {}
+
+  /** 这套服务当前的对端分类（`tunnelActive` 走 fail-closed 探针）。 */
+  private peerOf(req: IncomingMessage): PeerClass {
+    return classifyPeer(req)
+  }
+
+  /** 按对端取请求配额桶。 */
+  requestLimiter(req: IncomingMessage): FixedWindowLimiter {
+    return this.requestsByPeer[this.peerOf(req)]
+  }
+
+  /** 按对端取认证失败桶。 */
+  failureLimiter(req: IncomingMessage): FixedWindowLimiter {
+    return this.authFailuresByPeer[this.peerOf(req)]
+  }
+
+  /** 按对端取配对尝试桶（`router.ts` 的 exchange 端点用）。 */
+  pairingLimiter(req: IncomingMessage): FixedWindowLimiter {
+    return this.pairingAttemptsByPeer[this.peerOf(req)]
+  }
 
   /**
    * 隧道是否在跑。探针抛错时**按「在跑」处理**（fail closed）：探针读的是我们自己
@@ -216,27 +304,31 @@ export class AuthService {
 
   principal(req: IncomingMessage, options: { allowAdmin?: boolean } = {}): Principal {
     const remote = requestAddress(req)
-    this.requests.consume(remote)
+    // 键带上对端分类：本机侧与隧道侧各有一份配额，**互不连坐**。
+    // 分类判据与 `adminRefusal` 同源（`classifyPeer`），不另写一套。
+    const peer = this.peerOf(req)
+    const key = `${peer}:${remote}`
+    this.requestsByPeer[peer].consume(key)
     if (options.allowAdmin === true && req.headers['x-dsh-workspace-admin'] === '1') {
       // 声明了「我是回环管理员」的请求：判据不过**就明确拒绝**，而不是悄悄退回
       // Bearer 流程给一个 401。两者必须给同一个码 —— 否则 `/manage` 与 `/api/v1`
       // 会出现一严一松（见 tests/admin-loopback-escalation.spec.ts 的一致性用例）。
       const refusal = adminRefusal(req, { tunnelActive: this.tunnelRunning() })
       if (refusal !== undefined) {
-        this.authFailures.consume(remote)
+        this.authFailuresByPeer[peer].consume(key)
         throw new ApiError(403, refusal.code, refusal.message)
       }
       return ADMIN_PRINCIPAL
     }
     const authorization = req.headers.authorization
     if (authorization === undefined || !authorization.startsWith('Bearer ')) {
-      this.authFailures.consume(remote)
+      this.authFailuresByPeer[peer].consume(key)
       throw new ApiError(401, 'AUTH_REQUIRED', 'A valid Bearer token is required.')
     }
     const token = authorization.slice('Bearer '.length).trim()
     const device = token === '' ? undefined : this.database.authenticate(token)
     if (device === undefined) {
-      this.authFailures.consume(remote)
+      this.authFailuresByPeer[peer].consume(key)
       throw new ApiError(401, 'TOKEN_INVALID', 'The device token is invalid or revoked.')
     }
     const principal: DevicePrincipal = {

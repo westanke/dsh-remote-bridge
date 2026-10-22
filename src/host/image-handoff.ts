@@ -16,6 +16,7 @@
  * 「文件名白名单 + 扩展名声明 + 内容自证 + 体积上限」四道闸。
  */
 
+import { createHash } from 'node:crypto'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { ImageHandoffSettings } from '../shared/contracts.ts'
 import type { WorkspaceDatabase } from './database.ts'
@@ -225,12 +226,35 @@ export function sameOrigin(req: IncomingMessage): boolean {
   const site = req.headers['sec-fetch-site']
   if (typeof site === 'string') return site === 'same-origin' || site === 'none'
   const origin = req.headers.origin
-  if (typeof origin !== 'string' || origin === '') return true
+  if (typeof origin !== 'string' || origin === '') {
+    // **刻意放行**（H8 记录，不修改行为）：无 `Origin` 且无 `Sec-Fetch-Site` 的调用方
+    // 不是浏览器页面（`curl`、脚本、测试），浏览器**一定**会发这两个头之一。
+    // 因此这条口子对「网页」不成立；它的安全前提是**回环可达性本身**
+    // （与本地 GUI 其余部分假定的信任一致），而不是「请求像不像浏览器」。
+    //
+    // 与 `SECURITY.md` 的口径对齐：文档原先写「跨站一律 403」，
+    // 实际是「**带** `Sec-Fetch-Site` 的跨站 403；无该头时视为非浏览器、依赖回环可达性」。
+    // 两者不是矛盾，但文档必须说清，否则读者会以为这里有一道并不存在的闸。
+    return true
+  }
   try {
     return new URL(origin).host === req.headers.host
   } catch {
     return false
   }
+}
+
+/**
+ * 内容是够与文件名里的哈希一致。
+ *
+ * 文件名形如 `<64 hex>.<ext>`（`HANDOFF_FILE_NAME` 已保证），取前 64 字符当期望值。
+ * `message` 前缀（`sha256:`）不需要处理 —— 白名单正则里没有冒号。
+ */
+function contentMatchesName(bytes: Uint8Array, name: string): boolean {
+  const expected = name.slice(0, 64).toLowerCase()
+  if (!/^[0-9a-f]{64}$/.test(expected)) return false
+  const actual = createHash('sha256').update(bytes).digest('hex')
+  return actual === expected
 }
 
 /** 用一段纯文本说出拒绝理由：不回显调用方给的路径，也不做任何目录列举。 */
@@ -309,6 +333,20 @@ export function createImageRouteHandler(options: ImageRouteOptions) {
     }
     if (declared !== undefined && !sameImageFamily(declared, sniffed)) {
       refuse(res, 415, 'content does not match the file extension')
+      return
+    }
+    // **内容自证（H9）**：文件名是 `<sha256>.<ext>`，所以哈希必须与内容一致。
+    //
+    // 写盘侧（`dsh-0.2-bridge.ts` 的 `writeHandoffFile`）就是用
+    // `createHash('sha256').update(bytes)` 生成文件名的 —— 因此这条校验在真实数据上
+    // **恒成立**（不会误伤），它挡的是另一类情形：工作区里有人手工放了一个
+    // 「名字对、内容不对」的文件（例如用合法 PNG 覆盖某个历史哈希名）。
+    // 那种情况下浏览器会拿到一张与「客户端以为的图」不同的图，
+    // 而 `Cache-Control` 又按名字缓存 —— 于是错图会长久留在缓存里。
+    //
+    // 32 MiB 以下算一次 sha256 是毫秒级，相对于「不可信的缓存一致性」这笔交易很划算。
+    if (!contentMatchesName(image.bytes, name)) {
+      refuse(res, 404, 'no such handoff image')
       return
     }
     res.writeHead(200, {

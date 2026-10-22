@@ -120,27 +120,53 @@ export function clampHistoryEvents(
   perEventBudget: number = HISTORY_EVENT_BYTE_BUDGET,
 ): ClampedHistory {
   let clampedStrings = 0
-  const prepared = events.map(entry => {
-    if (byteLength(entry) <= perEventBudget) return entry
+  // **长度缓存**：每条事件的大小只量一次。
+  //
+  // 为什么现在才做：修复前是「先 map 一遍量一次（:124），再从最旧端累加时**再量一次**
+  // （:143）」—— 同一份数据被序列化了 2 次，而出网前 `sendJson` 还要再整份序列化
+  // 第 3 次。历史里最重的是工具输出（单条几 MB），多一次 `JSON.stringify` 就是
+  // 多一份等量临时字符串 + 一次大对象分配，GC 抖动会传导到同时进行的 WS 广播。
+  //
+  // 缓存是 `number[]` 而不是 `Map<unknown, number>`：索引天然唯一且连续，
+  // 数组比 Map 少一次哈希与一次对象头开销。
+  const sizes: number[] = new Array(events.length)
+  const prepared: unknown[] = new Array(events.length)
+
+  for (let index = 0; index < events.length; index += 1) {
+    const entry = events[index]
+    const size = byteLength(entry)
+    if (size <= perEventBudget) {
+      sizes[index] = size
+      prepared[index] = entry
+      continue
+    }
     // 单条超限：先剥字符串，再看是否真的变瘦了
     const result = clampStrings(entry, perEventBudget, new WeakSet())
-    if (result.clamped === 0) return entry
+    if (result.clamped === 0) {
+      // 剥不动（没有超长字符串）：原样保留，大小沿用已量到的那个。
+      sizes[index] = size
+      prepared[index] = entry
+      continue
+    }
     clampedStrings += result.clamped
     // 标记必须挂在**裁剪后**的结构上。这里踩过一次：先写成 `{ ...entry, bridgeTruncated }`，
     // 结果是「标记说截断了、内容却还是全的」—— 客户端按标记去提示用户「内容已截断」，
     // 而真正该被裁掉的几十万字符照旧进了响应。标记与内容必须同时来自 result.value。
     const marker = { truncated: true }
     const clampedValue = result.value
-    return clampedValue !== null && typeof clampedValue === 'object' && !Array.isArray(clampedValue)
+    const marked = clampedValue !== null && typeof clampedValue === 'object' && !Array.isArray(clampedValue)
       ? { ...(clampedValue as Record<string, unknown>), bridgeTruncated: marker }
       : { value: clampedValue, bridgeTruncated: marker }
-  })
+    prepared[index] = marked
+    // 裁完之后必须**重新量**（它变瘦了，沿用旧值会把预算算高）。
+    sizes[index] = byteLength(marked)
+  }
 
   // 从最新往最旧累加，超出预算就不再要更旧的
   const kept: unknown[] = []
   let bytes = 0
   for (let index = prepared.length - 1; index >= 0; index -= 1) {
-    const size = byteLength(prepared[index])
+    const size = sizes[index] ?? 0
     if (kept.length > 0 && bytes + size > byteBudget) break
     bytes += size
     kept.push(prepared[index])
@@ -152,6 +178,47 @@ export function clampHistoryEvents(
     droppedOldest: prepared.length - kept.length,
     clampedStrings,
   }
+}
+
+/**
+ * 逐条给出「这条事件出网要占多少字节」，**不裁剪**。
+ *
+ * 这是给将来的**流式出网**准备的入口：router 可以先按预算决定「要发哪几条」，
+ * 再逐条 `stringifyWire` 写出去 —— 那样峰值内存从「整份响应」降到「单条（≤512 KiB）」，
+ * 而不是像现在这样必须先把整份 JSON 拼出来才知道多大。
+ *
+ * 本文件**不负责**流式写（那在 router 里）；这里只把「先量后发」需要的两个东西
+ * 准备好：一条一条的大小、以及逐条序列化的能力。两者都不分配整份字符串。
+ *
+ * @returns 与 `events` 等长的字节数数组（失败按 0 计，与 [clampHistoryEvents] 一致）。
+ */
+export function measureEventBytes(events: readonly unknown[]): number[] {
+  return events.map(entry => byteLength(entry))
+}
+
+/**
+ * 从最新端往回挑出**落在预算内**的最长连续后缀。
+ *
+ * 语义与 [clampHistoryEvents] 的丢弃阶段完全一致（这也是为什么它独立导出：
+ * 流式出网那条路必须与现在这条**同一套取舍**，否则两条路径会漂）。
+ *
+ * @param sizes - 与事件等长的字节数（直接用 [measureEventBytes] 的结果）。
+ * @returns 要发送的起始索引与累计字节数；`dropped` 是最旧端被丢掉多少条。
+ */
+export function selectWithinBudget(
+  sizes: readonly number[],
+  byteBudget: number,
+): { start: number; bytes: number; dropped: number } {
+  let bytes = 0
+  let start = sizes.length
+  for (let index = sizes.length - 1; index >= 0; index -= 1) {
+    const size = sizes[index] ?? 0
+    // 「至少保留一条」是既有语义：一条就超预算时仍然发它（否则客户端永远拉不到任何东西）。
+    if (start < sizes.length && bytes + size > byteBudget) break
+    bytes += size
+    start = index
+  }
+  return { start, bytes, dropped: start }
 }
 
 /**

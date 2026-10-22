@@ -193,6 +193,58 @@ const zh = {
   errorAdminProxyForwarded: '管理面不接受经代理转发的请求。请在本机用 127.0.0.1 或 localhost 直接打开。',
   errorAdminHostNotLoopback: '管理面只在本机回环地址下可用。请用 127.0.0.1 或 localhost 打开本页。',
   errorAdminLoopbackRequired: '此操作只能在本机执行。',
+  // —— 云隧道：服务端下发的阶段文案（UI-03，键名与 cloudflared.ts 的 labelKey 一一对应）——
+  tunnelStageLocating: '正在定位本机 cloudflared…',
+  tunnelStageBinaryFound: '已找到本机二进制，直接复用',
+  tunnelStageDownloadGithub: '正在从 GitHub 下载 cloudflared…',
+  tunnelStageDownloadDeb: '正在从官方 deb 仓库下载 cloudflared…',
+  tunnelStageDownloadProgress: '正在下载 cloudflared… {mb}/{all} MB',
+  tunnelStageDownloadUnverified: '镜像源没有可用的校验和，仍在下载但本次不做完整性校验…',
+  tunnelStageUnpackDeb: '解包官方 deb 并提取二进制…',
+  tunnelStageWriteBinary: '写入二进制并赋予执行权限…',
+  tunnelStageStarting: '正在启动 cloudflared 隧道…',
+  // 隧道错误（errorKey 优先于 error 渲染；细节留在服务端日志，不进响应体）
+  tunnelErrorAlreadyRunning: '隧道已经在运行中，请先停止。',
+  tunnelErrorDownload: '下载 cloudflared 失败，请检查网络后重试；如需换源可设置 CLOUDFLARED_MIRROR。',
+  tunnelErrorExited: 'cloudflared 已退出（code={code}，signal={signal}），未拿到隧道地址。',
+  // 隧道按钮交互（本次手术的两位「主病号」）
+  tunnelStopConfirm: '停止云隧道后，公网临时地址立即失效，正在经隧道连接的手机会断开。确定停止吗？',
+  tunnelStartAndGenConfig: '开启隧道并生成配置',
+  tunnelConfigAuto: '隧道已开启，配置文本已自动生成',
+  tunnelUrlPending: '隧道已启动，但暂时还没拿到公网地址，稍等片刻后点「用隧道地址生成配置」即可。',
+  copyUrl: '复制地址',
+  // 配对码倒计时与复制（UI-10）
+  pairingExpiresAt: '配对码有效期约 {minutes} 分钟，请尽快在手机上输入。',
+  copyPairing: '复制配对码',
+  pairingCreated: '配对码已生成',
+  configCreated: '配置文本已生成',
+  // 危险操作确认（UI-06：原先一点即发的三处补齐确认）
+  revokeConfirm: '吊销后这台手机的令牌立即失效，必须重新配对才能访问。确定吊销「{name}」吗？',
+  removeRootConfirm: '移除根目录「{label}」不会删除磁盘上的文件，但所有手机将立刻失去对它的访问权。确定移除吗？',
+  disableRemoteConfirm: '关闭远程访问后，所有手机连接立即断开，需要重新启用并配对。确定关闭吗？',
+  // 操作成功反馈（UI-07：原先除识图保存外全部静默）
+  rootAdded: '根目录已添加',
+  rootRemoved: '根目录已移除',
+  remoteDisabled: '远程访问已关闭',
+  permissionsSaved: '权限已保存',
+  deviceRevoked: '设备已吊销',
+  listenerSaved: '监听设置已保存',
+  trashRestored: '已恢复',
+  trashPurged: '已永久删除',
+  tunnelStarted: '云隧道已开启',
+  // 停止成功的通知复用状态键 tunnelStopped（「隧道已停止」），不再另立同义键。
+  // 审计列表（UI-12）
+  auditEmpty: '暂无审计事件',
+  auditLoadMore: '加载更多',
+  auditLoading: '正在加载…',
+  trashEmpty: '回收站是空的',
+  // 设备行（UI-13）
+  deviceLastSeen: '最后使用 {time}',
+  deviceNeverSeen: '从未连接',
+  // 识图灯箱（UI-14）
+  imageLoadFailed: '图片加载失败',
+  prevImage: '上一张',
+  nextImage: '下一张',
   author: '作者 Github@Hakunm',
   version: '当前版本',
 } as const
@@ -285,7 +337,7 @@ const en: Messages = {
   removeRoot: 'Remove root',
   builtinRootBadge: 'Default',
   builtinRootHint: 'Default directory · cannot be removed',
-  builtinRootNotice: 'New roots are not granted to already paired phones by default. To share one, open 「设备」 and tick that directory for the phone in question.',
+  builtinRootNotice: 'New roots are not granted to already paired phones by default. To share one, open the Devices card and tick that directory for the phone in question.',
   errorRootBuiltin: 'This is the current DSH working directory, so it cannot be removed. You can still add other roots above.',
   scopeChatRead: 'Read chat',
   scopeChatWrite: 'Send chat',
@@ -376,6 +428,58 @@ const en: Messages = {
   errorAdminProxyForwarded: 'Management endpoints do not accept proxied requests. Open them locally via 127.0.0.1 or localhost.',
   errorAdminHostNotLoopback: 'Management endpoints are available only under a loopback address. Open this page via 127.0.0.1 or localhost.',
   errorAdminLoopbackRequired: 'This operation is available only from the local machine.',
+  // —— Cloudflare tunnel: server-driven stage labels (UI-03; keys mirror labelKey in cloudflared.ts) ——
+  tunnelStageLocating: 'Locating the local cloudflared binary…',
+  tunnelStageBinaryFound: 'Local binary found, reusing it',
+  tunnelStageDownloadGithub: 'Downloading cloudflared from GitHub…',
+  tunnelStageDownloadDeb: 'Downloading cloudflared from the official deb repo…',
+  tunnelStageDownloadProgress: 'Downloading cloudflared… {mb}/{all} MB',
+  tunnelStageDownloadUnverified: 'No checksum is published for this mirror; downloading without an integrity check…',
+  tunnelStageUnpackDeb: 'Unpacking the deb and extracting the binary…',
+  tunnelStageWriteBinary: 'Writing the binary and marking it executable…',
+  tunnelStageStarting: 'Starting the cloudflared tunnel…',
+  // Tunnel errors (errorKey wins over error; details stay in the server log, never in the response body)
+  tunnelErrorAlreadyRunning: 'The tunnel is already running. Stop it first.',
+  tunnelErrorDownload: 'Downloading cloudflared failed. Check the network and retry; set CLOUDFLARED_MIRROR to use another source.',
+  tunnelErrorExited: 'cloudflared exited (code={code}, signal={signal}) before a tunnel address was obtained.',
+  // Tunnel button interactions (the two patients of this surgery)
+  tunnelStopConfirm: 'Stopping the tunnel invalidates the public address immediately and disconnects phones currently connected through it. Stop anyway?',
+  tunnelStartAndGenConfig: 'Start tunnel & generate config',
+  tunnelConfigAuto: 'Tunnel started; config text generated automatically',
+  tunnelUrlPending: 'The tunnel is starting but its public address is not ready yet. Wait a moment, then press “Generate config with tunnel address”.',
+  copyUrl: 'Copy address',
+  // Pairing countdown and copy (UI-10)
+  pairingExpiresAt: 'The pairing code is valid for about {minutes} minutes — enter it on the phone soon.',
+  copyPairing: 'Copy code',
+  pairingCreated: 'Pairing code generated',
+  configCreated: 'Config text generated',
+  // Danger confirmations (UI-06: three actions that used to fire on a single click)
+  revokeConfirm: 'Revoking invalidates this phone’s token at once; it must pair again to regain access. Revoke “{name}”?',
+  removeRootConfirm: 'Removing “{label}” does not delete files on disk, but every phone immediately loses access to it. Remove it?',
+  disableRemoteConfirm: 'Disabling remote access drops every phone connection right away; it must be re-enabled and re-paired. Disable it?',
+  // Success feedback (UI-07: every action but the image-path save used to be silent)
+  rootAdded: 'Root added',
+  rootRemoved: 'Root removed',
+  remoteDisabled: 'Remote access disabled',
+  permissionsSaved: 'Permissions saved',
+  deviceRevoked: 'Device revoked',
+  listenerSaved: 'Listener settings saved',
+  trashRestored: 'Restored',
+  trashPurged: 'Permanently deleted',
+  tunnelStarted: 'Tunnel started',
+  // Stop-success notice reuses the status key tunnelStopped; no second synonym key.
+  // Audit list (UI-12)
+  auditEmpty: 'No audit events yet',
+  auditLoadMore: 'Load more',
+  auditLoading: 'Loading…',
+  trashEmpty: 'The recycle bin is empty',
+  // Device rows (UI-13)
+  deviceLastSeen: 'Last seen {time}',
+  deviceNeverSeen: 'Never connected',
+  // Image handoff lightbox (UI-14)
+  imageLoadFailed: 'Image failed to load',
+  prevImage: 'Previous image',
+  nextImage: 'Next image',
   author: 'Author Github@Hakunm',
   version: 'Current version',
 }

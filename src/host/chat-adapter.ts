@@ -361,7 +361,49 @@ export interface PermissionOptionView {
   description?: string
 }
 
+/** 会话可见性缓存的 TTL（见 `DshChatAdapter.sessionVisibility` 的说明）。 */
+const SESSION_VISIBILITY_TTL_MS = 2_000
+
+/** 可见性缓存条目上限；到顶就按 TTL 清一遍（见 `rememberVisibility`）。 */
+const SESSION_VISIBILITY_CACHE_LIMIT = 2_048
+
+/**
+ * 把 principal 收敛成一个稳定的缓存键。
+ *
+ * 为什么不用 `JSON.stringify(principal)`：`rootIds` 是 `Set`（序列化出来是 `{}`，
+ * 所有设备会撞成同一个键 —— 那就是越权）。这里只用**身份**部分，
+ * 授权范围的变化由 TTL 与 `sessionRootId` 那条独立缓存兜住。
+ */
+function principalKey(principal: Principal): string {
+  return principal.kind === 'admin' ? 'admin' : `device:${principal.id}`
+}
+
 export class DshChatAdapter {
+  /**
+   * 会话 → 可见性快照的短 TTL 缓存。
+   *
+   * ## 为什么需要（这是本文件最热的一处浪费）
+   *
+   * `requireSession()` 会在**几乎每个** API 调用里跑一遍 `listSessions()`，
+   * 而 `listSessions` 一次要打两次内核 RPC（`sessions.list` + `workspace.list`）
+   * 加一次 `database.listRoots()`。也就是说 history / commands / approvals /
+   * models / questions / prompt 每条请求都白花两次内核往返 —— 只为回答
+   * 「这个 session 能不能被这台设备看见」。
+   *
+   * ## 为什么 TTL 是 2 秒（短到近乎无感，长到足以省掉重复）
+   *
+   * 客户端在打开一个会话时会**连续**打四五个接口（历史、审批、提问、命令、模型），
+   * 2 秒足以把这一串并成一两次真实查询。再长就会让「刚建的会话看不到」
+   * 变成一个可感受到的延迟 —— 而那正是我们要避免的另一类 bug。
+   *
+   * ## 缓存的是什么（关键：缓存的是**授权结论**，不是会话内容）
+   *
+   * 只缓存「这个 sessionId 对当前设备可见吗」这一个布尔结论，且按 `principal.id`
+   * 分桶。**不缓存会话正文**：正文会被 `rename`/`archive`/新消息改掉，
+   * 缓存它等于制造陈旧数据；而可见性只随「根授权变没变」与「会话删没删」变，
+   * 两者都是低频且由用户操作驱动的。
+   */
+  private readonly sessionVisibility = new Map<string, { visibleAt: number; visible: boolean }>()
   private readonly sessionRootIds = new Map<string, string>()
   private readonly sessionRootLookups = new Map<string, Promise<string | undefined>>()
   private readonly pendingApprovals = new Map<string, PendingApprovalRecord>()
@@ -937,8 +979,19 @@ export class DshChatAdapter {
   }
 
   async isSessionAuthorized(principal: Principal, sessionId: string): Promise<boolean> {
+    // 这条是**广播热路径**：每个 `chat.*` 事件、每条连接都要问一次。
+    // 所以它必须尽量便宜：
+    // 1. 先查 2 秒可见性缓存（命中即 O(1)）；
+    // 2. 未命中再看 `sessionRootId` 缓存（进程级，按会话 id）；
+    // 3. 两者都未命中才打内核（`sessionRootId` 内部有 promise 去重，不会并发风暴）。
+    const key = `${principalKey(principal)}\u0000${sessionId}`
+    const cached = this.sessionVisibility.get(key)
+    const now = Date.now()
+    if (cached !== undefined && now - cached.visibleAt < SESSION_VISIBILITY_TTL_MS) return cached.visible
     const rootId = await this.sessionRootId(sessionId)
-    return rootId !== undefined && (principal.rootIds === 'all' || principal.rootIds.has(rootId))
+    const allowed = rootId !== undefined && (principal.rootIds === 'all' || principal.rootIds.has(rootId))
+    this.rememberVisibility(key, allowed)
+    return allowed
   }
 
   startEvents(signal: AbortSignal, emit: (event: WorkspaceEvent) => void): void {
@@ -1021,9 +1074,46 @@ export class DshChatAdapter {
   }
 
   private async requireSession(principal: Principal, sessionId: string): Promise<ChatSessionView> {
+    // 快路径：2 秒内问过同一个 (设备, 会话) 就直接复用结论。
+    // 注意键里必须含 principal —— 不同设备的可见范围不同，共用一个缓存
+    // 就是把 A 的授权结论泄露给 B（这正是最容易写错的地方）。
+    const key = `${principalKey(principal)}\u0000${sessionId}`
+    const cached = this.sessionVisibility.get(key)
+    const now = Date.now()
+    if (cached !== undefined && now - cached.visibleAt < SESSION_VISIBILITY_TTL_MS) {
+      if (cached.visible) {
+        // 命中「可见」还要给出会话视图本身（调用方要 `cwd` / `blank` 等字段）。
+        // 这里走一次 listSessions 是必要的 —— 但只有**真正需要视图**的调用方
+        // 走这条路；`isSessionAuthorized` 那条布尔路径完全不吃这个开销。
+        const session = (await this.listSessions(principal)).find(item => item.id === sessionId)
+        if (session !== undefined) return session
+        // 缓存说可见、实际查不到（刚被删/归档）：让缓存失效，走下面完整路径重判。
+        this.sessionVisibility.delete(key)
+      } else {
+        throw new ApiError(404, 'SESSION_NOT_FOUND', 'The session is not visible to this device.')
+      }
+    }
     const session = (await this.listSessions(principal)).find(item => item.id === sessionId)
+    this.rememberVisibility(key, session !== undefined)
     if (session === undefined) throw new ApiError(404, 'SESSION_NOT_FOUND', 'The session is not visible to this device.')
     return session
+  }
+
+  /**
+   * 记一条可见性结论，并顺手把过期条目清掉。
+   *
+   * 为什么在这里做清扫而不是定时器：缓存条目数与「设备数 × 会话数」同阶，
+   * 对单机部署来说是千级 —— 每次写入顺手扫一遍完全够，而且**没有定时器泄漏**。
+   * （本仓的纪律：服务端不引入 `setInterval`，见 `server.ts` 的心跳是唯一的例外，
+   * 且它 `unref` 过。）
+   */
+  private rememberVisibility(key: string, visible: boolean): void {
+    const now = Date.now()
+    this.sessionVisibility.set(key, { visibleAt: now, visible })
+    if (this.sessionVisibility.size < SESSION_VISIBILITY_CACHE_LIMIT) return
+    for (const [entryKey, entry] of this.sessionVisibility) {
+      if (now - entry.visibleAt >= SESSION_VISIBILITY_TTL_MS) this.sessionVisibility.delete(entryKey)
+    }
   }
 
   private async requireWorkspace(principal: Principal, workspaceId: string): Promise<ChatWorkspaceView> {

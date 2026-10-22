@@ -240,7 +240,31 @@ WebUI 另有**只读**路由供 `<img>` 使用（浏览器不会给图片请求�
 GET /plugin/dsh-remote-bridge/raw?sessionId=<sessionId>&name=<sha256>.<ext>
 ```
 
-判据：`Host` 必须回环、拒绝跨站请求、文件名必须匹配内容哈希白名单、扩展名声明必须与魔术字节一致、体积上限 32 MiB。取不到一律 `404`，且不区分「会话不存在」与「文件不存在」。
+判据：`Host` 必须回环；浏览器带 `Sec-Fetch-Site` 时跨站一律拒绝（仅 `same-origin` / `none` 放行），同源 `/plugin/` 前缀页面的 `Referer` 放行；**刻意例外**：无 `Sec-Fetch-Site` 且无 `Origin` 的非浏览器调用方（curl、脚本）放行——浏览器一定带这两个头之一，此时安全前提是回环可达性本身（见 `SECURITY.md`，真值在 `image-handoff.ts` 的 `sameOrigin()`）。文件名必须匹配内容哈希白名单、扩展名声明必须与魔术字节一致、体积上限 32 MiB。取不到一律 `404`，且不区分「会话不存在」与「文件不存在」。
+
+## 会话附件
+
+附件走「先上传拿回执，再在消息里引用」两段式：
+
+```http
+POST /api/v1/chat/sessions/{sessionId}/attachments
+Authorization: Bearer <device-token>
+Content-Type: application/json
+
+{ "data": "<base64>", "name": "photo.jpg" }
+```
+
+- 要求 `chat.write` 与会话归属；请求体上限 24 MiB；`data` 必填（非空字符串，标准 base64），`name` 可选。
+- `201` 返回 `{ "receiptId": "…", "name": "photo.jpg" | null }`；随后把回执放进消息内容的 `file` 部件。**只有图片可以直接内联**（`image` 部件传 base64），其它文件类型必须先拿回执。
+- 取附件字节（注意：这条要求的是 **`files.read`**，不是 `chat.read` —— 与「取图」同一档位）：
+
+```http
+GET /api/v1/attachments/{attachmentId}?sessionId=<sessionId>
+```
+
+`attachmentId` 通常形如 `sha256:<hex>`，**冒号必须 percent-encode**（`sha256%3A<hex>`），路径段百分号编码非法时返回 `400 PATH_INVALID`。响应是原始字节（`Content-Type` 取嗅探结果），`Cache-Control: private, max-age=31536000, immutable`（内容寻址，不可变）。会话或附件不属于当前设备时按 404 处理。
+
+`GET /image-handoff` 与 `GET /attachments/{id}` 的机器 schema 以 `docs/api/openapi.yaml` 为准。
 
 ## 已归档会话
 
@@ -372,7 +396,7 @@ WebSocket 使用 `chat.approval.requested` 与 `chat.approval.resolved` 提醒�
 
 本插件刻意不 import 任何 `@deepseek-ai/*` 包，全部宿主服务按结构类型 + Host 注入消费。好处是跨内核版本零漂移，代价是 cordis 的注入属性是惰性访问器 —— 读一个没人提供的服务会抛 `cannot get property "x" without inject`，而这个错误只在真的去读的那一刻出现。历史上反复出现同一类事故：某功能静默不工作，两侧日志都不说一句话（`attachments` 在 2.0.0、`fileUploads` 在 2.0.2 都是这么炸的）。
 
-该端点与其它 REST 端点同一套鉴权（设备 token 或 loopback admin）—— 它暴露宿主内部结构，不该对局域网裸奔。采集发生在插件 `apply` 期间，因为注入属性只在那一刻可读。
+该端点与其它 REST 端点同一套鉴权（设备 token 或 loopback admin），并且**额外要求 `settings.read` scope**（loopback admin 自动继承）—— 它暴露宿主内部结构，不该对局域网裸奔。2.5.2 修复（SEC-H1）：此前它在令牌校验之前返回，属于无凭据可读。本构建未注入报告时返回 `404 NOT_FOUND`；报告可能附带运行期 `metrics` 字段（同一鉴权，不另开路由）。采集发生在插件 `apply` 期间，因为注入属性只在那一刻可读。
 
 ```sh
 curl http://127.0.0.1:3090/api/v1/debug/host-services \
@@ -539,8 +563,29 @@ data 字段与实时路径**一致**（只多 `replayed`）；数据来自适配
 > 注：提问事件目前由 `normalizeDshEvent` 末段的 `chat.${payloadType}` 兜底产生，
 > 因此**尚未进 AsyncAPI 的 schema**（本次未扩：给所有兜底事件补 schema 是独立一件事）。
 
+### 连接级行为与背压（`connection.resyncRequired`）
+
+连接管理参数（真值在 `src/host/server.ts`，AsyncAPI info 描述有同条记录）：
+
+| 行为 | 规则 | 客户端感知 |
+|---|---|---|
+| 心跳 | 服务端每 30s ping；连续 2 个周期缺 pong 即 terminate | 正常实现自动回 pong 即可 |
+| 连接数 | 默认上限 32（可配置）；**鉴权先于计数**，第 33 条鉴权通过后在 Upgrade 阶段收到 HTTP `429`（`Retry-After: 5`） | 未鉴权请求不消耗名额；429 后退避重连 |
+| 帧大小 | 单帧上限 1 MiB，超限 WebSocket close `1009` | 大附件走 REST 上传，不要塞进 WS |
+| 发送队列 | 每连接 512 帧；溢出时优先丢可重建的 `chat.message.delta`，状态帧（`chat.turn.*` / `chat.approval.*` / `chat.turn.failed` / `connection.ready`）优先保留 | — |
+
+队列溢出丢帧后，服务端会尽力补发一帧连接级通知（状态帧也塞不进、要 close `1013 Backpressure` 之前也会再发一次）：
+
+```json
+{ "id": "<uuid>", "type": "connection.resyncRequired", "time": 1761100000000,
+  "data": { "dropped": 12, "reason": "backpressure" } }
+```
+
+收到后客户端应改走 REST 重新拉历史与待处理状态（被丢的帧不会重放）；`dropped` 仅用于诊断，
+不要按数值做逻辑。老客户端不认识该事件类型，忽略即可，无破坏性。
+
 ## Android 功能对等矩阵
 
-当前 `v1` 已覆盖设备配对、授权根、文件管理、回收站、工作区发现/创建/重命名/移除、会话列表/创建/重命名/分叉/归档、历史、发消息、steer、取消、实时事件、Agent Preset、TODO/权限投影、当前会话 host 斜杠命令、待审批查询与允许一次/拒绝、供应商有效配置/凭据状态、自定义供应商、模型发现以及会话模型/推理等级选择。以下 DSH WebUI 能力尚未进入稳定外部契约：会话搜索、附件与队列、通用问题回答、工作区自定义排序、归档恢复、目标、子代理、技能和后台任务。
+当前 `v1` 已覆盖设备配对、授权根、文件管理、回收站、工作区发现/创建/重命名/移除、会话列表/创建/重命名/分叉/归档、历史、发消息（含图片与文件附件）、steer、取消、实时事件、Agent Preset、TODO/权限投影、当前会话 host 斜杠命令、待审批查询与允许一次/拒绝、供应商有效配置/凭据状态、自定义供应商、模型发现以及会话模型/推理等级选择。以下 DSH WebUI 能力尚未进入稳定外部契约：会话搜索、消息队列、通用问题回答、工作区自定义排序、归档恢复、目标、子代理、技能和后台任务。
 
 App 不得直接调用 DSH 私有 `/api` 或通用 RPC 透传。每项缺失能力必须在插件中定义稳定 REST/事件 schema、对应设备 scope/root/session 授权、脱敏规则、OpenAPI/AsyncAPI、Kotlin SDK 和合约测试后才能标记为对等。

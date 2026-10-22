@@ -79,60 +79,64 @@
 
 | 方法 | 路径 | auth | 说明 | handler |
 | --- | --- | --- | --- | --- |
-| GET | `/api/v1/healthz` | — | 存活探针，只回 `{ok,version,pluginVersion}` | `router.ts:178` |
-| GET | `/api/v1/debug/host-services` | token | 宿主服务注入面报告（不可用时 404） | `router.ts:192` |
-| POST | `/api/v1/pairings/exchange` | — | 配对码换设备 token（限流） | `router.ts:201` |
-| GET | `/api/v1/devices/self` | token | 当前设备身份与 scope | `router.ts:220` |
-| GET | `/api/v1/roots` | `scope:files.read` | **只含 id/label/createdAt**，刻意不返回绝对路径 | `router.ts:229` |
-| GET | `/api/v1/roots/resolve?path=` | `scope:files.read` | 绝对路径 → `{rootId, 相对路径}` | `router.ts:243` |
-| GET | `/api/v1/roots/{rootId}/entries?path=&limit=&cursor=` | `scope:files.read`+root | 列目录（分页） | `router.ts:1064` |
-| POST | `/api/v1/roots/{rootId}/entries` | `scope:files.write`+root | 新建文件/目录 `{path, kind}` | `router.ts:1064` |
-| PATCH | `/api/v1/roots/{rootId}/entries` | `scope:files.write`+root | 移动/改名 `{path, destinationPath}` | `router.ts:1064` |
-| DELETE | `/api/v1/roots/{rootId}/entries?path=` | `scope:files.delete`+root | 移入回收站 | `router.ts:1064` |
-| GET | `/api/v1/roots/{rootId}/content?path=` | `scope:files.read`+root | 读文件（支持 Range / ETag） | `router.ts:1117` |
-| PUT | `/api/v1/roots/{rootId}/content?path=` | `scope:files.write`+root | 写文件（`If-Match` / `If-None-Match`） | `router.ts:1117` |
-| GET | `/api/v1/trash` | `scope:files.read` | 回收站列表（按设备 root 过滤） | `router.ts:276` |
-| POST | `/api/v1/trash/{trashId}/restore` | `scope:files.delete` | 恢复 | `router.ts:288` |
-| GET | `/api/v1/image-handoff?sessionId=&name=` | `scope:files.read` | 取交接图片字节 | `router.ts:666` |
-| GET | `/api/v1/attachments/{attachmentId}?sessionId=` | `scope:chat.read` | 取会话附件字节 | `router.ts:643` |
-| GET | `/api/v1/chat/workspaces` | `scope:chat.read` | 工作区列表（按设备可见范围） | `router.ts:295` |
-| POST | `/api/v1/chat/workspaces` | `scope:chat.write` | 新建工作区 `{rootId, path}` | `router.ts:295` |
-| PATCH | `/api/v1/chat/workspaces/{workspaceId}` | token | 改名 | `router.ts:314` |
-| DELETE | `/api/v1/chat/workspaces/{workspaceId}` | token | 删除工作区 | `router.ts:314` |
-| GET | `/api/v1/chat/agent-presets` | token | 智能体预设清单 | `router.ts:335` |
-| GET | `/api/v1/chat/permission-presets` | token | 权限档位清单 + 默认档 | `router.ts:343` |
-| GET | `/api/v1/chat/sessions` | `scope:chat.read` | 会话列表（`archived=true` 列出归档） | `router.ts:471` |
-| POST | `/api/v1/chat/sessions` | `scope:chat.write` | 新建会话 | `router.ts:471` |
-| PATCH | `/api/v1/chat/sessions/{sessionId}` | token | 改名 | `router.ts:515` |
-| POST | `/api/v1/chat/sessions/{sessionId}/fork` | token | 从 `atSeq` 分叉 | `router.ts:528` |
-| POST | `/api/v1/chat/sessions/{sessionId}/archive` | token | 归档 | `router.ts:543` |
-| GET | `/api/v1/chat/sessions/{sessionId}/jobs` | token | 后台任务 roster | `router.ts:556` |
-| GET | `/api/v1/chat/sessions/{sessionId}/jobs/{jobId}/output` | token | 任务输出（增量） | `router.ts:556` |
-| POST | `/api/v1/chat/sessions/{sessionId}/jobs/{jobId}/kill` | token | 人类取消 | `router.ts:556` |
-| GET | `/api/v1/chat/sessions/{sessionId}/messages` | token | 历史（`beforeSeq` 分页、字节预算） | `router.ts:588` |
-| POST | `/api/v1/chat/sessions/{sessionId}/messages` | token | 发消息 / prompt（`queue` 或 `steer`） | `router.ts:588` |
-| GET | `/api/v1/chat/sessions/{sessionId}/approvals` | token | 待处理审批 | `router.ts:787`（分支在 sessions 段） |
-| POST | `/api/v1/chat/sessions/{sessionId}/approvals/{approvalId}/decision` | token | 审批决定 | 同上 |
-| GET | `/api/v1/chat/sessions/{sessionId}/questions` | token | 待答问题 | 同上 |
-| POST | `/api/v1/chat/sessions/{sessionId}/questions/{callId}/answer` | token | 提交答案 | 同上 |
-| GET | `/api/v1/chat/sessions/{sessionId}/commands` | token | 斜杠命令清单 | `router.ts:881` 经 adapter |
-| POST | `/api/v1/chat/sessions/{sessionId}/commands` | token | 执行命令 | 同上 |
-| GET | `/api/v1/chat/sessions/{sessionId}/models` | token | 会话可选模型 | 同上 |
-| PUT | `/api/v1/chat/sessions/{sessionId}/model` | token | 选择模型 | 同上 |
-| PUT | `/api/v1/chat/sessions/{sessionId}/agent-preset` | token | 选择智能体预设 | `router.ts:506` 经 adapter |
-| POST | `/api/v1/chat/runs/{id}/cancel` | token | 取消当前轮 | `router.ts` cancel 分支 |
-| GET | `/api/v1/settings/providers` | token | 提供商配置 | `router.ts:349` |
-| POST | `/api/v1/settings/providers` | token | 新建自定义提供商 | `router.ts:349` |
-| PATCH | `/api/v1/settings/providers/{providerId}` | token | 改提供商 | `router.ts:429` |
-| DELETE | `/api/v1/settings/providers/{providerId}` | token | 删提供商 | `router.ts:429` |
-| POST | `/api/v1/settings/providers/{providerId}/discover` | token | 发现可用模型 | `router.ts:456` |
-| GET | `/api/v1/settings/models` | token | 模型目录 | `router.ts:380` |
-| GET | `/api/v1/settings/plugins` | token | 插件清单 | `router.ts:388` |
-| PATCH | `/api/v1/settings/plugins` | token | 插件启停 | `router.ts:402` |
+| GET | `/api/v1/healthz` | — | 存活探针，只回 `{ok,version,pluginVersion}` | `router.ts` dispatch 健康探针分支 |
+| GET | `/api/v1/debug/host-services` | `scope:settings.read` | 宿主服务注入面报告（不可用时 404）。2.5.2 起移到鉴权之后（SEC-H1） | `router.ts` dispatch host-services 分支 |
+| POST | `/api/v1/pairings/exchange` | — | 配对码换设备 token（按对端限流） | `router.ts` dispatch pairing 分支 |
+| GET | `/api/v1/devices/self` | token | 当前设备身份与 scope（admin 得 `rootIds:'all'`） | `router.ts` dispatch devices 分支 |
+| GET | `/api/v1/roots` | `scope:files.read` | **只含 id/label/createdAt**，刻意不返回绝对路径 | `router.ts` dispatch roots 分支 |
+| GET | `/api/v1/roots/resolve?path=` | `scope:files.read` | 绝对路径 → `{rootId,path,kind,size,modifiedAt,contentType}`；非绝对路径 400，越界 404 | `router.ts` dispatch resolve 分支 |
+| GET | `/api/v1/roots/{rootId}/entries?path=&limit=&cursor=` | `scope:files.read`+root | 列目录（分页） | `dispatchEntries` |
+| POST | `/api/v1/roots/{rootId}/entries` | `scope:files.write`+root | 新建文件/目录 `{path, kind}` | `dispatchEntries` |
+| PATCH | `/api/v1/roots/{rootId}/entries` | `scope:files.write`+root | 移动/改名 `{path, destinationPath}` | `dispatchEntries` |
+| DELETE | `/api/v1/roots/{rootId}/entries?path=` | `scope:files.delete`+root | 移入回收站 | `dispatchEntries` |
+| GET | `/api/v1/roots/{rootId}/content?path=` | `scope:files.read`+root | 读文件（支持 Range / ETag） | `dispatchContent` |
+| PUT | `/api/v1/roots/{rootId}/content?path=` | `scope:files.write`+root | 写文件（`If-Match` / `If-None-Match`） | `dispatchContent` |
+| GET | `/api/v1/trash` | `scope:files.read` | 回收站列表（按设备 root 过滤） | `router.ts` dispatch trash 分支 |
+| POST | `/api/v1/trash/{trashId}/restore` | `scope:files.delete` | 恢复 | `router.ts` dispatch restore 分支 |
+| GET | `/api/v1/image-handoff?sessionId=&name=` | `scope:files.read` | 取交接图片字节（`name` 为裸文件名，哈希+扩展白名单） | `router.ts` dispatch image-handoff 分支 |
+| GET | `/api/v1/attachments/{attachmentId}?sessionId=` | `scope:files.read` | 取会话附件字节。attachmentId 通常是 `sha256:<hex>`，冒号必须 percent-encode（`sha256%3A…`） | `router.ts` dispatch attachment 分支 |
+| POST | `/api/v1/chat/sessions/{sessionId}/attachments` | `scope:chat.write` | 上传附件：body `{data: base64, name?}`（≤24 MiB），回 `{receiptId,name}` | `router.ts` dispatch attachments 分支 |
+| GET | `/api/v1/chat/workspaces` | `scope:chat.read` | 工作区列表（按设备可见范围） | `router.ts` dispatch workspaces 分支 |
+| POST | `/api/v1/chat/workspaces` | `scope:chat.write` | 新建工作区 `{rootId, path}` | 同上 |
+| PATCH | `/api/v1/chat/workspaces/{workspaceId}` | `scope:chat.write` | 改名 `{title}` | `router.ts` workspaceRoute 块 |
+| DELETE | `/api/v1/chat/workspaces/{workspaceId}` | `scope:chat.write` | 删除工作区 | 同上 |
+| GET | `/api/v1/chat/agent-presets` | `scope:chat.read` | 智能体预设清单 | `router.ts` dispatch agent-presets 分支 |
+| GET | `/api/v1/chat/permission-presets` | `scope:chat.read` | 权限档位清单 + 默认档 | `router.ts` dispatch permission-presets 分支 |
+| GET | `/api/v1/chat/sessions` | `scope:chat.read` | 会话列表（`archived=true` 列出归档） | `router.ts` dispatch sessions 分支 |
+| POST | `/api/v1/chat/sessions` | `scope:chat.write` | 新建会话（`clientRequestId` 幂等） | 同上 |
+| PATCH | `/api/v1/chat/sessions/{sessionId}` | `scope:chat.write` | 改名 `{title}` | `router.ts` sessionRoute 块 |
+| POST | `/api/v1/chat/sessions/{sessionId}/fork` | `scope:chat.write` | 从 `atSeq` 分叉 | `router.ts` fork 分支 |
+| POST | `/api/v1/chat/sessions/{sessionId}/archive` | `scope:chat.write` | 归档 | `router.ts` archive 分支 |
+| GET | `/api/v1/chat/sessions/{sessionId}/jobs` | `scope:chat.read` | 后台任务 roster | `matchJobRoute` 消费处 |
+| GET | `/api/v1/chat/sessions/{sessionId}/jobs/{jobId}/output` | `scope:chat.read` | 任务输出（增量） | 同上 |
+| POST | `/api/v1/chat/sessions/{sessionId}/jobs/{jobId}/kill` | `scope:chat.write` | 人类取消 | 同上 |
+| GET | `/api/v1/chat/sessions/{sessionId}/messages` | `scope:chat.read` | 历史（`beforeSeq` 分页、字节预算） | `router.ts` messagesRoute 块 |
+| POST | `/api/v1/chat/sessions/{sessionId}/messages` | `scope:chat.write` | 发消息 / prompt（`queue` 或 `steer`） | 同上 |
+| GET | `/api/v1/chat/sessions/{sessionId}/approvals` | `scope:chat.read` | 待处理审批 | `router.ts` approvalsRoute 块 |
+| POST | `/api/v1/chat/sessions/{sessionId}/approvals/{approvalId}/decision` | `scope:chat.write` | 审批决定（`allowed-once` / `rejected`） | `router.ts` approvalDecisionRoute 块 |
+| GET | `/api/v1/chat/sessions/{sessionId}/questions` | `scope:chat.read` | 待答问题 | `router.ts` questionsRoute 块 |
+| POST | `/api/v1/chat/sessions/{sessionId}/questions/{callId}/answer` | `scope:chat.write` | 提交答案 | `router.ts` questionAnswerRoute 块 |
+| GET | `/api/v1/chat/sessions/{sessionId}/commands` | `scope:chat.read` | 斜杠命令清单 | `router.ts` commandsRoute 块 |
+| POST | `/api/v1/chat/sessions/{sessionId}/commands` | `scope:chat.write` | 执行命令 | 同上 |
+| GET | `/api/v1/chat/sessions/{sessionId}/models` | `scope:chat.read` | 会话可选模型 | `router.ts` sessionModelsRoute 块 |
+| GET | `/api/v1/chat/sessions/{sessionId}/model` | `scope:chat.read` | 同上的别名（路由正则 `model(?:s)?$` 同时收两种拼法，新客户端请用 `/models`） | 同上 |
+| PUT | `/api/v1/chat/sessions/{sessionId}/model` | `scope:chat.write` | 选择模型 `{provider, model, reasoningEffort?}` | 同上 |
+| PUT | `/api/v1/chat/sessions/{sessionId}/agent-preset` | `scope:chat.write` | 选择智能体预设（仅空白会话可改） | `router.ts` sessionAgentPresetRoute 块 |
+| POST | `/api/v1/chat/runs/{id}/cancel` | `scope:chat.write` | 取消当前轮（路径段语义为 sessionId） | `router.ts` cancelRoute 块 |
+| GET | `/api/v1/settings/providers` | `scope:settings.read` | 提供商配置 | `router.ts` dispatch providers 分支 |
+| POST | `/api/v1/settings/providers` | `scope:settings.write` | 新建自定义提供商 | 同上 |
+| PATCH | `/api/v1/settings/providers/{providerId}` | `scope:settings.write` | 改提供商 | `router.ts` providerRoute 块 |
+| DELETE | `/api/v1/settings/providers/{providerId}` | `scope:settings.write` | 删提供商 | 同上 |
+| POST | `/api/v1/settings/providers/{providerId}/discover` | `scope:settings.write` | 发现可用模型 | `router.ts` discoverProviderRoute 块 |
+| GET | `/api/v1/settings/models` | `scope:settings.read` | 模型目录 | `router.ts` dispatch settings/models 分支 |
+| GET | `/api/v1/settings/plugins` | `scope:settings.read` | 插件清单（`checkUpdates=1`） | `router.ts` dispatch settings/plugins 分支 |
+| PATCH | `/api/v1/settings/plugins` | `scope:settings.write` | 插件启停 `{name, loaded}` | 同上 |
 
-> 路径的机器真值：`docs/api/openapi.yaml` 的 `paths`。`tests/capabilities.spec.ts`
-> 会拿能力位宣称的路径去那里逐条核对。**改路由先改那里的三处（openapi/asyncapi/API.md）**，
-> 再改 `router.ts`。
+> handler 列只指分支名，不抄行号（行号随提交漂移，AGENTS.md §3.2）。
+> 路径与方法的机器真值：`docs/api/openapi.yaml` 的 `paths`，与 `src/host/router.ts`
+> 由 `scripts/docs-contract.ts` 在 `docs:check` 中双向 diff（少一条/多一条/豁免集不一致都红）。
+> `tests/capabilities.spec.ts` 还会拿能力位宣称的路径去 openapi 逐条核对。
+> **改路由先改契约三处（openapi/asyncapi/API.md），再改 `router.ts`。**
 
 ### 2.3 回环管理面 `/manage`（仅 `admin`）
 
@@ -167,10 +171,17 @@
   `file.changed` · `file.trashed` · `chat.message.delta` · `chat.message.committed` ·
   `chat.session.status` · `chat.session.snapshot` · `chat.deliverables.presented` ·
   `chat.approval.requested` · `chat.approval.resolved` · `chat.turn.failed` ·
-  `connection.ready`（首帧）· `chat.userQuestions/requested`。
+  `connection.ready`（首帧）· `connection.resyncRequired`（背压丢帧后补发）·
+  `chat.userQuestions/requested`。
 - 授权过滤在 `server.ts` 的 `eventAllowed`：按 scope（`files.read` / `chat.read`）、
   设备 root 范围、会话归属三层判；设备被撤销时该连接以 `4001` 关闭。
 - `seq` 只表示**会话持久事件序号**；流式 delta 不输出它（ADR-0008）。
+- 连接级行为（真值在 `src/host/server.ts`，AsyncAPI 有同条记录）：
+  30s ping 心跳、连续 2 个周期缺 pong 即 terminate；默认最多 32 条连接（可配置），
+  第 33 条在**鉴权通过之后**于 Upgrade 阶段收到 HTTP 429；单帧上限 1 MiB，超限 close(1009)；
+  每连接发送队列 512 帧，溢出时优先丢 `chat.message.delta` 并补发
+  `connection.resyncRequired`（`data: {dropped, reason:'backpressure'}`），
+  状态帧也塞不进时 close(1013,'Backpressure')。
 
 ### 3.2 订阅基线与补推
 
@@ -189,7 +200,8 @@
 ### 3.4 能力位（`connection.ready`）
 
 - 载荷：`{ bridgeVersion, capabilities: string[] }`（`capabilities.ts` 的 `connectionReadyData()`）。
-- 当前 26 项，命名固定 `<能力>-v<主版本>`；只增不撤，语义变更升 `-v2`。
+- 能力位的**清单与数量以 `src/host/capabilities.ts`（`BRIDGE_CAPABILITIES`）源码为准**，
+  不在文档里抄数字（AGENTS.md §3.2）；命名固定 `<能力>-v<主版本>`；只增不撤，语义变更升 `-v2`。
 - **每项必须能指出契约依据**（一个 OpenAPI 路径+方法，或一个 AsyncAPI 事件），
   `tests/capabilities.spec.ts` 逐条核对。
 - 客户端只把 `approvals-v1` / `questions-v1` 当必需项（详见

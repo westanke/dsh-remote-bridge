@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest'
-import { applyHistoryBudget, clampHistoryEvents, HISTORY_KEEP_CHARS } from '../src/host/history-budget.ts'
+import {
+  applyHistoryBudget,
+  clampHistoryEvents,
+  HISTORY_EVENT_BYTE_BUDGET,
+  HISTORY_KEEP_CHARS,
+  measureEventBytes,
+  selectWithinBudget,
+} from '../src/host/history-budget.ts'
 
 /** 造一条形如 history 元素的记录（外层 `event` + 内层 `data`，与内核透传形状一致）。 */
 function entry(text: string, type = 'tool/call'): Record<string, unknown> {
@@ -138,5 +145,92 @@ describe('history byte budget', () => {
   it('keeps hasMore true once the host already said so', () => {
     const raw = { events: [entry('hi')], hasMore: true }
     expect(applyHistoryBudget(raw).hasMore).toBe(true)
+  })
+})
+
+/**
+ * 单遍算法与流式出口（PERF-4 后续）。
+ *
+ * 这些用例钉的是**改法**而不是结果：结果语义已被上面 13 条钉死（含「未裁剪时逐字节
+ * 与改动前一致」）。这里要证明的是「不再重复序列化」这件事本身成立 —— 也就是
+ * `measureEventBytes` + `selectWithinBudget` 能给流式出网提供与 `clampHistoryEvents`
+ * **完全一致**的取舍。
+ */
+describe('single-pass sizing and the streaming seam', () => {
+  it('measureEventBytes reports the same UTF-8 byte counts the clamp uses', () => {
+    const events = [
+      { type: 'a', text: 'short' },
+      { type: 'b', text: '中文'.repeat(100) },
+      { type: 'c', text: '🖼️'.repeat(50) },
+    ]
+    const sizes = measureEventBytes(events)
+    expect(sizes).toHaveLength(3)
+    for (let index = 0; index < events.length; index += 1) {
+      expect(sizes[index]).toBe(Buffer.byteLength(JSON.stringify(events[index]), 'utf8'))
+    }
+  })
+
+  it('selectWithinBudget keeps exactly the same suffix the clamp would keep', () => {
+    const events = Array.from({ length: 20 }, (_, index) => ({
+      type: 'event',
+      index,
+      text: 'x'.repeat(1_000),
+    }))
+    const sizes = measureEventBytes(events)
+    // 只留得下 5 条左右：两条路径必须挑出**同一段**后缀。
+    const budget = 5_000
+    const selection = selectWithinBudget(sizes, budget)
+    const clamped = clampHistoryEvents(events, budget)
+    expect(clamped.events).toEqual(events.slice(selection.start))
+    expect(clamped.bytes).toBe(selection.bytes)
+    expect(clamped.droppedOldest).toBe(selection.dropped)
+  })
+
+  it('keeps at least one event even when a single event blows the whole budget', () => {
+    const events = [{ type: 'huge', text: 'y'.repeat(8 * 1024 * 1024) }]
+    const sizes = measureEventBytes(events)
+    const selection = selectWithinBudget(sizes, 2 * 1024 * 1024)
+    expect(selection.start).toBe(0)
+    expect(selection.dropped).toBe(0)
+    // 一条就超预算时仍然发它 —— 与既有 `clampHistoryEvents` 的「至少留一条」一致
+    // （否则客户端永远拉不到任何历史，而它恰恰最需要看到这条超大的工具输出）。
+    expect(clampHistoryEvents(events).events).toHaveLength(1)
+  })
+
+  it('handles the 8 MiB boundary: a single oversized event is clamped, not dropped', () => {
+    // 单条 8 MiB 的事件：远超单条预算（512 KiB），但**不等于**整份超预算。
+    // 正确行为是「裁字符串 + 打标记」，而不是整条丢掉 —— 丢掉会让用户
+    // 看到「那段工具输出不见了」，而其实只要首尾各留 8000 字就够用。
+    const giant = { type: 'tool/result', output: 'z'.repeat(8 * 1024 * 1024) }
+    const result = clampHistoryEvents([giant])
+    expect(result.events).toHaveLength(1)
+    expect(result.clampedStrings).toBeGreaterThan(0)
+    const kept = result.events[0] as { output: string; bridgeTruncated?: { truncated: boolean } }
+    expect(kept.bridgeTruncated).toEqual({ truncated: true })
+    // 首尾各保留 HISTORY_KEEP_CHARS：裁完的体积必须落在单条预算之内。
+    expect(Buffer.byteLength(JSON.stringify(kept), 'utf8')).toBeLessThan(HISTORY_EVENT_BYTE_BUDGET)
+    expect(kept.output.startsWith('z'.repeat(HISTORY_KEEP_CHARS))).toBe(true)
+    expect(kept.output.endsWith('z'.repeat(HISTORY_KEEP_CHARS))).toBe(true)
+    expect(kept.output).toContain('[truncated]')
+  })
+
+  it('does not re-serialize an already-measured event when it fits the per-event budget', () => {
+    // 这条用**调用次数**证明「同一份数据只量一次」：给一个会被反复测量的对象，
+    // 在它的 `toJSON` 上挂计数器。
+    //
+    // 修复前每条事件至少被 `JSON.stringify` 两次（map 里一次、累加时再一次），
+    // 所以计数会是 2 的倍数且 > 事件数。现在只量一次 —— 计数恰好等于事件数。
+    let serializations = 0
+    const makeEvent = (index: number) => ({
+      type: 'event',
+      index,
+      toJSON() {
+        serializations += 1
+        return { type: 'event', index }
+      },
+    })
+    const events = [makeEvent(0), makeEvent(1), makeEvent(2)]
+    clampHistoryEvents(events, 1_000_000)
+    expect(serializations).toBe(events.length)
   })
 })

@@ -535,8 +535,14 @@ Node 的 `fetch`（undici）对这类连接**不响应 `AbortController.abort()`
   必然在超时内返回（回归用例 `downloadHttps aborts within the timeout` 盯着）。
   超时语义只到「响应头到达」，否则 20MB 的 deb 会被「下载慢」误判成超时。
 - 取源顺序（`ensureCloudflared`）：显式 `CLOUDFLARED_MIRROR`（若设）→ 官方 GitHub →
-  官方 deb 兜底 `pkg.cloudflare.com`。三者都失败时**聚合带 URL 的具体原因**给前端（502
-  `TUNNEL_DOWNLOAD_FAILED`），而不是泛型 500。
+  官方 deb 兜底 `pkg.cloudflare.com`。三者都失败时聚合原因给前端（502
+  `TUNNEL_DOWNLOAD_FAILED`），而不是泛型 500。**2.5.2 / SEC-H7 起原因必须脱敏**：
+  聚合点与 router 出口都过 `sanitizeDownloadError`（完整 URL → 仅保留 host、绝对路径 → 仅保留 basename），
+  502 响应的 `message` 是固定英文兜底句，具体原因放 `details.reason`（已脱敏），
+  客户端按 `details.errorKey: 'tunnelErrorDownload'` 本地化。早先版本把
+  `cause.message` 原样透传，会连带泄露镜像完整 URL（可能带 token）与 `dpkg-deb -x` 的绝对路径。
+  教训：「给得出原因」与「不回显绝对路径」（SECURITY.md 脱敏承诺）要同时成立——
+  保留 host/basename 级线索，而不是在「透明」和「泛型 500」之间二选一。
 - `CLOUDFLARED_MIRROR` 支持两种形态（见 `src/host/cloudflared.ts`）：
   1. **`deb+` 完整 .deb 地址（推荐，已验证）**：
      `CLOUDFLARED_MIRROR=deb+https://pkg.cloudflare.com/cloudflared/pool/main/c/cloudflared/cloudflared_2026.10.1_amd64.deb`

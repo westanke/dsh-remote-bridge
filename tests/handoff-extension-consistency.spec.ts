@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -36,6 +37,20 @@ import {
  *   npx tsx .local-backup/security-audit/probe-heif.mjs
  *   # declared(.heif) = image/heif / sniff(ftypheic) = image/heic => 415
  */
+
+/**
+ * 由**真实内容**算出文件名里的哈希段。
+ *
+ * 为什么不再用固定的 `SHA = 'a'.repeat(64)`：只读路由现在多做一道「内容自证」
+ * （H9：文件名的 sha256 必须等于字节的 sha256），于是「随便编一个哈希 + 任意字节」
+ * 的夹具会被 404 挡住 —— 那正是那道闸在正常工作，不是测试断言写错了。
+ *
+ * 想让这些用例测的是**扩展名/魔术字节**这条链路，就得喂一对真实匹配的
+ * 「字节 + 文件名」，否则测的是哈希闸而不是它们想测的东西。
+ */
+function namedFor(bytes: Uint8Array, extension: string): string {
+  return `${createHash('sha256').update(bytes).digest('hex')}.${extension}`
+}
 
 const SHA = 'a'.repeat(64)
 
@@ -82,7 +97,10 @@ describe('图片交接：扩展名声明与魔术字节的一致性', () => {
       return { bytes: new Uint8Array(isoBmff(brand)), mediaType: declaredMediaType(name) as string }
     })
     for (const extension of ['heic', 'avif']) {
-      const response = await fetch(`${server.base}/plugin/dsh-remote-bridge/raw?sessionId=s1&name=${SHA}.${extension}`)
+      const brand = extension === 'avif' ? 'avif' : 'heic'
+      // 文件名里的哈希必须与字节真实匹配（只读路由的内容自证闸，见 namedFor）。
+      const name = namedFor(new Uint8Array(isoBmff(brand)), extension)
+      const response = await fetch(`${server.base}/plugin/dsh-remote-bridge/raw?sessionId=s1&name=${name}`)
       // 这两个是嗅探器真能自证的格式：应当 200。
       expect(response.status, extension).toBe(200)
     }
@@ -95,7 +113,8 @@ describe('图片交接：扩展名声明与魔术字节的一致性', () => {
       bytes: new Uint8Array(isoBmff('mif1')), // HEIF 的典型 brand
       mediaType: declaredMediaType(name) as string,
     }))
-    const response = await fetch(`${server.base}/plugin/dsh-remote-bridge/raw?sessionId=s1&name=${SHA}.heif`)
+    const heifName = namedFor(new Uint8Array(isoBmff('mif1')), 'heif')
+    const response = await fetch(`${server.base}/plugin/dsh-remote-bridge/raw?sessionId=s1&name=${heifName}`)
 
     // 修复后：200。一致性校验按「图片家族」比较，而 HEIC 与 HEIF 在字节层无法区分
     // （同一套 ftyp brand 家族），所以 declared('image/heif') 与 sniffed('image/heic')
@@ -119,7 +138,10 @@ describe('图片交接：扩展名声明与魔术字节的一致性', () => {
   it('still refuses a real mismatch: png bytes behind a .jpg name', async () => {
     // 这条是「一致性检查本身没坏」的对照，确保修 bug 时别把闸门一起拆了。
     const server = await serveImages(async () => ({ bytes: new Uint8Array(PNG), mediaType: 'image/png' }))
-    const response = await fetch(`${server.base}/plugin/dsh-remote-bridge/raw?sessionId=s1&name=${SHA}.jpg`)
+    // 哈希与内容匹配、只有**扩展名**在说谎 —— 这样走到的是 415（扩展名不一致），
+    // 而不是 404（哈希不匹配）。两条闸必须各测各的。
+    const name = namedFor(new Uint8Array(PNG), 'jpg')
+    const response = await fetch(`${server.base}/plugin/dsh-remote-bridge/raw?sessionId=s1&name=${name}`)
     expect(response.status).toBe(415)
   })
 })

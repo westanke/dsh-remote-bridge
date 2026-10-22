@@ -10,6 +10,25 @@ info:
     limit, quota exhausted, invalid API key, signed-out stop). Without it a
     remote client sees an ordinary `chat.turn.end` and keeps waiting on a run
     that already failed.
+
+    Connection-level behavior (source of truth: `src/host/server.ts`):
+
+    - Authentication happens **before** connection-limit counting. The
+      default cap is 32 accepted WebSocket connections (configurable); the
+      33rd authenticated upgrade is refused at the HTTP Upgrade stage with
+      `429 Too Many Requests` and `Retry-After: 5`.
+    - Frames larger than 1 MiB are refused with WebSocket close `1009`
+      (message too big).
+    - A server ping is sent every 30 seconds; a connection that misses the
+      pong for two consecutive intervals is terminated.
+    - Each connection has a 512-frame send queue. Under backpressure the
+      server first drops rebuildable `chat.message.delta` frames, then other
+      rebuildable frames queued ahead, and as a last resort the oldest state
+      frame. When any frame was dropped the server emits a best-effort
+      `connection.resyncRequired` frame (also immediately before a
+      `1013 Backpressure` close) telling the client to re-sync via REST;
+      clients must ignore the exact `dropped` value. Older clients that do
+      not know this event simply ignore it.
 servers:
   local:
     host: 127.0.0.1:3090
@@ -39,7 +58,7 @@ components:
           id: { type: string }
           type:
             type: string
-            examples: [file.changed, file.trashed, chat.message.delta, chat.message.committed, chat.session.status, chat.session.snapshot, chat.deliverables.presented, chat.approval.requested, chat.approval.resolved, chat.turn.failed, connection.ready]
+            examples: [file.changed, file.trashed, chat.message.delta, chat.message.committed, chat.session.status, chat.session.snapshot, chat.deliverables.presented, chat.approval.requested, chat.approval.resolved, chat.turn.failed, connection.ready, connection.resyncRequired]
           time: { type: integer }
           data:
             oneOf:
@@ -49,6 +68,7 @@ components:
               - $ref: '#/components/schemas/ChatApprovalResolved'
               - $ref: '#/components/schemas/ChatTurnFailed'
               - $ref: '#/components/schemas/ConnectionReadyData'
+              - $ref: '#/components/schemas/ConnectionResyncRequired'
               - $ref: '#/components/schemas/ChatSessionSnapshot'
               - $ref: '#/components/schemas/ChatDeliverablesPresented'
               - type: object
@@ -231,3 +251,32 @@ components:
         capabilities:
           type: array
           items: { type: string }
+
+    ConnectionResyncRequired:
+      type: object
+      description: |
+        Payload of a connection-scoped `connection.resyncRequired` frame. The
+        server emits it (best effort) after it had to drop queued frames for
+        this socket because the per-connection send queue (512 frames)
+        overflowed under backpressure; it is also emitted once immediately
+        before the server closes the socket with WebSocket code `1013`
+        (`Backpressure`), when even state frames no longer fit. State frames
+        (`chat.turn.*`, `chat.approval.*`, `chat.turn.failed`,
+        `connection.ready`) are preserved preferentially over
+        `chat.message.delta`.
+
+        On receipt, clients should re-fetch history and pending state via the
+        REST API (the dropped frames are never replayed). The `dropped` count
+        is diagnostic only and must not be acted on numerically; clients that
+        do not recognize this event type ignore it safely. Example:
+        `{"id":"<uuid>","type":"connection.resyncRequired","time":1761100000000,
+        "data":{"dropped":12,"reason":"backpressure"}}`.
+      required: [dropped, reason]
+      properties:
+        dropped:
+          type: integer
+          minimum: 0
+          description: Number of frames dropped for this connection since the previous resync notification.
+        reason:
+          type: string
+          const: backpressure

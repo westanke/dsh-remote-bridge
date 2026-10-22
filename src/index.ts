@@ -8,6 +8,7 @@ import { createDsh02ApiProxy, readHandoffImageFile, type Dsh02HostServices } fro
 import { WorkspaceEventBus } from './host/event-bus.ts'
 import { FileService } from './host/file-service.ts'
 import { probeHostServices, type HostServiceReport } from './host/host-service-probe.ts'
+import { runStartupRetention } from './host/retention.ts'
 import { JobAdapter } from './host/job-adapter.ts'
 import { createImageRouteHandler, IMAGE_ROUTE, readHandoffSubdir } from './host/image-handoff.ts'
 import { DEFAULT_REMOTE_HOST, normalizeListenerHost, normalizeListenerPort } from './host/listener-config.ts'
@@ -102,6 +103,15 @@ export async function apply(ctx: HostContext, config: Config = {}): Promise<void
     ctx.logger.warn(new Error(`dsh-remote-bridge: could not purge revoked devices: ${String(error)}`))
   }
 
+  // 数据保留：把 `audit` / `idempotency` 两张**只增不删**的表收到阈值以内。
+  //
+  // 为什么放在启动时：它要处理的是「上次运行攒下来的量」，那批数据可能远超一次
+  // 请求能承受的规模，混进请求路径只会让某一次请求莫名变慢。策略与理由见
+  // `retention.ts` 的文件头（含「为什么不裁幂等记录的响应体」那条否决）。
+  //
+  // 端口缺席时它只记一条 warn 就返回 —— 清理任务缺席不该让插件起不来。
+  runStartupRetention(database, ctx.logger)
+
   // 把 DSH 自己的工作区登记成一条授权根（不可删除，但可正常访问）。
   //
   // 为什么在启动时自动登记、而不是让用户手填：用户要的就是「默认指向当前 DSH 的
@@ -182,6 +192,12 @@ export async function apply(ctx: HostContext, config: Config = {}): Promise<void
     chat,
     events,
     handle: (req, res) => router.handle(req, res),
+    // 能力位必须与**这台进程真的能提供什么**一致：`jobController` 缺席时
+    // 三个 jobs 端点根本没挂（路由 404），此时仍然向客户端宣告 `job-list-v1`
+    // 等于让它去打一个必然失败的端点 —— 而这正是能力位要消灭的那种
+    // 「静默少一个功能」。过滤规则与理由见 `capabilities.ts` 的
+    // `CAPABILITY_REQUIREMENTS`。
+    capabilities: { jobs: jobControllerAvailable },
   })
   router = new ApiRouter({
     database,

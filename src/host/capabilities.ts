@@ -28,7 +28,8 @@ import { PLUGIN_VERSION } from '../shared/version.ts'
  *    `approvals-v1` / `questions-v1`（`dsh-companion` 的 `REQUIRED_CAPABILITIES`：
  *    缺了就明说「插件过旧、卡片不会出现」）与 `session-archive-list-v1`
  *    （决定会话面板是否显示「已归档」入口）。
- * 2. **对外声明** —— 其余 23 项。它们回答的是「这台服务端能做什么」，
+ * 2. **对外声明** —— 其余所有能力位（数量以本文件数组为准，勿在注释里写数字，
+ *    加一个位就要改注释的纪律只会让注释过期）。它们回答的是「这台服务端能做什么」，
  *    **服务的是任何客户端（包括第三方）**，而不是某一处分支。
  *
  * 所以：**「我方客户端没用到」不等于「没人用」**。删掉第 2 类会破坏对外承诺
@@ -108,11 +109,49 @@ export const BRIDGE_CAPABILITIES: readonly string[] = [
 export const HISTORY_FORMAT_VERSION = 1
 
 /**
+ * 运行时**不可用**的能力位：服务端此刻做不了这些事，就不该声明。
+ *
+ * ## 为什么必须过滤（这是本节最重要的一条）
+ *
+ * 能力位的全部意义是让客户端把「服务端不支持」与「本来就没有」分开
+ * （见文件头的说明）。而 `jobController` 是**可选宿主服务**：0.2.0-rc.2 上没有它，
+ * 三个 `/jobs` 端点在那套内核上根本不会被挂载（`index.ts` 直接不下发，路由返回 404）。
+ * 若 `connection.ready` 仍然宣告 `job-list-v1`，客户端按位探测后就会去打一个必然
+ * 404 的端点 —— 这恰好是这份清单本身想消灭的那种「静默少一个功能」。
+ *
+ * ## 为什么按「能力位 → 依赖的服务」映射，而不是在调用点手写过滤
+ *
+ * 声明与端点必须**同源**。把「哪个位依赖哪个可选服务」写在一处，将来再加一个
+ * 可选服务只需要在这里补一行；散在调用点就会漂。
+ */
+const CAPABILITY_REQUIREMENTS: Readonly<Record<string, 'jobs'>> = {
+  'job-list-v1': 'jobs',
+  'job-output-v1': 'jobs',
+  'job-kill-v1': 'jobs',
+}
+
+/**
+ * 这台进程此刻真的能提供的能力位。
+ *
+ * @param flags - 运行时可用性；**缺省当作「全都可用」**。
+ *   缺省必须保守地全给：测试替身与老调用点（不传参）拿到的仍是完整清单，
+ *   行为与加参数之前一字不差 —— 否则这个改动会悄悄改掉所有既有测试的期望。
+ */
+export function availableCapabilities(flags: { jobs?: boolean } = {}): string[] {
+  return BRIDGE_CAPABILITIES.filter((capability) => {
+    const requirement = CAPABILITY_REQUIREMENTS[capability]
+    if (requirement === undefined) return true
+    // `undefined` = 调用方没声明 → 当作可用（见参数说明）；只有 `false` 才是真的不可用。
+    return flags[requirement] !== false
+  })
+}
+
+/**
  * `connection.ready` 事件的载荷。
  *
  * 每次调用返回**新的副本**：调用方（或测试）改它不该影响常量，
  * 否则一处手滑就会让整个进程后续所有连接都收到被改过的能力清单。
  */
-export function connectionReadyData(): { bridgeVersion: string; capabilities: string[] } {
-  return { bridgeVersion: PLUGIN_VERSION, capabilities: [...BRIDGE_CAPABILITIES] }
+export function connectionReadyData(flags: { jobs?: boolean } = {}): { bridgeVersion: string; capabilities: string[] } {
+  return { bridgeVersion: PLUGIN_VERSION, capabilities: availableCapabilities(flags) }
 }

@@ -43,7 +43,16 @@ const PNG = Buffer.from(
   'base64',
 )
 
-const SHA = 'a'.repeat(64)
+/**
+ * PNG 的**真实** sha256。
+ *
+ * 交接文件的命名规则是「内容哈希 + 扩展名」（`dsh-0.2-bridge.ts` 的 `writeHandoffFile`），
+ * 而 2.5.2 起只读路由会在服务前校验「哈希 == 内容」（`image-handoff.ts` 的
+ * `contentMatchesName`）。所以测试桩里的名字**必须**是真实哈希 ——
+ * 用一个假名（如 `'a'.repeat(64)`）会让所有用例都撞 404，
+ * 而那些 404 与「文件不存在」无法区分，测试就失去了诊断价值。
+ */
+const SHA = 'f9b46256224296496301cd801f93e879366aa56cdc1742093d4f7ab3df7914eb'
 
 async function makeDatabase(): Promise<WorkspaceDatabase> {
   const base = await mkdtemp(path.join(os.tmpdir(), 'daw-image-'))
@@ -274,6 +283,30 @@ describe('只读图片路由', () => {
       expect(await response.text()).toContain('does not match')
     } finally {
       await mismatch.close()
+    }
+  })
+
+  it('refuses content whose bytes do not hash to the name it is addressed by', async () => {
+    // H9 的内容自证：文件名是内容哈希，所以「名字对、内容不对」必须 404。
+    //
+    // 这条挡的是「工作区里有人把某张图覆盖到另一个哈希名下」的情形 ——
+    // 浏览器会按名字缓存（`Cache-Control: private`），错图会长期留在缓存里，
+    // 而客户端完全不知道它拿到的不是自己要的那张。
+    //
+    // 构造：用 SHA 这个名字交付**另一张**合法 PNG（内容合法、名字不合法）。
+    const otherPng = Buffer.from(
+      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFAAH/q842iQAAAABJRU5ErkJggg==',
+      'base64',
+    )
+    expect(otherPng.equals(PNG)).toBe(false)
+    const server = await serveImages(async () => ({ bytes: new Uint8Array(otherPng), mediaType: 'image/png' }))
+    try {
+      const response = await fetch(`${server.base}/plugin/dsh-remote-bridge/raw?sessionId=s1&name=${SHA}.png`)
+      expect(response.status).toBe(404)
+      // 与「文件不存在」同一个对外形态（不区分原因，避免泄漏会话是否存在）。
+      expect(await response.text()).toContain('no such handoff image')
+    } finally {
+      await server.close()
     }
   })
 

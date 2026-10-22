@@ -21,11 +21,12 @@
  */
 
 import { createHash, randomUUID } from 'node:crypto'
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { mkdir, readFile, stat, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { join, sep } from 'node:path'
 import type { PromptContentPart, RpcResponse, UserQuestionAnswer, UserQuestionView } from './chat-adapter.ts'
 import { DEFAULT_HANDOFF_SUBDIR, HANDOFF_FILE_NAME, HANDOFF_MEDIA_TYPES } from './image-handoff.ts'
+import { recordFrameHubDropped, recordRpc } from './metrics.ts'
 import { wireRelative } from './path-policy.ts'
 import type { SettingsApiProxy } from './settings-adapter.ts'
 
@@ -539,12 +540,118 @@ function toRpcError(error: unknown): { code: string; message: string } {
 }
 
 /** Run one host call and wrap its outcome or failure in the old envelope. */
-async function call<T>(run: () => Promise<T> | T): Promise<RpcResponse<T>> {
+/**
+ * 一次内核 RPC 的**统一入口**：耗时统计 + 慢调用/失败日志。
+ *
+ * ## 为什么所有 RPC 都经过这一个函数
+ *
+ * 适配层有二十来条 RPC（sessions.list / history / prompt / models …），逐条埋点
+ * 必然漂（有人加新方法时会忘）。这里是**唯一单点**：加一行就全覆盖。
+ *
+ * ## 为什么必须有一层超时
+ *
+ * 修复前 `call(run)` 不做任何超时，而 `run` 里的每次内核调用都用
+ * `new AbortController().signal`（**永不 abort**）。于是内核侧一旦卡住：
+ *
+ * - 广播路径上那条 `sessions.list` 会把 `broadcastQueue` 永久堵住
+ *   （整站事件停摆，`stop()` 也跟着挂）；
+ * - 请求路径上那条会让 HTTP 连接一直挂着，客户端先超时、服务端资源不释放。
+ *
+ * 现在统一 10 秒上限。**注意语义**：超时被当作一次 RPC 失败（`code: 'rpc/timeout'`），
+ * 由调用方决定怎么处理 —— 广播路径拿到 false 就「少推一条」，请求路径拿到 504。
+ * 这比「无限等待」在任何情况下都更接近正确。
+ *
+ * @param name - 稳定的 RPC 名（如 `sessions.history`）。**不要**把 sessionId 拼进来，
+ *   否则指标的基数会按会话数增长。
+ * @param run - 真正的调用。它收到的 `signal` 已经带超时，应当传给宿主调用。
+ * @param options.timeoutMs - 覆盖默认上限（流式/长任务可放宽，但**不能**设成无限）。
+ */
+async function call<T>(
+  name: string,
+  run: (signal: AbortSignal) => Promise<T> | T,
+  options: { timeoutMs?: number } = {},
+): Promise<RpcResponse<T>> {
+  const startedAt = Date.now()
+  const timeoutMs = options.timeoutMs ?? RPC_TIMEOUT_MS
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(new Error(`RPC ${name} timed out after ${timeoutMs}ms`)), timeoutMs)
+  timer.unref?.()
   try {
-    return ok(await run())
+    const value = await run(controller.signal)
+    const elapsed = Date.now() - startedAt
+    recordRpc(name, elapsed, true)
+    logSlowRpc(name, elapsed, true)
+    return ok(value)
   } catch (error) {
+    const elapsed = Date.now() - startedAt
+    recordRpc(name, elapsed, false)
+    logSlowRpc(name, elapsed, false)
+    if (controller.signal.aborted && isAbortLike(error)) {
+      return {
+        result: {
+          ok: false,
+          error: { code: 'rpc/timeout', message: `The host did not answer ${name} within ${timeoutMs}ms.` },
+        },
+      }
+    }
     return { result: { ok: false, error: toRpcError(error) } }
+  } finally {
+    clearTimeout(timer)
   }
+}
+
+/** 默认 RPC 上限。10 秒：超过它基本可以断定内核卡了，而不是「慢」。 */
+const RPC_TIMEOUT_MS = 10_000
+
+/**
+ * 「查一下这个会话的工作目录 / 投影」这类**短查询**的上限。
+ *
+ * 比 [RPC_TIMEOUT_MS] 更紧，因为它们在 prompt 的同步前置里：用户按下发送之后
+ * 要等它们回来（图才落盘、模型判定才完成）。让一个辅助查询拖 10 秒，
+ * 用户已经认定「发不出去」了。
+ */
+const SESSION_DIR_LOOKUP_TIMEOUT_MS = 3_000
+
+/**
+ * 造一个**会自己到期**的 signal（并让它的定时器随 abort 一起清掉）。
+ *
+ * 为什么不在调用点写 `AbortSignal.timeout(ms)`：两者的过期行为一致，但这里需要
+ * 「定时器不拖住进程退出」—— `AbortSignal.timeout` 内部没有 `unref`，
+ * 在只剩它一个活跃句柄时会让进程多等三秒。这在本仓是已经踩过的纪律
+ * （见 `server.ts` 的 `unref` 注释）。
+ */
+function timeoutSignal(ms: number): AbortSignal {
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(new Error(`timed out after ${ms}ms`)), ms)
+  timer.unref?.()
+  // 到期时顺手清掉定时器；未到期就被消费完的 signal 也不会泄漏（`unref` 过）。
+  controller.signal.addEventListener('abort', () => clearTimeout(timer), { once: true })
+  return controller.signal
+}
+
+/**
+ * 慢调用 / 失败时打一条日志。
+ *
+ * 阈值 5 秒是刻意的：**正常**的内核调用都在毫秒级，5 秒说明真的出问题了；
+ * 而每次都打日志会让热路径的日志量变成噪声（那反而更难看出问题）。
+ */
+function logSlowRpc(name: string, elapsedMs: number, okFlag: boolean): void {
+  if (okFlag && elapsedMs < SLOW_RPC_LOG_MS) return
+  const message = `dsh-0.2-bridge: rpc ${name} ${okFlag ? 'slow' : 'failed'}: ${elapsedMs}ms`
+  // 失败用 warn、慢用 warn 同一条通道：这条日志的意义是「去看一眼」，
+  // 而不是分级治理（这个插件没有自己的 logger 面）。
+  console.warn(message)
+}
+
+const SLOW_RPC_LOG_MS = 5_000
+
+/** 判断一个异常是不是「因为我们 abort 才抛」的（不同实现的 message 不一样）。 */
+function isAbortLike(error: unknown): boolean {
+  if (error === null || typeof error !== 'object') return false
+  const candidate = error as { name?: unknown; message?: unknown; code?: unknown }
+  if (candidate.name === 'AbortError') return true
+  if (candidate.code === 'ABORT_ERR') return true
+  return typeof candidate.message === 'string' && /abort/i.test(candidate.message)
 }
 
 // ── event fan-out: the old `events.mux` / `events.host` streams ────────────
@@ -574,8 +681,34 @@ class FrameHub {
     const queue: Frame[] = []
     let wake: (() => void) | undefined
     let closed = false
+    /** 因队列满被丢掉的帧数（丢过就要告知消费方「事件流不连续」）。 */
+    let dropped = 0
     const onFrame = (frame: Frame): void => {
       if (closed) return
+      // **有界队列**：修复前这个数组没有任何上限，消费慢（低端机解析不动大量
+      // `chat.message.delta`）时它只增不减 —— 内存随「连接存活时长」线性增长，
+      // 而每一次增长都不会有任何日志或信号。
+      //
+      // 溢出策略与 `server.ts` 的 per-socket 队列**故意保持一致**（同一套取舍，
+      // 两处各写一套必然漂）：
+      // 1. 来的这条是可重建的（流式文本增量）→ 丢它；
+      // 2. 否则找个可重建的旧帧牺牲掉，给状态帧腾位置；
+      // 3. 一条可重建帧都没有 → 丢最旧的（宁可少一条旧状态，也要让新状态送达）。
+      //
+      // 三条都会记 `dropped`，消费方随后会收到一条 resync 提示帧。
+      if (queue.length >= FRAME_HUB_QUEUE_LIMIT) {
+        if (isRebuildableFrame(frame)) {
+          dropped += 1
+          recordFrameHubDropped()
+          wake?.()
+          return
+        }
+        const victim = queue.findIndex(isRebuildableFrame)
+        if (victim >= 0) queue.splice(victim, 1)
+        else queue.shift()
+        dropped += 1
+        recordFrameHubDropped()
+      }
       queue.push(frame)
       wake?.()
     }
@@ -595,6 +728,17 @@ class FrameHub {
       async *[Symbol.asyncIterator](): AsyncIterator<Frame> {
         try {
           while (!closed && !signal.aborted) {
+            if (dropped > 0) {
+              // 丢过帧：先补一条 resync 提示，再继续发真实事件。
+              // 这里**造一个合成帧**而不是复用某个真实帧 —— 它携带的是
+              // 「你漏了多少」这一条新信息，不该被误当成原始的 session/event。
+              const count = dropped
+              dropped = 0
+              yield {
+                rpcId: randomUUID(),
+                payload: { type: 'bridge/resync-required', dropped: count, reason: 'backpressure' },
+              }
+            }
             if (queue.length === 0) {
               await new Promise<void>(resolve => { wake = resolve })
               wake = undefined
@@ -610,6 +754,27 @@ class FrameHub {
   }
 }
 
+/**
+ * `FrameHub` 每个消费者的队列上限。
+ *
+ * 与 `server.ts` 的 `DEFAULT_SOCKET_QUEUE_LIMIT` 同量级但**不必相等**：
+ * 这一层是「内核帧 → 插件帧」的缓冲，消费方是本插件的 `startEvents` 循环；
+ * 那一层是「插件事件 → WebSocket 帧」，消费方是网络。两层各有各的慢法。
+ */
+const FRAME_HUB_QUEUE_LIMIT = 1000
+
+/**
+ * 这一帧丢了能不能重建。
+ *
+ * 只有流式文本增量可以（客户端重拉历史即得）。判据看**归一化后的 payload.type**：
+ * `assistant/chunk` 会经 `normalizeDshEvent` 变成 `chat.message.delta`，
+ * 而 `FrameHub` 处在归一化**之前**，所以两边都要认。
+ */
+function isRebuildableFrame(frame: Frame): boolean {
+  const type = frame.payload['type']
+  return type === 'assistant/chunk'
+}
+
 // ── live session event relay ──────────────────────────────────────────────
 
 /**
@@ -623,6 +788,10 @@ class FrameHub {
  * transcript would only appear once a message had been committed and re-read.
  */
 class SessionEventRelay {
+  /**
+   * 活跃订阅。**Map 的插入顺序就是 LRU 顺序**：命中/新建都先 delete 再 set，
+   * 于是最旧（最久没动过）的会话永远在队首 —— 淘汰时取第一个即可，不用另建链表。
+   */
   private readonly active = new Map<string, AbortController>()
 
   constructor(
@@ -630,12 +799,47 @@ class SessionEventRelay {
     private readonly mux: FrameHub,
     /** Cap concurrent subscriptions so a busy host cannot exhaust file handles. */
     private readonly limit = 8,
+    /**
+     * 到上限时淘汰的日志口。默认什么都不做 —— 测试替身与不关心日志的调用方
+     * 不必补一个参数；但**生产路径必须传**（见 `createDsh02ApiProxy`）。
+     */
+    private readonly warn: (message: string) => void = () => undefined,
   ) {}
 
-  /** Start following one session; idempotent per session. */
+  /**
+   * Start following one session; idempotent per session.
+   *
+   * ## 到上限时的行为（修复点）
+   *
+   * 此前是 `if (this.active.size >= this.limit) return` —— **静默**不订阅。
+   * 后果：第 9 个「正在跑」的会话**没有流式事件**，而两侧日志一句话都没有；
+   * 用户看到的现象是「这个会话不实时了」，与网络问题完全无法区分。
+   *
+   * 现在改为 **LRU 淘汰 + warn**：踢掉最久没被触碰的那条订阅，给新会话腾位置。
+   * 这比「拒绝新会话」更接近用户预期 —— 用户切到的那个会话正是他此刻在看的那条，
+   * 而被淘汰的那条通常已经不在屏幕上了（它的下一次 `attach` 会重新订阅，
+   * 代价只是「那段时间的增量要重拉历史」，而不是永久看不到）。
+   *
+   * 淘汰必须**有日志**：不然「我的旧会话为什么突然不流式了」永远查不出来。
+   */
   attach(sessionId: string): void {
-    if (this.active.has(sessionId)) return
-    if (this.active.size >= this.limit) return
+    const existing = this.active.get(sessionId)
+    if (existing !== undefined) {
+      // 命中即刷新 LRU 位置（删掉再插回去，顺序移动到队尾）。
+      this.active.delete(sessionId)
+      this.active.set(sessionId, existing)
+      return
+    }
+    if (this.active.size >= this.limit) {
+      const oldest = this.active.keys().next().value as string | undefined
+      if (oldest !== undefined) {
+        this.warn(
+          `dsh-0.2-bridge: session event relay is at its limit (${this.limit}); `
+          + `evicting the least recently used subscription (${oldest}) to follow ${sessionId}`,
+        )
+        this.detach(oldest)
+      }
+    }
     const controller = new AbortController()
     this.active.set(sessionId, controller)
     void this.pump(sessionId, controller.signal).catch(() => {
@@ -762,7 +966,11 @@ class SessionEventRelay {
  */
 class ApprovalBridge {
   private readonly pending = new Map<string, {
-    settle: (outcome: 'allowed-once' | 'rejected' | 'cancelled') => void
+    /** 结算入口。`delegate` 是**服务端自己**的选择（超时/中止），客户端永远给不了它。 */
+    settle: (outcome: 'allowed-once' | 'rejected' | 'cancelled' | 'delegate') => void
+    /** 挂起超时定时器；结算时**必须**清掉，否则定时器会拖住进程。 */
+    timer: NodeJS.Timeout
+    requestedAt: number
   }>()
 
   constructor(
@@ -793,16 +1001,43 @@ class ApprovalBridge {
       const rpcId = randomUUID()
       const outcome = await new Promise<'allowed-once' | 'rejected' | 'cancelled' | 'delegate'>(resolve => {
         let done = false
-        const settle = (value: 'allowed-once' | 'rejected' | 'cancelled'): void => {
+        // `delegate` 也在 settle 的取值范围里：超时与中止都由服务端按它结算。
+        // 客户端那条路（`respond`）仍然只接受 allowed-once / rejected。
+        const settle = (value: 'allowed-once' | 'rejected' | 'cancelled' | 'delegate'): void => {
           if (done) return
           done = true
+          clearTimeout(entry.timer)
           resolve(value)
         }
-        this.pending.set(rpcId, { settle })
+        const entry: { settle: typeof settle; timer: NodeJS.Timeout; requestedAt: number } = {
+          settle,
+          // 占位：下面立刻覆盖。写成两段是因为 `settle` 要用到 `entry.timer`，
+          // 而 `entry` 又要用到 `settle` —— 循环引用只能这样打破。
+          timer: setTimeout(() => undefined, 0),
+          requestedAt: Date.now(),
+        }
+        // **挂起超时**：客户端不答、宿主也不 abort 时，此前这个 Promise 永不结算，
+        // 内核那一轮就永久阻塞，`pending` 条目也只增不减（= 内存与行为双泄漏）。
+        //
+        // 超时按 `delegate` 结算 —— **绝不能**自动 `allowed-once`：那等于
+        // 「没人回答 = 默认批准」，是把安全判据交给一个定时器。`delegate` 会让
+        // 内核回到下游（官方 WebUI）继续等，同时给客户端推一条 `approval/resolved`，
+        // 那张陈旧卡片自己消失。
+        //
+        // `unref()`：这个定时器最长挂 10 分钟，不该拦住进程退出；
+        // 正常结算路径一定会 `clearTimeout`。
+        clearTimeout(entry.timer)
+        entry.timer = setTimeout(() => {
+          this.pending.delete(rpcId)
+          settle('delegate')
+        }, APPROVAL_PENDING_TIMEOUT_MS)
+        entry.timer.unref?.()
+        this.pending.set(rpcId, entry)
         req.signal?.addEventListener('abort', () => {
           this.pending.delete(rpcId)
           if (done) return
           done = true
+          clearTimeout(entry.timer)
           resolve('delegate')
         }, { once: true })
         this.mux.push({
@@ -815,6 +1050,8 @@ class ApprovalBridge {
           ...(typeof req.reason === 'string' ? { reason: req.reason } : {}),
         })
       })
+      // 结算路径（respond / abort / timeout）都会自己清定时器；这里再清一次是幂等的，
+      // 防的是将来有人加第三条结算路径时忘记清。
       this.pending.delete(rpcId)
       this.mux.push({
         type: 'approval/resolved',
@@ -860,6 +1097,10 @@ interface PendingQuestion {
   callId: string
   questions: unknown[]
   settle: (outcome: QuestionBridgeOutcome) => void
+  /** 挂起超时定时器；结算时必须清掉（见 [QUESTION_PENDING_TIMEOUT_MS]）。 */
+  timer: NodeJS.Timeout
+  /** 进入挂起表的时间；按它做批量清扫（表本身也随定时器逐条退出）。 */
+  requestedAt: number
 }
 
 /**
@@ -877,6 +1118,42 @@ type QuestionBridgeOutcome =
  * 不做无上限的挂起表 —— 失控的 agent 能问出任意多问题，每条都吊着一个 Promise。
  */
 const MAX_PENDING_QUESTIONS = 32
+
+/**
+ * 同时跟踪多少个「正在跑」的会话的事件流。
+ *
+ * 每一条都是一个 `follow()` 订阅，占一个文件描述符与一段内存；无上限的话，
+ * 一个「同时跑 50 个会话」的机器会把 fd 耗光。8 是既有取值，本轮不调 ——
+ * 本轮只把「到顶就静默丢弃」改成「LRU 淘汰 + 日志」。
+ */
+const SESSION_RELAY_LIMIT = 8
+
+/**
+ * 一条审批**最多挂起多久**（10 分钟）。
+ *
+ * 为什么必须有这个上限：`approval/request` 是一个等待承诺 —— 客户端通过
+ * `respond()` 结算，宿主通过 `req.signal` 的 abort 结算。**两条都不发生时，
+ * 这个 Promise 永不结算**，内核那一轮就永久阻塞，`pending` 条目也永远留着。
+ *
+ * 而「客户端永远不回答」在真实场景里并不罕见：手机被放进兜里、App 被杀、
+ * 通知被划掉。修复前遇到这种情况，用户看到的是「agent 卡住不动了」，
+ * 除了重启 dsh 没有别的出路。
+ *
+ * 为什么超时是 `delegate` 而**不是** `allowed-once`：把「没人回答」解释成
+ * 「默认批准」等于让安全判据失效于一个定时器。`delegate` 让内核回到下游
+ * （官方 WebUI）继续等，同时推一条 `approval/resolved` 让陈旧卡片消失 ——
+ * 功能上「回到没有这个插件时的行为」，这才是正确的降级方向。
+ */
+const APPROVAL_PENDING_TIMEOUT_MS = 10 * 60_000
+
+/**
+ * 一条前台提问**最多挂起多久**（10 分钟，与审批同口径）。
+ *
+ * 提问不阻塞内核（Agent 已经继续跑），但它一样会吊着一个 Promise 与一条挂起表条目。
+ * 超时按 `dismissed` 结算：推 `userQuestions/dismissed` 让手机端那张卡片消失，
+ * 同时把 `delegate` 交给调用方 —— 与「用户点了电脑端」同一条收尾路径。
+ */
+const QUESTION_PENDING_TIMEOUT_MS = 10 * 60_000
 
 /**
  * `user-questions/request` 的接管者 —— 形状照 [ApprovalBridge]。
@@ -993,9 +1270,31 @@ class QuestionBridge {
         const settle = (value: QuestionBridgeOutcome): void => {
           if (done) return
           done = true
+          clearTimeout(entry.timer)
           resolve(value)
         }
-        bridge.pending.set(rpcId, { sessionId, callId, questions, settle })
+        const entry: PendingQuestion = {
+          sessionId,
+          callId,
+          questions,
+          settle,
+          // 占位，下一行立刻覆盖（`settle` 需要 `entry.timer`，只能这样打破循环）。
+          timer: setTimeout(() => undefined, 0),
+          requestedAt: Date.now(),
+        }
+        clearTimeout(entry.timer)
+        // **挂起超时**：两端都不答、signal 也不 abort 时，此前这个 Promise 永不结算，
+        // 手机端那张卡永远点不动（它还在表里，所以既不能答、也不会消失）。
+        //
+        // 结算成 `dismissed`：与「电脑端先答了」走同一条收尾路径（摘挂起项 +
+        // 推 `userQuestions/dismissed` + 把 delegate 交给调用方）。
+        // `unref()`：最长挂 10 分钟，不该拦住进程退出；正常路径会 clearTimeout。
+        entry.timer = setTimeout(() => {
+          bridge.pending.delete(rpcId)
+          settle({ kind: 'dismissed' })
+        }, QUESTION_PENDING_TIMEOUT_MS)
+        entry.timer.unref?.()
+        bridge.pending.set(rpcId, entry)
         // 中止 = 限时窗口到期或整轮被取消 → 让这张卡作废，然后把 delegate 原样交给调用方
         // （与 task-18 相同：下游没人接就 reject，askTimed 会把它接住并落到 continued）。
         request?.signal?.addEventListener('abort', () => {
@@ -1047,6 +1346,31 @@ class QuestionBridge {
       return { accepted: true }
     }
     return { accepted: false, reason: 'not-pending' }
+  }
+
+  /**
+   * 清扫**已经超期**的挂起项。
+   *
+   * 为什么还需要这个「批量清扫」，既然每条都有自己的定时器：
+   * 定时器是**正常**路径；清扫是**兜底**。两者都存在的理由与 `pending` 表的最小不变式
+   * 有关 —— 表里的每一条都必须「要么会被用户结算、要么会被超时结算、要么会被这里扫掉」。
+   * 少任何一条都会留下永久条目（那正是修复前的状态：只有用户结算这一条路）。
+   *
+   * 它按 `requestedAt` 判断而不是再挂一个计时器：调用方（适配层）可以在任意时机
+   * 顺手调一次，代价是 O(表中条目数)，而这个表被 `MAX_PENDING_QUESTIONS` 封在 32。
+   *
+   * @returns 被清掉多少条（供日志/测试断言）。
+   */
+  sweepExpired(now = Date.now()): number {
+    let swept = 0
+    for (const [rpcId, entry] of this.pending) {
+      if (now - entry.requestedAt < QUESTION_PENDING_TIMEOUT_MS) continue
+      this.pending.delete(rpcId)
+      clearTimeout(entry.timer)
+      entry.settle({ kind: 'dismissed' })
+      swept += 1
+    }
+    return swept
   }
 
   /**
@@ -1172,6 +1496,15 @@ function sessionIdOf(summary: unknown): string | undefined {
  */
 const DEFAULT_IMAGE_HANDOFF_DIR = join(homedir(), '.dsh', 'image-handoff')
 
+/**
+ * 交接图片读取的体积上限（32 MiB）。
+ *
+ * 与只读图片路由里的 `MAX_BYTES`（`image-handoff.ts`）**同值但不同职责**：
+ * 那边是「浏览器要不要显示」，这边是「服务端要不要把字节读进内存」。
+ * 这里必须**在读之前**判 —— 先读完再判等于闸门形同虚设。
+ */
+const MAX_HANDOFF_BYTES = 32 * 1024 * 1024
+
 const IMAGE_EXTENSIONS: Record<string, string> = {
   'image/png': 'png',
   'image/jpeg': 'jpg',
@@ -1202,14 +1535,30 @@ function handoffExtension(mediaType: string, bytes: Buffer): string {
  * `relative` 是相对会话工作目录的短路径，给人看；`absolute` 给读图工具用。
  * 目录 0700、文件 0600：这些字节可能包含用户隐私。
  */
-function writeHandoffFile(dir: string, workspace: string | undefined, mediaType: string, data: string): { absolute: string; relative: string } {
+async function writeHandoffFile(
+  dir: string,
+  workspace: string | undefined,
+  mediaType: string,
+  data: string,
+): Promise<{ absolute: string; relative: string }> {
   const bytes = Buffer.from(data, 'base64')
   if (bytes.length === 0) throw new Error('EMPTY_IMAGE')
-  mkdirSync(dir, { recursive: true, mode: 0o700 })
+  // ⚠️ 这里原来是 `mkdirSync` / `existsSync` / `writeFileSync` —— **同步 IO 跑在
+  // prompt 请求链上**。一张 8 MiB 的图（base64 → 6 MiB 字节）在慢盘上足以让
+  // 同时在跑的 WS 广播整体顿一下，因为 Node 的事件循环被这条系统调用占住了。
+  // 换成 fs/promises 之后，等待期间事件循环照常处理其它连接。
+  await mkdir(dir, { recursive: true, mode: 0o700 })
   const fileName = `${createHash('sha256').update(bytes).digest('hex')}.${handoffExtension(mediaType, bytes)}`
   const absolute = join(dir, fileName)
   // 已存在就是同一张图（内容寻址），直接复用，不重写。
-  if (!existsSync(absolute)) writeFileSync(absolute, bytes, { mode: 0o600 })
+  // `flag: 'wx'` 把「存在与否」的判断交给内核原子完成：并发两张同样的图不会互相覆盖，
+  // 也不会有「检查完到写之间被别人建了」的窗口（原来的 existsSync + writeFileSync 有）。
+  try {
+    await writeFile(absolute, bytes, { mode: 0o600, flag: 'wx' })
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error
+    // 同一张图已经落过盘：幂等复用，不报错。
+  }
   // 落进工作目录时给人看的是 `.dsh-images/xxx.jpg` 这样的短相对路径；
   // 退回私有目录时只有绝对路径有意义，relative 就用文件名。
   //
@@ -1266,9 +1615,32 @@ export async function readHandoffImageFile(
     ...(workspace !== undefined ? [join(workspace, subdir, fileName)] : []),
     join(fallbackDir, fileName),
   ]
-  const target = candidates.find(candidate => existsSync(candidate))
+  // 先 `stat` 再读，而且**两条都异步**：
+  //
+  // 修复前是 `existsSync` + `readFileSync` —— 同步 IO 跑在 HTTP 请求链上，
+  // 一张 32 MiB 的图足以把事件循环按住几百毫秒（期间 WS 广播、其它请求全排队）。
+  // 而且「先整份读进来、再在上层判 32 MiB」意味着超限时内存**已经花掉了** ——
+  // 一个反复请求大文件的客户端能把服务端 RSS 顶上去。
+  //
+  // 所以顺序改成：stat（O(1)、异步）→ 体积闸门 → readFile（异步）。
+  // 闸门放在读之前，超限一个字节都不读。
+  let target: string | undefined
+  let size = 0
+  for (const candidate of candidates) {
+    try {
+      const info = await stat(candidate)
+      if (!info.isFile()) continue
+      target = candidate
+      size = info.size
+      break
+    } catch {
+      // 这个候选不存在：继续下一个（工作目录 → 兜底目录）。
+    }
+  }
   if (target === undefined) throw new Error('HANDOFF_IMAGE_NOT_FOUND')
-  return { bytes: new Uint8Array(readFileSync(target)), mediaType }
+  if (size === 0) throw new Error('HANDOFF_IMAGE_EMPTY')
+  if (size > MAX_HANDOFF_BYTES) throw new Error('HANDOFF_IMAGE_TOO_LARGE')
+  return { bytes: new Uint8Array(await readFile(target)), mediaType }
 }
 
 
@@ -1285,7 +1657,9 @@ async function sessionWorkspaceDir(
   sessionId: string,
 ): Promise<string | undefined> {
   if (roots.length === 0) return undefined
-  const list = await host.sessionController.list({}, new AbortController().signal)
+  // 带超时：这条调用在 prompt（交接图落盘）与只读读图两条热路径上。
+  // 修复前它用永不 abort 的 signal —— 内核卡住时「发一条带图的消息」会无限挂着。
+  const list = await host.sessionController.list({}, timeoutSignal(SESSION_DIR_LOOKUP_TIMEOUT_MS))
   const item = (list.items as readonly { sessionId?: unknown; cwd?: unknown }[] | undefined)
     ?.find(entry => entry.sessionId === sessionId)
   const cwd = typeof item?.cwd === 'string' ? item.cwd : undefined
@@ -1460,7 +1834,8 @@ async function currentModelSelection(
   host: Dsh02HostServices,
   sessionId: string,
 ): Promise<{ provider: string; model: string } | undefined> {
-  const baseline = await host.sessionController.projections({ sessionId }, new AbortController().signal)
+  // 同上：判定「模型看不看得到图」这一跳也在 prompt 热路径上，必须有上限。
+  const baseline = await host.sessionController.projections({ sessionId }, timeoutSignal(SESSION_DIR_LOOKUP_TIMEOUT_MS))
   const selection = baseline?.values?.['modelSelection'] as { lastUsed?: unknown; next?: unknown } | undefined
   const catalog = await host.sessionController.modelCatalog()
   // 字段名必须用对外**wire 视图**的名字：内核 `wire.view` 产出的是 `{ lastUsed, next }`，
@@ -1559,10 +1934,17 @@ async function handoffImagesForTextOnlyModel(
     const workspace = await sessionWorkspaceDir(host, roots, sessionId)
     const dir = workspace !== undefined ? join(workspace, subdir) : fallbackDir
     let index = 0
-    return content.map(part => {
-      if (part.type !== 'image') return part
+    // 逐张 await：图片数量少（一条消息里通常 1~4 张），但每张都要落盘。
+    // 用 for 循环而不是 `Promise.all` 是刻意的 —— 保持**原顺序**与**原编号**，
+    // 而且并发写同一目录在重负载下没有收益（都是小文件）。
+    const mapped: PromptContentPartLike[] = []
+    for (const part of content) {
+      if (part.type !== 'image') {
+        mapped.push(part)
+        continue
+      }
       index += 1
-      const { absolute, relative } = writeHandoffFile(dir, workspace, part.mediaType, part.data)
+      const { absolute, relative } = await writeHandoffFile(dir, workspace, part.mediaType, part.data)
       const name = typeof part.name === 'string' && part.name.trim() !== ''
         ? part.name.trim()
         : (locale === 'en' ? `image ${index}` : `图片 ${index}`)
@@ -1577,8 +1959,9 @@ async function handoffImagesForTextOnlyModel(
         handoffLine(index, name, relative, locale),
         `[Image: source: ${absolute}]`,
       ].join('\n')
-      return { type: 'text' as const, text }
-    })
+      mapped.push({ type: 'text' as const, text })
+    }
+    return mapped
   } catch {
     return content
   }
@@ -1668,7 +2051,13 @@ export function createDsh02ApiProxy(
   // 这个接管者是手机端能看到它们的唯一入口。
   const questions = new QuestionBridge(host, mux)
   questions.attach()
-  const relay = new SessionEventRelay(host, mux)
+  // 订阅上限到顶时必须**有日志**（见 `SessionEventRelay.attach`）。这里没有 logger
+  // 注入面（`createDsh02ApiProxy` 拿的是宿主服务，不是插件 ctx），所以退到
+  // console.warn —— 这不是"偷懒"，而是「一条必要的告警」与「为它改造整个函数的
+  // 签名、再让所有测试替身补参数」之间的取舍。DSH 会把插件进程的 stderr 收进日志。
+  const relay = new SessionEventRelay(host, mux, SESSION_RELAY_LIMIT, (message) => {
+    console.warn(message)
+  })
 
   // Session registry changes used to ride the `host` stream. 0.2.x publishes
   // them as Cordis events instead, so relay them into the old frame shape.
@@ -1737,8 +2126,10 @@ export function createDsh02ApiProxy(
       // are asserted at the boundary: the host supplied the row, and the shape
       // mismatch (0.2.x adds `agentAvailable`, drops `agentPreset`) is handled
       // by the adapter's own tolerant reads.
-      list: request => call(async () => {
-        const page = await host.sessionController.list(request.payload, new AbortController().signal)
+      list: request => call('sessions.list', async (signal) => {
+        // 用 `call` 给的 signal（带 10 s 超时）：修复前是 `new AbortController().signal`，
+        // 永不 abort —— 内核卡住时这条会把广播队列永久堵住。
+        const page = await host.sessionController.list(request.payload, signal)
         // 0.2.x lists every Session row, subagents included, flagging them with
         // `origin: 'subagent'`. Those are internal delegations that the host
         // refuses to activate as ordinary sessions, so exposing them only yields
@@ -1748,10 +2139,14 @@ export function createDsh02ApiProxy(
           : page.items
         return { ...page, items } as never
       }),
-      create: request => call(() => host.sessionController.create(request.payload)),
-      history: request => call(async () => {
+      create: request => call('sessions.create', (signal) => host.sessionController.create(request.payload)),
+      history: request => call('sessions.history', async (signal) => {
         const { sessionId, maxMessages, beforeSeq } = request.payload
         const controller = new AbortController()
+        // 外层超时必须能传到内核：否则 `call` 的 10 s 只是"我们不再等"，
+        // 而内核那边继续读流、继续占资源。`addEventListener` 一次性转发即可。
+        if (signal.aborted) controller.abort()
+        else signal.addEventListener('abort', () => controller.abort(), { once: true })
         try {
           const stream = host.sessionController.follow(
             { address: { kind: 'session', sessionId }, ...(maxMessages === undefined ? {} : { maxMessages }) },
@@ -1800,7 +2195,7 @@ export function createDsh02ApiProxy(
           controller.abort()
         }
       }),
-      prompt: request => call(async () => {
+      prompt: request => call('sessions.prompt', async (signal) => {
         // 0.2.x requires a client-minted requestId that the old payload omitted.
         const requestId = randomUUID()
         // `locale` 是我们自己加的字段（客户端界面语言），**不能**原样递给内核 ——
@@ -1838,22 +2233,22 @@ export function createDsh02ApiProxy(
 
         await host.sessionController.prompt(
           { requestId, ...kernelPayload, content },
-          new AbortController().signal,
+          signal,
         )
         binding?.commit()
         return { accepted: true as const }
       }),
-      uploadAttachment: request => call(async () => {
+      uploadAttachment: request => call('sessions.uploadAttachment', async (signal) => {
         const { sessionId, data, name } = request.payload
         if (fileUploadService == null) throw new Error('FILE_UPLOADS_UNAVAILABLE: this DSH build provides no ctx.fileUploads service, so file attachments cannot be sent')
         const value = await fileUploadService.upload(
           await agentFor(sessionId),
           name === undefined || name === '' ? { data } : { data, name },
-          new AbortController().signal,
+          signal,
         )
         return { receiptId: value.receiptId, name: name ?? null }
       }),
-      readAttachment: request => call(async () => {
+      readAttachment: request => call('sessions.readAttachment', async (signal) => {
         // 走**内核的 sessionController.attachment()**，不自己碰 `ctx.attachments`。
         //
         // 这是真机排查出来的正路：真进程里 `ctx.attachments` 是 **MISSING** ——
@@ -1871,16 +2266,16 @@ export function createDsh02ApiProxy(
         const bytes = new Uint8Array(Buffer.from(value.data, 'base64'))
         return { bytes, mediaType: value.attachment.mediaType }
       }),
-      readHandoffImage: request => call(async () => {
+      readHandoffImage: request => call('sessions.readHandoffImage', async (signal) => {
         // 纯文本模型下图片被交接成工作区文件（见 handoffImagesForTextOnlyModel）。
         // 手机端要把它**当图显示**给人看时走这里；路径仍以文本留在消息里给机器读。
         const { sessionId, name } = request.payload
         return readHandoffImageFile(host, handoffRootsOf(), imageHandoffDir, handoffSubdirOf(), sessionId, name)
       }),
-      cancel: request => call(() => host.sessionController.cancel(request.payload)),
-      rename: request => call(() => host.sessionController.rename(request.payload)),
-      fork: request => call(() => host.sessionController.fork(request.payload)),
-      models: request => call(async () => {
+      cancel: request => call('sessions.cancel', (signal) => host.sessionController.cancel(request.payload)),
+      rename: request => call('sessions.rename', (signal) => host.sessionController.rename(request.payload)),
+      fork: request => call('sessions.fork', (signal) => host.sessionController.fork(request.payload)),
+      models: request => call('sessions.models', async (signal) => {
         const { sessionId } = request.payload
         // The plugin's cold-session path (chat-adapter's `commandAgent`) reaches
         // an Agent by calling `sessions.models` and then reading
@@ -1900,7 +2295,7 @@ export function createDsh02ApiProxy(
         // uses). Fold them into the plugin's `{ current, routable, groups,
         // failures }` view; a strict client decoder rejects the catalog alone.
         const catalog = await host.sessionController.modelCatalog()
-        const baseline = await host.sessionController.projections({ sessionId }, new AbortController().signal)
+        const baseline = await host.sessionController.projections({ sessionId }, signal)
         const selection = baseline?.values?.['modelSelection'] as
           | { lastUsed?: unknown; next?: unknown }
           | undefined
@@ -1923,11 +2318,11 @@ export function createDsh02ApiProxy(
             : [],
         } as never
       }),
-      selectModel: request => call(() => host.sessionController.selectModel(request.payload) as never),
+      selectModel: request => call('sessions.selectModel', (signal) => host.sessionController.selectModel(request.payload) as never),
     },
 
     workspace: {
-      list: () => call(async () => {
+      list: () => call('workspace.list', async (signal) => {
         const items = host.workspaceRegistry.list().map(row => ({
           workspaceId: row.id,
           path: row.path,
@@ -1947,17 +2342,17 @@ export function createDsh02ApiProxy(
         // 会话照旧留在列表里。见 chat-adapter.listSessions 的过滤处。
         return { items, archivedSessionIds: readArchivedSessionIds(host.workspaceRegistry) }
       }),
-      create: request => call(() => host.workspaceController.create(request.payload) as Promise<never>),
-      rename: request => call(() => host.workspaceController.rename(request.payload) as Promise<never>),
-      delete: request => call(async () => {
+      create: request => call('workspace.create', (signal) => host.workspaceController.create(request.payload) as Promise<never>),
+      rename: request => call('workspace.rename', (signal) => host.workspaceController.rename(request.payload) as Promise<never>),
+      delete: request => call('workspace.delete', async (signal) => {
         await host.workspaceController.delete(request.payload)
         return { deleted: true as const }
       }),
-      archiveSession: request => call(() => host.workspaceController.archiveSession(request.payload) as Promise<never>),
+      archiveSession: request => call('workspace.archiveSession', (signal) => host.workspaceController.archiveSession(request.payload) as Promise<never>),
     },
 
     agentPresets: {
-      list: () => call(async () => {
+      list: () => call('agentPresets.list', async (signal) => {
         // 0.2.x dropped the old `trust: 'system' | 'user'` split: every preset a
         // deployment declares is equally trusted, so neither `AgentPreset` nor
         // `AgentPresetRow` carries the field. The plugin's `AgentPresetView`
@@ -1981,7 +2376,7 @@ export function createDsh02ApiProxy(
         const items = await host.agentPresets.list()
         return { presets: withTrust(items), authorable: false, hasDocument: false } as never
       }),
-      select: request => call(async () => {
+      select: request => call('agentPresets.select', async (signal) => {
         const agent = await agentFor(request.payload.sessionId)
         const agentPreset = await host.agentPresets.select(agent, request.payload.agentPreset)
         return { agentPreset }
@@ -1991,7 +2386,7 @@ export function createDsh02ApiProxy(
     // 权限档位目录：内核的 `permissionPresets.catalog()` 是进程级清单，
     // 客户端必须能拿到它才能列候选档位（见 PermissionPresetsLike 的 @patch 说明）。
     permissionPresets: {
-      catalog: () => call(async () => {
+      catalog: () => call('permissionPresets.catalog', async (signal) => {
         // **必须容错读取**，不能直接 `host.permissionPresets`：
         // 本机实测（2026-10-19）这条 profile 上它抛
         // `cannot get property "permissionPresets" without inject`。
@@ -2014,7 +2409,7 @@ export function createDsh02ApiProxy(
     userQuestions: {
       // 连接重放用：全部会话的挂起提问（授权过滤由 chat-adapter 逐条做）。
       pendingAll: () => questions.pendingAll(),
-      list: request => call(async () => {
+      list: request => call('userQuestions.list', async (signal) => {
         const { sessionId } = request.payload
         // **两个来源合流**：本插件接管的前台提问（此刻真的在等）+ 内核的 continued
         // （带 timeout 的提问超时之后留下的、可以迟到回复的那批）。
@@ -2034,7 +2429,7 @@ export function createDsh02ApiProxy(
           : []
         return { items: [...bridged, ...continued.filter(item => !bridgedIds.has(item.callId))] } as never
       }),
-      answer: request => call(async () => {
+      answer: request => call('userQuestions.answer', async (signal) => {
         const { sessionId, callId, answer } = request.payload
         // **两条路并存**：内核管「带 timeout 的 continued 提问」，本插件管「前台正挂着的提问」。
         // 先问内核：同一个 callId 不会同时在两边（挂起那条要等超时才进投影），
@@ -2076,8 +2471,8 @@ export function createDsh02ApiProxy(
     },
 
     settings: {
-      describe: () => call(() => host.settingsController.describe() as never),
-      mutate: request => call(() => host.settingsController.mutate(
+      describe: () => call('settings.describe', (signal) => host.settingsController.describe() as never),
+      mutate: request => call('settings.mutate', (signal) => host.settingsController.mutate(
         request.payload.ns,
         request.payload.ops,
         request.payload.expectedRevision,
@@ -2087,22 +2482,22 @@ export function createDsh02ApiProxy(
     credentials: {
       // CredentialInfo is the settings-controller's own view type; asserted here
       // because the plugin models it structurally in settings-adapter.ts.
-      describe: request => call(async () => {
+      describe: request => call('credentials.describe', async (signal) => {
         const credentials = await host.credentialsController.describe(request.payload.refs)
         return { credentials } as never
       }),
-      set: request => call(async () => {
+      set: request => call('credentials.set', async (signal) => {
         await host.credentialsController.set(request.payload.ref, request.payload.value)
         return {}
       }),
-      unset: request => call(async () => {
+      unset: request => call('credentials.unset', async (signal) => {
         await host.credentialsController.unset(request.payload.ref)
         return {}
       }),
     },
 
     llm: {
-      providers: () => call(async () => {
+      providers: () => call('llm.providers', async (signal) => {
         // The plugin models a configurable provider as
         // `{ provider, displayName, settingsNs, settingsPath, active, declared? }`.
         // 0.2.x splits that across two calls: the configurable directory (which
@@ -2125,7 +2520,7 @@ export function createDsh02ApiProxy(
           })),
         } as never
       }),
-      models: () => call(async () => {
+      models: () => call('llm.models', async (signal) => {
         // The model directory the settings page renders is the same catalogue a
         // session sees; sessions.models projects the per-session slice of it.
         const catalog = await host.sessionController.modelCatalog()
@@ -2135,7 +2530,7 @@ export function createDsh02ApiProxy(
           failures: Array.isArray(view.failures) ? view.failures : [],
         }
       }),
-      discoverModels: request => call(async () => {
+      discoverModels: request => call('llm.discoverModels', async (signal) => {
         const { settingsNs, ...rest } = request.payload
         const models = await host.llm.discoverModels(settingsNs, rest)
         return { models: [...models] } as never

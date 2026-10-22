@@ -33,8 +33,8 @@
   而内核一直阻塞着等。重放把它变成服务端保证（对我方 App 是幂等冗余）。
   契约面同步 AsyncAPI 与 `API.md`。
   **提问侧同日一并重放**（走既有事件类型 `chat.userQuestions/requested`，字段与实时一致）。
-  ④ **能力发现 + 历史格式版本**：`connection.ready` 带上 `bridgeVersion` 与 **26 项能力位**（2026-10-17 依次补 `session-archive-list-v1`、`session-snapshot-v1`）
-  （`src/host/capabilities.ts`，每项都能指出契约依据；`tests/capabilities.spec.ts` 逐条核对）；
+  ④ **能力发现 + 历史格式版本**：`connection.ready` 带上 `bridgeVersion` 与**能力位清单**（2026-10-17 依次补 `session-archive-list-v1`、`session-snapshot-v1`）
+  （清单与数量以 `src/host/capabilities.ts` 的 `BRIDGE_CAPABILITIES` 源码为准，文档不抄数字；每项都能指出契约依据，`tests/capabilities.spec.ts` 逐条核对）；
   `GET …/messages` 总是带 `historyFormatVersion`（**只声明不校验**，强制会打断已发布客户端的
   `beforeSeq` 分页）。**客户端尚未接入**（仍在硬比版本号）。
   ⑤ **已归档会话可列**：`GET /chat/sessions?archived=true` 只列已归档的那批（默认行为不变），
@@ -62,8 +62,9 @@
   但实时那一路此前落进默认分支、被规范化成客户端不认识的名字 —— 新交付物要等下次消息完成
   才出现。现已给它正式事件名，`files` 原样透传。**不加能力位**（客户端只是"收到就刷新"，
   没有它仅晚一点，不是分支关系）。
-  ⑩ **能力位消费者审计**：26 项里**只有 3 项**是我方客户端的分支判据
-  （`approvals-v1`/`questions-v1`/`session-archive-list-v1`），其余 23 项是**对外声明**
+  ⑩ **能力位消费者审计**（能力位总数以 `src/host/capabilities.ts` 源码为准）：**只有 3 项**
+  是我方客户端的分支判据
+  （`approvals-v1`/`questions-v1`/`session-archive-list-v1`），其余各项是**对外声明**
   （服务任何客户端，含第三方）—— 「某个客户端没用到」≠「没人用」，删掉等于撤回对外承诺。
   新增跨仓钉子：能力位清单必须保留客户端必需的两个名字。
   见 `CHANGELOG-DEV.md` 2026-10-17 十条。见 `CHANGELOG-DEV.md` 2026-10-17 七条。

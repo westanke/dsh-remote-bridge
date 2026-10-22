@@ -1,6 +1,7 @@
 import { readdir, readFile, stat } from 'node:fs/promises'
 import path from 'node:path'
 import { parseDocument } from 'yaml'
+import { checkRouteContract } from './docs-contract.ts'
 
 const root = path.resolve(import.meta.dirname, '..')
 const projectDir = path.join(root, 'docs', 'project')
@@ -374,38 +375,14 @@ const openapiDoc = parseYaml('OpenAPI', openapi)
 const asyncapiDoc = parseYaml('AsyncAPI', asyncapi)
 if (openapiDoc.info?.version !== packageJson.version) failures.push('OpenAPI version differs from package.json')
 if (asyncapiDoc.info?.version !== packageJson.version) failures.push('AsyncAPI version differs from package.json')
-for (const route of [
-  '/healthz',
-  '/debug/host-services',
-  '/pairings/exchange',
-  '/devices/self',
-  '/roots',
-  '/roots/{rootId}/entries',
-  '/roots/{rootId}/content',
-  '/trash',
-  '/trash/{trashId}/restore',
-  '/chat/sessions',
-  '/chat/workspaces',
-  '/chat/workspaces/{workspaceId}',
-  '/chat/sessions/{sessionId}',
-  '/chat/sessions/{sessionId}/fork',
-  '/chat/sessions/{sessionId}/archive',
-  '/chat/sessions/{sessionId}/jobs',
-  '/chat/sessions/{sessionId}/jobs/{jobId}/output',
-  '/chat/sessions/{sessionId}/jobs/{jobId}/kill',
-  '/chat/sessions/{sessionId}/messages',
-  '/chat/sessions/{sessionId}/approvals',
-  '/chat/sessions/{sessionId}/approvals/{approvalId}/decision',
-  '/chat/sessions/{sessionId}/commands',
-  '/chat/sessions/{sessionId}/models',
-  '/chat/sessions/{sessionId}/model',
-  '/chat/sessions/{sessionId}/agent-preset',
-  '/chat/runs/{id}/cancel',
-  '/settings/providers',
-  '/settings/models',
-  '/settings/providers/{providerId}',
-  '/settings/providers/{providerId}/discover',
-]) if (openapiDoc.paths?.[route] === undefined) failures.push(`OpenAPI is missing ${route}`)
+// FUNC-3 / SEC-H1 根治门禁：OpenAPI paths 与 router.ts 真实路由双向 diff
+// （代码有 yaml 没有 → 红；yaml 有代码没有 → 红），并强制「yaml security:[] 豁免集
+// == principal() 之前返回的端点集」，防止再出现 host-services 那种裸奔端点。
+// 解析逻辑与显式豁免（OPTIONS 预检、bare /jobs/{id} 的 405 守卫）见 scripts/docs-contract.ts。
+{
+  const routerSource = await readFile(path.join(root, 'src', 'host', 'router.ts'), 'utf8')
+  failures.push(...(await checkRouteContract({ routerSource, openApiYaml: openapi })))
+}
 if (asyncapiDoc.channels?.events?.address !== '/api/v1/events') failures.push('AsyncAPI is missing /api/v1/events')
 
 const kotlin = await readFile(

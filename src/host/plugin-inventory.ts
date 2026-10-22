@@ -54,6 +54,15 @@ export type PluginState =
   /** 非官方包，声明要加载但 profile 里找不到 —— 这通常意味着启动会出问题。 */
   | 'declared-missing'
 
+/**
+ * 读包清单时的并发上限。
+ *
+ * 为什么不是 `Promise.all` 全放：`names` 的长度由用户装了多少插件决定，
+ * 理论上可以几十上百；一把放出去在慢盘/网络盘上反而更慢，而且失败时更难定位。
+ * 6 与 `withUpdateCheck` 的网络并发同值，本仓已经验证过。
+ */
+const INVENTORY_READ_CONCURRENCY = 6
+
 export interface PluginEntry {
   name: string
   /** `dependencies` 里的版本声明，例如 `^0.4.5`；没有则为 null。 */
@@ -294,9 +303,26 @@ export async function readPluginInventory(input: ProfileResolutionInput = {}): P
   // 「声明加载却缺失」这两种状态就看不到了。
   const names = [...new Set([...Object.keys(dependencies), ...bundles])].sort()
 
+  // **受控并发**：修复前对每个包串行 `readFile(package.json)` —— 十几二十个包
+  // 就是十几二十次连续的小文件读。单次很快（毫秒级），但串起来会让「打开插件页」
+  // 多出一次可感知的等待，而它们之间**毫无依赖**。
+  //
+  // 并发 6 直接复用本文件 `withUpdateCheck` 已经用过、也验证过的量级
+  // （见下方 `workers` 那段）：网络请求是 6，本地小文件读更保守没有坏处。
+  //
+  // 注意：结果必须按 `names` 的原顺序拼回（`Promise.all` 保序，所以直接用）。
   const items: PluginEntry[] = []
+  const manifests = new Map<string, Record<string, unknown> | null>()
+  for (let offset = 0; offset < names.length; offset += INVENTORY_READ_CONCURRENCY) {
+    const batch = names.slice(offset, offset + INVENTORY_READ_CONCURRENCY)
+    const rows = await Promise.all(batch.map(async (name) => ({
+      name,
+      manifest: await readPackageManifest(profilePath, name),
+    })))
+    for (const row of rows) manifests.set(row.name, row.manifest)
+  }
   for (const name of names) {
-    const pkgManifest = await readPackageManifest(profilePath, name)
+    const pkgManifest = manifests.get(name) ?? null
     const installedRaw = pkgManifest?.version
     const installed = typeof installedRaw === 'string' && installedRaw.trim() ? installedRaw : null
     const loaded = bundles.includes(name)

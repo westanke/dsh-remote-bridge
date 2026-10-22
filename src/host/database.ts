@@ -103,6 +103,29 @@ export class WorkspaceDatabase {
   readonly trashDir: string
   private readonly db: DatabaseSync
   private closed = false
+  /**
+   * 「设备集合或设备权限发生过写」的进程内单调计数。
+   *
+   * ## 为什么需要它
+   *
+   * WebSocket 广播的每一条事件都要确认「这条连接背后的设备还有效吗、scope/root 变了吗」
+   * —— 旧实现是**每条事件查一次库**（`getActiveDevice`）。多条连接 × 持续事件
+   * 就是成百次纯浪费的 SQLite 查询。
+   *
+   * 有了这个计数，`server.ts` 可以只在**它变了**的时候重新水化设备
+   * （特性探测：getter 不存在就退回逐事件查库，所以迟到或缺席都不会更差）。
+   *
+   * ## 语义（与 perf-reader 的 PERF-1 契约一致）
+   *
+   * 「任何改变**设备是否存在 / scope / rootIds** 的写」都要 +1。当前四处：
+   * `exchangePairing` / `updateDevice` / `revokeDevice` / `purgeRevokedDevices`。
+   *
+   * 根（roots）的增删**不** +1：设备记录本身没变；`/roots` 那条路径本来就是实时查库。
+   *
+   * 保守性：宁可多 +1（多一次缓存失效，代价是一次查询），不可漏 +1
+   * （漏了就是「撤销后仍能收事件」—— 那正是 `device-revocation` 要防的事）。
+   */
+  private devicesRevisionCounter = 0
 
   constructor(dataDir: string) {
     this.dataDir = path.resolve(dataDir)
@@ -112,6 +135,11 @@ export class WorkspaceDatabase {
     this.db.exec('PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;')
     this.migrate()
     openDatabases.add(new WeakRef(this))
+  }
+
+  /** 当前设备状态版本号。用途见字段注释（`server.ts` 的广播缓存失效）。 */
+  get devicesRevision(): number {
+    return this.devicesRevisionCounter
   }
 
   /** 关闭数据库。**幂等** —— 重复调用不抛错。 */
@@ -147,7 +175,18 @@ export class WorkspaceDatabase {
       .run(key, value)
   }
 
-  async addRoot(inputPath: string, label?: string, options?: { allowDuplicate?: boolean }): Promise<StoredRoot> {
+  /**
+   * 登记一条授权根。
+   *
+   * @param options.requestId - 发起这次登记的那条 HTTP 请求的 id。
+   *   审计的用途不只是「记下发生了什么」，还要能回答「**哪一次请求**干的」；
+   *   不传（插件启动期登记内置根）时审计行的 `request_id` 为 null。
+   */
+  async addRoot(
+    inputPath: string,
+    label?: string,
+    options?: { allowDuplicate?: boolean; requestId?: string },
+  ): Promise<StoredRoot> {
     const realPath = await canonicalRoot(inputPath)
     // 默认按 real_path 去重（用户手动加目录时不该冒出两条一样的）。
     // `allowDuplicate` 只给 `ensureBuiltinRoot` 用：它需要为「同目录但权限不同」插一条
@@ -161,7 +200,7 @@ export class WorkspaceDatabase {
     const resolvedLabel = label?.trim() || path.basename(realPath) || realPath
     this.db.prepare('INSERT INTO roots(id,label,real_path,created_at,builtin) VALUES(?,?,?,?,0)')
       .run(id, resolvedLabel, realPath, createdAt)
-    this.audit('admin', 'loopback-admin', 'root.add', id, undefined, { label: resolvedLabel })
+    this.audit('admin', 'loopback-admin', 'root.add', id, undefined, { label: resolvedLabel }, options?.requestId)
     return { id, label: resolvedLabel, realPath, createdAt }
   }
 
@@ -224,7 +263,17 @@ export class WorkspaceDatabase {
     this.audit('admin', 'loopback-admin', 'root.remove', id)
   }
 
-  createPairing(rootIds: string[], scopes: DeviceScope[], ttlMs = 10 * 60_000): { code: string; expiresAt: number } {
+  /**
+   * 生成一枚配对码。
+   *
+   * @param options.requestId - 发起这次请求的 HTTP requestId（审计可追溯）。
+   */
+  createPairing(
+    rootIds: string[],
+    scopes: DeviceScope[],
+    ttlMs = 10 * 60_000,
+    options: { requestId?: string } = {},
+  ): { code: string; expiresAt: number } {
     assertScopes(scopes)
     for (const rootId of rootIds) {
       if (this.getRoot(rootId) === undefined) throw new ApiError(404, 'ROOT_NOT_FOUND', `Unknown root ${rootId}.`)
@@ -234,11 +283,22 @@ export class WorkspaceDatabase {
     const expiresAt = Date.now() + ttlMs
     this.db.prepare('INSERT INTO pairings(code_hash,scopes_json,roots_json,expires_at,created_at) VALUES(?,?,?,?,?)')
       .run(hashSecret(normalizePairingCode(code)), JSON.stringify(scopes), JSON.stringify(rootIds), expiresAt, Date.now())
-    this.audit('admin', 'loopback-admin', 'pairing.create', undefined, undefined, { rootIds, scopes, expiresAt })
+    this.audit('admin', 'loopback-admin', 'pairing.create', undefined, undefined, { rootIds, scopes, expiresAt }, options.requestId)
     return { code, expiresAt }
   }
 
-  exchangePairing(code: string, deviceName: string): { token: string; device: DeviceView } {
+  /**
+   * 用配对码换一枚设备令牌。
+   *
+   * 审计**在事务内**写（FUNC-5）：它是「这台设备被授权了」的唯一留痕，
+   * 与设备行同生共死。审计写不进去 → 整个兑换回滚 → 客户端重试，
+   * 而不是「拿到令牌但库里没有这笔授权的记录」。
+   */
+  exchangePairing(
+    code: string,
+    deviceName: string,
+    options: { requestId?: string } = {},
+  ): { token: string; device: DeviceView } {
     const normalized = normalizePairingCode(code)
     const now = Date.now()
     this.db.exec('BEGIN IMMEDIATE')
@@ -265,9 +325,13 @@ export class WorkspaceDatabase {
         .run(id, name, hashSecret(token), JSON.stringify(scopes), now)
       const grant = this.db.prepare('INSERT INTO device_roots(device_id,root_id) VALUES(?,?)')
       for (const rootId of rootIds) grant.run(id, rootId)
+      // 审计与业务同事务：见方法注释。
+      this.audit('device', id, 'pairing.exchange', undefined, undefined, { name }, options.requestId)
       this.db.exec('COMMIT')
+      // 设备集合变了 → 版本号 +1（广播缓存失效）。
+      // 放在 COMMIT 之后：回滚时不该留下一个「以为变了」的版本号。
+      this.devicesRevisionCounter += 1
       const device: DeviceView = { id, name, scopes, rootIds, createdAt: now }
-      this.audit('device', id, 'pairing.exchange', undefined, undefined, { name })
       return { token, device }
     } catch (error) {
       this.db.exec('ROLLBACK')
@@ -325,7 +389,21 @@ export class WorkspaceDatabase {
     return this.db.prepare('SELECT 1 AS active FROM devices WHERE id = ? AND revoked_at IS NULL').get(id) !== undefined
   }
 
-  updateDevice(id: string, scopes: DeviceScope[], rootIds: string[]): DeviceView {
+  /**
+   * 改一台设备的 scope 与 root 授权。
+   *
+   * 审计**在事务内**写（FUNC-5）：它是「谁的权限被扩大了」的唯一留痕。
+   * 审计失败 → 整个更新回滚。宁可让用户重试，也不能出现「权限已经变宽、
+   * 但没有任何记录说是谁在什么时候改的」—— 那是不可审计的提权。
+   *
+   * @param options.requestId - 发起这次请求的 HTTP requestId（审计可追溯）。
+   */
+  updateDevice(
+    id: string,
+    scopes: DeviceScope[],
+    rootIds: string[],
+    options: { requestId?: string } = {},
+  ): DeviceView {
     assertScopes(scopes)
     for (const rootId of rootIds) {
       if (this.getRoot(rootId) === undefined) throw new ApiError(404, 'ROOT_NOT_FOUND', `Unknown root ${rootId}.`)
@@ -338,12 +416,13 @@ export class WorkspaceDatabase {
       this.db.prepare('DELETE FROM device_roots WHERE device_id = ?').run(id)
       const grant = this.db.prepare('INSERT INTO device_roots(device_id,root_id) VALUES(?,?)')
       for (const rootId of rootIds) grant.run(id, rootId)
+      this.audit('admin', 'loopback-admin', 'device.update', undefined, undefined, { deviceId: id, scopes, rootIds }, options.requestId)
       this.db.exec('COMMIT')
     } catch (error) {
       this.db.exec('ROLLBACK')
       throw error
     }
-    this.audit('admin', 'loopback-admin', 'device.update', undefined, undefined, { deviceId: id, scopes, rootIds })
+    this.devicesRevisionCounter += 1
     const device = this.listDevices().find(item => item.id === id)
     if (device === undefined) throw new ApiError(404, 'DEVICE_NOT_FOUND', 'The device does not exist.')
     return device
@@ -362,18 +441,34 @@ export class WorkspaceDatabase {
  * - `authenticate` 仍保留 `revoked_at IS NULL` 作为兜底，万一有别处留下的标记行，
  *   它们依然登不进来 —— 两层保险不冲突。
  */
-revokeDevice(id: string): void {
+  /**
+   * 撤销一台设备 = 删除设备行。
+   *
+   * 审计与删除**在同一事务里**（FUNC-5），且顺序是「先留痕、再删除」：
+   * 审计的 `actor_id` 不带外键，删设备不会把记录带走。反过来若先删后写、
+   * 而写审计失败，就会留下「设备已经没了，但没有任何记录说谁撤的」。
+   *
+   * @param options.requestId - 发起这次请求的 HTTP requestId（审计可追溯）。
+   */
+  revokeDevice(id: string, options: { requestId?: string } = {}): void {
     const active = this.getActiveDevice(id)
     if (active === undefined) {
       // 已经删掉了，或者本来就是标记行（历史数据）。两种都算「没什么可撤销的」，
       // 但仍按 404 回给调用方 —— 与原语义一致：撤销一个不存在的设备是调用方的问题。
       throw new ApiError(404, 'DEVICE_NOT_FOUND', 'The active device does not exist.')
     }
-    // 先写审计再删：审计的 actor_id 不带外键，删设备不会把它带走，但顺序上
-    // 「先留痕再删」更符合「记录发生了什么」的直觉。
-    this.audit('admin', 'loopback-admin', 'device.revoke', undefined, undefined, { deviceId: id, name: active.name })
-    const result = this.db.prepare('DELETE FROM devices WHERE id = ?').run(id)
-    if (result.changes === 0) throw new ApiError(404, 'DEVICE_NOT_FOUND', 'The active device does not exist.')
+    this.db.exec('BEGIN IMMEDIATE')
+    try {
+      this.audit('admin', 'loopback-admin', 'device.revoke', undefined, undefined, { deviceId: id, name: active.name }, options.requestId)
+      const result = this.db.prepare('DELETE FROM devices WHERE id = ?').run(id)
+      if (result.changes === 0) throw new ApiError(404, 'DEVICE_NOT_FOUND', 'The active device does not exist.')
+      this.db.exec('COMMIT')
+    } catch (error) {
+      this.db.exec('ROLLBACK')
+      throw error
+    }
+    // 撤销即时生效的那一半靠这个计数：广播侧看到版本变了才会重新水化。
+    this.devicesRevisionCounter += 1
   }
 
   /**
@@ -399,14 +494,83 @@ revokeDevice(id: string): void {
 
   purgeRevokedDevices(): number {
     const stale = this.db.prepare('SELECT id FROM devices WHERE revoked_at IS NOT NULL').all() as { id: string }[]
-    if (stale.length === 0) return 0
+    if (stale.length === 0) {
+      // 没有可清理的行 —— 但**仍然递增版本号**：这是「可能改变设备集合」的写，
+      // 保守递增的代价只是一次多余的缓存失效，漏递增的代价是「撤销后仍能收事件」。
+      this.devicesRevisionCounter += 1
+      return 0
+    }
     this.db.exec('BEGIN IMMEDIATE')
     try {
       // device_roots 是 ON DELETE CASCADE，授权行跟着走。
       const result = this.db.prepare('DELETE FROM devices WHERE revoked_at IS NOT NULL').run()
-      this.db.exec('COMMIT')
       this.audit('admin', 'loopback-admin', 'device.purge', undefined, undefined, { purged: result.changes })
+      this.db.exec('COMMIT')
+      this.devicesRevisionCounter += 1
       return Number(result.changes)
+    } catch (error) {
+      this.db.exec('ROLLBACK')
+      throw error
+    }
+  }
+
+  /**
+   * 删掉早于 `cutoffMs` 的幂等回放记录，返回删除行数。
+   *
+   * 由 `retention.ts`（perf-reader）按调度调用，本方法只做 SQL —— 不判断策略、
+   * 不写日志，所以它可以被单独测试。
+   *
+   * 为什么用 `created_at` 而不是加一列 `expires_at`：24 小时的过期**完全**由
+   * `created_at` 推导得出，加列会让每次插入多写一个字段，还多一次 migration 风险。
+   */
+  pruneIdempotency(cutoffMs: number): number {
+    const result = this.db.prepare('DELETE FROM idempotency WHERE created_at < ?').run(cutoffMs)
+    return Number(result.changes)
+  }
+
+  /**
+   * 清理审计：先按时间删，再兜「总数超过 `keepMax` 就删最旧的」。
+   *
+   * ## 为什么是两段而不是一段
+   *
+   * 只按时间删不够：桥可以被一个「短时间高频写入」的场景灌满审计表
+   * （例如每秒几十条 `chat.delta` 对应的写操作），时间窗内的量仍然能压垮库。
+   * 只按数量删也不够：用户可能希望「一年前的都清掉」，而不在乎条数。
+   *
+   * ## `keepMax` 是**下限保护**
+   *
+   * 即使 `cutoffMs` 设成了未来（把全部行都判成过期），也**至少**保留最近
+   * `keepMax` 条 —— 一句写错的调用不该把审计清空。审计被清空本身就等于
+   * 「抹掉证据」，这个方向必须由这一层挡住。
+   *
+   * 返回删除的行数（两段之和）。
+   */
+  pruneAudit(cutoffMs: number, keepMax: number): number {
+    const floor = Math.max(0, Math.floor(keepMax))
+    this.db.exec('BEGIN IMMEDIATE')
+    try {
+      // 第一段：按时间删。但先算「时间删完还剩多少」，避免它把保留量也删穿。
+      const total = Number((this.db.prepare('SELECT COUNT(*) AS n FROM audit').get() as { n: number }).n)
+      const expired = Number((this.db.prepare('SELECT COUNT(*) AS n FROM audit WHERE time < ?').get(cutoffMs) as { n: number }).n)
+      const removableByTime = Math.max(0, Math.min(expired, total - floor))
+      let removed = 0
+      if (removableByTime > 0) {
+        // 删**最旧的** removableByTime 条，而不是「所有早于 cutoff 的」——
+        // 两者在 floor 生效后不等价，而我们需要精确控制保留数量。
+        removed += Number(this.db.prepare(
+          'DELETE FROM audit WHERE id IN (SELECT id FROM audit ORDER BY time ASC, id ASC LIMIT ?)',
+        ).run(removableByTime).changes)
+      }
+      // 第二段：仍然超过 keepMax 的（时间全都很新）→ 继续删最旧的。
+      const afterTime = Number((this.db.prepare('SELECT COUNT(*) AS n FROM audit').get() as { n: number }).n)
+      const over = afterTime - floor
+      if (over > 0) {
+        removed += Number(this.db.prepare(
+          'DELETE FROM audit WHERE id IN (SELECT id FROM audit ORDER BY time ASC, id ASC LIMIT ?)',
+        ).run(over).changes)
+      }
+      this.db.exec('COMMIT')
+      return removed
     } catch (error) {
       this.db.exec('ROLLBACK')
       throw error

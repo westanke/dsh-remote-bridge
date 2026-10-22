@@ -149,3 +149,98 @@ test('App 下载卡片展开时二维码都渲染出来了', async ({ page }) =>
   const links = await page.locator('.daw-qr-url').evaluateAll(els => els.map(el => el.getAttribute('href')))
   expect(links).toEqual(APP_QR_CODES.map(code => code.url))
 })
+
+/** 远程卡展开时的 DOM：监听器三列表单是 UI-01 当年被挤爆的现场。 */
+const remoteBody = `<div class="daw-listener-form">
+      <label class="daw-field"><span>绑定 IP</span><input class="daw-input" value="0.0.0.0"></label>
+      <label class="daw-field"><span>端口</span><input class="daw-input" value="3090"></label>
+      <button class="daw-command" id="save-listener">保存</button>
+    </div>
+    <div class="daw-tunnel">
+      <button class="daw-command primary" id="tunnel-main">开启云隧道</button>
+    </div>`
+
+test.describe('375px 窄屏契约（UI-01/UI-02 复诊）', () => {
+  test('@mediaa 事故不再复发：窄屏媒体规则真实存在于样式表', async ({ page }) => {
+    await page.setViewportSize({ width: 375, height: 720 })
+    await page.setContent(panelHtmlWith('remote', remoteBody))
+    const mediaCount = await page.evaluate(() => {
+      for (const sheet of document.styleSheets) {
+        try {
+          const rules = [...sheet.cssRules]
+          const media = rules.filter(rule => rule instanceof CSSMediaRule)
+          if (media.length > 0) return media.length
+        } catch { /* 跨域表读不到，本用例只有内联表 */ }
+      }
+      return 0
+    })
+    // 修复前 @mediaa 多一个 a：浏览器直接丢弃整条规则，cssRules 里 0 条 media rule。
+    expect(mediaCount).toBeGreaterThan(0)
+  })
+
+  test('监听器表单在 375px 下塌成单列，保存按钮不再被挤成 37px', async ({ page }) => {
+    await page.setViewportSize({ width: 375, height: 720 })
+    await page.setContent(panelHtmlWith('remote', remoteBody))
+
+    const box = await page.locator('#save-listener').boundingBox()
+    expect(box).not.toBeNull()
+    // 事故现场：三列硬挤时按钮宽 37px。单列后至少应该有一个正常可点宽度。
+    expect(box!.width).toBeGreaterThan(88)
+  })
+
+  test('整页在 375px 下不横向溢出（box-sizing 漏网的 textarea 也不许）', async ({ page }) => {
+    await page.setViewportSize({ width: 375, height: 720 })
+    const overflowBody = `${remoteBody}
+      <textarea class="daw-input" id="cfg" style="width:100%;padding:8px 9px"></textarea>`
+    await page.setContent(panelHtmlWith('remote', overflowBody))
+
+    const metrics = await page.evaluate(() => ({
+      scrollWidth: document.documentElement.scrollWidth,
+      clientWidth: document.documentElement.clientWidth,
+      textareaScroll: document.getElementById('cfg')!.scrollWidth,
+      textareaClient: document.getElementById('cfg')!.clientWidth,
+    }))
+    // 事故现场：documentElement.scrollWidth 382/395 > 375。
+    expect(metrics.scrollWidth).toBeLessThanOrEqual(metrics.clientWidth)
+    // textarea 自身也不许 content-box 撑破（UI-02 的原始证据点）。
+    expect(metrics.textareaScroll).toBeLessThanOrEqual(metrics.textareaClient + 1)
+  })
+
+  test('普通按钮跟随宿主深色令牌（UI-04），禁用按钮给 not-allowed（UI-05）', async ({ page }) => {
+    await page.setViewportSize({ width: 375, height: 720 })
+    // 注入深色宿主令牌：旧版写死 #fff 的按钮此刻仍是白块；令牌化后应是 layer-3 深色。
+    await page.setContent(panelHtmlWith('remote', remoteBody, DARK_HOST_TOKENS))
+    const background = await page.locator('#save-listener').evaluate(el => getComputedStyle(el).backgroundColor)
+    expect(background).toBe('rgb(32, 42, 51)')
+    expect(background).not.toBe('rgb(255, 255, 255)')
+
+    await page.locator('#save-listener').evaluate(el => el.setAttribute('disabled', ''))
+    const disabledCursor = await page.locator('#save-listener').evaluate(el => getComputedStyle(el).cursor)
+    expect(disabledCursor).toBe('not-allowed')
+  })
+})
+
+/**
+ * 与 panelHtml 同款，但允许指定展开卡及其 body。
+ * `hostTokens`：模拟宿主在 :root 注入的 DSH 设计令牌（深色态），用来区分「写死 #fff」
+ * 与「令牌回退恰好是 #fff」——不注入令牌时两者同色，UI-04 根本无法被证伪。
+ */
+function panelHtmlWith(openTab: string, body: string, hostTokens = ''): string {
+  const cards = ADMIN_TABS.map(name =>
+    cardHtml(name, name === openTab, name === openTab ? body : name === 'roots' ? rootsBody : ''),
+  ).join('')
+  return `<!doctype html><html><head><meta charset="utf-8">
+    <style>:root{${hostTokens}}</style>
+    <style>${WORKSPACE_CSS}</style>
+    <style>body{margin:0;background:#fff}</style></head><body>
+    <!-- #stage 是 .daw-settings-section 的祖先而非后代，吃不到插件的 box-sizing 重置，
+         这里自己 border-box，否则 100vw+padding 会把页面撑出 24px 的假溢出。 -->
+    <div id="stage" style="box-sizing:border-box;width:100vw;padding:12px">
+      <div class="daw-settings-section">
+        <main class="daw-admin">${cards}</main>
+      </div>
+    </div></body></html>`
+}
+
+/** 宿主深色令牌的一组代表值（layer-3 是普通按钮/输入框的底色来源）。 */
+const DARK_HOST_TOKENS = '--dsw-alias-bg-layer-3:#202a33;--dsw-alias-label-primary:#e6ebf0;--dsw-alias-border-l2:#3a4651'

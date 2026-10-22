@@ -66,19 +66,47 @@ export interface ConfigTextResult {
   deviceId: string
 }
 
+/**
+ * 隧道阶段文案键（UI-03）：与服务端 cloudflared.ts 下发的 `labelKey` 逐字对应，
+ * 也与 i18n 词典里的 MessageKey 同名 —— 客户端直接 `t(labelKey, labelParams)` 即可，
+ * 不再渲染服务端拼好的中文。`''` 仅用于 idle（无进行中任务），不参与翻译。
+ */
+export type TunnelStageKey =
+  | 'tunnelStageLocating'
+  | 'tunnelStageBinaryFound'
+  | 'tunnelStageDownloadGithub'
+  | 'tunnelStageDownloadDeb'
+  | 'tunnelStageDownloadProgress'
+  // 第 9 键（H5）：镜像源下载且没有可用的内置校验和时的「未校验」可见态。
+  | 'tunnelStageDownloadUnverified'
+  | 'tunnelStageUnpackDeb'
+  | 'tunnelStageWriteBinary'
+  | 'tunnelStageStarting'
+
+/** 隧道错误文案键：客户端优先用它翻译；细节留在服务端日志，不下发。 */
+export type TunnelErrorKey =
+  | 'tunnelErrorAlreadyRunning'
+  | 'tunnelErrorDownload'
+  | 'tunnelErrorExited'
+
 /** Cloudflare 隧道的对外状态视图。 */
 export interface CloudflareTunnelState {
   channel: 'quick' | 'named' | null
   /** 对外地址（`https://` 前缀原文），null = 未就绪。 */
   url: string | null
   running: boolean
+  /** 兜底英文短消息（已脱敏，不含 URL/绝对路径）；渲染时 errorKey 优先。 */
   error?: string
+  errorKey?: TunnelErrorKey
+  errorParams?: Record<string, string | number>
 }
 
 /** 创建云隧道进行中任务的阶段进度（与后端 TunnelActivity 对应）。 */
 export interface CloudflareTunnelActivity {
   stage: 'idle' | 'locating' | 'downloading' | 'unpacking' | 'starting'
-  label: string
+  /** 阶段文案键；idle 时为空串。 */
+  labelKey: TunnelStageKey | ''
+  labelParams?: Record<string, string | number>
   percent: number | null
 }
 

@@ -101,7 +101,7 @@ host services 之上重建 0.1.x 的 `apiProxy` 面容，让 `chat-adapter` / `s
 
 ## 3. 逐目录说明
 
-### 3.1 `src/host/` —— 宿主侧（23 个文件）
+### 3.1 `src/host/` —— 宿主侧
 
 **入口与装配**
 
@@ -110,7 +110,7 @@ host services 之上重建 0.1.x 的 `apiProxy` 面容，让 `chat-adapter` / `s
 | `router.ts` | `ApiRouter`：唯一路由分派点，含 `/api/v1` 版本化 REST 与 `/manage` 回环管理面 | `index.ts` 装配；`server.ts` 转发 |
 | `server.ts` | `RemoteApiServer`（监听器启停/状态）、`attachEmbeddedRoutes`（把 API 代理与图片路由挂到 DSH webServer） | `index.ts`、`router.ts` |
 | `auth.ts` | `AuthService`：设备 token / loopback admin 两种身份，scope 与 root 校验，限流 | `router.ts`、`server.ts` |
-| `capabilities.ts` | `BRIDGE_CAPABILITIES`（26 项能力位）与 `connection.ready` 载荷 | `server.ts`（发首帧）、`tests/capabilities.spec.ts` |
+| `capabilities.ts` | `BRIDGE_CAPABILITIES` 能力位清单与 `connection.ready` 载荷（**清单与数量以本文件源码为准，勿在文档抄数字**） | `server.ts`（发首帧）、`tests/capabilities.spec.ts` |
 
 **业务 adapter（router 的下游）**
 
@@ -274,7 +274,9 @@ host services 之上重建 0.1.x 的 `apiProxy` 面容，让 `chat-adapter` / `s
 | `src/host/image-handoff.ts` | file | 识图路径设置与只读图片路由 |
 | `src/host/job-adapter.ts` | file | 后台任务 adapter |
 | `src/host/listener-config.ts` | file | 监听地址/端口归一化 |
+| `src/host/metrics.ts` | file | 进程内薄指标收集器（计数 + 固定样本环分位数） |
 | `src/host/path-policy.ts` | file | 相对路径校验 |
+| `src/host/retention.ts` | file | audit/idempotency 表的保留期清理调度（策略层，SQL 在 database.ts） |
 | `src/host/plugin-inventory.ts` | file | 插件清单与启停 |
 | `src/host/rate-limit.ts` | file | 固定窗口限流 |
 | `src/host/root-resolver.ts` | file | 绝对路径到授权根的解析 |

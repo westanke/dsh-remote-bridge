@@ -63,7 +63,8 @@ getter 现读 —— 改完立即生效，不需要重启 dsh。
 ## 能力位与事件面（2026-10-17）
 
 **客户端不再比版本号**。每条被接受的 WebSocket 连接，第一帧 `connection.ready` 都会带上
-`bridgeVersion` 与**能力清单**（`src/host/capabilities.ts`，26 项）。这是架构级的取舍：
+`bridgeVersion` 与**能力清单**（`src/host/capabilities.ts` 的 `BRIDGE_CAPABILITIES`；
+清单与数量以源码为准，文档不抄数字——AGENTS.md §3.2）。这是架构级的取舍：
 
 - 版本号回答的是「这份代码是什么年代的」，而客户端要知道的是「**这台服务端现在能做什么**」——
   同一个版本完全可能因配置差异关掉某条能力；
