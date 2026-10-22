@@ -354,7 +354,7 @@ pnpm pack
 
 `pnpm check` covers type-checking, documentation consistency, and tests. It currently passes **67 test files / 557 cases**, plus **8 browser-layer cases** (Playwright measuring real computed styles, including the 375px narrow-viewport contract).
 
-`npm pack` produces roughly a **0.61 MB** archive (v2.5.2 measured 635,316 bytes, SHA-256 `1779c02e…bdd3bd`): 2.2.0 dropped the standalone page and its editor dependencies and turned source maps off, down from 1.72 MB; it has since grown slightly with projection passthrough, the permission BFF, and the five-dimension hardening.
+`npm pack` produces roughly a **0.61 MB** archive (v2.5.2 measured 635,325 bytes, SHA-256 `18d36904…c8095`): 2.2.0 dropped the standalone page and its editor dependencies and turned source maps off, down from 1.72 MB; it has since grown slightly with projection passthrough, the permission BFF, and the five-dimension hardening.
 
 v2.5.0 was verified on DSH **0.2.1-rc.2** on real hardware: all 14/14 host services injected, the three jobs endpoints exercised, and the permission catalog returned the kernel's real three presets. The development baseline is upstream `dsh-v0.2.1-rc.2` (commit `687f282e8625c6b8d11ff58211a90524be2e4317`); see `engines.dsh` above for the supported range. CI covers Windows, Ubuntu, and macOS.
 
