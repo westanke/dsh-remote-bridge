@@ -210,6 +210,7 @@ const zh = {
   // 隧道按钮交互（本次手术的两位「主病号」）
   tunnelStopConfirm: '停止云隧道后，公网临时地址立即失效，正在经隧道连接的手机会断开。确定停止吗？',
   tunnelStartAndGenConfig: '开启隧道并生成配置',
+  tunnelRestartAndGenConfig: '停止后重开隧道并生成配置',
   tunnelConfigAuto: '隧道已开启，配置文本已自动生成',
   tunnelUrlPending: '隧道已启动，但暂时还没拿到公网地址，稍等片刻后点「用隧道地址生成配置」即可。',
   copyUrl: '复制地址',
@@ -445,6 +446,7 @@ const en: Messages = {
   // Tunnel button interactions (the two patients of this surgery)
   tunnelStopConfirm: 'Stopping the tunnel invalidates the public address immediately and disconnects phones currently connected through it. Stop anyway?',
   tunnelStartAndGenConfig: 'Start tunnel & generate config',
+  tunnelRestartAndGenConfig: 'Restart tunnel & generate config',
   tunnelConfigAuto: 'Tunnel started; config text generated automatically',
   tunnelUrlPending: 'The tunnel is starting but its public address is not ready yet. Wait a moment, then press “Generate config with tunnel address”.',
   copyUrl: 'Copy address',

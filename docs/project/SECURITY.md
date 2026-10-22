@@ -44,15 +44,22 @@
 ### 隧道模式下的规则
 
 - 隧道运行时 `/manage/**` 一律 403（判据 0），管理操作只能在本机 WebUI 做。
-- **唯一例外**是 `GET /manage/cloudflare/status` 与 `/activity`：它们只读、无副作用，
-  目的是让面板能读到「隧道开着」这个信号并给出人话提示（否则隧道一开，连这个信号也 403，
-  面板只剩一个无法解读的失败）。它们只豁免判据 0，判据 1/2/3 照旧生效。
-- 豁免**只针对判据 0**。判据 1/2/3 对这两个端点照旧生效，所以隧道来源的请求连状态端点
+- **例外有三个**：`GET /manage/cloudflare/status`、`/activity`（只读）与
+  `POST /manage/cloudflare/stop`。前两个让面板能读到「隧道开着」这个信号并给出人话提示
+  （否则隧道一开，连这个信号也 403，面板只剩一个无法解读的失败）。
+- `stop` 是 v2.5.2 加入的**唯一豁免判据 0 的写操作**。起因是真机回归：隧道一开连停机端点
+  也 403，本机面板没有任何体面出口（只能杀进程），同时 status 403 导致根列表刷空、主按钮
+  永久禁用——「开了就关不掉、按钮全灰」。它不构成提权：①唯一效果是把管理面**重新锁回**
+  判据 0（一个让系统更安全、且让隧道自身下线的动作，对隧道外攻击者毫无收益）；
+  ②判据 1 仍然生效，真实隧道来源必带 `cf-*` 边缘头，打 stop 照样 403；
+  ③`config/text`（能签发令牌）与 `create` 绝不豁免。
+- 豁免**只针对判据 0**。判据 1/2/3 对这三个端点照旧生效，所以隧道来源的请求连状态端点
   也是 403 —— 它读不到隧道地址（Quick Tunnel 地址本身就是一次对外入口），
   也读不到任何其他东西。「远程能读到 running 但读不到 url」被明确**否决**了：
   那需要为状态端点在判据 1 上再开一个口子，而那正是这次修复要消灭的东西。
   见 `tests/admin-loopback-escalation.spec.ts` 的
-  “still refuses a real tunnel caller on the exempt status endpoints”。
+  “still refuses a real tunnel caller on the exempt status endpoints” 与
+  “lets the LOCAL panel STOP the tunnel … but still blocks edge callers”。
 - 判据 1 里的 **Cloudflare 边缘头**（`Cf-Connecting-IP` / `Cf-Ray` / `Cf-IpCountry` /
   `Cf-Visitor`）是必要的：**cloudflared 的 `httpHostHeader` 默认为空，会把 `Host`
   改写成源站地址**，真实隧道下判据 2 挡不住它。实测确认（

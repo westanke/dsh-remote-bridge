@@ -1,5 +1,56 @@
 # 开发日志
 
+## 2.5.2 · 五维全量治疗 + 隧道一键出令牌回归修复（进行中，未发版）
+
+五维报告（安全/功能/性能/界面/按钮反馈）全部条目落地，详见同批提交与
+`研究类/remote-bridge-优化-20261022/dsh-remote-bridge-v2.5.1-手术报告.md`。本节只记
+真机手工测试暴露的**隧道按钮回归**及其修复（2026-10-22）。
+
+### 现象（用户真机实测）
+
+1. 点「开启隧道并生成配置」：隧道开了，但配置文本没出现、也找不到复制入口。
+2. 关闭隧道后，隧道区按钮全部灰掉，无法再操作。
+
+### 根因（两者同源）
+
+v2.5.1 的安全模型是「隧道运行中整个 `/manage/**` 判据 0 一律 403」，豁免集只有只读的
+`status`/`activity`：
+
+1. 客户端的一键串联是「先 `create`，再 `POST /manage/config/text`」。`create` 一成功隧道即
+   active，第二步必然撞判据 0 返回 403，配置面板永远不出现。
+2. 连 `POST /manage/cloudflare/stop` 自己都不豁免 —— 隧道一开本机面板无法体面停机；
+   同时 `status` 403 使整页状态刷新失败、根列表被当成空，主按钮
+   `disabled={tunnelBusy || roots.length===0}` 永久禁用（连停止路径一起被锁）。
+
+### 修复
+
+- **`src/host/router.ts`**：
+  - `TUNNEL_MODE_EXEMPT_PATHS` 加入 `/manage/cloudflare/stop`（唯一豁免判据 0 的**写**操作；
+    判据 1/2/3 照旧，真实隧道来源带 `cf-*` 头仍 403；它的唯一效果是把管理面重新锁回，不提权）。
+  - `POST /cloudflare/create` 接受可选请求体 `{ configText?: true, endpointLabel?, rootIds?, deviceName? }`：
+    在隧道**起来之前**的同一次调用里 `waitForUrl(12s)` 并经抽出的私有 `buildConfigText()`
+    顺带生成 `DSH1:` 令牌，响应在状态之外多带 `configText`、`url` 回填为等到的地址；
+    等不到地址则返回普通 state（不带 configText），客户端轮询 status 后补一步。
+    请求体在 `ensureCloudflared` 长耗时操作之前读完（流会随时间关闭）。
+- **`src/host/cloudflared.ts`**：新增 `waitForUrl(timeoutMs, signal?)`，订阅 `onStatus`，
+  地址出现/进程退出/有界超时三选一结算（unref 定时器、可取消、幂等清理）。
+- **`src/client/api.ts`**：`CloudflareTunnelState.configText?`；`tunnelCreate(withConfig, options)`
+  在 withConfig 时 POST `{configText:true,...}`。
+- **`src/client/workspace.tsx`**：一键路径直接消费 create 响应里搭车的 configText，不再隧道后
+  二次请求；`refresh` 对判据 0/代理 403 容错（保留旧 status、不弹红条、不清空数据）；
+  主按钮只在「开启」路径要求 roots 非空，停止路径永不被 roots 锁死；隧道已运行时点
+  「生成配置」改为一键「停止后重开并出令牌」（一次停止确认+一次开启确认，重开换随机域名已告知）。
+- 文案：新增 `tunnelRestartAndGenConfig`（中英）；豁免口径同步到 `SECURITY.md`/`API.md`/
+  `INTERFACES.md` 与 `auth.ts`/`router.ts` 注释（原「豁免端点只读无副作用」的描述已订正）。
+
+### 测了什么
+
+- `tests/admin-loopback-escalation.spec.ts`：新增本机 stop 200 / 边缘 cf 头 stop 403 /
+  config/text 仍 403 的矩阵（共 18 例）。
+- `tests/tunnel-create-config.spec.ts`（新，4 例）：configText:true 同次调用返回
+  configText（端点只有隧道地址）、设备真实落库、只起一次隧道；不带 configText 响应无该字段
+  且不调 waitForUrl；waitForUrl 超时不 500、返回普通 state；隧道运行中 create 仍 403。
+
 ## 2.5.1 · 堵住隧道/反代下的管理面提权（安全修复，2026-10-21）
 
 ### 基于什么

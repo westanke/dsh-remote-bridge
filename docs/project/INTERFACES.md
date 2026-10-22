@@ -67,10 +67,14 @@
 
 - **`Origin` 缺失仍放行是刻意的**：它不再构成信任来源，真正确立信任的是判据 0/1/2。
   翻严只会打死 `curl` 与本机脚本调试，挡不住隧道（隧道流量先撞判据 0）。
-- **唯一豁免判据 0 的端点**：`GET /manage/cloudflare/status|activity`（只读、无副作用），
-  目的是让本机面板读到「隧道开着」这个信号；判据 1/2/3 对它们**照旧生效**，
-  所以隧道来源的请求连它们也是 403（读不到隧道地址）。详见 `SECURITY.md` §管理面的信任边界。
-- 隧道模式下 `POST /manage/cloudflare/create|stop` **仍然 403**（它们不是豁免项）。
+- **豁免判据 0 的端点**：`GET /manage/cloudflare/status|activity`（只读、无副作用）与
+  `POST /manage/cloudflare/stop`（v2.5.2 起，唯一豁免的写操作——它只会把管理面重新锁回，
+  且判据 1 仍挡住边缘调用）。前两个让本机面板读到「隧道开着」这个信号；判据 1/2/3 对三者
+  **照旧生效**，所以隧道来源的请求连它们也是 403（读不到隧道地址、也停不了隧道）。
+  详见 `SECURITY.md` §管理面的信任边界。
+- 隧道模式下 `POST /manage/cloudflare/create` 与 `POST /manage/config/text` **仍然 403**
+  （create 只能在隧道起来之前调用；config/text 能签发令牌，绝不豁免）。一键「开隧道并出令牌」
+  改由 create 请求体 `configText:true` 在隧道启动前的同一调用里搭车完成。
 
 ### 2.2 REST 路由总表
 
@@ -156,8 +160,9 @@
 | GET | `/manage/audit` | 审计日志 |
 | GET / PUT | `/manage/image` | 识图路径设置 |
 | DELETE | `/manage/trash/{trashId}` | 彻底删除回收站条目 |
-| GET / HEAD | `/manage/cloudflare/status` · `/activity` | 隧道状态与活动（**唯一豁免判据 0**，供本机面板读取；判据 1/2/3 仍生效） |
-| POST | `/manage/cloudflare/create` · `/stop` | 建/停隧道 |
+| GET / HEAD | `/manage/cloudflare/status` · `/activity` | 隧道状态与活动（豁免判据 0，供本机面板读取；判据 1/2/3 仍生效） |
+| POST | `/manage/cloudflare/create` | 建隧道（仅隧道未运行时；可选 body `configText:true` 搭车返回 `DSH1:` 配置） |
+| POST | `/manage/cloudflare/stop` | 停隧道（**唯一豁免判据 0 的写操作**；判据 1/2/3 仍生效，边缘调用 403） |
 
 ---
 

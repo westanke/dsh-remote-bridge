@@ -64,16 +64,19 @@ curl -X POST http://127.0.0.1:3090/manage/config/text \
 
 **v2.5.1 起隧道运行时会禁用整个管理面**（`403 TUNNEL_MODE_ADMIN_DISABLED`）——
 因为隧道把公网流量转成 127.0.0.1 出站，回环判据会被它洗白。
-`status` 与 `activity` 是仅有的两个豁免项（只读、无副作用），好让**本机**面板还能读到
-「隧道开着」并给出人话提示；`create` / `stop` **不在豁免之列**，且豁免只针对判据 0 ——
-隧道来源的请求即使打豁免端点也 403。见 `SECURITY.md` §管理面的信任边界与「残余风险」。
+豁免项有三个：`status`、`activity`（只读）与 `stop`。`stop` 是 v2.5.2 加入的**唯一豁免判据 0
+的写操作**：否则隧道一开，本机面板连「体面停机」的出口都没有（只能杀进程），而 status 又 403、
+根列表刷空，主按钮随之永久禁用。放行它不构成提权——它的唯一效果是把管理面重新锁回判据 0，
+且判据 1 仍挡住任何经边缘的调用（真实 cloudflared 必带 `cf-*` 头）。`create` 与
+`config/text` **绝不豁免**（`create` 只在隧道起来之前可调用，`config/text` 能签发令牌）。
+豁免只针对判据 0：隧道来源打豁免端点照样 403。见 `SECURITY.md` §管理面的信任边界与「残余风险」。
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
-| `GET` | `/manage/cloudflare/status` | 当前隧道状态：`{ channel, url, running, error? }`。未启动时 `running:false`、`url:null`。**唯一豁免「隧道模式禁用管理面」的端点之一**，供本机面板读「隧道开着」；隧道来源的请求仍被判据 1/2/3 挡住（403），读不到隧道地址 |
-| `POST` | `/manage/cloudflare/create` | 查/建 `cloudflared` 可执行文件并启动 **Quick Tunnel**（转发到配置的监听端口，常为 `3090`），响应 `201` 返回与 `status` 同构的状态 |
-| `POST` | `/manage/cloudflare/stop` | 停止当前隧道，返回 `200` 与状态 |
-| `GET` | `/manage/cloudflare/activity` | 创建期间的阶段进度（用户侧用它轮询画进度条）：`{ stage, label, percent }`；`create` 结束即清空 |
+| `GET` | `/manage/cloudflare/status` | 当前隧道状态：`{ channel, url, running, error?, errorKey? }`。未启动时 `running:false`、`url:null`。豁免判据 0 的端点之一，供本机面板读「隧道开着」；隧道来源的请求仍被判据 1/2/3 挡住（403），读不到隧道地址 |
+| `POST` | `/manage/cloudflare/create` | 查/建 `cloudflared` 可执行文件并启动 **Quick Tunnel**（转发到配置的监听端口，常为 `3090`），响应 `201` 返回与 `status` 同构的状态。**请求体可选** `{ "configText": true }`（v2.5.2）：在隧道**起来之前**的这一次调用里等随机域名并顺带生成 `DSH1:` 令牌配置，响应在状态之外多带 `configText`（结构同 `POST /manage/config/text` 的 201），`url` 也回填为等到的地址；12s 内没等到地址则不带 `configText`、`url:null`，客户端可轮询 `status` 后补一步 |
+| `POST` | `/manage/cloudflare/stop` | 停止当前隧道，返回 `200` 与状态。**唯一豁免判据 0 的写操作**（v2.5.2）：本机面板在隧道运行时仍可停机；经边缘（带转发/`cf-*` 头）仍 403 |
+| `GET` | `/manage/cloudflare/activity` | 创建期间的阶段进度（用户侧用它轮询画进度条）：`{ stage, labelKey, labelParams?, percent }`（v2.5.2 起文案为可本地化的 `labelKey`，不再下发拼好的中文）；`create` 结束即清空 |
 
 `create` 会先下载缺省的 `cloudflared`（官方 GitHub Release，版本 `CLOUDFLARED_VERSION`；
 可用环境变量 `CLOUDFLARED_MIRROR` 指定下载镜像），随后 `spawn cloudflared tunnel --url http://127.0.0.1:<port>`，

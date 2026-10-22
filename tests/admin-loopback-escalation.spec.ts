@@ -368,6 +368,40 @@ describe('【真 bug｜高危｜远程提权】隧道拓扑下的管理面越权
     }
   })
 
+  it('lets the LOCAL panel STOP the tunnel while criterion 0 is active, but still blocks edge callers', async () => {
+    // 回归（用户真机实测）：隧道运行时连 POST /manage/cloudflare/stop 都被判据 0 挡掉，
+    // 于是面板上没有任何体面的停机出口，只能杀进程；而 status 又 403，roots 刷空，
+    // 主按钮因 roots.length===0 永久禁用 ——「开了就关不掉、按钮全灰」。
+    // stop 现在豁免判据 0（唯一豁免的写操作），但判据 1（边缘头）必须仍然生效：
+    // 真实 cloudflared 来源必带 cf-*，放行本机停机不等于让公网能停我们的隧道。
+    const harness = await startTunnelTopology({ tunnelActive: true })
+    try {
+      // 本机浏览器：stop 豁免判据 0 → 路由进处理器（测试里管理器无进程，返回 200 状态视图）。
+      const localStop = await asDesktopBrowser(harness, '/manage/cloudflare/stop', { method: 'POST' })
+      expect(localStop.status).toBe(200)
+      expect(errorCode(localStop.body)).toBeUndefined()
+
+      // 经边缘（带 cf-connecting-ip）：即使是豁免路径，判据 1 照样拒绝。
+      const edgeStop = await viaTunnel(harness, '/manage/cloudflare/stop', {
+        method: 'POST',
+        headers: { host: `127.0.0.1:${harness.port}`, 'cf-connecting-ip': '203.0.113.9' },
+      })
+      expect(edgeStop.status).toBe(403)
+      expect(errorCode(edgeStop.body)).toBe('ADMIN_PROXY_FORWARDED')
+
+      // 边界护栏：豁免集只许扩大到 stop，config/text 这种能签发令牌的写操作绝不能搭车。
+      const config = await asDesktopBrowser(harness, '/manage/config/text', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: '{}',
+      })
+      expect(config.status).toBe(403)
+      expect(errorCode(config.body)).toBe('TUNNEL_MODE_ADMIN_DISABLED')
+    } finally {
+      await harness.close()
+    }
+  })
+
   it('still refuses a real tunnel caller on the exempt status endpoints (judged by edge headers)', async () => {
     const harness = await startTunnelTopology({ tunnelActive: true })
     try {

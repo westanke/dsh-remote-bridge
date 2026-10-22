@@ -305,7 +305,14 @@ export function AdminPanel(props: { api: WorkspaceApi; initialOpen: AdminTab }):
       // 注意：刷新成功**不**清空 error。旧实现这里 setError(undefined)，会把上一个动作的报错
       // 抹掉（轮询一成功红条就消失，用户根本没看见）。错误由发起动作的人在开头自己清。
     } catch (cause) {
-      setError(cause)
+      // 隧道运行时 /manage/status 等会被管理面判据 0 挡 403。这是**预期且持续**的状态，
+      // 不是一次该弹红条、更不该把整页已加载数据（根列表/按钮可用性）清空的失败：
+      // 保留旧 status，只让隧道区自己的信号（status 端点豁免）说话。
+      const tunnelLockout =
+        cause instanceof WorkspaceApiError &&
+        cause.status === 403 &&
+        (cause.code === 'TUNNEL_MODE_ADMIN_DISABLED' || cause.code === 'ADMIN_PROXY_FORWARDED')
+      if (!tunnelLockout) setError(cause)
     }
   }, [props.api, openCards])
 
@@ -370,10 +377,13 @@ export function AdminPanel(props: { api: WorkspaceApi; initialOpen: AdminTab }):
   // 注：noticeKey 是每次调用的字面量参数，不进依赖。
 
   // 开启云隧道：进入下载/启动流程并轮询进度。开启与未运行时的「一键开隧道并出令牌」共用此起点。
-  // thenGenConfig=true 时，隧道地址一出来就**自动**接着生成配置文本 —— 修掉「开完还得再点一次」。
+  // thenGenConfig=true 时，让服务端在隧道**起来之前**的同一次 create 调用里顺带生成配置文本
+  // （state.configText 搭车返回）——这是关键：隧道一旦运行，/manage/config/text 会被管理面
+  // 判据 0 挡 403，客户端在隧道后再补请求必然失败（2.5.1 一键串联断裂的根因）。
   const createTunnel = useCallback(async (opts: { thenGenConfig?: boolean } = {}): Promise<void> => {
     // 公网暴露是高风险动作，先弹一次安全确认再动手；取消则不执行。
     if (!window.confirm(t('tunnelStartConfirm'))) return
+    const wantConfig = opts.thenGenConfig === true
     let alive = true
     setTunnelBusy(true)
     setError(undefined)
@@ -382,22 +392,32 @@ export function AdminPanel(props: { api: WorkspaceApi; initialOpen: AdminTab }):
     setActivity({ stage: 'locating', labelKey: 'tunnelStageLocating', percent: null })
     void pollActivityOnce(() => alive)
     try {
-      const created = await props.api.tunnelCreate()
+      const currentRoots = status?.roots ?? []
+      const created = await props.api.tunnelCreate(wantConfig, {
+        ...(currentRoots.length === 0 ? {} : { rootIds: currentRoots.map(root => root.id) }),
+      })
       setTunnel(created)
       setActivity(undefined)
       if (created.errorKey !== undefined || created.error !== undefined) {
         throw new Error(tunnelErrorText(created))
       }
+      // 一键串联优先消费「搭车」返回的配置；个别慢机器服务端 12s 内没等到地址时，
+      // configText 缺席——回退到轮询等地址，再由各按钮处理（不谎报成功）。
+      if (wantConfig && created.configText !== undefined) {
+        setConfigText(created.configText)
+        await refresh()
+        notify('tunnelConfigAuto')
+        return
+      }
       const url = created.url ?? await waitForTunnelUrl(() => alive)
       await refresh()
       if (url === null) {
-        // 进程起来了但 ~20s 内没拿到地址：不谎报成功，提示用户用现成按钮补一步。
+        // 进程起来了但没在窗口内拿到地址：不谎报成功，提示用户用现成按钮补一步。
         notify('tunnelUrlPending')
         return
       }
-      // 一键串联路径只发「隧道已开启，配置文本已自动生成」一条绿条（见 generateConfigForUrl）；
-      // 单独开隧道才发 tunnelStarted，避免两条绿条先后覆盖。
-      if (opts.thenGenConfig === true) {
+      if (wantConfig) {
+        // 理论上服务端已搭车返回；万一旧服务端/竞态漏带，这里兜底再试一次。
         await generateConfigForUrl(url, 'tunnelConfigAuto')
       } else {
         notify('tunnelStarted')
@@ -409,7 +429,7 @@ export function AdminPanel(props: { api: WorkspaceApi; initialOpen: AdminTab }):
       setActivity(undefined)
       setTunnelBusy(false)
     }
-  }, [props.api, refresh, t, notify, pollActivityOnce, waitForTunnelUrl, tunnelErrorText, generateConfigForUrl])
+  }, [props.api, refresh, status, t, notify, pollActivityOnce, waitForTunnelUrl, tunnelErrorText, generateConfigForUrl])
 
   // 停止云隧道（停止也有后果：地址立刻失效、手机断开，所以和开启一样要先确认）。
   const stopTunnel = useCallback(async (): Promise<void> => {
@@ -427,6 +447,32 @@ export function AdminPanel(props: { api: WorkspaceApi; initialOpen: AdminTab }):
       setTunnelBusy(false)
     }
   }, [props.api, refresh, t, notify])
+
+  // 「生成隧道配置文件」按钮的统一入口：
+  // - 隧道未运行 → createTunnel(thenGenConfig) 一键开隧道，配置在「启动前」窗口搭车返回（无 403）。
+  // - 隧道已运行 → 安全模型禁止隧道期间打 /manage/config/text（判据 0 一律 403）。要出新令牌，
+  //   只能先停止隧道（停止端点是唯一豁免判据 0 的写操作）再重开并出配置；重开会换随机域名、
+  //   旧地址当场失效，所以必须让用户在停止确认里知情。一次确认完成，不用点三次。
+  const tunnelConfigClick = useCallback(async (): Promise<void> => {
+    if (tunnel?.running === true) {
+      if (!window.confirm(t('tunnelStopConfirm'))) return
+      setTunnelBusy(true)
+      setError(undefined)
+      try {
+        const stopped = await props.api.tunnelStop()
+        setTunnel(stopped)
+        await refresh()
+      } catch (cause) {
+        setError(cause)
+      } finally {
+        setTunnelBusy(false)
+      }
+      // 停止确认本身已告知「地址失效」，紧接着重开只补一次开启确认（暴露风险知情）。
+      await createTunnel({ thenGenConfig: true })
+    } else {
+      await createTunnel({ thenGenConfig: true })
+    }
+  }, [props.api, tunnel, t, createTunnel, refresh, setError])
 
   // Refresh on mount and whenever a card opens: trash, audit and image settings are card-local,
   // and `refresh` now depends on `openCards`, so expanding a card fetches its data.
@@ -551,7 +597,10 @@ export function AdminPanel(props: { api: WorkspaceApi; initialOpen: AdminTab }):
                   <CopyButton text={tunnel.url} title={t('copyUrl')} copiedText={t('copied')} manualText={t('copyManual')} copyText={copyText} />
                 </div>
               )}
-              <button className="daw-command primary" style={{ marginTop: 10 }} disabled={tunnelBusy || roots.length === 0} onClick={() => { if (tunnel?.running === true) void stopTunnel(); else void createTunnel() }}>{tunnel?.running === true ? t('tunnelStop') : t('tunnelCreate')}</button>
+              {/* 停止路径绝不能被 roots.length===0 锁死：隧道运行时管理面关门、
+                  status/roots 可能刷新失败为空，若停止也禁用，用户就再也无法在面板上体面关隧道。
+                  仅「开启」路径需要至少一个根目录（配置要有落点）。 */}
+              <button className="daw-command primary" style={{ marginTop: 10 }} disabled={tunnelBusy || (tunnel?.running !== true && roots.length === 0)} onClick={() => { if (tunnel?.running === true) void stopTunnel(); else void createTunnel() }}>{tunnel?.running === true ? t('tunnelStop') : t('tunnelCreate')}</button>
               {activity !== undefined && (
                 <div className="daw-tunnel-progress" style={{ marginTop: 10 }}>
                   <div className="daw-progress-track">
@@ -603,12 +652,14 @@ export function AdminPanel(props: { api: WorkspaceApi; initialOpen: AdminTab }):
                 }).then(value => { setConfigText(value); notify('configCreated') }).catch(setError).finally(() => setConfigTextBusy(false))
               }}>{t('newConfigText')}</button>
               {tunnel !== undefined && (
-                <button className="daw-command daw-inline-command" disabled={configTextBusy || tunnelBusy} onClick={() => {
-                  // 隧道已运行且地址就绪：直接用隧道地址出令牌；否则一键「开隧道并自动出令牌」
-                  // （createTunnel 内部等 URL、再自动生成配置文本 —— 本次手术的头号病号）。
-                  if (tunnel.running === true && tunnel.url !== null && tunnel.url !== undefined) void generateConfigForUrl(tunnel.url)
-                  else void createTunnel({ thenGenConfig: true })
-                }}>{tunnel.running === true && tunnel.url !== null && tunnel.url !== undefined ? t('tunnelGenConfigReady') : t('tunnelStartAndGenConfig')}</button>
+                <button className="daw-command daw-inline-command" disabled={configTextBusy || tunnelBusy} onClick={() => { void tunnelConfigClick() }}>
+                  {/* 隧道未运行：一键「开隧道并自动出令牌」（配置在 create 的「启动前」窗口里搭车生成，
+                      避开隧道运行后 /manage/config/text 必 403 的安全模型）；隧道已运行：安全模型不允许
+                      在隧道期间生成配置，一键「停止后重开并出令牌」。 */}
+                  {tunnel.running !== true
+                    ? t('tunnelStartAndGenConfig')
+                    : t('tunnelRestartAndGenConfig')}
+                </button>
               )}
               <div className="daw-list-meta daw-listener-hint">{t('configTextScopeNote')}</div>
             </>}

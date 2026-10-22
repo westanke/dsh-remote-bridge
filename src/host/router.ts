@@ -155,7 +155,20 @@ export function matchJobRoute(pathname: string): JobRouteMatch | null {
  * 「远程能读到 running 但读不到 url」这个方案被**否决**了：那需要在判据 1 上再开一个口子，
  * 而那正是本次修复要消灭的东西。`tunnelStateFor` 里还留了一层不变量检查作双保险。
  */
-const TUNNEL_MODE_EXEMPT_PATHS = new Set(['/manage/cloudflare/status', '/manage/cloudflare/activity'])
+// 隧道运行时仍允许本机面板调用的管理路径。豁免的只是判据 0（隧道在跑），
+// 判据 1/2/3（转发头 / Host / Origin）对它们全部照旧——所以真实 cloudflared 流量
+// 带着 cf-* 边缘头照样 403。
+//
+// status / activity：只读信号（面板得知道「隧道开着」）。
+// stop：**唯一**豁免的写操作。理由是安全模型自身的可用性闭环——隧道一开其余管理面全关，
+// 若连「停隧道」也关，本机面板就没有任何体面的收场手段（只能杀进程）；而且 stop 的
+// 唯一效果正是「重新锁上管理面」，让外部能调它也没有收益（DoS 自己的隧道，隧道本来
+// 就可以被本机任何人停掉）。config/text 绝不进这个集合（它吐设备令牌）。
+const TUNNEL_MODE_EXEMPT_PATHS = new Set([
+  '/manage/cloudflare/status',
+  '/manage/cloudflare/activity',
+  '/manage/cloudflare/stop',
+])
 
 
 
@@ -988,48 +1001,7 @@ export class ApiRouter {
     // 「电脑 在哪里生成？」。配对码本来就在 WebUI 的这个页面生成，配置文本理应同处。
     if (method === 'POST' && pathname === '/manage/config/text') {
       const body = await readJson(req, 64_000) as Record<string, unknown>
-
-      const port = Number.isInteger(body.port) && Number(body.port) > 0 && Number(body.port) < 65_536
-        ? Number(body.port)
-        : DEFAULT_PORT
-
-      const endpoints = readRequestedEndpoints(body.endpoints) ?? detectEndpoints(port)
-      if (endpoints.length === 0) {
-        throw new ApiError(
-          400,
-          'NO_ENDPOINT',
-          'No usable local address was detected. Provide endpoints explicitly.',
-        )
-      }
-
-      const scopes = body.scopes === undefined
-        ? [...DEFAULT_CONFIG_SCOPES]
-        : validateScopes(body.scopes)
-      const rootIds = body.rootIds === undefined
-        ? this.options.database.listRoots().map(root => root.id)
-        : validateStringArray(body.rootIds, 'rootIds')
-      const deviceName = readOptionalText(body.deviceName) ?? 'Android 设备'
-      const displayName = readOptionalText(body.displayName) ?? defaultDisplayName()
-
-      const pairing = this.options.database.createPairing(rootIds, scopes, undefined, { requestId })
-      const exchanged = this.options.database.exchangePairing(pairing.code, deviceName, { requestId })
-
-      sendJson(res, 201, {
-        text: encodeConfigText({
-          displayName,
-          endpoints,
-          token: exchanged.token,
-          deviceName,
-          scopes,
-        }),
-        displayName,
-        deviceName,
-        endpoints,
-        deviceId: exchanged.device.id,
-        // 刻意不返回 pairing.expiresAt：那是**配对码**的十分钟有效期，
-        // 而设备令牌本身不过期（devices 表没有过期列）。回传它会被读成
-        // 「这段文本十分钟后就失效」，从而诱发没必要的重复生成。
-      })
+      sendJson(res, 201, this.buildConfigText(body, requestId))
       return
     }
     if (method === 'POST' && pathname === '/manage/remote/enable') {
@@ -1095,9 +1067,11 @@ export class ApiRouter {
     //
     // 端点只有在注入了 `tunnels` 时才可用；未注入（测试、未启用的构建）返回 404。
     //
-    // `status` / `activity` 是**唯一豁免判据 0** 的两个端点（见 `TUNNEL_MODE_EXEMPT_PATHS`）：
-    // 隧道一开，其余管理面全 403，而**本机面板**必须靠这个信号才能给出「隧道开着，
-    // 管理面停用」的人话提示。判据 1/2/3 对它们照旧生效 —— 隧道来源的请求连这里也是 403。
+    // `status` / `activity` / `stop` 是豁免判据 0 的三个端点（见 `TUNNEL_MODE_EXEMPT_PATHS`）：
+    // 隧道一开，其余管理面全 403，而**本机面板**必须靠前两个信号给出「隧道开着，
+    // 管理面停用」的人话提示；`stop` 则是用户在面板上体面关隧道的唯一出口——否则隧道一开
+    // 就只能杀进程。判据 1/2/3 对三者照旧生效：真实隧道来源必带 cf-* 头，连这里也是 403。
+    // `stop` 虽有副作用，但唯一效果是重新锁回管理面，不构成提权（详见 auth.ts allowTunnelMode）。
     if (this.options.tunnels !== undefined && pathname === '/manage/cloudflare/status') {
       if (method === 'GET' || method === 'HEAD') {
         sendJson(res, 200, this.tunnelStateFor(req))
@@ -1111,6 +1085,10 @@ export class ApiRouter {
       }
     }
     if (this.options.tunnels !== undefined && method === 'POST' && pathname === '/manage/cloudflare/create') {
+      // 请求体必须在任何长耗时操作（下载 cloudflared、spawn、等地址）**之前**读完：
+      // 请求体是一条随时间关闭的流，等 startQuick 之后再读会挂住或读到空。
+      const createBody = (await readJson(req, 64_000).catch(() => ({}))) as Record<string, unknown>
+      const wantConfig = createBody.configText === true
       const binDir = this.options.cloudflaredBinDir
       let exe: string
       try {
@@ -1138,12 +1116,41 @@ export class ApiRouter {
       }
       // 转发到「配置的监听端口」（不是实际绑定的 127.0.0.1 探测端口）。
       // oc隧道入口即桥接给客户端连，client 连的是 wss:// 边缘 → cloudflared → localhost:port。
-      const status = this.options.remote.status()
-      const port = status.configuredPort ?? DEFAULT_PORT
+      const remoteStatus = this.options.remote.status()
+      const port = remoteStatus.configuredPort ?? DEFAULT_PORT
       const state = await this.options.tunnels.startQuick(exe, port)
+
+      // 一键「开隧道并出令牌」（2.5.2）：这次请求发生在隧道**起来之前**，管理面尚未被
+      // 判据 0 关门。若客户端请求了 configText，就在这里等随机域名出来并直接带出令牌
+      // 配置文本——否则客户端得在隧道运行后再打一次 /manage/config/text，而那时该端点
+      // 必然 403（v2.5.1 的安全模型），一键串联因此断裂。
+      //
+      // 等待是有界的（waitForUrl 默认 12s）：等不到就照常返回 state（running、url 可能为 null），
+      // 客户端仍可轮询 /cloudflare/status（该端点豁免判据 0）拿到地址后再走自己的补一步路径。
+      let configText: Record<string, unknown> | undefined
+      // startQuick 的快照在 stdout 抓到域名前就返回（url 多为 null）。wantConfig 时等到的
+      // 地址回填进响应，让客户端这一次调用就同时拿到 state.url 与配置文本，不必再轮询。
+      let resolvedUrl: string | null = state.url
+      if (wantConfig) {
+        const tunnelUrl = state.url ?? await this.options.tunnels.waitForUrl()
+        resolvedUrl = tunnelUrl
+        if (tunnelUrl !== null) {
+          // 显式端点只用隧道地址；rootIds 与 deviceName 透传（沿用 config/text 的窄语义）。
+          configText = this.buildConfigText(
+            {
+              endpoints: [{ label: readOptionalText(createBody.endpointLabel) ?? '云隧道', baseUrl: tunnelUrl }],
+              ...(createBody.rootIds === undefined ? {} : { rootIds: createBody.rootIds }),
+              ...(createBody.deviceName === undefined ? {} : { deviceName: createBody.deviceName }),
+            },
+            requestId,
+          )
+        }
+      }
+
       this.options.tunnels!.clearActivity()
       this.options.database.audit('admin', 'loopback-admin', 'cloudflare.create', undefined, undefined, {}, requestId)
-      sendJson(res, 201, state)
+      const responseState = resolvedUrl === state.url ? state : { ...state, url: resolvedUrl }
+      sendJson(res, 201, configText === undefined ? responseState : { ...responseState, configText })
       return
     }
     if (this.options.tunnels !== undefined && method === 'POST' && pathname === '/manage/cloudflare/stop') {
@@ -1171,6 +1178,65 @@ export class ApiRouter {
    * 评估结论见报告：本轮选择「远程一律 403」而不是「远程读得到但 `url` 为 null」，
    * 因为后者需要为状态端点在判据 1 上再开一个口子，而那正是这次修复要消灭的东西。
    */
+  /**
+   * 生成一行可粘贴的 `DSH1:` 配置文本（POST /manage/config/text 与「一键开隧道并出令牌」
+   * 的 create 端点共用，避免两处各写一套配对/兑换/编码逻辑而漂移）。
+   *
+   * 入参字段与 /manage/config/text 的窄格式一致：
+   * - endpoints：显式给出则不再做本机网卡探测（隧道场景必须只塞隧道地址，不能混入 LAN）；
+   * - rootIds / scopes / deviceName / displayName / port：全部可选，缺省沿用原端点口径；
+   * - scopes 缺省是**五个非破坏性默认权限**（不含 files.delete / settings.write），
+   *   调用方若显式传 DEVICE_SCOPES 会放大手机权限，create 一键路径不传。
+   *
+   * 刻意不返回 pairing.expiresAt：那是配对码的十分钟有效期，设备令牌本身不过期。
+   */
+  private buildConfigText(body: Record<string, unknown>, requestId: string): {
+    text: string
+    displayName: string
+    deviceName: string
+    endpoints: ConfigEndpoint[]
+    deviceId: string
+  } {
+    const port = Number.isInteger(body.port) && Number(body.port) > 0 && Number(body.port) < 65_536
+      ? Number(body.port)
+      : DEFAULT_PORT
+
+    const endpoints = readRequestedEndpoints(body.endpoints) ?? detectEndpoints(port)
+    if (endpoints.length === 0) {
+      throw new ApiError(
+        400,
+        'NO_ENDPOINT',
+        'No usable local address was detected. Provide endpoints explicitly.',
+      )
+    }
+
+    const scopes = body.scopes === undefined
+      ? [...DEFAULT_CONFIG_SCOPES]
+      : validateScopes(body.scopes)
+    const rootIds = body.rootIds === undefined
+      ? this.options.database.listRoots().map(root => root.id)
+      : validateStringArray(body.rootIds, 'rootIds')
+    const deviceName = readOptionalText(body.deviceName) ?? 'Android 设备'
+    const displayName = readOptionalText(body.displayName) ?? defaultDisplayName()
+
+    const pairing = this.options.database.createPairing(rootIds, scopes, undefined, { requestId })
+    const exchanged = this.options.database.exchangePairing(pairing.code, deviceName, { requestId })
+
+    return {
+      text: encodeConfigText({
+        displayName,
+        endpoints,
+        token: exchanged.token,
+        deviceName,
+        scopes,
+      }),
+      displayName,
+      deviceName,
+      endpoints,
+      deviceId: exchanged.device.id,
+    }
+  }
+
   private tunnelStateFor(req: IncomingMessage): TunnelPublicState {
     const tunnels = this.options.tunnels
     if (tunnels === undefined) throw new ApiError(404, 'ROUTE_NOT_FOUND', 'The requested management route does not exist.')

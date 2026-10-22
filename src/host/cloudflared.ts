@@ -561,9 +561,12 @@ export class CloudflaredTunnelManager {
   /** 订阅状态变化；返回取消函数。 */
   onStatus(cb: () => void): () => void {
     this.listeners.push(cb)
-    return () => {
-      this.listeners = this.listeners.filter((fn) => fn !== cb)
-    }
+    return () => this.offStatus(cb)
+  }
+
+  /** 取消一个状态订阅（onStatus 返回的函数与 waitForUrl 共用）。 */
+  private offStatus(cb: () => void): void {
+    this.listeners = this.listeners.filter((fn) => fn !== cb)
   }
 
   private emit(): void {
@@ -635,6 +638,44 @@ export class CloudflaredTunnelManager {
       }
     })
     return this.publicState
+  }
+
+  /**
+   * 等待子进程把随机域名打印到 stdout（spawn 后 `url` 通常还要几秒才有）。
+   *
+   * 存在的理由（2.5.2）：`POST /manage/cloudflare/create` 发生在隧道**起来之前**，
+   * 此刻管理面还没被判据 0 关门；一旦在这次请求里等出地址并顺带出令牌配置文本，
+   * 客户端就不必在隧道运行后再打一次 `/manage/config/text`（那时必然 403，
+   * 这正是「一键开隧道+出令牌」失效的根因）。
+   *
+   * 任一条件满足即结算：地址出现 → resolve(url)；进程退出/超时 → resolve(null)
+   * （不抛，调用方据 null 决定要不要让客户端走轮询补一步）。调用方传 AbortSignal 可提前走人。
+   */
+  async waitForUrl(timeoutMs = 12_000, signal?: AbortSignal): Promise<string | null> {
+    if (this.url !== null) return this.url
+    if (this.process === null || this.process.killed) return null
+    return await new Promise<string | null>((resolve) => {
+      let settled = false
+      const finish = (value: string | null): void => {
+        if (settled) return
+        settled = true
+        clearTimeout(timer)
+        this.offStatus(observer)
+        signal?.removeEventListener('abort', onAbort)
+        resolve(value)
+      }
+      const observer = (): void => {
+        if (this.url !== null) finish(this.url)
+        else if (this.process === null || this.process.killed) finish(null)
+      }
+      const onAbort = (): void => finish(null)
+      const timer = setTimeout(() => finish(null), timeoutMs)
+      timer.unref?.()
+      signal?.addEventListener('abort', onAbort, { once: true })
+      this.onStatus(observer)
+      // 注册后再看一眼，防地址在 await 间隙已到。
+      observer()
+    })
   }
 
   /** 停止当前隧道。 */

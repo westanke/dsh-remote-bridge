@@ -99,6 +99,12 @@ export interface CloudflareTunnelState {
   error?: string
   errorKey?: TunnelErrorKey
   errorParams?: Record<string, string | number>
+  /**
+   * 一键「开隧道并出令牌」时，create 请求（body 带 configText:true）在隧道起来前
+   * 的同一次调用里顺带生成的令牌配置文本。隧道运行后 /manage/config/text 会被
+   * 管理面判据 0 挡 403，所以配置必须搭这班「启动前」的车。
+   */
+  configText?: ConfigTextResult
 }
 
 /** 创建云隧道进行中任务的阶段进度（与后端 TunnelActivity 对应）。 */
@@ -255,9 +261,30 @@ export class WorkspaceApi {
     return this.manageJson('/cloudflare/activity')
   }
 
-  /** 创建（或复用）cloudflared 并启动 Quick Tunnel，返回对外地址。 */
-  async tunnelCreate(): Promise<CloudflareTunnelState> {
-    return this.manageJson('/cloudflare/create', { method: 'POST' })
+  /**
+   * 创建（或复用）cloudflared 并启动 Quick Tunnel，返回对外地址。
+   *
+   * `withConfig=true`（一键「开隧道并出令牌」）：请求体带 `configText:true`，服务端在
+   * 隧道**起来之前**的这一次调用里等地址并顺带生成令牌配置文本（见 state.configText）。
+   * 必须走这班车：隧道一旦运行，单独的 /manage/config/text 会被管理面判据 0 挡 403。
+   * endpointLabel/rootIds/deviceName 可选透传给服务端的配置生成。
+   */
+  async tunnelCreate(
+    withConfig = false,
+    options: { endpointLabel?: string; rootIds?: string[]; deviceName?: string } = {},
+  ): Promise<CloudflareTunnelState> {
+    if (withConfig !== true) {
+      return this.manageJson('/cloudflare/create', { method: 'POST' })
+    }
+    return this.manageJson('/cloudflare/create', {
+      method: 'POST',
+      body: JSON.stringify({
+        configText: true,
+        ...(options.endpointLabel === undefined ? {} : { endpointLabel: options.endpointLabel }),
+        ...(options.rootIds === undefined ? {} : { rootIds: options.rootIds }),
+        ...(options.deviceName === undefined ? {} : { deviceName: options.deviceName }),
+      }),
+    })
   }
 
   /** 停止当前隧道。 */

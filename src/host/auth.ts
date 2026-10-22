@@ -86,9 +86,12 @@ export interface LocalAdminOptions {
  *
  * @param req - 待判定的请求。
  * @param options.tunnelActive - 是否有我们自管的隧道在运行；缺省视为没有。
- * @param options.allowTunnelMode - 仅用于「隧道状态」这类**只读、无副作用**的端点：
- *   让它们豁免判据 0（否则隧道一开，面板连「隧道开着」这件事都读不到），
- *   判据 1/2/3 仍然全部生效。**其他任何 `/manage` 端点都不许传这个选项。**
+ * @param options.allowTunnelMode - 仅用于「隧道状态」与「停止隧道」端点：让它们豁免判据 0
+ *   （否则隧道一开，面板连「隧道开着」都读不到，也无法体面地把隧道停掉），判据 1/2/3
+ *   仍然全部生效。其中 `cloudflare/stop` 是**唯一**豁免的写操作 —— 它的唯一效果就是把
+ *   管理面重新锁上（重新拉回判据 0），且判据 1 仍挡住任何经隧道/代理的调用，所以对真实
+ *   隧道来源（必带 cf-* 头）不可利用；放行它不构成任何提权。**其他任何 `/manage` 端点
+ *   （尤其 config/text）都不许传这个选项。**
  */
 export function adminRefusal(
   req: IncomingMessage,
