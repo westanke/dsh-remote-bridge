@@ -51,6 +51,24 @@ v2.5.1 的安全模型是「隧道运行中整个 `/manage/**` 判据 0 一律 4
   configText（端点只有隧道地址）、设备真实落库、只起一次隧道；不带 configText 响应无该字段
   且不调 waitForUrl；waitForUrl 超时不 500、返回普通 state；隧道运行中 create 仍 403。
 
+### 真机复诊：重进设置页误显「隧道已停止」、按钮全废（同日）
+
+- **现象**：隧道开着（手机正常连着），退出设置页再进来，药丸显示「隧道已停止」且所有按钮
+  不可操作。
+- **根因**：`refresh()` 把不豁免的 `GET /manage/status` 放在最前，隧道运行中它必 403，
+  整个 try 中断 —— 后面豁免的 `tunnelStatus()` 永远走不到（全新挂载时 tunnel 停在
+  undefined ⇒ 误显已停止），roots 也没加载（⇒ 按钮被 `roots.length===0` 锁死）。
+- **修复（`src/client/workspace.tsx`）**：
+  - 隧道状态提到刷新最前、独立 try/catch 且**无条件拉取**（它是全局管理面锁定判据，
+    原来只在 remote 卡展开时拉，停在别的卡时门控全部失效）；
+  - 新增 `managementLocked = tunnel?.running === true`：隧道期除「停止隧道」与
+    「停止后重开并出令牌」两个出口外，加根/删根/监听/权限/配对/配置/关远程全部禁用，
+    顶部显示常驻人话提示（新键 `managementLockedWhileTunnel`，中英），停止后自动恢复；
+    `(status.remoteEnabled || managementLocked)` 保证重进页面（status 403）时出令牌入口仍渲染。
+- **验证**：React18 + Playwright 一次性真点击台 19 断言全绿（重进停在 roots/remote 两张卡、
+  运行中药丸/地址/停止出口正确、其余写操作门控、无假红条、停止后恢复、正常态不受影响）；
+  tsc/vitest 67 文件 557 例/docs/e2e 8 例全过。
+
 ## 2.5.1 · 堵住隧道/反代下的管理面提权（安全修复，2026-10-21）
 
 ### 基于什么

@@ -284,6 +284,18 @@ export function AdminPanel(props: { api: WorkspaceApi; initialOpen: AdminTab }):
   }, [])
 
   const refresh = useCallback(async () => {
+    // 隧道状态走的是豁免判据 0 的 /manage/cloudflare/status，隧道运行中也读得到 —— 必须
+    // **先于、且独立于**下面的 /manage/status 拉取。否则 status 在隧道期返回 403 会中断整个
+    // 刷新，隧道状态永远拿不到：重进设置页时 tunnel 停在 undefined（误显「隧道已停止」），
+    // roots 也没加载（按钮全被 roots.length===0 锁死）——这正是真机抓到的「重进页面装死」。
+    // 隧道状态是「管理面是否锁定」的全局判据，不能只在 remote 卡展开时才拉：用户重进
+    // 设置页可能停在任意一张卡，缺了它 managementLocked 恒为 false，其它卡的写操作门控
+    // 就全部失效。豁免判据 0，隧道运行中也读得到，成本一次轻请求。
+    try {
+      setTunnel(await props.api.tunnelStatus())
+    } catch {
+      // 隧道状态读不到不该拖垮整页；主状态请求的错误处理在下面。
+    }
     try {
       const next = await props.api.status()
       setStatus(next)
@@ -299,15 +311,12 @@ export function AdminPanel(props: { api: WorkspaceApi; initialOpen: AdminTab }):
         setImageDraft(settings.subdir)
         setImageSaved(false)
       }
-      if (openCards.has('remote')) {
-        setTunnel(await props.api.tunnelStatus())
-      }
       // 注意：刷新成功**不**清空 error。旧实现这里 setError(undefined)，会把上一个动作的报错
       // 抹掉（轮询一成功红条就消失，用户根本没看见）。错误由发起动作的人在开头自己清。
     } catch (cause) {
-      // 隧道运行时 /manage/status 等会被管理面判据 0 挡 403。这是**预期且持续**的状态，
-      // 不是一次该弹红条、更不该把整页已加载数据（根列表/按钮可用性）清空的失败：
-      // 保留旧 status，只让隧道区自己的信号（status 端点豁免）说话。
+      // 隧道运行时 /manage/status 会被管理面判据 0 挡 403。这是**预期且持续**的安全状态，
+      // 不是该弹红条、更不该把整页已加载数据清空的失败：保留旧 status，隧道区靠上面独立
+      // 拉到的豁免状态照常工作（显示运行中、可停止），其余管理操作由 locked 提示说明。
       const tunnelLockout =
         cause instanceof WorkspaceApiError &&
         cause.status === 403 &&
@@ -485,6 +494,10 @@ export function AdminPanel(props: { api: WorkspaceApi; initialOpen: AdminTab }):
     setListenerPort(String(status.configuredPort))
   }, [status?.configuredHost, status?.configuredPort])
   const roots = status?.roots ?? []
+  // 隧道运行中：管理面除「隧道自身的状态/停止」外一律 403（判据 0）。此时其它卡片的写操作
+  // 注定失败，统一禁用并给出人话提示，而不是让用户点一个炸一个（重进设置页尤其明显：
+  // status 403 → roots 为空 → 所有按钮看起来莫名其妙地全灰）。
+  const managementLocked = tunnel?.running === true
   // 「启用远程访问」时授予的权限 —— **由用户在这里勾选**。
   //
   // 这条链路是：勾权限 → 生成访问码 → APP 输入码 → 权限随设备一起落库。
@@ -532,11 +545,12 @@ export function AdminPanel(props: { api: WorkspaceApi; initialOpen: AdminTab }):
           </div>
           {error !== undefined && <div className="daw-warning" role="alert">{messageOf(error, t)}</div>}
           {notice !== undefined && <div className="daw-success" role="status">{t(notice.key, notice.params)}</div>}
+          {managementLocked && <div className="daw-warning" role="status">{t('managementLockedWhileTunnel')}</div>}
           <SettingsCard key="roots" tab="roots" nameKey={tabLabelKey('roots')} descKey={tabDescKey('roots')} open={isOpen('roots')} onToggle={() => toggleCard('roots')}>
             <div className="daw-form-row">
               <input className="daw-input" placeholder={t('absolutePath')} value={path} onChange={event => setPath(event.target.value)} />
               <input className="daw-input" placeholder={t('displayLabel')} value={label} onChange={event => setLabel(event.target.value)} />
-              <button className="daw-command primary" onClick={() => {
+              <button className="daw-command primary" disabled={managementLocked} title={managementLocked ? t('managementLockedWhileTunnel') : undefined} onClick={() => {
                 setError(undefined)
                 void props.api.addRoot(path, label || undefined)
                   .then(() => { setPath(''); setLabel(''); notify('rootAdded'); return refresh() })
@@ -547,7 +561,7 @@ export function AdminPanel(props: { api: WorkspaceApi; initialOpen: AdminTab }):
               // 内置的 DSH 工作区根不给删除按钮：它在服务端也被 `removeRoot` 拦着，
               // 这里干脆不提供入口，而不是提供一个必然报错的按钮。
               ? <span className="daw-list-meta daw-builtin-hint">{t('builtinRootHint')}</span>
-              : <button className="daw-icon danger" title={t('removeRoot')} aria-label={t('removeRoot')} onClick={() => {
+              : <button className="daw-icon danger" title={t('removeRoot')} aria-label={t('removeRoot')} disabled={managementLocked} onClick={() => {
                 // 移除根不删文件但会让所有手机立刻失去访问权（UI-06）：先确认。
                 if (!window.confirm(t('removeRootConfirm', { label: root.label }))) return
                 setError(undefined)
@@ -562,11 +576,11 @@ export function AdminPanel(props: { api: WorkspaceApi; initialOpen: AdminTab }):
           </SettingsCard>
           <SettingsCard key="remote" tab="remote" nameKey={tabLabelKey('remote')} descKey={tabDescKey('remote')} open={isOpen('remote')} onToggle={() => toggleCard('remote')}>
             <div className="daw-warning">{t('httpWarning')}</div>
-            {roots.length === 0 && <div className="daw-warning">{t('addRootBeforeRemote')}</div>}
+            {roots.length === 0 && !managementLocked && <div className="daw-warning">{t('addRootBeforeRemote')}</div>}
             <div className="daw-listener-form">
-              <label className="daw-field"><span>{t('bindIp')}</span><input className="daw-input" value={listenerHost} disabled={status?.remoteEnabled} spellCheck={false} placeholder="0.0.0.0" onChange={event => setListenerHost(event.target.value)} /></label>
-              <label className="daw-field"><span>{t('bindPort')}</span><input className="daw-input" type="number" min={1} max={65535} inputMode="numeric" value={listenerPort} disabled={status?.remoteEnabled} onChange={event => setListenerPort(event.target.value)} /></label>
-              <button className="daw-command" disabled={status?.remoteEnabled || listenerHost.trim() === '' || !listenerPortValid || !listenerDirty} onClick={() => {
+              <label className="daw-field"><span>{t('bindIp')}</span><input className="daw-input" value={listenerHost} disabled={status?.remoteEnabled || managementLocked} spellCheck={false} placeholder="0.0.0.0" onChange={event => setListenerHost(event.target.value)} /></label>
+              <label className="daw-field"><span>{t('bindPort')}</span><input className="daw-input" type="number" min={1} max={65535} inputMode="numeric" value={listenerPort} disabled={status?.remoteEnabled || managementLocked} onChange={event => setListenerPort(event.target.value)} /></label>
+              <button className="daw-command" disabled={managementLocked || status?.remoteEnabled || listenerHost.trim() === '' || !listenerPortValid || !listenerDirty} onClick={() => {
                 setError(undefined)
                 void props.api.configureListener(listenerHost.trim(), parsedListenerPort)
                   .then(result => poll(result.id))
@@ -616,10 +630,12 @@ export function AdminPanel(props: { api: WorkspaceApi; initialOpen: AdminTab }):
                 </div>
               )}
             </div>
-            <div className="daw-scope-grid">{DEVICE_SCOPES.map(scope => <label className="daw-check" key={scope}><input type="checkbox" checked={grantedScopes.includes(scope)} onChange={() => toggleScope(scope)} /> {scopeLabel(locale, scope)}</label>)}</div>
+            <fieldset disabled={managementLocked} style={{ border: 'none', margin: 0, padding: 0 }}>
+              <div className="daw-scope-grid">{DEVICE_SCOPES.map(scope => <label className="daw-check" key={scope}><input type="checkbox" checked={grantedScopes.includes(scope)} onChange={() => toggleScope(scope)} /> {scopeLabel(locale, scope)}</label>)}</div>
+            </fieldset>
             <div className="daw-list-meta">{grantNotice}</div>
             {status?.remoteEnabled
-              ? <button className="daw-command danger" onClick={() => {
+              ? <button className="daw-command danger" disabled={managementLocked} title={managementLocked ? t('managementLockedWhileTunnel') : undefined} onClick={() => {
                 // 关闭远程会立刻断开所有手机（UI-06）：原先一点即发，现在先确认。
                 if (!window.confirm(t('disableRemoteConfirm'))) return
                 setError(undefined)
@@ -628,18 +644,21 @@ export function AdminPanel(props: { api: WorkspaceApi; initialOpen: AdminTab }):
                   .then(() => { notify('remoteDisabled'); return refresh() })
                   .catch(setError)
               }}>{t('disableRemote')}</button>
-              : <button className="daw-command primary" disabled={roots.length === 0 || listenerDirty || !listenerPortValid || listenerHost.trim() === '' || grantedScopes.length === 0} onClick={() => {
+              : <button className="daw-command primary" disabled={managementLocked || roots.length === 0 || listenerDirty || !listenerPortValid || listenerHost.trim() === '' || grantedScopes.length === 0} onClick={() => {
                 setError(undefined)
                 void props.api.enableRemote(roots.map(root => root.id), grantedScopes).then(result => poll(result.id)).catch(setError)
               }}>{t('enablePairing')}</button>}
-            {status?.remoteEnabled && <>
-              <button className="daw-command daw-inline-command" disabled={grantedScopes.length === 0} onClick={() => {
+            {/* 隧道运行 ⇒ 远程访问必然已启用（隧道只是已启用监听器的前置）；重进页面时
+                /manage/status 403 拿不到 remoteEnabled，用 managementLocked 补这个真值，否则
+                「停止后重开并出令牌」这个出口在重进页面后会整块不渲染。 */}
+            {(status?.remoteEnabled === true || managementLocked) && <>
+              <button className="daw-command daw-inline-command" disabled={managementLocked || grantedScopes.length === 0} title={managementLocked ? t('managementLockedWhileTunnel') : undefined} onClick={() => {
                 setError(undefined)
                 void props.api.createPairing(roots.map(root => root.id), grantedScopes)
                   .then(value => { setPairing(value); notify('pairingCreated') })
                   .catch(setError)
               }}>{t('newPairingCode')}</button>
-              <button className="daw-command daw-inline-command" disabled={configTextBusy} onClick={() => {
+              <button className="daw-command daw-inline-command" disabled={managementLocked || configTextBusy} title={managementLocked ? t('managementLockedWhileTunnel') : undefined} onClick={() => {
                 const manual = configEndpoint.trim()
                 setConfigTextBusy(true)
                 setError(undefined)
@@ -672,8 +691,8 @@ export function AdminPanel(props: { api: WorkspaceApi; initialOpen: AdminTab }):
                 <div className="daw-list-meta" style={{ marginTop: -4 }}>{t('pairingExpiresAt', { minutes: pairingMinutesLeft(pairing.expiresAt, now) })}</div>
               )}
             </>}
-            {status?.remoteEnabled && <div style={{ marginTop: 12, maxWidth: 560 }}>
-              <label className="daw-field"><span>{t('configTextManual')}</span><input className="daw-input" value={configEndpoint} spellCheck={false} placeholder={t('configTextManualPlaceholder')} onChange={event => setConfigEndpoint(event.target.value)} /></label>
+            {(status?.remoteEnabled === true || managementLocked) && <div style={{ marginTop: 12, maxWidth: 560 }}>
+              <label className="daw-field"><span>{t('configTextManual')}</span><input className="daw-input" value={configEndpoint} disabled={managementLocked} spellCheck={false} placeholder={t('configTextManualPlaceholder')} onChange={event => setConfigEndpoint(event.target.value)} /></label>
               <div className="daw-list-meta" style={{ marginTop: 5 }}>{t('configTextManualHint')}</div>
             </div>}
             {configText !== undefined && <ConfigTextPanel result={configText} />}
