@@ -69,7 +69,10 @@ describe('设备令牌的生成与存储', () => {
 
     // `listDevices()` 的每一项都会原样进 `/manage/devices` 响应。
     const view = database.listDevices()[0] as unknown as Record<string, unknown>
-    expect(Object.keys(view).sort()).toEqual(['createdAt', 'id', 'name', 'rootIds', 'scopes'])
+    // `nameSource` 是设备身份的来源标记（default/detected/declared），随设备视图一起出去
+    // 是设计内的 —— 它决定界面能不能自动改名。平台与型号在这里不出现是因为这台设备
+    // 从未带身份连过（库里的 platform/model 两列都是 NULL，按设计整个键都不写）。
+    expect(Object.keys(view).sort()).toEqual(['createdAt', 'id', 'name', 'nameSource', 'rootIds', 'scopes'])
     expect(JSON.stringify(view)).not.toContain(hashSecret(exchanged.token))
     expect(JSON.stringify(view)).not.toContain(exchanged.token)
   })

@@ -53,6 +53,24 @@ export interface DeviceView {
   createdAt: number
   lastSeenAt?: number
   revokedAt?: number
+  /**
+   * 设备自称/被推断出的平台与型号（`android` / `harmonyos` / …）。
+   *
+   * **可选**：老设备从未上报过就是 `undefined`，客户端必须能接受缺省。
+   * 这两个字段只用于界面显示与排查，**不参与任何授权判断** —— 它们是客户端
+   * 自称的，不是可信身份。
+   */
+  platform?: string
+  model?: string
+  /**
+   * `name` 是怎么来的，决定后续能不能自动改名。
+   *
+   * - `default`：配对时的占位名（`'Android 设备'` 之类）。设备第一次带身份
+   *   连上来时**允许**被自动改成「平台 · 型号」。
+   * - `detected`：由探测到的身份自动生成。后续身份变了仍可再自动更新。
+   * - `declared`：用户手工改的。**永不再自动覆盖** —— 用户起的名比机器猜的准。
+   */
+  nameSource?: 'default' | 'detected' | 'declared'
 }
 
 export interface FileEntryView {

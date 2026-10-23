@@ -8,6 +8,7 @@ import { adminRefusal, requestAddress } from './auth.ts'
 import type { DshChatAdapter } from './chat-adapter.ts'
 import type { PromptContentPart, UserQuestionAnswer } from './chat-adapter.ts'
 import type { StoredRoot, WorkspaceDatabase } from './database.ts'
+import { DEFAULT_DEVICE_NAME } from './device-identity.ts'
 import { handoffLocaleOf } from './dsh-0.2-bridge.ts'
 import type { HostServiceReport } from './host-service-probe.ts'
 import { JobAdapter } from './job-adapter.ts'
@@ -305,7 +306,21 @@ export class ApiRouter {
       if (principal.kind === 'admin') {
         sendJson(res, 200, { id: principal.id, name: 'Local administrator', scopes: [...principal.scopes], rootIds: 'all' })
       } else {
-        sendJson(res, 200, { id: principal.id, name: principal.name, scopes: [...principal.scopes], rootIds: [...principal.rootIds] })
+        // platform / model 从库里读：`principal` 是认证那一刻的快照，而身份是在
+        // 认证路径上**顺带**探测入库的（见 `auth.ts` 的 `recordIdentity`），
+        // 这里补一次读才能让客户端第一次请求就看到自己的平台与型号。
+        // `getActiveDevice` 不刷新 last_seen_at —— 那是 `authenticate` 的事，
+        // 在这里重复刷会把「最后使用时间」的含义变成「最后一次问自己是谁」。
+        const stored = this.options.database.getActiveDevice(principal.id)
+        sendJson(res, 200, {
+          id: principal.id,
+          name: principal.name,
+          scopes: [...principal.scopes],
+          rootIds: [...principal.rootIds],
+          ...(stored?.platform === undefined ? {} : { platform: stored.platform }),
+          ...(stored?.model === undefined ? {} : { model: stored.model }),
+          ...(stored?.nameSource === undefined ? {} : { nameSource: stored.nameSource }),
+        })
       }
       return
     }
@@ -1028,14 +1043,31 @@ export class ApiRouter {
     const deviceRoute = pathname.match(/^\/manage\/devices\/([^/]+)$/)
     if (deviceRoute !== null && method === 'PATCH') {
       const body = await readJson(req, 64_000) as Record<string, unknown>
+      const deviceId = decodePathSegment(deviceRoute[1] as string)
+      if (body.name !== undefined && typeof body.name !== 'string') {
+        throw new ApiError(400, 'BODY_INVALID', 'name must be a string.')
+      }
+      // 同一个 PATCH 承载两件不同的事：改名与改授权。
+      //
+      // 为什么允许只给 `name`：设备表里那些配对时被塞了占位名（「Android 设备」）
+      // 的行，此前**没有任何 API 能修** —— 只能直接改库。用户 2026-10-23 的原话
+      // 是「已登记错的设备名没有任何 API 能修」。
+      //
+      // 两者同时给时的顺序：**先校验全部入参，再改名，最后改权限**。改名是幂等的
+      // 装饰性操作，改权限是「谁的权限被扩大了」的敏感操作；万一后者失败，留下一个
+      // 已改的名字无害，反过来则是「权限已变但界面报错」。
+      const onlyRename = body.scopes === undefined && body.rootIds === undefined
+      if (onlyRename) {
+        if (body.name === undefined) {
+          throw new ApiError(400, 'BODY_INVALID', 'Either name or the scopes/rootIds pair is required.')
+        }
+        sendJson(res, 200, this.options.database.renameDevice(deviceId, body.name as string, { requestId }))
+        return
+      }
       const scopes = validateScopes(body.scopes)
       const rootIds = validateStringArray(body.rootIds, 'rootIds')
-      sendJson(res, 200, this.options.database.updateDevice(
-        decodePathSegment(deviceRoute[1] as string),
-        scopes,
-        rootIds,
-        { requestId },
-      ))
+      if (typeof body.name === 'string') this.options.database.renameDevice(deviceId, body.name, { requestId })
+      sendJson(res, 200, this.options.database.updateDevice(deviceId, scopes, rootIds, { requestId }))
       return
     }
     if (deviceRoute !== null && method === 'DELETE') {
@@ -1284,7 +1316,7 @@ export class ApiRouter {
       throw new Error('隧道已启动，但 12 秒内没拿到公网地址。稍等片刻再发一次 /tunnel 可复用当前地址。')
     }
     const text = typeof configText.text === 'string' ? configText.text : ''
-    const deviceName = typeof configText.deviceName === 'string' ? configText.deviceName : 'Android 设备'
+    const deviceName = typeof configText.deviceName === 'string' ? configText.deviceName : DEFAULT_DEVICE_NAME
     return { url: state.url, text, deviceName }
   }
 
@@ -1341,11 +1373,17 @@ export class ApiRouter {
     const rootIds = body.rootIds === undefined
       ? this.options.database.listRoots().map(root => root.id)
       : validateStringArray(body.rootIds, 'rootIds')
-    const deviceName = readOptionalText(body.deviceName) ?? 'Android 设备'
+    const deviceName = readOptionalText(body.deviceName) ?? DEFAULT_DEVICE_NAME
     const displayName = readOptionalText(body.displayName) ?? defaultDisplayName()
 
     const pairing = this.options.database.createPairing(rootIds, scopes, undefined, { requestId })
-    const exchanged = this.options.database.exchangePairing(pairing.code, deviceName, { requestId })
+    // `nameSource: 'default'`：这个名字是占位名，等设备第一次带身份连上来时
+    // 允许被自动改成「平台 · 型号」（见 `device-identity.ts`）。用户手工填了
+    // `deviceName` 时则是 `declared` —— 那是人的意图，机器不该覆盖。
+    const exchanged = this.options.database.exchangePairing(pairing.code, deviceName, {
+      requestId,
+      ...(readOptionalText(body.deviceName) === undefined ? { nameSource: 'default' } : { nameSource: 'declared' }),
+    })
 
     return {
       text: encodeConfigText({

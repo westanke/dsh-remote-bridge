@@ -317,6 +317,14 @@ A device also needs an explicit grant for every `rootId`. Local administrators m
 
 The default selection is five scopes — `chat.read`, `chat.write`, `files.read`, `files.write`, `settings.read` — and **deliberately excludes** `files.delete` and `settings.write`. You can still tick them; the default just no longer hands out destructive permissions on its own.
 
+### Device names and models
+
+At pairing time the bridge has no idea who will use the token, so a new device starts with a **platform-neutral** placeholder name (`Mobile device`). The first time the device connects, the bridge works out its platform and model from the request and replaces the name with `platform · model` (for example `HarmonyOS · ICL-AL10`).
+
+Platform detection prefers the client-declared `X-Dsh-Device: <platform>/<model>` header and falls back to the `User-Agent`. **The model is only taken from what the client reports**: neither okhttp nor ArkWeb puts a model in its default UA, and the bridge will not guess — a wrong model is worse than no model.
+
+Open **Devices** and use **Permissions** to rename a device. **A name you set yourself is never overwritten**; an automatically generated name still updates when the device reports a new identity. Device names are for display and troubleshooting only and take no part in authorization.
+
 **Revoking a device deletes it from the database** rather than leaving a marker row behind. Its grants go with it, while the audit trail (who revoked which device, and when) is kept.
 
 ## Upgrade and uninstall

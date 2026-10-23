@@ -899,6 +899,7 @@ function DeviceRow(props: {
   const [editing, setEditing] = useState(false)
   const [scopes, setScopes] = useState<DeviceScope[]>(props.device.scopes)
   const [rootIds, setRootIds] = useState<string[]>(props.device.rootIds)
+  const [name, setName] = useState(props.device.name)
   const toggle = <T extends string>(list: T[], value: T): T[] => list.includes(value) ? list.filter(item => item !== value) : [...list, value]
   // 完整 uuid 是一行噪声：列表里只露「前8…后4」，hover/读屏仍可拿到全量（title/aria-label）。
   const shortId = props.device.id.length > 14
@@ -907,22 +908,62 @@ function DeviceRow(props: {
   const lastSeen = props.device.lastSeenAt === undefined
     ? t('deviceNeverSeen')
     : t('deviceLastSeen', { time: new Date(props.device.lastSeenAt).toLocaleString(locale) })
+  // 名字是自动来的（占位名或探测名）时给个提示 —— 用户才知道「改不改得动、
+  // 改了会不会被覆盖」。`declared` 是用户自己起的，不需要说明。
+  const autoNamed = props.device.nameSource === 'default' || props.device.nameSource === 'detected'
+  // 一个「保存」按钮同时提交改名与权限，而不是并排两个按钮。
+  //
+  // 理由：界面上它们在同一块编辑区里，并排两个「保存」必然有人点错。分成两次
+  // 请求（而不是一个 PATCH 带全部字段）是因为它们是两件不同的事：改名不需要
+  // 权限校验通过，权限校验失败也不该把名字回滚。
+  //
+  // 顺序：**先改名，后权限**。名字是无害的装饰性字段；万一权限请求失败，留下
+  // 一个已改的名字比「权限已变但界面报错」好。
+  const saveAll = (): void => {
+    const trimmed = name.trim()
+    const rename = trimmed !== '' && trimmed !== props.device.name
+    const renameCall = rename ? props.api.renameDevice(props.device.id, trimmed) : Promise.resolve()
+    void renameCall
+      .then(() => props.api.updateDevice(props.device.id, scopes, rootIds))
+      .then(props.onChanged)
+      .then(() => {
+        setEditing(false)
+        props.onNotice(rename ? 'deviceNameSaved' : 'permissionsSaved')
+      })
+      .catch(props.onError)
+  }
   return <div className="daw-list-row">
     <div>
-      <div className="daw-list-title">{props.device.name} {props.device.revokedAt !== undefined && <span className="daw-pill">{t('revoked')}</span>}</div>
+      <div className="daw-list-title">
+        {props.device.name}
+        {props.device.revokedAt !== undefined && <span className="daw-pill">{t('revoked')}</span>}
+        {autoNamed && <span className="daw-pill" title={t('deviceRenameHint')}>{t('deviceDetectedName')}</span>}
+      </div>
       <div className="daw-list-meta">
         <span title={props.device.id}>{shortId}</span>
+        {props.device.platform !== undefined && <>{' · '}{props.device.platform}{props.device.model === undefined ? '' : ` · ${props.device.model}`}</>}
         {' · '}{lastSeen}
         {' · '}{(props.device.scopes.length === 0 ? t('noScopes') : props.device.scopes.map(scope => scopeLabel(locale, scope)).join(' · '))}
       </div>
       {editing && <>
+        <label className="daw-field">
+          <span>{t('deviceRename')}</span>
+          <input
+            className="daw-input"
+            value={name}
+            placeholder={t('deviceRenamePlaceholder')}
+            title={t('deviceRenameHint')}
+            onChange={event => setName(event.target.value)}
+            onKeyDown={event => { if (event.key === 'Enter') saveAll() }}
+          />
+        </label>
         <div className="daw-scope-grid">{DEVICE_SCOPES.map(scope => <label className="daw-check" key={scope}><input type="checkbox" checked={scopes.includes(scope)} onChange={() => setScopes(current => toggle(current, scope))} />{scopeLabel(locale, scope)}</label>)}</div>
         <div className="daw-scope-grid">{props.roots.map(root => <label className="daw-check" key={root.id}><input type="checkbox" checked={rootIds.includes(root.id)} onChange={() => setRootIds(current => toggle(current, root.id))} />{root.label}</label>)}</div>
       </>}
     </div>
     {props.device.revokedAt === undefined && <div>
-      {editing && <button className="daw-command primary" onClick={() => { void props.api.updateDevice(props.device.id, scopes, rootIds).then(props.onChanged).then(() => { setEditing(false); props.onNotice('permissionsSaved') }).catch(props.onError) }}>{t('save')}</button>}
-      <button className="daw-command" onClick={() => setEditing(value => !value)}>{editing ? t('cancel') : t('permissions')}</button>
+      {editing && <button className="daw-command primary" onClick={saveAll}>{t('save')}</button>}
+      <button className="daw-command" onClick={() => { setName(props.device.name); setEditing(value => !value) }}>{editing ? t('cancel') : t('permissions')}</button>
       <button
         className="daw-icon danger"
         title={t('revokeDevice')}

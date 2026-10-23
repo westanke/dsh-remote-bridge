@@ -46,6 +46,12 @@ data class DeviceView(
     val name: String,
     val scopes: List<String>,
     val rootIds: List<String>,
+    /** 平台：`android` / `harmonyos` / `ios` / …。老桥与从未连过的设备没有这个字段。 */
+    val platform: String? = null,
+    /** 型号。桥刻意不猜（okhttp/ArkWeb 默认 UA 里没有机型），所以多数时候是 null。 */
+    val model: String? = null,
+    /** `name` 的来源：`default` / `detected` / `declared`。null 等价于 `declared`。 */
+    val nameSource: String? = null,
 )
 
 @Serializable

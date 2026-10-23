@@ -1,7 +1,8 @@
 import type { IncomingMessage } from 'node:http'
 import type { DevicePrincipal, DeviceScope, Principal } from '../shared/contracts.ts'
 import { ADMIN_PRINCIPAL } from '../shared/contracts.ts'
-import type { WorkspaceDatabase } from './database.ts'
+import type { AuthenticatedDevice, WorkspaceDatabase } from './database.ts'
+import { describeDevice, parseDeviceIdentity } from './device-identity.ts'
 import { ApiError } from './errors.ts'
 import { loopbackHost } from './image-handoff.ts'
 import { FixedWindowLimiter } from './rate-limit.ts'
@@ -334,14 +335,51 @@ export class AuthService {
       this.authFailuresByPeer[peer].consume(key)
       throw new ApiError(401, 'TOKEN_INVALID', 'The device token is invalid or revoked.')
     }
+    // 设备身份在这里**顺带**落库：这是桥第一次能知道「这台令牌背后是台什么设备」的时刻。
+    // 配对时不可能知道（见 `device-identity.ts` 的文件头），所以只能放在认证路径上。
+    //
+    // 三个克制点：
+    // 1. 只在探测结果与库里不同时才写（`recordDeviceIdentity` 自己判），
+    //    一台设备一生通常只写一次 —— 否则每个读请求都会变成写请求。
+    // 2. 写失败**不影响鉴权**：拿不到设备名是显示问题，不该让设备连不上。
+    //    这是少数几处「吞异常」是正确选择的地方。
+    // 3. 只认客户端自称的结构化头与 UA，**绝不参与授权判断**（授权只看 scopes/rootIds）。
+    //
+    // 返回值是「改名后的新名字」：`device` 是认证那一刻的快照，本次请求的
+    // `devices/self` 应当立刻看到新名字，而不是等下一次请求。
+    const renamed = this.recordIdentity(req, device)
     const principal: DevicePrincipal = {
       kind: 'device',
       id: device.id,
-      name: device.name,
+      name: renamed ?? device.name,
       scopes: new Set(device.scopes),
       rootIds: new Set(device.rootIds),
     }
     return principal
+  }
+
+  /**
+   * 把本次请求探测到的身份记进库，并（在允许时）更新设备显示名。
+   *
+   * 吞掉一切异常的理由见调用点注释：设备名是显示信息，不该成为连接的前置条件。
+   *
+   * @returns 改名成功时的新名字；没改名（或探测不到）时 `undefined`。
+   */
+  private recordIdentity(req: IncomingMessage, device: AuthenticatedDevice): string | undefined {
+    try {
+      const identity = parseDeviceIdentity(req.headers)
+      if (identity.platform === undefined && identity.model === undefined) return undefined
+      const suggestedName = describeDevice(identity)
+      const changed = this.database.recordDeviceIdentity(device.id, {
+        ...(identity.platform === undefined ? {} : { platform: identity.platform }),
+        ...(identity.model === undefined ? {} : { model: identity.model }),
+        ...(suggestedName === undefined ? {} : { suggestedName }),
+      })
+      return changed ? suggestedName : undefined
+    } catch {
+      // 见调用点注释第 2 条。
+      return undefined
+    }
   }
 
   /**

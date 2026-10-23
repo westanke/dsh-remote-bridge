@@ -251,6 +251,11 @@ const zh = {
   // 设备行（UI-13）
   deviceLastSeen: '最后使用 {time}',
   deviceNeverSeen: '从未连接',
+  deviceRename: '改名',
+  deviceRenamePlaceholder: '给这台设备起个名字',
+  deviceRenameHint: '手动改过的名字不会被自动覆盖',
+  deviceNameSaved: '设备名已保存',
+  deviceDetectedName: '自动识别',
   // 识图灯箱（UI-14）
   imageLoadFailed: '图片加载失败',
   prevImage: '上一张',
@@ -494,6 +499,11 @@ const en: Messages = {
   // Device rows (UI-13)
   deviceLastSeen: 'Last seen {time}',
   deviceNeverSeen: 'Never connected',
+  deviceRename: 'Rename',
+  deviceRenamePlaceholder: 'Name this device',
+  deviceRenameHint: 'A name you set is never overwritten automatically',
+  deviceNameSaved: 'Device name saved',
+  deviceDetectedName: 'Detected',
   // Image handoff lightbox (UI-14)
   imageLoadFailed: 'Image failed to load',
   prevImage: 'Previous image',

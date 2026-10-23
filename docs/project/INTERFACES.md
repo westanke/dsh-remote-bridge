@@ -86,7 +86,7 @@
 | GET | `/api/v1/healthz` | — | 存活探针，只回 `{ok,version,pluginVersion}` | `router.ts` dispatch 健康探针分支 |
 | GET | `/api/v1/debug/host-services` | `scope:settings.read` | 宿主服务注入面报告（不可用时 404）。2.5.2 起移到鉴权之后（SEC-H1） | `router.ts` dispatch host-services 分支 |
 | POST | `/api/v1/pairings/exchange` | — | 配对码换设备 token（按对端限流） | `router.ts` dispatch pairing 分支 |
-| GET | `/api/v1/devices/self` | token | 当前设备身份与 scope（admin 得 `rootIds:'all'`） | `router.ts` dispatch devices 分支 |
+| GET | `/api/v1/devices/self` | token | 当前设备身份与 scope（admin 得 `rootIds:'all'`）；设备另有 `platform` / `model` / `nameSource` | `router.ts` dispatch devices 分支 |
 | GET | `/api/v1/roots` | `scope:files.read` | **只含 id/label/createdAt**，刻意不返回绝对路径 | `router.ts` dispatch roots 分支 |
 | GET | `/api/v1/roots/resolve?path=` | `scope:files.read` | 绝对路径 → `{rootId,path,kind,size,modifiedAt,contentType}`；非绝对路径 400，越界 404 | `router.ts` dispatch resolve 分支 |
 | GET | `/api/v1/roots/{rootId}/entries?path=&limit=&cursor=` | `scope:files.read`+root | 列目录（分页） | `dispatchEntries` |
@@ -163,7 +163,7 @@
 | GET / POST | `/manage/roots` | 列/加授权根 |
 | DELETE | `/manage/roots/{rootId}` | 删授权根 |
 | GET | `/manage/devices` | 设备清单 |
-| PATCH / DELETE | `/manage/devices/{deviceId}` | 改 scope/root · 撤销（直接删行） |
+| PATCH / DELETE | `/manage/devices/{deviceId}` | 改 scope/root、**只改名**（`{name}`）· 撤销（直接删行） |
 | POST | `/manage/pairings` | 生成配对码 |
 | POST | `/manage/config/text` | 生成 `DSH1:` 配置文本 |
 | POST | `/manage/remote/enable` · `/disable` | 开关远程监听 |

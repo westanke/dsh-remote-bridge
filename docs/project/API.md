@@ -32,7 +32,7 @@ curl -X POST http://127.0.0.1:3090/manage/config/text \
 | 字段 | 说明 |
 | --- | --- |
 | `displayName` | 电脑显示名，缺省取本机主机名 |
-| `deviceName` | 设备名（写进 `devices` 表，便于日后吊销），缺省 `Android 设备` |
+| `deviceName` | 设备名（写进 `devices` 表，便于日后吊销），缺省 `Mobile device`（**平台无关**；设备第一次带身份连上来时会被自动换成「平台 · 型号」） |
 | `scopes` | 设备权限，缺省为 5 项**非破坏性**权限（不含 `files.delete` / `settings.write`） |
 | `rootIds` | 授权的根，缺省为全部已注册根 |
 | `port` | 自动探测地址时拼接的端口，缺省 `3090` |

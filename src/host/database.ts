@@ -24,6 +24,10 @@ interface DeviceRow {
   created_at: number
   last_seen_at: number | null
   revoked_at: number | null
+  /** 迁移前的库没有这三列，读出来是 undefined。 */
+  platform: string | null
+  model: string | null
+  name_source: string | null
 }
 
 export interface StoredRoot extends RootView {
@@ -297,7 +301,7 @@ export class WorkspaceDatabase {
   exchangePairing(
     code: string,
     deviceName: string,
-    options: { requestId?: string } = {},
+    options: { requestId?: string; nameSource?: 'default' | 'declared' } = {},
   ): { token: string; device: DeviceView } {
     const normalized = normalizePairingCode(code)
     const now = Date.now()
@@ -321,8 +325,9 @@ export class WorkspaceDatabase {
       const scopes = parseScopes(row.scopes_json)
       const rootIds = JSON.parse(row.roots_json) as string[]
       this.db.prepare('UPDATE pairings SET used_at = ? WHERE code_hash = ?').run(now, row.code_hash)
-      this.db.prepare('INSERT INTO devices(id,name,token_hash,scopes_json,created_at) VALUES(?,?,?,?,?)')
-        .run(id, name, hashSecret(token), JSON.stringify(scopes), now)
+      const nameSource = options.nameSource ?? 'declared'
+      this.db.prepare('INSERT INTO devices(id,name,token_hash,scopes_json,created_at,name_source) VALUES(?,?,?,?,?,?)')
+        .run(id, name, hashSecret(token), JSON.stringify(scopes), now, nameSource)
       const grant = this.db.prepare('INSERT INTO device_roots(device_id,root_id) VALUES(?,?)')
       for (const rootId of rootIds) grant.run(id, rootId)
       // 审计与业务同事务：见方法注释。
@@ -331,7 +336,7 @@ export class WorkspaceDatabase {
       // 设备集合变了 → 版本号 +1（广播缓存失效）。
       // 放在 COMMIT 之后：回滚时不该留下一个「以为变了」的版本号。
       this.devicesRevisionCounter += 1
-      const device: DeviceView = { id, name, scopes, rootIds, createdAt: now }
+      const device: DeviceView = { id, name, scopes, rootIds, createdAt: now, nameSource }
       return { token, device }
     } catch (error) {
       this.db.exec('ROLLBACK')
@@ -365,7 +370,91 @@ export class WorkspaceDatabase {
       rootIds: rootRows.map(item => item.root_id),
       createdAt: row.created_at,
       ...(touchLastSeen ? { lastSeenAt: now } : row.last_seen_at === null ? {} : { lastSeenAt: row.last_seen_at }),
+      ...identityFields(row),
     }
+  }
+
+  /**
+   * 记录一次探测到的设备身份，必要时顺手把占位名改成「平台 · 型号」。
+   *
+   * 时序说明：配对时桥只知道「有个设备要连」，真正的平台与型号要等设备
+   * **第一次发请求**才拿得到。所以这个方法由认证路径调用（见 `auth.ts`
+   * 的 `principal`），而不是配对路径。
+   *
+   * ## 什么时候改名
+   *
+   * 只有 `name_source` 是 `default`（配对时的占位名）或 `detected`（上次自动
+   * 生成的）才改名。`declared`（用户手工改的）**永不动** —— 用户起的名比机器
+   * 猜的准，而且他能改一次就能改第二次，但机器每次连接都覆盖就再也留不住了。
+   *
+   * 老库的 `name_source` 是 NULL：那些行里的名字多半是硬编码的「Android 设备」，
+   * 但**也可能是用户手工改过的**（此前没有任何改名通道，所以实际上只有占位名；
+   * 不过万一有人直接改过库，我们不能替他决定）。保守起见把 NULL 当作
+   * `declared` 处理 —— 名字不动，只补 platform/model 两列。
+   *
+   * ## 为什么不做成「每次请求都写库」
+   *
+   * 调用方只在**探测结果与库里不同**时才调这里（见 `auth.ts`），所以正常情况
+   * 下一台设备一生只写一次。这不是性能考虑，而是避免把一次读请求变成写请求：
+   * 写请求会碰 WAL、会影响 `devicesRevisionCounter`，进而触发全体客户端重拉设备表。
+   *
+   * @returns 是否真的改了库（调用方据此决定要不要递增设备版本号）。
+   */
+  recordDeviceIdentity(
+    id: string,
+    identity: { platform?: string; model?: string; suggestedName?: string },
+  ): boolean {
+    const row = this.db.prepare('SELECT platform, model, name_source, name FROM devices WHERE id = ? AND revoked_at IS NULL')
+      .get(id) as { platform: string | null; model: string | null; name_source: string | null; name: string } | undefined
+    if (row === undefined) return false
+
+    const platform = identity.platform ?? row.platform
+    const model = identity.model ?? row.model
+    const source = row.name_source ?? 'declared'
+    const mayRename = source === 'default' || source === 'detected'
+    const suggested = identity.suggestedName
+    const rename = mayRename && suggested !== undefined && suggested !== row.name
+
+    const platformChanged = platform !== row.platform
+    const modelChanged = model !== row.model
+    if (!platformChanged && !modelChanged && !rename) return false
+
+    this.db.prepare('UPDATE devices SET platform = ?, model = ?, name = ?, name_source = ? WHERE id = ?').run(
+      platform ?? null,
+      model ?? null,
+      rename ? suggested : row.name,
+      rename ? 'detected' : row.name_source ?? 'declared',
+      id,
+    )
+    this.devicesRevisionCounter += 1
+    return true
+  }
+
+  /**
+   * 用户手工改名。
+   *
+   * 一旦走这条路，`name_source` 就变成 `declared`，此后任何自动探测都**不再**
+   * 覆盖它。这是「用户意图优先于机器推断」的唯一实现点，所以单独一个方法而不是
+   * 塞进 `updateDevice`：权限变更与改名是两件不同的事，审计动作也不该混。
+   */
+  renameDevice(id: string, name: string, options: { requestId?: string } = {}): DeviceView {
+    const trimmed = name.trim().slice(0, 120)
+    if (trimmed === '') throw new ApiError(400, 'BODY_INVALID', 'name must not be empty.')
+    this.db.exec('BEGIN IMMEDIATE')
+    try {
+      const changed = this.db.prepare("UPDATE devices SET name = ?, name_source = 'declared' WHERE id = ? AND revoked_at IS NULL")
+        .run(trimmed, id)
+      if (changed.changes === 0) throw new ApiError(404, 'DEVICE_NOT_FOUND', 'The active device does not exist.')
+      this.audit('admin', 'loopback-admin', 'device.rename', undefined, undefined, { deviceId: id, name: trimmed }, options.requestId)
+      this.db.exec('COMMIT')
+    } catch (error) {
+      this.db.exec('ROLLBACK')
+      throw error
+    }
+    this.devicesRevisionCounter += 1
+    const device = this.getActiveDevice(id)
+    if (device === undefined) throw new ApiError(404, 'DEVICE_NOT_FOUND', 'The active device does not exist.')
+    return device
   }
 
   listDevices(): DeviceView[] {
@@ -382,6 +471,7 @@ export class WorkspaceDatabase {
       createdAt: row.created_at,
       ...(row.last_seen_at === null ? {} : { lastSeenAt: row.last_seen_at }),
       ...(row.revoked_at === null ? {} : { revokedAt: row.revoked_at }),
+      ...identityFields(row),
     }))
   }
 
@@ -752,6 +842,27 @@ export class WorkspaceDatabase {
     if (!this.hasRootColumn('builtin')) {
       this.db.exec('ALTER TABLE roots ADD COLUMN builtin INTEGER NOT NULL DEFAULT 0')
     }
+    // `devices` 的身份三列（platform / model / name_source）。
+    //
+    // 起因（用户 2026-10-23 反馈）：鸿蒙手机在设备表里被登记成「Android 设备」。
+    // 配置文本路径在**生成文本时**就把设备行写进库了，那时桥还不知道将来谁来用
+    // 这个令牌，只能塞一个硬编码占位名。真正的平台与型号要等设备第一次发请求
+    // 才拿得到，所以需要这两列存探测结果。
+    //
+    // `name_source` 决定「还能不能自动改名」：占位名与自动探测出来的名字可以被
+    // 后续探测覆盖，**用户手工改过的名字永不再动**（用户起的名比机器猜的准）。
+    //
+    // 同样走 PRAGMA 探测（`ADD COLUMN` 不认 `IF NOT EXISTS`），保证 migrate()
+    // 可以无条件重跑。老库三列全为 NULL，语义上等价于「从没探测过」。
+    if (!this.hasDeviceColumn('platform')) {
+      this.db.exec('ALTER TABLE devices ADD COLUMN platform TEXT')
+    }
+    if (!this.hasDeviceColumn('model')) {
+      this.db.exec('ALTER TABLE devices ADD COLUMN model TEXT')
+    }
+    if (!this.hasDeviceColumn('name_source')) {
+      this.db.exec('ALTER TABLE devices ADD COLUMN name_source TEXT')
+    }
     // 去掉 `real_path` 上的 UNIQUE。
     //
     // 起因：用户要求内置的「DSH 工作区」根**不可删除**，但他自己先加的那条同目录根
@@ -813,13 +924,42 @@ export class WorkspaceDatabase {
 
   /** `roots` 表是否已有指定列。 */
   private hasRootColumn(column: string): boolean {
-    const columns = this.db.prepare('PRAGMA table_info(roots)').all() as { name: string }[]
+    return this.hasColumn('roots', column)
+  }
+
+  /** `devices` 表是否已有指定列。 */
+  private hasDeviceColumn(column: string): boolean {
+    return this.hasColumn('devices', column)
+  }
+
+  private hasColumn(table: string, column: string): boolean {
+    const columns = this.db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[]
     return columns.some(entry => entry.name === column)
   }
 }
 
 export function hashSecret(secret: string): string {
   return createHash('sha256').update(secret, 'utf8').digest('hex')
+}
+
+/**
+ * 把库里三列身份摊成 `DeviceView` 的可选字段。
+ *
+ * 老库这三列是 NULL —— 此时**整个键都不写**，而不是写 `platform: undefined`：
+ * 前者在 JSON 里不存在（老客户端忽略未知字段，新客户端看到 `undefined`），
+ * 后者会被 `JSON.stringify` 丢掉，两种结果一样，但省略更诚实。
+ */
+function identityFields(row: {
+  platform?: string | null
+  model?: string | null
+  name_source?: string | null
+}): { platform?: string; model?: string; nameSource?: 'default' | 'detected' | 'declared' } {
+  const source = row.name_source
+  return {
+    ...(row.platform === null || row.platform === undefined ? {} : { platform: row.platform }),
+    ...(row.model === null || row.model === undefined ? {} : { model: row.model }),
+    ...(source === 'default' || source === 'detected' || source === 'declared' ? { nameSource: source } : {}),
+  }
 }
 
 function normalizePairingCode(code: string): string {

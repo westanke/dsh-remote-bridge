@@ -231,6 +231,20 @@ export class WorkspaceApi {
     })
   }
 
+  /**
+   * 只改名，不动权限。
+   *
+   * 走同一个 PATCH 但只带 `name` —— 服务端见到没有 scopes/rootIds 就按「纯改名」
+   * 处理。分成两个调用点（而不是把 name 塞进 `updateDevice`）是因为它们是两件
+   * 不同的事：改名不需要先想清楚权限，也不该因为权限校验失败而失败。
+   */
+  async renameDevice(deviceId: string, name: string): Promise<void> {
+    await this.manageJson(`/devices/${encodeURIComponent(deviceId)}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ name }),
+    })
+  }
+
   async revokeDevice(deviceId: string): Promise<void> {
     await this.manageJson(`/devices/${encodeURIComponent(deviceId)}`, { method: 'DELETE' })
   }

@@ -20,8 +20,10 @@
 | 文件 | 行数 | 为什么是债 | 清账阶段 |
 |---|---|---|---|
 | `src/host/dsh-0.2-bridge.ts` | 1 818 | **兼容适配层**：重建 0.1.x `apiProxy` 面容，一个文件里装了会话、审批、提问、模型多条链路的重建逻辑。改一条要读 1 700 行 | 按链路拆（session / approval / question / model 各一模块），公共面容抽 `api-proxy-facade.ts` |
-| `src/host/router.ts` | 1 293 | 全部 REST 路由集中一处；新端点往里加，旧端点没人敢删 | 按资源域拆 `routes/*.ts`，router 只做组装 |
+| `src/host/router.ts` | 1 931 | 全部 REST 路由集中一处；新端点往里加，旧端点没人敢删 | 按资源域拆 `routes/*.ts`，router 只做组装 |
 | `src/host/chat-adapter.ts` | 1 409 | 会话链路适配：列表/历史/发送/取消/workspace/agent-preset 全在一个文件 | 按端点族拆 |
+| `src/host/database.ts` | 1 005 | 用户数据（根/设备/回收站/配对/幂等/审计）全在一个类里；每次加字段都要在这个文件里写迁移 | 按表族拆 `db/{roots,devices,trash,pairings}.ts`，迁移独立成 `db/migrations.ts` |
+| `src/host/settings-adapter.ts` | 731 | 提供商与模型目录、通用设置命名空间两件事挤在一个类；SEC-H11 的重定向闸门也落在这里 | 拆 `providers-adapter.ts` 与 `namespaces-adapter.ts` |
 
 > 这三个是**已登记的债，不是许可**。新增超预算文件必须先入本表再写码。
 >
@@ -33,6 +35,14 @@
 > 三个 `/manage/cloudflare/*` 端点与其注释，续在既有 404 之前）、`dsh-0.2-bridge.ts` 1 818
 > （其间又 +32 的既有增长）、`chat-adapter.ts` 1 409（+37 的既有增长）、`cloudflared.ts` 221
 > （新文件，未超预算不入表，只在此留痕）。
+> **2026-10-23 SEC-H11 修复与设备身份后复核**（`wc -l` 实测）：`router.ts` 1 293 → **1 931**
+> （设备改名通道、`devices/self` 身份回传、三处 provider 审计字段、注释扩写），
+> `database.ts` 865 → **1 005**（设备身份三列迁移、`recordDeviceIdentity`、`renameDevice`），
+> `settings-adapter.ts` 588 → **731**（三入口地址策略接线、凭据重定向闸门、`effectiveBaseURL`）。
+> **新登记两条**：`database.ts` 与 `settings-adapter.ts` 本轮越线，按「新增超预算文件必须先入表
+> 再写码」的纪律补登（严格说是既有文件越线，处置相同：可见、带清账阶段）。
+> `provider-url-policy.ts`（186）与 `device-identity.ts`（180）是两个新文件，
+> **刻意拆出去就是为了不把既有超预算文件推得更高**。
 > **预算（600 行/文件）未变，清账阶段未变** —— 变的只是「事实数字」。
 > 本文件第 41 行自己写着「旧值会骗人」，这次就是被它抓到：上一轮我引用台账时，
 > 记的还是几个月前的数字。

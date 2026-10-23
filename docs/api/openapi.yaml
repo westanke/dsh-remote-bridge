@@ -1437,6 +1437,28 @@ components:
         rootIds:
           type: array
           items: { type: string }
+        platform:
+          type: string
+          description: >-
+            Platform the device reported, or the one inferred from its
+            User-Agent when it reported nothing. Absent for devices that never
+            connected since the bridge started collecting it. Informational
+            only — it is client-declared and never takes part in authorization.
+          enum: [android, harmonyos, ios, ipados, web, windows, macos, linux]
+        model:
+          type: string
+          description: >-
+            Model the device reported. Often absent: neither okhttp nor ArkWeb
+            puts a model in its default User-Agent, and the bridge deliberately
+            does not guess — a wrong model is worse than no model.
+        nameSource:
+          type: string
+          description: >-
+            Where `name` came from. `default` (pairing placeholder) and
+            `detected` (auto-generated from the reported identity) may still be
+            replaced when the device reports a different identity; `declared`
+            means a human set it and it is never overwritten automatically.
+          enum: [default, detected, declared]
     FileEntry:
       type: object
       required: [name, path, kind, size, modifiedAt, writable]
