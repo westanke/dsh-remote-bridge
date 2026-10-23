@@ -1,5 +1,23 @@
 # 当前状态
 
+- 日期：2026-10-23
+- **已发版 v2.6.1（2026-10-23）**：**SEC-H11 安全修复 + 设备身份自动识别**。
+  - **SEC-H11（高危）**：供应商 `baseURL` 的三个入口（`createProvider` / `updateProvider` /
+    `discover`）此前不做任何校验，持 `settings.write` 的设备可把 baseURL 指向自己的服务器，
+    内核会带**该供应商的真实 API key** 请求 `/models`。攻击链是实测确认的（假端点抓到
+    `Authorization: Bearer`），不是静态推理。修复为三道闸门：协议白名单、私网默认拒绝
+    （`allowPrivateProviderHosts` 显式放行，支持带端口钉住）、换 host 且已有凭据时必须同时给新 key。
+    新文件 `src/host/provider-url-policy.ts`（纯函数，含 `::ffff:7f00:1` 十六进制映射的绕过修复）。
+  - **配对默认权限收窄**：七档 → 五档（去掉 `settings.write` 与 `files.delete`），
+    新增 `DEFAULT_DEVICE_SCOPES` 供三条路径共用。此前默认全勾与本仓 `SECURITY.md`
+    把 `llm-*` 定为只读、`CHANGELOG-DEV` 写明 settings.write「是用户显式要求才给的」两处声明矛盾。
+  - **设备身份**：新增 `src/host/device-identity.ts`，从 `X-Dsh-Device` 头（UA 兜底判平台）
+    识别平台与型号，自动把配对占位名换成「平台 · 型号」；新增 `PATCH /manage/devices/{id}` 的
+    改名通道。`nameSource` 三态（`default`/`detected`/`declared`）保证手动改过的名字永不被覆盖。
+    修掉鸿蒙被登记成「Android 设备」的根因（UA 判定顺序：`harmonyos` 必须先于 `android`）。
+  - 门验：`pnpm check` 四道门全绿（**74 文件 / 682 用例**、docs:check、build）。
+  - 未部署：本次只发版，未同步到运行中的 profile（部署要重启桥，会断手机连接）。
+
 - 日期：2026-10-19
 - **已发版 v2.4.2（2026-10-19）**：**history 带投影 + 权限档位 BFF + 斜杠命令执行修复**。
   - **history 透传投影**：新增 `readSessionProjections()`，`sessions.history` 两条分支都把

@@ -9,7 +9,7 @@
 </p>
 
 <p align="center">
-  <img alt="Version" src="https://img.shields.io/badge/version-v2.6.0-087f8c">
+  <img alt="Version" src="https://img.shields.io/badge/version-v2.6.1-087f8c">
   <img alt="DSH plugin" src="https://img.shields.io/badge/DeepSeek_Harness-plugin-1f2328">
   <img alt="Platforms" src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-586069">
   <img alt="License" src="https://img.shields.io/badge/license-AGPL--3.0-2da44e">
@@ -93,10 +93,10 @@ dsh plugin --profile web add dsh-remote-bridge
 dsh plugin --profile web add dsh-remote-bridge --registry https://registry.npmmirror.com
 
 # ② GitHub Release 的 tarball
-dsh plugin --profile web add https://github.com/westanke/dsh-remote-bridge/releases/download/v2.6.0/dsh-remote-bridge-v2.6.0.tgz
+dsh plugin --profile web add https://github.com/westanke/dsh-remote-bridge/releases/download/v2.6.1/dsh-remote-bridge-v2.6.1.tgz
 
 # ③ Gitee Release 的 tarball（国内访问更快）
-dsh plugin --profile web add https://gitee.com/westanke/dsh-remote-bridge/releases/download/v2.6.0/dsh-remote-bridge-v2.6.0.tgz
+dsh plugin --profile web add https://gitee.com/westanke/dsh-remote-bridge/releases/download/v2.6.1/dsh-remote-bridge-v2.6.1.tgz
 
 npx @deepseek-ai/dsh web
 ```
@@ -112,7 +112,7 @@ npx @deepseek-ai/dsh web
 从 GitHub Release 下载离线安装包时，可直接安装 tarball：
 
 ```sh
-dsh plugin --profile web add ./dsh-remote-bridge-v2.6.0.tgz
+dsh plugin --profile web add ./dsh-remote-bridge-v2.6.1.tgz
 ```
 
 ## 第一次使用
@@ -413,20 +413,29 @@ pnpm pack
 
 `pnpm check` 覆盖类型检查、文档一致性与测试；当前 **67 个测试文件 / 557 个用例**，外加 **8 个浏览器层用例**（Playwright 实测量出的计算样式，含 375px 窄屏契约），全部通过。
 
-`npm pack` 的产物约 **0.61 MB**（v2.5.2 实测 635,325 字节，SHA-256 `18d36904…c8095`）：2.2.0 删除独立页及其编辑器依赖、并关闭 source map 之后从 1.72 MB 降下来，之后随投影透传、权限 BFF 与五维加固小幅增长。
+`npm pack` 的产物约 **0.64 MB**（v2.6.1 实测 669,434 字节，SHA-256 `9bf0189b…2cd35`）：2.2.0 删除独立页及其编辑器依赖、并关闭 source map 之后从 1.72 MB 降下来，之后随投影透传、权限 BFF 与五维加固小幅增长。
 
 v2.5.0 在 DSH **0.2.1-rc.2** 上完成真机验证：14/14 宿主服务全部可注入、三个 jobs 端点实测通过、
 权限档位目录返回内核真实三档。开发基线为上游 `dsh-v0.2.1-rc.2`（commit `687f282e8625c6b8d11ff58211a90524be2e4317`），
 兼容范围见上文 `engines.dsh`。CI 覆盖 Windows、Ubuntu 和 macOS。
 
-**v2.6.0 的验证状态**：70 个测试文件 / 593 个用例全绿、8 个 Playwright 浏览器用例
-（含 375px 窄屏契约）、`typecheck`/`docs:check`/构建通过；隧道管理面三轮真机回归均用
-React18 + Playwright 真点击台复现并验证（一键出令牌、停止出口、重进设置页锁定态），
-用户真机手工复测通过。
+**v2.6.1 的验证状态**：74 个测试文件 / 682 个用例全绿、8 个 Playwright 浏览器用例
+（含 375px 窄屏契约）、`typecheck`/`docs:check`/构建通过。SEC-H11 的攻击链是**用实测**
+确认的（起一个假 LLM 端点，抓到内核把真实 `Authorization: Bearer` 打过去），修复后的
+四道闸门各有回归断言；设备身份的三个 spec（27 + 13 + 12 例）覆盖 UA 判定顺序、
+「`declared` 永不覆盖」与老表结构迁移幂等。
 
 ## 项目信息
 
-- 当前版本：`v2.6.0`
+- 当前版本：`v2.6.1`
+- **v2.6.1 是安全修复 + 设备身份版**：修掉一个**高危**问题 —— 供应商 `baseURL` 的三个入口
+  （新建 / 修改 / 探测模型）此前不做任何校验，持有 `settings.write` 的设备可以把 baseURL
+  指向自己的服务器，内核会带着**该供应商的真实 API key** 去请求 `/models`，等于凭据直接外泄；
+  持久化变体更糟：改完 baseURL 之后正常聊天都会把 key 发过去。现在三道闸门（协议白名单、
+  私网默认拒绝 + `allowPrivateProviderHosts` 显式放行、换 host 且已有凭据时必须同时给新 key），
+  配对默认权限也从七档收到五档（不再默认给 `settings.write` 与 `files.delete`）。
+  另修「设备名永远是『Android 设备』」：桥现在从 `X-Dsh-Device` 头（UA 兜底）识别平台与型号，
+  自动把占位名换成「平台 · 型号」，并新增改名通道（手动改过的名字永不被自动覆盖）。
 - **v2.6.0 是通用设置面 + IM 入口版**：新增「按插件划分的设置命名空间」两个端点（手机端照 schema 自建表单，新装插件无需改 App），以及「人已出门、电脑还锁着」时用 IM 一句话开隧道并收回配对配置的双入口（宿主命令 `/tunnel` + 工具 `open_tunnel_config`）；另加一键清理 N 天未使用设备、移除审计页，并把「激活期降级保护」补上（apply 尾部抛错不再拆掉整条插件上下文）。
 - **v2.5.2 是全量完善版**：落地五维审计（安全/功能/性能/界面/按钮反馈）——含高危的
   `debug/host-services` 免鉴权信息泄露修复、限流双桶、广播背压、弱 ETag、审计保留策略等，

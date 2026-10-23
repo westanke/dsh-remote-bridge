@@ -1,4 +1,4 @@
-# dsh-remote-bridge 产物校验（v2.6.0）
+# dsh-remote-bridge 产物校验（v2.6.1）
 # 两个文件名指向同一份字节；npm 包名安装与 Release 直链都能对上。
-faf4d13c96358a9de385414873345a3dc28e247ca5eac05fb10da9017be227ab  dsh-remote-bridge-2.6.0.tgz
-faf4d13c96358a9de385414873345a3dc28e247ca5eac05fb10da9017be227ab  dsh-remote-bridge-v2.6.0.tgz
+9bf0189ba8999623fa43d018af9520ce7566d92da64fd8fb36656b02e392cd35  dsh-remote-bridge-2.6.1.tgz
+9bf0189ba8999623fa43d018af9520ce7566d92da64fd8fb36656b02e392cd35  dsh-remote-bridge-v2.6.1.tgz
