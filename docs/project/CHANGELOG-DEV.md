@@ -1,5 +1,127 @@
 # 开发日志
 
+## 未发布 · SEC-H11 SSRF 与凭据外泄修复（2026-10-23）
+
+**基于**：v2.6.0（含 `settings-namespaces-v1` 能力位补漏）。这是一次**安全修复**，
+起因是用户问「看桥还有其他的漏洞吗」——于是把审计做成实测而非推理：直接 curl 打
+运行中的桥，用真实凭据验证攻击链是否成立。
+
+### 发现过程
+
+问题不在命名空间写策略，而在**旁边那条专用路由**。`SECURITY.md` 明写 `llm-*`
+（供应商、模型、Base URL）只读，理由是「手机能改 Base URL = 把模型请求引到攻击者的
+端点」；但 `isSettingsNamespaceWriteAllowed` 只被 `mutateNamespace` 调用，
+`createProvider`/`updateProvider`/`discover` 三个写入口一次都不检查。同一个目标，
+一条路堵死，另一条路敞着。
+
+比「能改配置」更糟的是 `discover`：它把 `baseURL` 交给内核发 `GET {baseURL}/models`，
+内核**带着该供应商已配置的真实 key**。实测起一个 python http.server，对官方
+`deepseek`（`DEEPSEEK_API_KEY` 已配置）发起 discover，服务端日志里直接收到：
+
+```
+GET /v1/models
+authorization: Bearer sk-…（真实生产 key）
+user-agent: deepseek-harness/0.2.1-rc.2
+```
+
+也就是说这不是 SSRF 而已，是**凭据外泄**：攻击者只要让受害者点一下「发现模型」，
+或者自己持 `settings.write` 直接调，就能拿到明文 key。
+
+三个入口都没拦：`createProvider` 只判 `input.baseURL.trim() === ''`，
+`updateProvider` 只判 `value === null || value === ''`，`discover` 原样透传。
+
+**持久化变体更彻底**：`PATCH /settings/providers/{id}` 改 `baseURL` 会真写进配置，
+此后每次聊天都把 key 打到新地址。而 `router.ts` 的审计只记 `providerId` 不记地址
+（`discover` 的 baseURL 更是临时覆盖、不落配置），所以**事后无法从审计追溯凭据被
+打到哪个地址** —— 取证盲区。
+
+**零测试覆盖**：`grep baseURL tests/*.spec.ts` 找不到任何 ssrf/private/169.254 断言，
+`tests/settings-adapter.spec.ts:79-86` 只验了 `https://api.example/v1` 这条正常路径。
+
+顺带发现配对默认权限自相矛盾：WebUI「生成配对码」默认勾满七档 scope（含
+`settings.write`），而「生成配置文本」那条路径刻意只给五档（注释
+`No scopes on purpose`）。`CHANGELOG-DEV.md:2913-2915` 又明写 `settings.write`
+「是用户显式要求才给的东西」——三处声明与默认值互相打架。
+
+### 修了什么
+
+**① 地址策略（新文件 `src/host/provider-url-policy.ts`，186 行）**
+
+三道闸门，三个写入口全部生效：
+
+| # | 判据 | 拒绝码 | 挡的是什么 |
+|---|---|---|---|
+| 1 | 绝对 URL + 协议限 `http`/`https` | `400 PROVIDER_BASE_URL_INVALID` | `file:`/`gopher:`/`data:` 这类由 URL 解析器自己发起的协议 |
+| 2 | 私网/回环/链路本地/CGNAT 默认拒绝 | `403 PROVIDER_BASE_URL_FORBIDDEN` | SSRF：内网探测、云元数据 `169.254.169.254` |
+| 3 | 已存凭据的供应商换 host 必须同时给新 key | `403 PROVIDER_BASE_URL_REPOINT_FORBIDDEN` | 换成攻击者的**公网**域名 —— 闸门 2 对此无能为力 |
+
+闸门 3 是**实施中补的、审计报告里没有的**：只拦私网不够。攻击者不需要内网，
+他只需要一个公网域名 —— 内核照样会把 key 发过去。真正的不变量是「不能让内核把
+已有凭据发到新目的地」。所以只在 `baseURL` 的 host 真的变了、且该供应商
+`credentials.describe` 报 `configured: true` 时才查，纯改 models/显示名/同 host 改
+path 都是零额外开销的日常操作。
+
+`allowPrivateProviderHosts` 放行自建 LLM（ollama 默认 `127.0.0.1:11434`）。两种粒度：
+带端口条目按 `host:port` 精确比对（推荐），裸 host 条目放行该主机全部端口。不支持
+CIDR —— 只接受精确 host。理由：放行 `192.168.1.5` 等于放行它上面所有服务，而 ollama
+只在 11434。
+
+**刻意不做 DNS 解析**：校验时解析一次、内核发请求时再解析一次，中间可变（TOCTOU），
+而且会给出「已经校验过」的错觉。攻击面因此被收窄到「攻击者必须控制一个公网域名」，
+而不是「攻击者必须控制 DNS」。
+
+**② 实施时发现的一个真绕过**
+
+`new URL('http://[::ffff:127.0.0.1]/v1')` 会把 hostname 归一化成
+`[::ffff:7f00:1]`（十六进制形式）。最初只匹配点分十进制 `::ffff:(\d{1,3}\.){3}`，
+等于完全没挡。改成 `embeddedIPv4()`：先把末尾点分 IPv4 换成两组十六进制，再统一
+展开 `::` 得 8 组，判前 5 组为零且第 6 组为 `0xffff`（映射）或 `0`（兼容），
+后两组拼回 IPv4 再递归判私网。
+
+**③ 配对默认权限收窄**
+
+`src/shared/contracts.ts` 新增 `DEFAULT_DEVICE_SCOPES`（五档：`chat.read`、
+`chat.write`、`files.read`、`files.write`、`settings.read`），**刻意不含**
+`files.delete` 与 `settings.write`。三条配对路径（配对码 / 配置文本 / 隧道配置文本）
+共用这一份 —— 修复前它们各写各的，才会出现同一产品两种默认值。破坏性权限仍可由
+用户手动勾选。
+
+**④ 路径回显（SEC-H13）**
+
+`plugin-inventory.ts:590` 的 `MANIFEST_UNREADABLE` 消息原本拼了 `manifestPath`，
+经 `router.ts:539` → `router.ts:215-226` 顶层 catch 原样进响应体，泄露部署方的
+用户名与目录结构。改成 `Cannot read the manifest of profile "${profile}".` ——
+定位靠 code + profile 名（用户自己起的名字，不构成泄露）。全仓扫过，这是唯一一处。
+
+**⑤ 能力位依据表**
+
+`provider-settings-v1` 的依据从两条路径补成三条（补 `PATCH /settings/providers/{providerId}`）。
+三条路径同进同出，合成一条位，但依据要列全 —— 否则以后有人删掉一条路径，
+机检看不出依据少了一条。
+
+### 测了什么
+
+- `tests/provider-url-policy.spec.ts`（**新增 29 例**）：协议白名单 5 例；空串与相对值；
+  私网默认拒绝 12 例（`127.0.0.1:11434`、`localhost:1234`、`[::1]:8080`、`10.0.0.5`、
+  `172.16.3.4`、`192.168.1.1`、`169.254.169.254`、`100.64.1.1`、`0.0.0.0:8080`、
+  `[::ffff:127.0.0.1]`、`[fd00::1]`、`[fe80::1]`）；拒绝时不回显完整 URL；公网放行 4 例；
+  白名单粒度 4 例（带端口钉住 `:11434` 而不放 `:8080`）；`isPrivateHost` 边界 22 例。
+- `tests/settings-adapter.spec.ts`（4 → **12 例**）：新增「credential repoint guard」
+  6 例（拒绝换 host 且**未发生任何 mutation**；同 host 改 path 放行；同时给新 key 放行；
+  给新 key 仍拒私网——地址策略先于重定向闸门；无凭据供应商不设防；纯编辑不受影响），
+  以及 discover 的地址策略 2 例（拒绝时**未发生任何 discovery 调用**；白名单端口放行）。
+- 全量 `pnpm check` 全绿：typecheck → **71 文件 / 630 用例**（原 593，+37）→
+  docs:check → build。
+
+### 未做 / 已知边界
+
+- 未升 `package.json` 版本号、未发版、未部署（部署要重启桥，会断手机连接）。
+- **不防 DNS 重绑定**：攻击者控制域名后可以先解析到公网、请求时解析到内网。根治需要
+  「解析结果校验 + IP 钉死」，那要改内核的请求路径，不在本仓范围内。已在
+  `SECURITY.md` 的残余风险里如实记录。
+- 三端客户端**无需改动**：新错误码只会出现在它们本来就没走过的写入路径上；旧客户端
+  收到 403 会显示服务端给的 message。
+
 ## 2.6.0 · 通用设置命名空间面 + IM 远程开隧道（2026-10-22）
 
 **基于**：v2.5.2。目标是不再为每个插件写专用设置接口 —— 手机端直接读内核按插件

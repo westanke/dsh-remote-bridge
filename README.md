@@ -251,8 +251,26 @@ DSH1:eyJ2IjoxLCJlbmRwb2ludHMiOlt7ImxhYmVsIjoi…
 - 配对、认证和普通请求分别限流。
 - 审计记录操作类型和对象，但不记录令牌、文件正文或聊天正文。
 - 新增根目录不会自动授权给已经配对的设备。
+- 供应商 `baseURL` 只能指向公网 http(s) 地址；把「已经存有凭据」的供应商换到新 host
+  还必须同时提供新的 API key —— 因为内核会带着那把 key 去请求这个地址，这是凭据边界，
+  不只是 SSRF。
 
 只有来自回环地址的管理界面可以添加根目录、调整设备权限、生成配对码、修改监听设置和永久清理回收站。
+
+### 自建 LLM（ollama / LM Studio）
+
+私网、回环、链路本地与 CGNAT 的供应商地址**默认拒绝**。要用本机模型服务，在插件配置里
+显式放行：
+
+```yaml
+allowPrivateProviderHosts:
+  - 127.0.0.1:11434     # 推荐：钉住端口
+  - 192.168.1.5         # 裸 host：放行该主机的全部端口
+```
+
+只接受精确 `host` 或 `host:port`，**不支持 CIDR**。推荐带端口写法：放行 `192.168.1.5`
+等于放行它上面所有服务，而 ollama 只在 11434。理由与审计字段见
+[docs/project/SECURITY.md](docs/project/SECURITY.md#供应商-baseurl-的地址策略261-起sec-h11)。
 
 ## 文件边界
 
@@ -327,6 +345,8 @@ Authorization: Bearer DEVICE_TOKEN
 设备还必须获得相应 `rootId` 的授权。权限和根目录授权都可以在本机 WebUI 的“设备”页随时修改。
 
 **新增的权限是配对前在「远程访问」里勾选的**：勾什么，生成的配对码就带什么；APP 输入配对码后这些权限随设备一起生效。已在用的设备则到「设备」里点它的「权限」修改。
+
+默认勾选是五档 —— `chat.read`、`chat.write`、`files.read`、`files.write`、`settings.read`，**刻意不含** `files.delete` 与 `settings.write`。你仍然可以自己勾上；默认值只是不再替你做这个决定。
 
 **撤销一台设备会直接把它从数据库里删除**，不是打个标记留着；它的授权随之清除，但审计记录（谁在什么时候撤了谁）会保留。
 

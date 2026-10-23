@@ -80,7 +80,10 @@ describe('DSH provider settings', () => {
       baseURL: 'https://api.example/v1',
       api: 'openai-completions',
       apiKey: 'draft-key',
-    })).resolves.toEqual([{ id: 'model-discovered', name: 'Discovered' }])
+    })).resolves.toEqual({
+      models: [{ id: 'model-discovered', name: 'Discovered' }],
+      baseURLHost: 'api.example',
+    })
     expect(calls.discovery).toMatchObject({
       settingsNs: 'llm-pi-ai',
       provider: 'custom-openai',
@@ -120,9 +123,94 @@ describe('DSH provider settings', () => {
     })
     expect(calls.credential).toEqual({ ref: 'ACME_GATEWAY_API_KEY', value: 'custom-secret' })
   })
+
+  describe('credential repoint guard (SEC-H11 persistent variant)', () => {
+    it('refuses to move baseURL to another host while a credential is stored', async () => {
+      const calls = createFakeApi()
+      const adapter = new DshSettingsAdapter(calls.api as never)
+
+      // 供应商当前指向 llm.local 且已存 key；把它改到攻击者的域名等于把 key 交出去。
+      await expect(adapter.updateProvider('custom-openai', { baseURL: 'https://attacker.example/v1' }))
+        .rejects.toMatchObject({ code: 'PROVIDER_BASE_URL_REPOINT_FORBIDDEN', status: 403 })
+      expect(calls.mutation).toBeUndefined()
+    })
+
+    it('allows the same-host change (path/port is not a destination change)', async () => {
+      const calls = createFakeApi()
+      const adapter = new DshSettingsAdapter(calls.api as never)
+
+      await adapter.updateProvider('custom-openai', { baseURL: 'https://llm.local/v2' })
+      expect(calls.mutation).toMatchObject({
+        ops: [{ op: 'set', path: ['providers', 'custom-openai', 'baseURL'], value: 'https://llm.local/v2' }],
+      })
+    })
+
+    it('allows repointing when the caller supplies a fresh apiKey', async () => {
+      const calls = createFakeApi()
+      const adapter = new DshSettingsAdapter(calls.api as never)
+
+      // 用户本来就在重设凭据 —— 目的地跟着换是正当操作，不该被拦。
+      await adapter.updateProvider('custom-openai', {
+        baseURL: 'https://attacker.example/v1',
+        apiKey: 'brand-new-key',
+      })
+      expect(calls.credential).toEqual({ ref: 'CUSTOM_OPENAI_API_KEY', value: 'brand-new-key' })
+    })
+
+    it('still rejects private targets even when a new apiKey is supplied', async () => {
+      const calls = createFakeApi()
+      const adapter = new DshSettingsAdapter(calls.api as never)
+
+      // 地址策略先于重定向闸门生效：换 key 不免除私网限制。
+      await expect(adapter.updateProvider('custom-openai', {
+        baseURL: 'http://127.0.0.1:11434/v1',
+        apiKey: 'brand-new-key',
+      })).rejects.toMatchObject({ code: 'PROVIDER_BASE_URL_FORBIDDEN', status: 403 })
+    })
+
+    it('does not guard providers that hold no credential', async () => {
+      const calls = createFakeApi({ credentialConfigured: false })
+      const adapter = new DshSettingsAdapter(calls.api as never)
+
+      await adapter.updateProvider('custom-openai', { baseURL: 'https://other.example/v1' })
+      expect(calls.mutation).toMatchObject({
+        ops: [{ op: 'set', path: ['providers', 'custom-openai', 'baseURL'], value: 'https://other.example/v1' }],
+      })
+    })
+
+    it('does not guard plain edits that leave baseURL alone', async () => {
+      const calls = createFakeApi()
+      const adapter = new DshSettingsAdapter(calls.api as never)
+
+      await adapter.updateProvider('custom-openai', { displayName: 'Renamed', models: [{ id: 'm1' }] })
+      expect(calls.mutation).toBeDefined()
+    })
+  })
+
+  it('blocks discover from reaching a private address without an explicit allowlist', async () => {
+    const calls = createFakeApi()
+    const adapter = new DshSettingsAdapter(calls.api as never)
+
+    // 修复前这里会把请求（连同真实凭据）发到 127.0.0.1 上任意端口。
+    await expect(adapter.discover('custom-openai', { baseURL: 'http://127.0.0.1:18095/v1' }))
+      .rejects.toMatchObject({ code: 'PROVIDER_BASE_URL_FORBIDDEN' })
+    expect(calls.discovery).toBeUndefined()
+  })
+
+  it('lets discover reach a loopback LLM when the deployment allowlists that port', async () => {
+    const calls = createFakeApi()
+    const adapter = new DshSettingsAdapter(calls.api as never, {
+      allowPrivateProviderHosts: ['127.0.0.1:11434'],
+    })
+
+    await expect(adapter.discover('custom-openai', { baseURL: 'http://127.0.0.1:11434/v1' }))
+      .resolves.toMatchObject({ baseURLHost: '127.0.0.1:11434' })
+    expect(calls.discovery).toMatchObject({ baseURL: 'http://127.0.0.1:11434/v1' })
+  })
 })
 
-function createFakeApi() {
+function createFakeApi(options: { credentialConfigured?: boolean } = {}) {
+  const credentialConfigured = options.credentialConfigured ?? true
   const state: {
     mutation?: Record<string, unknown>
     credential?: Record<string, unknown>
@@ -179,7 +267,7 @@ function createFakeApi() {
     },
     credentials: {
       describe: async () => ok({ credentials: {
-        CUSTOM_OPENAI_API_KEY: { configured: true, source: 'profile-store', writable: true },
+        CUSTOM_OPENAI_API_KEY: { configured: credentialConfigured, source: 'profile-store', writable: true },
       } }),
       set: async (request: { payload: Record<string, unknown> }) => {
         state.credential = request.payload

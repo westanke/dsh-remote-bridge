@@ -219,9 +219,27 @@ The following controls remain active over both HTTP and HTTPS:
 - revocable scopes and per-root grants;
 - separate rate limits for pairing, authentication failures, and normal requests;
 - audit records that omit tokens, file bodies, and chat bodies;
-- no automatic access to roots added after a device was paired.
+- no automatic access to roots added after a device was paired;
+- provider `baseURL` changes are limited to public http(s) destinations, and moving a
+  provider that already stores a credential to a new host also requires a fresh API key
+  (the kernel sends that key to the address, so this is a credential boundary, not just SSRF).
 
 Only a loopback client may add roots, change device grants, create pairing codes, configure the listener, or permanently purge trash.
+
+### Local LLM endpoints (ollama / LM Studio)
+
+Private, loopback, link-local and CGNAT provider addresses are **rejected by default**.
+To use a local model server, list it explicitly in the plugin config:
+
+```yaml
+allowPrivateProviderHosts:
+  - 127.0.0.1:11434     # recommended: pin the port
+  - 192.168.1.5         # bare host: allows every port on that host
+```
+
+Exact `host` or `host:port` only — CIDR is not supported. Prefer the `host:port` form:
+allowing `192.168.1.5` allows every service on it, while ollama only listens on 11434.
+See `docs/project/SECURITY.md` for the reasoning and the audit trail fields.
 
 ## Path boundary
 
@@ -296,6 +314,8 @@ Errors use one envelope:
 A device also needs an explicit grant for every `rootId`. Local administrators may change or revoke both scopes and root grants at any time.
 
 **New scopes are picked before pairing, in Remote access**: whatever you tick is what the generated pairing code carries, and those scopes take effect once the app enters the code. For a device that is already paired, open **Devices** and use its **Permissions** button.
+
+The default selection is five scopes — `chat.read`, `chat.write`, `files.read`, `files.write`, `settings.read` — and **deliberately excludes** `files.delete` and `settings.write`. You can still tick them; the default just no longer hands out destructive permissions on its own.
 
 **Revoking a device deletes it from the database** rather than leaving a marker row behind. Its grants go with it, while the audit trail (who revoked which device, and when) is kept.
 

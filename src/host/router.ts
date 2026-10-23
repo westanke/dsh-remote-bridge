@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import path from 'node:path'
 import type { DeviceScope, Principal } from '../shared/contracts.ts'
-import { DEVICE_SCOPES } from '../shared/contracts.ts'
+import { DEFAULT_DEVICE_SCOPES, DEVICE_SCOPES } from '../shared/contracts.ts'
 import type { AuthService } from './auth.ts'
 import { adminRefusal, requestAddress } from './auth.ts'
 import type { DshChatAdapter } from './chat-adapter.ts'
@@ -451,10 +451,12 @@ export class ApiRouter {
           ...(typeof body.apiKey === 'string' ? { apiKey: body.apiKey } : {}),
           ...(Number.isSafeInteger(body.expectedRevision) ? { expectedRevision: body.expectedRevision as number } : {}),
         }
-        await this.options.settings.createProvider(input)
+        const created = await this.options.settings.createProvider(input)
         this.audit(principal, 'settings.provider.create', undefined, undefined, requestId, {
           providerId: input.id,
           credentialChanged: typeof input.apiKey === 'string' && input.apiKey.trim() !== '',
+          // 记 host 不记完整 URL：path/query 可能带凭据，审计表不该成为新的泄露点。
+          baseURLHost: created.baseURLHost,
         })
         sendJson(res, 201, await this.options.settings.listProviders())
         return
@@ -549,11 +551,13 @@ export class ApiRouter {
       if (method === 'PATCH') {
         this.options.auth.requireScope(principal, 'settings.write')
         const body = await readJson(req, 1_000_000) as ProviderPatch
-        await this.options.settings.updateProvider(providerId, body)
+        const updated = await this.options.settings.updateProvider(providerId, body)
         this.audit(principal, 'settings.provider.update', undefined, undefined, requestId, {
           providerId,
           fields: Object.keys(body).filter(field => field !== 'apiKey'),
           credentialChanged: Object.hasOwn(body as object, 'apiKey'),
+          // 只记 host：改了 baseURL 之后模型请求会持续打到新地址，必须可追溯。
+          ...(updated.baseURLHost === undefined ? {} : { baseURLHost: updated.baseURLHost }),
         })
         sendJson(res, 200, await this.options.settings.listProviders())
         return
@@ -579,9 +583,14 @@ export class ApiRouter {
         ...(typeof body.api === 'string' ? { api: body.api } : {}),
         ...(typeof body.apiKey === 'string' ? { apiKey: body.apiKey } : {}),
       }
-      const models = await this.options.settings.discover(providerId, draft)
-      this.audit(principal, 'settings.provider.discover', undefined, undefined, requestId, { providerId })
-      sendJson(res, 200, { models })
+      const discovered = await this.options.settings.discover(providerId, draft)
+      this.audit(principal, 'settings.provider.discover', undefined, undefined, requestId, {
+        providerId,
+        // discover 的 baseURL 是临时覆盖、不写配置；不记 host 的话事后无法知道
+        // 「凭据被打到哪个地址」—— 这正是 SEC-H11 的取证盲区。
+        ...(discovered.baseURLHost === undefined ? {} : { baseURLHost: discovered.baseURLHost }),
+      })
+      sendJson(res, 200, { models: discovered.models })
       return
     }
 
@@ -1725,16 +1734,11 @@ function validateStringArray(value: unknown, name: string): string[] {
 /**
  * 生成配置文本时的默认设备权限。
  *
- * 刻意**不含** `files.delete` 与 `settings.write`：这两个是破坏性权限，应当是用户显式
- * 要求才授予，而不是因为「生成了一段配置文本」就顺手给了。需要时可在请求里显式传 scopes。
+ * 定义已上移到 `shared/contracts.ts` 的 `DEFAULT_DEVICE_SCOPES`：Web UI 的配对码面板
+ * 原先默认勾满七档（含 `settings.write`），与服务端这里的五档缺省互相矛盾 ——
+ * 同一份默认值散落两处正是它跑偏的原因。
  */
-const DEFAULT_CONFIG_SCOPES: readonly DeviceScope[] = [
-  'chat.read',
-  'chat.write',
-  'files.read',
-  'files.write',
-  'settings.read',
-]
+const DEFAULT_CONFIG_SCOPES = DEFAULT_DEVICE_SCOPES
 
 function readOptionalText(value: unknown): string | null {
   if (typeof value !== 'string') return null

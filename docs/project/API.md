@@ -180,6 +180,19 @@ curl "http://192.168.1.20:3090/api/v1/roots/resolve?path=%2Fmedia%2Fdata%2Fproje
 
 `POST /settings/providers` 使用自定义 route、显示名、Base URL、协议与至少一个模型创建 DSH 自定义供应商；route 必须匹配 DSH WebUI 的小写短横线规则。`PATCH /settings/providers/{providerId}` 可更新 Base URL、协议、模型和写入/清除凭据；`POST .../discover` 使用草稿配置发现模型。`PATCH` 的 `models` 字段：数组=整体替换（空数组=自定义空目录），`null`=恢复适配器默认目录（unset，2.5.0 起）。读取与修改分别要求 `settings.read`、`settings.write`，并由 DSH 设置服务决定配置是否可写；`expectedRevision` 不匹配时返回 409 `SETTINGS_CONFLICT`。
 
+**`baseURL` 的地址策略（2.6.1 起）**：三个写入口（`POST /settings/providers`、`PATCH /settings/providers/{providerId}`、`POST .../discover`）都要过同一套校验，与「命名空间是否可写」是**两条独立的闸门**（providers 路由不经过 `settingsWriteNamespaces`）：
+
+| 情形 | 状态码 | 错误码 |
+| --- | --- | --- |
+| `baseURL` 为空串 | 400 | `PROVIDER_BASE_URL_REQUIRED` |
+| 不是绝对 URL，或协议不是 `http`/`https` | 400 | `PROVIDER_BASE_URL_INVALID` |
+| 指向私网 / 回环 / 链路本地 / CGNAT，且未在 `allowPrivateProviderHosts` 里 | 403 | `PROVIDER_BASE_URL_FORBIDDEN`（`details.host`） |
+| 该供应商已存有凭据，换 host 却没同时提供新 `apiKey` | 403 | `PROVIDER_BASE_URL_REPOINT_FORBIDDEN`（`details.previousHost` / `details.host`） |
+
+`details.host` 只给 `host[:port]`，**不回显完整 URL**（path/query 可能带凭据）。`allowPrivateProviderHosts` 接受精确 `host` 或 `host:port`，**不支持 CIDR**；推荐带端口（`127.0.0.1:11434`），裸 host 会放行该主机的全部端口。理由与实测证据见 `SECURITY.md` 的「供应商 `baseURL` 的地址策略」。
+
+三个写入口的审计（`settings.provider.create` / `.update` / `.discover`）都带 `baseURLHost`，同样只记 host。`discover` 的 `baseURL` 是临时覆盖、不写配置，所以这条审计是唯一的取证线索。
+
 ## 通用设置命名空间（2.6.0 起）
 
 DSH 的设置是**一份按插件命名空间划分的文档**（`ui-chat` 的 `transcriptView`、`ui-theme` 的 `fontSize` 等）。本桥不再为每个插件写专用接口，而是暴露一对通用端点，客户端按返回的 `schema` 自行生成表单：

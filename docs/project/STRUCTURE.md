@@ -120,6 +120,7 @@ host services 之上重建 0.1.x 的 `apiProxy` 面容，让 `chat-adapter` / `s
 | `file-service.ts` | `FileService`：授权根内的列目录/读写/移动/回收站，含路径策略落地 | `router.ts` |
 | `settings-adapter.ts` | `DshSettingsAdapter`：提供商与模型目录（`SettingsApiProxy` 面）、通用设置命名空间读写 | `router.ts` |
 | `settings-namespace.ts` | 通用设置命名空间的纯逻辑：写允许策略、密钥脱敏、ops 校验、对外视图投影（不碰内核 RPC） | `settings-adapter.ts` |
+| `provider-url-policy.ts` | 供应商 `baseURL` 的地址策略（SEC-H11）：协议白名单、私网/回环默认拒绝、`allowPrivateProviderHosts` 显式放行 | `settings-adapter.ts` |
 | `plugin-inventory.ts` | 插件清单读取、状态裁决（`resolveState`）、启停（`togglePlugin`）、更新检查 | `router.ts` |
 | `job-adapter.ts` | `JobAdapter`：后台任务 roster / 输出 / kill（依赖可选服务 `jobController`） | `router.ts` |
 
@@ -223,6 +224,7 @@ host services 之上重建 0.1.x 的 `apiProxy` 面容，让 `chat-adapter` / `s
 | `src/host/server.ts` | ≈450 行 | 监听器、`/dsh-workspace-api` 前缀（**不可动契约**）、WS 扇出与授权过滤 |
 | `src/host/settings-adapter.ts` | ≈430 行 | 提供商/模型设置页 |
 | `src/host/settings-namespace.ts` | ≈200 行 | 通用设置命名空间的策略/脱敏/校验（纯函数） |
+| `src/host/provider-url-policy.ts` | ≈190 行 | 供应商 baseURL 地址策略（纯函数） |
 | `src/host/cloudflared.ts` | ≈430 行 | 隧道与二进制下载 |
 | `src/client/workspace.tsx` | ≈660 行 | 面板全部交互 |
 | `src/shared/version.ts` | 1 行 | 版本号；与 `package.json`、两站 README、OpenAPI/AsyncAPI 版本同源 |
@@ -279,6 +281,7 @@ host services 之上重建 0.1.x 的 `apiProxy` 面容，让 `chat-adapter` / `s
 | `src/host/listener-config.ts` | file | 监听地址/端口归一化 |
 | `src/host/metrics.ts` | file | 进程内薄指标收集器（计数 + 固定样本环分位数） |
 | `src/host/path-policy.ts` | file | 相对路径校验 |
+| `src/host/provider-url-policy.ts` | file | 供应商 baseURL 地址策略（私网默认拒绝） |
 | `src/host/retention.ts` | file | audit/idempotency 表的保留期清理调度（策略层，SQL 在 database.ts） |
 | `src/host/plugin-inventory.ts` | file | 插件清单与启停 |
 | `src/host/rate-limit.ts` | file | 固定窗口限流 |

@@ -84,6 +84,18 @@ export interface Config {
    * 遥控器交出去（理由见 docs/project/SECURITY.md）。
    */
   settingsWriteNamespaces?: readonly string[]
+  /**
+   * 允许供应商 `baseURL` 指向的私网 / 回环 host 白名单（默认空 = 一律拒绝）。
+   *
+   * 默认拒绝的理由：手机端改 `baseURL` 就等于把模型请求（含 `Authorization:
+   * Bearer <真实 key>`）引到任意地址，这是 SEC-H11 的窃取路径。默认拒绝把
+   * 「谁能连内网」变成部署方的显式决定。
+   *
+   * 要连本地 LLM（ollama / LM Studio 之类）时填这里，推荐带端口：
+   * `["127.0.0.1:11434", "localhost:1234"]`。带端口的条目只放行该端口，裸
+   * host 条目放行该主机的任意端口（面更大）。规则见 `src/host/provider-url-policy.ts`。
+   */
+  allowPrivateProviderHosts?: readonly string[]
 }
 
 interface HostContext extends Dsh02HostServices {
@@ -168,6 +180,7 @@ export async function apply(ctx: HostContext, config: Config = {}): Promise<void
   const chat = new DshChatAdapter(apiProxy, database, { agents: ctx.agents, commands: ctx.commands })
   const settings = new DshSettingsAdapter(apiProxy, {
     writeNamespaces: config.settingsWriteNamespaces ?? [],
+    allowPrivateProviderHosts: config.allowPrivateProviderHosts ?? [],
   })
   // 宿主服务注入面探针：在 apply 期间（cordis 注入属性仍可读）采集一份快照。
   //

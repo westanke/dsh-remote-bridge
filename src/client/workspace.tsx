@@ -13,7 +13,7 @@ import {
 import type { ReactNode } from 'react'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { DeviceScope, DeviceView, ImageHandoffSettings, RootView } from '../shared/contracts.ts'
-import { DEVICE_SCOPES } from '../shared/contracts.ts'
+import { DEFAULT_DEVICE_SCOPES, DEVICE_SCOPES } from '../shared/contracts.ts'
 import { APP_QR_CODES } from './app-qr.ts'
 import { WorkspaceApi, WorkspaceApiError } from './api.ts'
 import type { CloudflareTunnelActivity, CloudflareTunnelState, ConfigTextResult } from './api.ts'
@@ -503,8 +503,17 @@ export function AdminPanel(props: { api: WorkspaceApi; initialOpen: AdminTab }):
   //  - 一版改成取「第一台设备的权限」，没设备时七个框全灰 —— 可恰恰**只有没设备时
   //    才会走到这一步**，那版等于在用户唯一需要它的时刻把它弄坏。
   //
-  // 默认全选，与既有行为一致（`enablePairing` 原先就是 `[...DEVICE_SCOPES]`）。
-  const [grantedScopes, setGrantedScopes] = useState<DeviceScope[]>([...DEVICE_SCOPES])
+  // 默认勾**五个非破坏性权限**，与服务端生成配置文本时的缺省同一份
+  // （`shared/contracts.ts` 的 `DEFAULT_DEVICE_SCOPES`）。
+  //
+  // 修复前这里是 `[...DEVICE_SCOPES]`（七档全勾，含 `files.delete` 与
+  // `settings.write`）。这不只是「默认值偏松」：持 `settings.write` 就能改供应商
+  // `baseURL`，把模型请求连同真实凭据引到任意地址（SEC-H11），而 docs/project/
+  // SECURITY.md 早已把 `llm-*` 定为只读、CHANGELOG-DEV 也写明 settings.write
+  // 「是用户显式要求才给的东西」—— 默认全勾与这两处声明直接矛盾。
+  //
+  // 破坏性权限仍需可用：用户照样可以在这里勾上，只是不再由默认值代劳。
+  const [grantedScopes, setGrantedScopes] = useState<DeviceScope[]>([...DEFAULT_DEVICE_SCOPES])
   const toggleScope = useCallback((scope: DeviceScope) => {
     setGrantedScopes(current => current.includes(scope) ? current.filter(item => item !== scope) : [...current, scope])
   }, [])

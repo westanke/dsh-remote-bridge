@@ -12,6 +12,7 @@ import {
   parseSettingsNamespaceOps,
   projectSettingsNamespace,
 } from './settings-namespace.ts'
+import { validateProviderBaseURL } from './provider-url-policy.ts'
 
 export type { SettingsNamespaceView } from './settings-namespace.ts'
 
@@ -140,10 +141,16 @@ export class DshSettingsAdapter {
   /**
    * @param options.writeNamespaces 额外允许手机端写入的设置命名空间（精确 ns 或
    *   `前缀*`），与内置策略（`ui-*` / 以 `locale` 结尾）叠加；默认为空。
+   * @param options.allowPrivateProviderHosts 允许供应商 `baseURL` 指向的私网 / 回环
+   *   host 白名单（默认空 = 一律拒绝）。要连本地 LLM 的部署方显式填，理由见
+   *   `provider-url-policy.ts` 文件头。
    */
   constructor(
     private readonly api: SettingsApiProxy,
-    private readonly options: { writeNamespaces?: readonly string[] } = {},
+    private readonly options: {
+      writeNamespaces?: readonly string[]
+      allowPrivateProviderHosts?: readonly string[]
+    } = {},
   ) {}
 
   /**
@@ -198,6 +205,11 @@ export class DshSettingsAdapter {
 
   private get writeNamespaces(): readonly string[] {
     return this.options.writeNamespaces ?? []
+  }
+
+  /** 交给地址策略的选项；集中一处，三个入口不会各配各的。 */
+  private get baseURLOptions() {
+    return { allowPrivateHosts: this.options.allowPrivateProviderHosts ?? [] }
   }
 
   /** 内核 settings 服务缺失时给 503（而不是把 `TypeError` 漏成 500）。 */
@@ -274,17 +286,60 @@ export class DshSettingsAdapter {
     return unwrapDsh(await this.api.llm.models({ rpcId: randomUUID(), payload: {} }))
   }
 
-  async updateProvider(providerId: string, patch: ProviderPatch): Promise<void> {
+  /**
+   * 更新供应商配置。
+   *
+   * 返回 `baseURLHost`（仅当本次 patch 动了 `baseURL` 时存在）供路由层写审计：
+   * 攻击者可以用 discover 把凭据发到任意地址，事后必须能从审计里看出「打了哪」。
+   * 只记 host 不记完整 URL —— path/query 可能带凭据，审计表不该成为新的泄露点。
+   */
+  async updateProvider(providerId: string, patch: ProviderPatch): Promise<{ baseURLHost?: string }> {
     const context = await this.providerContext(providerId)
     if (!context.writable) throw new ApiError(409, 'SETTINGS_READ_ONLY', 'DSH settings are read-only.')
     if (context.entry.settingsNs === '') throw new ApiError(409, 'PROVIDER_NOT_CONFIGURABLE', 'This provider has no writable settings section.')
     const ops: Array<{ op: 'set'; path: string[]; value: unknown } | { op: 'unset'; path: string[] }> = []
+    let baseURLHost: string | undefined
+    // 改地址之前先记下**旧** host：凭据是绑在这个目的地上的，换目的地等于把
+    // 已存的 key 交给新主机 —— 这正是 SEC-H11 的持久化变体（本地地址拦住了，
+    // 攻击者换成自己的公网域名照样收得到）。判定见循环之后的 repoint 检查。
+    const previousHost = hostOf(effectiveBaseURL(context))
     for (const field of ['displayName', 'baseURL', 'api', 'thinking', 'reasoningEffort'] as const) {
       if (!(field in patch)) continue
       const value = patch[field]
+      // 只在**真正设置**地址时校验；置空（unset 回默认）不需要过地址策略。
+      if (field === 'baseURL' && typeof value === 'string' && value.trim() !== '') {
+        baseURLHost = validateProviderBaseURL(value, this.baseURLOptions)
+      }
       ops.push(value === null || value === ''
         ? { op: 'unset', path: [...context.entry.settingsPath, field] }
         : { op: 'set', path: [...context.entry.settingsPath, field], value })
+    }
+    // 「凭据目的地重定向」闸门：已经有 key 的供应商，不允许把 baseURL 换到另一个 host。
+    //
+    // 为什么只拦 host 变化、不整体禁写：模型编辑（改 models、显示名、协议）是三端
+    // 的日常功能，禁掉等于砍功能；而真正能偷走凭据的动作只有一个 —— 让内核把已有
+    // key 发到别处。同 host 内改 path 不算（还是同一台服务器）。
+    //
+    // 放行条件（任一）：
+    // - 这次 patch 同时提供了新的 apiKey（用户本来就在重设凭据，目的地跟着换是正当的）
+    // - 该供应商当前没有配置凭据（没东西可偷）
+    // - 旧 host 未知（内置供应商走适配器默认端点，没有可比对的地址）
+    // - 新 host 与旧 host 相同
+    //
+    // 只在**确实要换 host** 时才去查凭据状态：正常保存（改 models/显示名）零额外 RPC。
+    if (
+      baseURLHost !== undefined
+      && previousHost !== ''
+      && baseURLHost !== previousHost
+      && !(typeof patch.apiKey === 'string' && patch.apiKey.trim() !== '')
+      && await this.providerHoldsCredential(providerId, context)
+    ) {
+      throw new ApiError(
+        403,
+        'PROVIDER_BASE_URL_REPOINT_FORBIDDEN',
+        'Changing baseURL of a provider that already holds a credential requires supplying a new apiKey.',
+        { previousHost, host: baseURLHost },
+      )
     }
     if (patch.models !== undefined) {
       if (patch.models === null) {
@@ -317,14 +372,15 @@ export class DshSettingsAdapter {
     }
     // 写成功：让下一次读拿到新值（见 `invalidateProviderContext` 的说明）。
     this.invalidateProviderContext(providerId)
+    return baseURLHost === undefined ? {} : { baseURLHost }
   }
 
-  async createProvider(input: CustomProviderCreate): Promise<void> {
+  async createProvider(input: CustomProviderCreate): Promise<{ baseURLHost: string }> {
     const id = input.id.trim()
     if (!/^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/.test(id)) {
       throw new ApiError(400, 'PROVIDER_ID_INVALID', 'Provider ids must use lowercase letters, digits, and single hyphens, starting with a letter.')
     }
-    if (input.baseURL.trim() === '') throw new ApiError(400, 'PROVIDER_BASE_URL_REQUIRED', 'baseURL is required.')
+    const baseURLHost = validateProviderBaseURL(input.baseURL, this.baseURLOptions)
     if (input.models.length === 0) throw new ApiError(400, 'PROVIDER_MODELS_REQUIRED', 'At least one model is required.')
     validateModels(input.models)
 
@@ -367,6 +423,7 @@ export class DshSettingsAdapter {
       unwrapDsh(await this.api.credentials.set({ rpcId: randomUUID(), payload: { ref, value: key } }))
     }
     this.invalidateProviderContext(id)
+    return { baseURLHost }
   }
 
   async removeProvider(providerId: string, expectedRevision?: number): Promise<void> {
@@ -386,8 +443,24 @@ export class DshSettingsAdapter {
     this.invalidateProviderContext(providerId)
   }
 
-  async discover(providerId: string, draft: { baseURL?: string; api?: string; apiKey?: string }): Promise<ProviderModelView[]> {
+  /**
+   * 发现供应商可用模型。
+   *
+   * `draft.baseURL` 是**临时覆盖**（不写配置），但内核会带着该供应商已配置的真实
+   * 凭据去请求它 —— 这正是 SEC-H11 的窃取路径：攻击者把自己的服务器填进来即可收到
+   * `Authorization: Bearer <真实 key>`。因此临时覆盖与持久化写入过同一道地址策略。
+   *
+   * 返回 `baseURLHost` 供路由层审计；不传 `baseURL` 时（用配置里的地址）同样返回，
+   * 这样「打了哪个地址」在任何情况下都能追溯。
+   */
+  async discover(
+    providerId: string,
+    draft: { baseURL?: string; api?: string; apiKey?: string },
+  ): Promise<{ models: ProviderModelView[]; baseURLHost?: string }> {
     const context = await this.providerContext(providerId)
+    const override = draft.baseURL === undefined || draft.baseURL === ''
+      ? undefined
+      : validateProviderBaseURL(draft.baseURL, this.baseURLOptions)
     const payload = {
       settingsNs: context.entry.settingsNs,
       provider: providerId,
@@ -395,7 +468,15 @@ export class DshSettingsAdapter {
       ...(draft.api === undefined || draft.api === '' ? {} : { api: draft.api }),
       ...(draft.apiKey === undefined || draft.apiKey === '' ? {} : { apiKey: draft.apiKey }),
     }
-    return unwrapDsh(await this.api.llm.discoverModels({ rpcId: randomUUID(), payload })).models
+    const models = unwrapDsh(await this.api.llm.discoverModels({ rpcId: randomUUID(), payload })).models
+    // 没给临时覆盖时，审计目标就是配置里的地址（内置 provider 走适配器默认端点）。
+    const configured = effectiveBaseURL(context)
+    return {
+      models,
+      ...(override !== undefined
+        ? { baseURLHost: override }
+        : configured === '' ? {} : { baseURLHost: hostOf(configured) }),
+    }
   }
 
   /**
@@ -451,7 +532,31 @@ export class DshSettingsAdapter {
     const entry = directory.providers.find(item => item.provider === providerId)
     if (entry === undefined) throw new ApiError(404, 'PROVIDER_NOT_FOUND', 'The provider is not available in DSH.')
     const namespace = settings.namespaces.find(item => item.ns === entry.settingsNs)
-    return { entry, writable: settings.writable, namespace, profile: recordAt(namespace?.value, entry.settingsPath) }
+    return {
+      entry,
+      writable: settings.writable,
+      namespace,
+      profile: recordAt(namespace?.value, entry.settingsPath),
+      baseProfile: recordAt(namespace?.base, entry.settingsPath),
+    }
+  }
+
+  /**
+   * 该供应商当前是否已经存了凭据。
+   *
+   * 单独一次 `credentials.describe` 只在「要换 baseURL host」时才调 —— 那是罕见路径，
+   * 而正常保存（改 models / 显示名 / 协议）不该为此多付一次内核往返。
+   */
+  private async providerHoldsCredential(
+    providerId: string,
+    context: Awaited<ReturnType<DshSettingsAdapter['loadProviderContext']>>,
+  ): Promise<boolean> {
+    const ref = text(context.profile?.apiKeyEnv) ?? keyRef(providerId)
+    const described = unwrapDsh(await this.api.credentials.describe({
+      rpcId: randomUUID(),
+      payload: { refs: [ref] },
+    }))
+    return described.credentials[ref]?.configured === true
   }
 }
 
@@ -585,4 +690,42 @@ function keyRef(provider: string): string {
   return provider === 'deepseek-official'
     ? 'DEEPSEEK_API_KEY'
     : `${provider.toUpperCase().replace(/[^A-Z0-9]+/g, '_')}_API_KEY`
+}
+
+/**
+ * 取一个供应商**当前生效**的 baseURL。
+ *
+ * 三层回退的顺序是刻意的：
+ * 1. `value`（`SettingsNamespaceView.value`）是内核合并后的生效值，首选；
+ * 2. `base` 是内核给出的基线 —— 用户没覆盖过 baseURL 时，生效地址只在这里；
+ * 3. 适配器目录的 `defaultBaseURL` 是最后兜底（内置供应商走它）。
+ *
+ * 只看第 1 层会把「用基线地址的供应商」误判成「地址未知」，从而让重定向闸门
+ * 对它静默失效 —— 那正是攻击者想要的。
+ */
+function effectiveBaseURL(context: {
+  profile: Record<string, unknown> | undefined
+  baseProfile: Record<string, unknown> | undefined
+  entry: { defaultBaseURL?: string }
+}): string {
+  const fromValue = text(context.profile?.baseURL)
+  if (fromValue !== undefined) return fromValue
+  const fromBase = text(context.baseProfile?.baseURL)
+  if (fromBase !== undefined) return fromBase
+  return text(context.entry.defaultBaseURL) ?? ''
+}
+
+/**
+ * 取 URL 的 `host[:port]` 供审计用；解析失败时返回原串。
+ *
+ * 只用于「配置里的地址」（已经过地址策略或来自适配器目录），所以不需要再校验，
+ * 但也不能因为一个畸形配置让 discover 整体失败 —— 审计字段缺失不该阻断业务。
+ */
+function hostOf(value: string): string {
+  try {
+    const url = new URL(value)
+    return url.port === '' ? url.hostname.toLowerCase() : `${url.hostname.toLowerCase()}:${url.port}`
+  } catch {
+    return value
+  }
 }

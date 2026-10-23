@@ -506,7 +506,16 @@ paths:
         '403': { $ref: '#/components/responses/Error' }
     post:
       operationId: createCustomProvider
-      description: Creates a fully custom llm-pi-ai provider using the protocols reported by ProviderSettings.customProvider.
+      description: |
+        Creates a fully custom llm-pi-ai provider using the protocols reported by
+        ProviderSettings.customProvider.
+
+        `baseURL` must be an absolute http(s) URL. Private, loopback, link-local and
+        CGNAT destinations are rejected with `403 PROVIDER_BASE_URL_FORBIDDEN` unless the
+        deployment lists the host in `allowPrivateProviderHosts` (exact `host` or
+        `host:port`, no CIDR). The kernel sends the provider's stored API key to this
+        address, so the check is what keeps a paired device from redirecting credentials.
+        See SECURITY.md ("供应商 baseURL 的地址策略").
       requestBody:
         required: true
         content:
@@ -519,6 +528,7 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/ProviderSettings' }
         '400': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
         '409': { $ref: '#/components/responses/Error' }
   /settings/plugins:
     get:
@@ -649,7 +659,15 @@ paths:
         schema: { type: string }
     patch:
       operationId: updateProvider
-      description: Updates provider settings and optionally writes an API key to the DSH credential store.
+      description: |
+        Updates provider settings and optionally writes an API key to the DSH credential store.
+
+        `baseURL` goes through the same address policy as creation. In addition, moving a
+        provider that already holds a credential to a different host requires supplying a
+        new `apiKey` in the same patch (`403 PROVIDER_BASE_URL_REPOINT_FORBIDDEN`) —
+        otherwise a paired device could point a live key at its own public domain, which
+        the private-address rule cannot catch. Changing models, the display name, or the
+        path within the same host is unaffected.
       requestBody:
         required: true
         content:
@@ -675,6 +693,11 @@ paths:
   /settings/providers/{providerId}/discover:
     post:
       operationId: discoverProviderModels
+      description: |
+        Fetches `GET {baseURL}/models` through the kernel, carrying the provider's stored
+        credential. `baseURL` here is a temporary override that is NOT persisted, so a
+        rejected address never reaches the config — but it does reach the network unless
+        the address policy allows it. Same rules as creation.
       parameters:
         - name: providerId
           in: path
@@ -702,6 +725,8 @@ paths:
                   models:
                     type: array
                     items: { $ref: '#/components/schemas/ProviderModel' }
+        '400': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
   /chat/sessions:
     get:
       operationId: listChatSessions

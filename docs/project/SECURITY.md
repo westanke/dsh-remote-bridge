@@ -14,6 +14,8 @@
 - DSH 工作区列表必须同时通过设备 `chat.read` 和 root grant；响应使用 `workspaceId` 与根内相对路径，不返回 DSH 工作区绝对路径。Agent Preset 只暴露选择所需元数据，损坏详情等宿主内部诊断不进入外部响应。
 - WebSocket 使用 Upgrade Authorization 或 `bearer.<token>` 子协议，不接受会进入代理日志的 query token。每条事件重新读取设备状态，并同时检查实时 root grant 与 `files.read`/`chat.read` scope。连接级闸口（真值在 `src/host/server.ts`）：默认最多 32 条连接（可配置），**鉴权先于计数**——超额连接在通过鉴权后才于 Upgrade 阶段收到 HTTP 429（`Retry-After: 5`），未鉴权请求不消耗名额；单帧上限 1 MiB，超限 close(1009)；30 秒 ping 心跳，连续 2 个周期缺 pong 即 terminate；每连接发送队列 512 帧，背压溢出时优先丢可重建的 `chat.message.delta` 并补发 `connection.resyncRequired` 通知客户端改走 REST 补历史，状态帧也塞不进时 close(1013,'Backpressure')。
 - Provider 列表只返回凭据的 `configured/source/writable` 元数据，绝不读取或回传 API 密钥。供应商读取和修改分别要求 `settings.read`、`settings.write`；密钥只通过 DSH credential service 写入或清除，审计不记录正文。
+- 供应商 `baseURL`（三个写入口：创建、修改、`discover`）必须过地址策略：协议限 `http`/`https`，私网/回环/链路本地/CGNAT **默认拒绝**，且已有凭据的供应商换 host 必须同时给新 key。理由是内核会带着真实凭据去请求这个地址——实测能直接收到 `Bearer sk-…`（2.6.1 / SEC-H11）。放宽只走部署方配置 `allowPrivateProviderHosts`。详见下节「供应商 `baseURL` 的地址策略」。
+- 配对默认只给五档 scope（`chat.read`/`chat.write`/`files.read`/`files.write`/`settings.read`），**刻意不含** `files.delete` 与 `settings.write`；三条配对路径共用 `DEFAULT_DEVICE_SCOPES`。用户仍可手动勾选破坏性权限（2.6.1）。
 - 通用设置命名空间（`/settings/namespaces`）要求 `settings.read` / `settings.write`，但**默认只有 `ui-*` 与以 `locale` 结尾的命名空间可写**；`llm-*`、`permission`、`agent-default-model`、`subagent-*` 等一律只读。理由、放宽开关与两道脱敏见下节「通用设置命名空间的写权限（2.6.0 起）」。
 - 待审批列表要求 `chat.read`，决定要求 `chat.write`，两者还会重新检查会话所属 root grant。插件仅在 Host 内保存 DSH `rpcId`，向设备返回独立审批 ID；工具参数按 API Key、token、密码、Bearer 等常见形式脱敏并限长，审计不记录原因或命令。`danger-full-access` 标记为高风险，Android 必须二次确认且只允许单次授权。
 - 诊断端点 `GET /api/v1/debug/host-services` 与其它 `/api/v1` 路由同级鉴权：先过 `principal()`，再要求 `settings.read` scope（admin 身份自动继承）；本构建未注入报告时回 404。2.5.2 修复（SEC-H1）：它此前位于 `principal()` 之前、无需任何凭据即可读到宿主注入面与内核原始错误文本，而 openapi 全局 `bearerAuth` 从未给它豁免——属于契约违约。新增的运行期 metrics 字段挂在这份报告上而**不另开路由**（另开一条就再造一个要单独守的鉴权面）。回归断言见 `tests/security-h1.spec.ts`；免设备令牌的端点集合由 `scripts/docs-contract.ts` 在 `docs:check` 中与 openapi 的 `security: []` 集合双向核对，目前恰好只有 `GET /healthz` 与 `POST /pairings/exchange`。
@@ -29,7 +31,7 @@ DSH 的设置是一份**按插件命名空间划分**的文档。桥把它整份
 |---|---|---|
 | `ui-*`（如 `ui-chat`、`ui-theme`） | 可写 | 改的是界面偏好（`transcriptView`、`fontSize`），最坏结果是界面难看 |
 | 以 `locale` 结尾 | 可写 | 语言/区域偏好，可随时改回 |
-| `llm-*`（供应商、模型、Base URL） | **只读** | 手机能改 Base URL = 把模型请求引到攻击者的端点；令牌泄露后这是最直接的数据外泄路径 |
+| `llm-*`（供应商、模型、Base URL） | **只读** | 手机能改 Base URL = 把模型请求引到攻击者的端点；令牌泄露后这是最直接的数据外泄路径。**注意**：供应商还有一条专用路由，不经过本策略 —— 它的守门是下节的地址策略 |
 | `permission`（审批档位/策略） | **只读** | 手机能改权限 = 把审批闸门拆掉，之后所有危险工具调用都无人拦截 |
 | `agent-default-model` / `subagent-*` | **只读** | 同样是把「用哪个大脑、放多少自主权」交给远端 |
 
@@ -51,6 +53,74 @@ DSH 的设置是一份**按插件命名空间划分**的文档。桥把它整份
   把字符串值替换成 `***`（`apiKeyEnv` 是变量名不是密钥，但它暴露供应商配置）。
 - 成功写入的审计是 `settings.namespace.mutate`，`details` 只含 `ns`、`fields`
   （字段路径）与 `credentialChanged`（路径是否命中 `secrets[].path`）；**绝不记录值**。
+
+### 供应商 `baseURL` 的地址策略（2.6.1 起，SEC-H11）
+
+上表的 `llm-*` 只读挡的是**命名空间那条路**。供应商还有一条专用路由
+（`POST /settings/providers`、`PATCH /settings/providers/{id}`、
+`POST /settings/providers/{id}/discover`），它写的是同一批字段，却**不经过**
+`isSettingsNamespaceWriteAllowed` —— 也就是说，只要设备拿到 `settings.write`，
+上面那句「手机不能改 Base URL」就形同虚设。这是 2.6.0 及之前版本的真实状态。
+
+更严重的是，`discover` 会把 `baseURL` 交给内核去发 `GET {baseURL}/models`，而内核
+**带着该供应商已配置的真实 API key**。实测（2.6.0）：把 `baseURL` 指向自己的服务器，
+就能在服务端日志里收到 `authorization: Bearer sk-…`。所以这条不只是 SSRF，是
+**凭据外泄**。`PATCH` 改 `baseURL` 的持久化变体更彻底：配置真的被改掉，此后每次
+聊天都把 key 打到新地址，而审计只记 `providerId` 不记地址，事后无法追溯。
+
+三道闸门（策略本体在 `src/host/provider-url-policy.ts`，接线在
+`src/host/settings-adapter.ts`）：
+
+| # | 判据 | 拒绝码 | 为什么 |
+|---|---|---|---|
+| 1 | 必须是绝对 URL，协议限 `http`/`https` | `400 PROVIDER_BASE_URL_INVALID` | 挡 `file:`、`gopher:`、`data:` 这类由 URL 解析器自己发起的协议 |
+| 2 | 私网 / 回环 / 链路本地 / CGNAT 默认拒绝 | `403 PROVIDER_BASE_URL_FORBIDDEN` | 挡 SSRF：内网探测与云元数据 `169.254.169.254` |
+| 3 | 已有凭据的供应商换 host 时必须同时提供新 `apiKey` | `403 PROVIDER_BASE_URL_REPOINT_FORBIDDEN` | 挡「换成攻击者的**公网**域名」——闸门 2 对公网地址无能为力 |
+
+三条都在 `createProvider`、`updateProvider`、`discover` **三个入口**生效，缺一即留后门
+（`tests/settings-adapter.spec.ts` 每个入口都有拒绝用例）。闸门 3 只在 `baseURL` 的
+host 真的变了、且该供应商**确实存有凭据**（`credentials.describe` 报
+`configured: true`）时才查 —— 所以改模型列表、改显示名、同 host 内改 path 都是零额外
+开销的日常操作，不会被误伤。
+
+**放行自建 LLM**：默认拒绝会打死本机 ollama / LM Studio。部署方用插件配置
+`allowPrivateProviderHosts` 显式放行，接受两种粒度：
+
+```yaml
+allowPrivateProviderHosts:
+  - 127.0.0.1:11434     # 推荐：只放行这一个端口
+  - 192.168.1.5         # 裸 host：放行该主机任意端口
+```
+
+**不支持 CIDR** —— 只接受精确 `host` 或 `host:port`。带端口的条目按 `host:port` 精确
+比对，裸 host 条目匹配该主机任意端口。**推荐永远带端口**：放行 `192.168.1.5` 等于放行
+它上面所有服务，而 ollama 只在 11434。这是部署方的显式决定，不进 REST 请求体、不经客户端。
+
+**刻意不做 DNS 解析**：校验时解析一次、内核发请求时再解析一次，两次之间可以变
+（TOCTOU），而且会给出一层「已经校验过」的错觉。所以攻击面被收窄到「攻击者必须
+控制一个公网域名」，而不是「攻击者必须控制 DNS」。
+
+**审计**：三个写入口的审计都带 `baseURLHost`（`host[:port]`，**不记完整 URL** ——
+path/query 可能带凭据）。`discover` 的 `baseURL` 是临时覆盖、不写配置，所以这条尤其
+重要：不记 host 就完全无法知道凭据被打到哪个地址。
+
+**回归断言**：`tests/provider-url-policy.spec.ts`（29 例：协议白名单、12 种私网形态、
+白名单粒度、`::ffff:` 十六进制映射绕过）与 `tests/settings-adapter.spec.ts` 的
+「credential repoint guard」6 例。其中 `::ffff:127.0.0.1` 一例是实施时发现的真绕过：
+`new URL()` 会把 IPv4 映射地址归一化成 `[::ffff:7f00:1]`，只匹配点分十进制等于完全没挡。
+
+### 配对的默认权限（2.6.1 起）
+
+修复前，WebUI「生成配对码」这条路径默认勾选**全部七档** scope（含 `files.delete` 与
+`settings.write`），而「生成配置文本」那条路径刻意只给五档（注释原文
+`No scopes on purpose`）。同一个产品两条配对路径的默认权限不一样，且宽的那条恰好是
+用户更常用的那条。
+
+现在三条路径（配对码 / 配置文本 / 隧道配置文本）共用 `src/shared/contracts.ts` 的
+`DEFAULT_DEVICE_SCOPES`（五档：`chat.read`、`chat.write`、`files.read`、`files.write`、
+`settings.read`），**刻意不含** `files.delete` 与 `settings.write`。破坏性权限仍可由用户
+在配对界面上手动勾选 —— 默认值与「能给它」是两件事。这与 `CHANGELOG-DEV.md` 里
+「`settings.write` 是用户显式要求才给的东西」那句声明对齐。
 
 ## 管理面的信任边界（2.5.1 起）
 

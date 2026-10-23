@@ -587,7 +587,13 @@ export async function togglePlugin(
   const manifestPath = path.join(profilePath, 'package.json')
   const raw = await readFile(manifestPath, 'utf8').catch(() => null)
   if (raw === null) {
-    throw new PluginToggleError('MANIFEST_UNREADABLE', `Cannot read ${manifestPath}`)
+    // 不回显 `manifestPath`：这条 message 会被 router 的顶层 catch 原样写进响应体，
+    // 而绝对路径会泄露部署方的用户名与目录结构（AGENTS.md「系统错误不回显绝对路径」）。
+    // 定位靠 code + profile 名：profile 是用户自己起的名字，不构成信息泄露。
+    throw new PluginToggleError(
+      'MANIFEST_UNREADABLE',
+      `Cannot read the manifest of profile "${profile}".`,
+    )
   }
 
   let manifest: Record<string, unknown>

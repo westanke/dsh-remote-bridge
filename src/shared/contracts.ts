@@ -10,6 +10,24 @@ export const DEVICE_SCOPES = [
 
 export type DeviceScope = (typeof DEVICE_SCOPES)[number]
 
+/**
+ * 授予新设备时的默认权限（**五个非破坏性权限**）。
+ *
+ * 刻意不含 `files.delete` 与 `settings.write`：这两个是破坏性权限，应当是用户显式
+ * 要求才授予。`settings.write` 尤其危险 —— 拿到它就能改供应商 `baseURL`，把模型
+ * 请求连同真实凭据引到任意地址（SEC-H11），所以它绝不能是默认值。
+ *
+ * 三条路径必须共用这一份，否则「同一个产品里三处默认权限不一样」这种缺陷会反复
+ * 复发：服务端生成配置文本时的缺省、Web UI 配对码面板的初始勾选、隧道一键路径。
+ */
+export const DEFAULT_DEVICE_SCOPES: readonly DeviceScope[] = [
+  'chat.read',
+  'chat.write',
+  'files.read',
+  'files.write',
+  'settings.read',
+]
+
 export interface RootView {
   id: string
   label: string

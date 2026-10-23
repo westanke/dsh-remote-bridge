@@ -34,7 +34,14 @@ const EVIDENCE: Record<string, { openapi?: string[]; asyncapi?: string[] }> = {
   'workspace-list-v1': { openapi: ['/chat/workspaces'] },
   'workspace-manage-v1': { openapi: ['/chat/workspaces/{workspaceId}'] },
   'provider-settings-v1': {
-    openapi: ['/settings/providers', '/settings/providers/{providerId}/discover'],
+    openapi: [
+      '/settings/providers',
+      // PATCH/DELETE 单个供应商 —— 能力位说的是「这个能力面在不在」，而
+      // `/settings/providers`（列表）在、单条写不在的中间态并不存在；三条路径同进同出，
+      // 所以合成一条位，但依据要列全，否则「为什么这个位能代表 PATCH」无从查证。
+      '/settings/providers/{providerId}',
+      '/settings/providers/{providerId}/discover',
+    ],
   },
   'model-catalog-v1': { openapi: ['/settings/models'] },
   'plugin-inventory-v1': { openapi: ['/settings/plugins'] },
