@@ -75,6 +75,10 @@ export const BRIDGE_CAPABILITIES: readonly string[] = [
   'model-catalog-v1', // GET /settings/models
   'plugin-inventory-v1', // GET /settings/plugins
   'plugin-toggle-v1', // PATCH /settings/plugins
+  // 通用设置命名空间面（2.6.0）：不再为每个插件写专用接口，客户端按返回的 `schema` 自建表单。
+  // 这条**必须**是可探测的位，不能靠「收到就刷新」豁免：老桥（<2.6.0）根本没有这两个路径，
+  // 客户端拿不到区分「这台服务端没有这个能力面」与「有但读失败」的依据。
+  'settings-namespaces-v1', // GET /settings/namespaces、PATCH /settings/namespaces/{ns}
   // —— 交互与事件 ——
   'approvals-v1', // GET …/approvals + POST …/decision + chat.approval.*
   'questions-v1', // GET …/questions + POST …/answer

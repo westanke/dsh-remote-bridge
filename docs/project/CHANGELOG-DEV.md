@@ -23,6 +23,32 @@
 **未做**：未升 `package.json` 版本号、未发版；真实内核的 `settings.mutate` 已由桥代理，
 真机验收待发版后由用户执行。
 
+### 补漏：`settings-namespaces-v1` 能力位（2026-10-23）
+
+**发现的经过**：用户升级到 2.6.0 后要求核实「能力位有没有生效」，对账时发现
+`git diff v2.5.2..HEAD -- src/host/capabilities.ts` **无输出** —— 新增了两条对外路径，
+能力位数组却一字未动，仍是 29 项。
+
+**为什么这次不能套用「不加能力位」的豁免**：本仓此前几次不加位都写明了理由
+（`CHANGELOG-DEV.md:855`「收到就刷新，不是分支关系」、`:1003`「没有客户端需要分支」）。
+而 `settings/namespaces` 恰好是**需要分支**的那一类 —— 老桥（<2.6.0）没有这两个路径，
+客户端必须能把「这台服务端没有这个能力面」与「有但读失败」分开；这跟 `job-list-v1`
+同属可选能力面，不是纯声明。同时它依赖 settings 服务（缺失时 `503 SETTINGS_UNAVAILABLE`，
+见 `settings-adapter.ts:207`），本就符合 `CAPABILITY_REQUIREMENTS` 的适用场景。
+
+**改动**：
+
+- `src/host/capabilities.ts` 数组加 `'settings-namespaces-v1'`，注释写明两条路径依据。
+- `tests/capabilities.spec.ts` 的 `EVIDENCE` 加 `['/settings/namespaces', '/settings/namespaces/{ns}']`；
+  双向断言（每条位都有依据 / 依据表无孤儿）随之通过。
+
+**影响面**：现网**无**行为变化 —— 三端客户端早已按 `404/403 静默降级` 守卫
+（安卓 `HarnessNamespacesViewModel.kt:148`、桌面 `AppStateSettingsNamespaces.kt:80`、
+鸿蒙 `HarnessViewModelCatalog.ts:481`，三者都刻意排除 503 以免把真故障当降级吞掉）。
+这次补的是**契约缺口**：第三方客户端按位探测时不再探不到这个能力面。
+
+**验证**：`npx vitest run tests/capabilities.spec.ts` → 7/7 通过。
+
 ### IM 远程开隧道：宿主命令 `/tunnel` 与工具 `open_tunnel_config`
 
 **动机**：真实场景的缺口 —— 人已出门，才发现电脑上的隧道没开、配置文本也没发给自己。

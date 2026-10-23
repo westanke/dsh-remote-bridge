@@ -39,6 +39,11 @@ const EVIDENCE: Record<string, { openapi?: string[]; asyncapi?: string[] }> = {
   'model-catalog-v1': { openapi: ['/settings/models'] },
   'plugin-inventory-v1': { openapi: ['/settings/plugins'] },
   'plugin-toggle-v1': { openapi: ['/settings/plugins'] },
+  // 依据是这两条路径本身；`/settings/namespaces/{ns}` 与 `/settings/namespaces` 是两个独立
+  // 能力动作（读全表 / 按 ns 写），但同属一个能力面，故合成一条位。
+  'settings-namespaces-v1': {
+    openapi: ['/settings/namespaces', '/settings/namespaces/{ns}'],
+  },
   'approvals-v1': {
     openapi: [
       '/chat/sessions/{sessionId}/approvals',
