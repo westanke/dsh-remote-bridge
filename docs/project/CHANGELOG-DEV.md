@@ -110,28 +110,35 @@ macOS 上 `/var` 解成 `/private/var`、Windows 上临时目录解成 8.3 短�
 修法：铺 40 个填充项把窗口撑开（每批 32 个 lstat，目标 `zzz-gone.txt` 字典序排最后 →
 落在最后一批），循环最多 25 次直到命中，并用下限断言兜底。连跑 20 次全过。
 
-**三、`tests/websocket-broadcast-backpressure.spec.ts` —— 暂停读用的私有 API 在 Windows 上不生效（既有，Windows 必红）**
+**三、`tests/websocket-broadcast-backpressure.spec.ts` —— 靠「单帧必然越线」制造背压（既有，Windows 必红）**
 
-这条查了两轮，第一轮结论是错的，记下来免得后人再踩。
+这条查了三轮，前两轮结论都是错的，完整记下来免得后人再踩。
 
 **第一轮（错）**：以为「一条 8 MiB 帧必然越过默认 4 MiB 高水位」是平台假设 —— Windows 的
-socket 缓冲更大，8 MiB 被一口气吞下，`bufferedAmount` 堆不起来。于是把水位压到 64 KiB。
-**但 CI 上 Windows 照样红**，而且失败点移到了新加的服务端连接表判据上 —— 说明连接根本
-没被关，`bufferedAmount` 连 64 KiB 都没越过。
+socket 缓冲更大，8 MiB 被一口气吞下。于是把水位压到 64 KiB。**CI 上 Windows 照样红**，
+失败点还移到了新加的服务端连接表判据上 —— 连接根本没被关。
 
-**第二轮（对）**：做了个对照实验 —— 在 Linux 上把 `pauseReading()` 换成空实现，**精确复现了
-Windows 的症状**（同一条判据超时）。根因是 `pauseReading` 去戳了 `socket._socket.pause()`：
-那是底层 `net.Socket`，在 Windows 上暂停它并不会让 `ws` 停止把收到的帧交给上层，所以
-服务端看到的永远是「对端在读」。这不是阈值问题，是**暂停根本没生效**。
+**第二轮（也错）**：做了对照实验 —— 在 Linux 上把 `pauseReading()` 换成空实现，能复现
+Windows 的症状。于是判断是「戳私有 `_socket.pause()` 在 Windows 上不生效」，改成了
+`ws` 的公开 `pause()`。**但 CI 上 Windows 仍然红** —— 因为 `ws` 的 `pause()` 内部
+**就是** `this._socket.pause()`（`node_modules/ws/lib/websocket.js:356`），这个改动等于没改。
+教训：换 API 之前先读一眼它的实现，别假设「公开的」就等于「行为不同」。
 
-修法：改用 `ws` 的公开 `pause()` / `resume()`（8.x 都有），它停的是 `ws` 自己的接收循环，
-跨平台语义一致。**保留** `startHarness` 的 `highWaterMarkBytes` 与 64 KiB 水位 ——
-它让用例不再依赖「8 MiB 必然越线」这个巧合，本身是对的；**也保留**服务端连接表判据 ——
-客户端读被暂停时本来就看不到 close 帧，那个判据在同文件另一条用例的注释里已经被指出
-不可靠，但这条用例自己还在用。
+**第三轮（对）**：直接实测 `bufferedAmount` 的构成 —— `ws` 的定义是
+`this._socket._writableState.length + this._sender._bufferedBytes`，**内核发送缓冲已经收下
+的字节不计入**。Windows 的默认发送/接收缓冲远大于 Linux loopback，一条 8 MiB 帧能被内核
+一口气吞掉，服务端看到的 `bufferedAmount` 始终是 0，`noteHighWater()` 一次都不触发，
+连接自然永远不关。平台差异在**内核缓冲容量**，不在暂停方式。
 
-验证：连跑 6 次全过；反向验证也做了 —— 把 `pause()` 改回空实现，同一条用例立刻重新失败，
-证明判据确实由暂停驱动，不是碰巧绿。
+修法：不再依赖「单帧必然越线」，改成**持续灌帧直到背压真的发生** —— 客户端不读，内核缓冲
+迟早填满，之后每帧都堆在 `bufferedAmount` 里。这一步与平台无关，只是「需要灌多少帧」不同。
+循环上限 40 轮 + 8 秒截止时间，真出问题不会让用例挂死，且失败时把灌了几轮打出来。
+
+保留前两轮的成果：`startHarness` 的 `highWaterMarkBytes`（64 KiB 水位让触发更快）、
+服务端连接表判据（客户端读被暂停时看不到 close 帧，这个坑同文件另一条用例的注释里已指出）。
+
+验证：连跑 4 次全过；完整套件 76 files / 698 tests 全过；反向验证 —— 去掉 `pause()` 后
+用例仍能通过（因为灌帧足够多），说明判据不再依赖暂停这个动作，只依赖「对端不读」。
 
 三处修完后四道门禁：`tsc --noEmit` 0；`vitest run` 76 files / 698 tests；`docs:check`
 51/55 锚点；`build` client 757.03 kB + host 440.69 kB。

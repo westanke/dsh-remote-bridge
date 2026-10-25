@@ -149,28 +149,43 @@ describe('broadcast isolation and backpressure', () => {
   })
 
   it('closes a connection that stays over the high-water mark twice', async () => {
-    // 高水位压到 64 KiB，不再靠「一条 8 MiB 帧必然越过 4 MiB」这个平台假设。
+    // 这条用例在 Windows 上红了好几版，根因查了两轮，记下来免得再猜。
     //
-    // 原先写死默认 4 MiB + 8 MiB 帧，在 Windows 上稳定红：`socket.bufferedAmount`
-    // 是**内核发送缓冲还没被对端确认**的字节数，而 Windows 的默认 socket 缓冲远大于
-    // Linux 的 loopback —— 8 MiB 能被内核一口气吞下，`bufferedAmount` 始终在水位以下，
-    // 于是 `noteHighWater()` 一次都不触发，连接自然永远不关。这不是产品 bug，
-    // 是测试对「多大帧才会造成背压」做了平台相关的假设。
+    // **不能**靠「一条 8 MiB 帧必然把 bufferedAmount 顶过水位」。`bufferedAmount`
+    // 是 `_writableState.length + _sender._bufferedBytes` —— 内核发送缓冲**已经收下**
+    // 的字节不计入。Windows 的默认发送/接收缓冲远大于 Linux loopback，一条 8 MiB 帧
+    // 能被内核一口气吞掉，服务端看到的 bufferedAmount 始终是 0，`noteHighWater()`
+    // 一次都不触发，连接自然永远不关。
     //
-    // 压小水位之后，判据与平台无关：只要对端不读，64 KiB 迟早会堆住。
+    // 也**不要**指望「暂停客户端读」来保证堆住：`ws` 的 `pause()` 内部就是
+    // `this._socket.pause()`（见 node_modules/ws/lib/websocket.js:356），它停的是
+    // Node 侧的读取，内核接收窗口仍按 TCP 协议自己流动。平台差异不在这里。
+    //
+    // 可靠的判据只有一个：**持续灌帧，直到背压真的发生**。客户端不读，内核缓冲
+    // 迟早会被填满，之后每帧都堆在服务端的 bufferedAmount 里 —— 这一步与平台无关，
+    // 只是「需要灌多少帧」不同。所以下面循环灌，直到服务端把连接摘掉为止。
     const harness = await startHarness({ highWaterMarkBytes: 64 * 1024 })
     try {
       const slow = await harness.connect()
       pauseReading(slow.socket)
-      harness.events.emit(fileEvent(harness.rootId, 'big', BIG_PAYLOAD_CHARS))
-      // 等两个复查周期：第一拍只是「可疑」，第二拍才 close(1013)。
-      // 客户端此刻读不动，close 帧排在它的接收缓冲里 —— 所以**必须**先恢复读，
-      // 才可能观察到关闭（否则只能看到「一直 OPEN」，那是暂停读的假象）。
-      await new Promise(resolve => setTimeout(resolve, 700))
+      // 每轮灌一条大帧，直到服务端把这条连接关掉（`closeBackpressured()` 会把它
+      // 从登记表里摘掉）。上限 40 轮：真出问题时不能让用例挂死。
+      const CLOSE_TIMEOUT_MS = 8_000
+      const deadline = Date.now() + CLOSE_TIMEOUT_MS
+      let rounds = 0
+      while (serverSocketCount(harness.remote) > 0 && Date.now() < deadline) {
+        harness.events.emit(fileEvent(harness.rootId, `big-${rounds}`, BIG_PAYLOAD_CHARS))
+        rounds += 1
+        // 让 drain 循环与两次高水位复查（HIGH_WATER_RECHECK_MS = 250ms）跑起来。
+        await new Promise(resolve => setTimeout(resolve, 300))
+      }
       // 服务端侧判据：连接已被摘出登记表 = `closeBackpressured()` 已经跑过。
-      // 这条比客户端 `readyState` 可靠 —— 它不依赖 close 帧穿过暂停的读取路径，
-      // 也正是上一条用例（stop() 及时返回）已经在用的判据。
-      await waitFor(() => serverSocketCount(harness.remote) === 0, 300)
+      // 这条比客户端 `readyState` 可靠 —— 客户端读被暂停时看不到 close 帧，
+      // 那正是同文件另一条用例的注释里已经指出过的坑。
+      expect(
+        serverSocketCount(harness.remote),
+        `灌了 ${rounds} 轮仍未触发背压关闭 —— 高水位 ${64} KiB 可能没被越过`,
+      ).toBe(0)
       resumeReading(slow.socket)
       // 恢复读之后，客户端才可能真的看到 CLOSED 与关闭码。
       await waitFor(() => slow.socket.readyState === WebSocket.CLOSED, 300)
