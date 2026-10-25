@@ -21,7 +21,7 @@ set -euo pipefail
 # 顺序即优先级：Gitee 主站 → AtomGit 备站
 SOURCES=(
   "Gitee|https://gitee.com/westanke/dsh-remote-bridge.git"
-  "AtomGit|https://atomgit.com/westanke163/dsh-workspace.git"
+  "AtomGit|https://atomgit.com/westanke163/dsh-remote-bridge.git"
 )
 
 WORK="$(mktemp -d)"

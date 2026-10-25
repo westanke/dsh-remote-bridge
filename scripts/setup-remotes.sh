@@ -4,7 +4,7 @@
 # 目标约定：
 #   origin   -> GitHub    https://github.com/westanke/dsh-remote-bridge.git
 #   gitee    -> Gitee     https://gitee.com/westanke/dsh-remote-bridge.git          （主）
-#   atomgit  -> AtomGit   https://atomgit.com/westanke163/dsh-workspace.git        （备）
+#   atomgit  -> AtomGit   https://atomgit.com/westanke163/dsh-remote-bridge.git        （备）
 #
 # 渠道拓扑（2026-10-20 起，与姊妹仓 dsh-companion 对齐）：Gitee 为主、AtomGit 为备，
 # GitHub 为从站，GitHub 端不手工推送，由 .github/workflows/mirror-sync.yml
@@ -15,7 +15,7 @@ set -uo pipefail
 
 GITHUB_URL="https://github.com/westanke/dsh-remote-bridge.git"
 GITEE_URL="https://gitee.com/westanke/dsh-remote-bridge.git"
-ATOMGIT_URL="https://atomgit.com/westanke163/dsh-workspace.git"
+ATOMGIT_URL="https://atomgit.com/westanke163/dsh-remote-bridge.git"
 
 say() { printf '%s\n' "$*"; }
 ok()  { printf '  ✅ %s\n' "$*"; }

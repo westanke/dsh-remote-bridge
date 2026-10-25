@@ -3,7 +3,7 @@
 #
 # 渠道拓扑（2026-10-20 起，与姊妹仓 dsh-companion 对齐）：
 #   gitee    -> Gitee    gitee.com/westanke/dsh-remote-bridge.git        （主站）
-#   atomgit  -> AtomGit  atomgit.com/westanke163/dsh-workspace.git      （备站）
+#   atomgit  -> AtomGit  atomgit.com/westanke163/dsh-remote-bridge.git      （备站）
 #   origin   -> GitHub   github.com/westanke/dsh-remote-bridge.git       （从站，自动同步）
 #
 # 为什么 GitHub 不再手工推：本机到 github.com:443 长期被阻断（实测表现是

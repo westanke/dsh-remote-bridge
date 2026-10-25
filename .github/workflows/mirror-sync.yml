@@ -42,7 +42,7 @@ jobs:
           SRC_URL=""
           for entry in \
             "Gitee|https://gitee.com/westanke/dsh-remote-bridge.git" \
-            "AtomGit|https://atomgit.com/westanke163/dsh-workspace.git"; do
+            "AtomGit|https://atomgit.com/westanke163/dsh-remote-bridge.git"; do
             label="${entry%%|*}"; url="${entry#*|}"
             echo "探测源站：$label"
             if git ls-remote --heads "$url" >/dev/null 2>&1; then

@@ -27,7 +27,7 @@
 
 ```
 gitee    -> Gitee    gitee.com/westanke/dsh-remote-bridge.git        （主站）
-atomgit  -> AtomGit  atomgit.com/westanke163/dsh-workspace.git      （备站）
+atomgit  -> AtomGit  atomgit.com/westanke163/dsh-remote-bridge.git      （备站）
 origin   -> GitHub   github.com/westanke/dsh-remote-bridge.git       （从站，自动同步）
 ```
 
