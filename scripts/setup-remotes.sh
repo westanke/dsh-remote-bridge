@@ -8,7 +8,11 @@
 #
 # 渠道拓扑（2026-10-20 起，与姊妹仓 dsh-companion 对齐）：Gitee 为主、AtomGit 为备，
 # GitHub 为从站，GitHub 端不手工推送，由 .github/workflows/mirror-sync.yml
-# 定时从 Gitee 自动同步。upstream -> Hakunm/dsh-workspace 是只读上游，本脚本绝不触碰。
+# 定时从 Gitee 自动同步。
+#
+# 2026-10-25：删除了 `upstream`（原 `Hakunm/dsh-workspace`）。原作者早已停止更新，
+# 那个远端从建仓起就没有再 fetch 过，留着只是让 `git remote -v` 多一行噪音。
+# 代码血缘与 AGPL 归属仍在 `AGENTS.md` §1 与 README 里写明，删的是 git 远端、不是署名。
 #
 # 用法：bash scripts/setup-remotes.sh
 set -uo pipefail
@@ -45,4 +49,4 @@ say ""
 say "当前远端："
 git remote -v | awk '!seen[$1]++ {print "  " $1 "\t" $2}'
 say ""
-ok "三远端命名已统一（origin=GitHub 从站 / gitee=Gitee 主站 / atomgit=AtomGit 备站；upstream 为只读上游）"
+ok "三远端命名已统一（origin=GitHub 从站 / gitee=Gitee 主站 / atomgit=AtomGit 备站）"
