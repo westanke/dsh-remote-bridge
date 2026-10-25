@@ -217,7 +217,7 @@ gitee_release() {
 
 atomgit_release() {
   [ -z "$AT" ] && { warn "无 AtomGit token，跳过"; return 0; }
-  local repo="westanke163/dsh-workspace"
+  local repo="westanke163/dsh-remote-bridge"
   local cur
   cur=$(curl -s -H "Authorization: Bearer $AT" \
         "https://atomgit.com/api/v5/repos/$repo/releases?per_page=1" \
