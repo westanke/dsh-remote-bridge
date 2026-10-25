@@ -110,17 +110,28 @@ macOS 上 `/var` 解成 `/private/var`、Windows 上临时目录解成 8.3 短�
 修法：铺 40 个填充项把窗口撑开（每批 32 个 lstat，目标 `zzz-gone.txt` 字典序排最后 →
 落在最后一批），循环最多 25 次直到命中，并用下限断言兜底。连跑 20 次全过。
 
-**三、`tests/websocket-broadcast-backpressure.spec.ts` —— 背压阈值是平台假设（既有，Windows 必红）**
+**三、`tests/websocket-broadcast-backpressure.spec.ts` —— 暂停读用的私有 API 在 Windows 上不生效（既有，Windows 必红）**
 
-原用例写死「一条 8 MiB 帧必然越过默认 4 MiB 高水位」。但 `socket.bufferedAmount` 是
-**内核发送缓冲还没被对端确认**的字节数，Windows 的默认 socket 缓冲远大于 Linux loopback，
-8 MiB 能被内核一口气吞下，`bufferedAmount` 始终在水位以下 → `noteHighWater()` 一次都不触发
-→ 连接永远不关。这不是产品 bug，是测试对「多大帧才造成背压」做了平台相关假设。
+这条查了两轮，第一轮结论是错的，记下来免得后人再踩。
 
-修法两条：①`startHarness` 支持 `highWaterMarkBytes`，该用例压到 64 KiB，判据与平台无关；
-②判据从客户端 `readyState` 换成服务端连接表 `serverSocketCount(remote) === 0` ——
-客户端读被暂停时它本来就看不到 close 帧，那个判据在同文件另一条用例的注释里已经被指出
+**第一轮（错）**：以为「一条 8 MiB 帧必然越过默认 4 MiB 高水位」是平台假设 —— Windows 的
+socket 缓冲更大，8 MiB 被一口气吞下，`bufferedAmount` 堆不起来。于是把水位压到 64 KiB。
+**但 CI 上 Windows 照样红**，而且失败点移到了新加的服务端连接表判据上 —— 说明连接根本
+没被关，`bufferedAmount` 连 64 KiB 都没越过。
+
+**第二轮（对）**：做了个对照实验 —— 在 Linux 上把 `pauseReading()` 换成空实现，**精确复现了
+Windows 的症状**（同一条判据超时）。根因是 `pauseReading` 去戳了 `socket._socket.pause()`：
+那是底层 `net.Socket`，在 Windows 上暂停它并不会让 `ws` 停止把收到的帧交给上层，所以
+服务端看到的永远是「对端在读」。这不是阈值问题，是**暂停根本没生效**。
+
+修法：改用 `ws` 的公开 `pause()` / `resume()`（8.x 都有），它停的是 `ws` 自己的接收循环，
+跨平台语义一致。**保留** `startHarness` 的 `highWaterMarkBytes` 与 64 KiB 水位 ——
+它让用例不再依赖「8 MiB 必然越线」这个巧合，本身是对的；**也保留**服务端连接表判据 ——
+客户端读被暂停时本来就看不到 close 帧，那个判据在同文件另一条用例的注释里已经被指出
 不可靠，但这条用例自己还在用。
+
+验证：连跑 6 次全过；反向验证也做了 —— 把 `pause()` 改回空实现，同一条用例立刻重新失败，
+证明判据确实由暂停驱动，不是碰巧绿。
 
 三处修完后四道门禁：`tsc --noEmit` 0；`vitest run` 76 files / 698 tests；`docs:check`
 51/55 锚点；`build` client 757.03 kB + host 440.69 kB。

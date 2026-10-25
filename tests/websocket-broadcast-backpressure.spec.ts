@@ -253,14 +253,20 @@ describe('broadcast isolation and backpressure', () => {
 })
 
 /**
- * 让客户端的底层 socket **暂停读取**。
+ * 让客户端**暂停读取**。
  *
  * 这是复现「慢客户端」的唯一可靠办法：本地回环默认瞬间排干，光调小阈值测不出来
- * （会把快连接一起判成慢）。`_socket` 在 `ws` 上标了下划线，但正是给这类场景用的。
+ * （会把快连接一起判成慢）。
+ *
+ * ⚠️ 必须用 `ws` 的公开 `pause()` / `resume()`，**不能**去戳 `socket._socket.pause()`。
+ * 后者是底层 net.Socket，在 Windows 上暂停它并不会让 `ws` 停止把收到的帧交给
+ * 上层，于是服务端的 `bufferedAmount` 永远堆不起来 —— 表现为「背压根本不发生、
+ * 连接一直不关」。2026-10-25 的对照实验证实了这一点：在 Linux 上把 `pause()` 换成
+ * 空实现，能精确复现 Windows 的失败（服务端连接表判据超时）。
+ * `ws` 的 `pause()` 停的是它自己的接收循环，跨平台语义一致。
  */
 function pauseReading(socket: WebSocket): void {
-  const raw = (socket as unknown as { _socket?: { pause?: () => void } })._socket
-  raw?.pause?.()
+  socket.pause()
 }
 
 /** 服务端此刻还登记着多少条连接。 */
@@ -270,8 +276,7 @@ function serverSocketCount(remote: RemoteApiServer): number {
 
 /** 恢复读取，让客户端侧把已排队的帧与 close 处理掉。 */
 function resumeReading(socket: WebSocket): void {
-  const raw = (socket as unknown as { _socket?: { resume?: () => void } })._socket
-  raw?.resume?.()
+  socket.resume()
 }
 
 function fileEvent(rootId: string, id: string, payloadChars = 0): WorkspaceEvent {
