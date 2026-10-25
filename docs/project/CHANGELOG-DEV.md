@@ -143,9 +143,15 @@ Windows 的症状。于是判断是「戳私有 `_socket.pause()` 在 Windows �
 三处修完后四道门禁：`tsc --noEmit` 0；`vitest run` 76 files / 698 tests；`docs:check`
 51/55 锚点；`build` client 757.03 kB + host 440.69 kB。
 
-**仍红的是 CI 基础设施层面的既有问题**，不在本仓代码内：Windows / macOS 的
-`profile-install` 需要 checkout 上游 `deepseek-ai/deepseek-harness` 并 `pnpm install`，
-那两个平台的 runner 上一直失败，与插件本身无关。
+**结果：CI 首次全绿。** 提交 `cc77cb6` 经 mirror-sync 同步到 GitHub 后，run
+`40185031716` 的 **12 个 job 全部 success** —— 包括此前一直红的
+`core (windows-latest, 22.19.0)`、`core (windows-latest, 24)`、
+`profile-install (windows-latest)`、`profile-install (macos-latest)`。v2.6.1 时
+Windows/macOS 就已经在红，这次一并转绿，不是靠放宽判据换来的。
+
+（早前几轮我曾判断「Windows/macOS 的 profile-install 是 CI 基础设施层面的既有问题、
+不在本仓代码内」—— 那个判断是错的，它们红的原因就是同一个 websocket 用例。
+凡是「某平台一直红」的结论，都该先把它那条用例的失败原文读出来再下。）
 
 ## 2.6.1 · SEC-H11 SSRF 与凭据外泄修复 + 设备身份自动识别（2026-10-23）
 
