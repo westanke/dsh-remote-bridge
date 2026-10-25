@@ -392,7 +392,8 @@ export const PLUGIN_VERSION: string          // shared/version.ts，与 package.
 | --- | --- | --- |
 | `WorkspaceApiError` / `DirectoryPage` / `ContentResult` | `api.ts` | 浏览器侧 REST 客户端 |
 | 客户端插件入口（slot 注册） | `index.tsx` | 面板与图片交接渲染的注册点 |
-| 手机设置面板组件 | `workspace.tsx` | 七张折叠卡片 |
+| 手机设置面板组件 | `workspace.tsx` | 七张折叠卡片（含插件清单与启停） |
+| `PLUGINS_TAB_ID` / `PLUGINS_TAB_KIND` / `pluginsTabDefinition` / `PluginsTabTitle` / `makePluginsTabBody` | `plugins.tsx` | 插件清单的右侧栏 tab：`SidebarRightTabDefinition` + guide 卡片（rc.3 起可 pin） |
 | 交接消息解析 | `handoff.tsx` | 用户消息行首标记 → 图片 |
 | 语言 store 与文案 | `i18n.tsx` | `zh-CN` / `en` |
 | `AppQrCode` | `app-qr.ts` | 应用下载二维码（生成物） |
@@ -476,4 +477,7 @@ export const PLUGIN_VERSION: string          // shared/version.ts，与 package.
 | `export const PLUGIN_VERSION` | `src/shared/version.ts` | const |
 | `export class WorkspaceApiError` | `src/client/api.ts` | class |
 | `export interface AppQrCode` | `src/client/app-qr.ts` | interface |
+| `export const PLUGINS_TAB_ID` | `src/client/plugins.tsx` | const |
+| `export function pluginsTabDefinition` | `src/client/plugins.tsx` | function |
+| `export function makePluginsTabBody` | `src/client/plugins.tsx` | function |
 <!-- interfaces-check:end -->

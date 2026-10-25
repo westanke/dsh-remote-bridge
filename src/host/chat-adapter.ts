@@ -256,6 +256,20 @@ export interface ChatSessionView {
   pendingInteraction?: 'approval'
 }
 
+/**
+ * 建会话的可选参数。
+ *
+ * `reuseBlank` 是**桥**加的语义，不是内核字段：DSH 0.2.1 起桌面端点「新会话」会回到
+ * 那个工作区已有的空白会话，而内核 RPC 不做这层挑选（见 `reusableBlankId`）。
+ * 桥默认照桌面语义走（省略即 `true`），但留一个 `false` 让调用方要「无论如何新建一个」
+ * 时能要得到 —— 老客户端从来不带这个字段，行为因此是**新增**而不是**变更**。
+ */
+export interface CreateSessionOptions {
+  sessionId?: string
+  agentPreset?: string
+  reuseBlank?: boolean
+}
+
 export interface PendingApprovalView {
   id: string
   sessionId: string
@@ -566,15 +580,17 @@ export class DshChatAdapter {
   async createSessionInWorkspace(
     principal: Principal,
     workspaceId: string,
-    options: { sessionId?: string; agentPreset?: string },
+    options: CreateSessionOptions,
   ): Promise<{ id: string; agentPreset?: string }> {
     const workspace = (await this.listWorkspaces(principal)).find(item => item.id === workspaceId)
     if (workspace === undefined) {
       throw new ApiError(404, 'WORKSPACE_NOT_FOUND', 'The DSH workspace is not visible to this device.')
     }
+    const sessionId = options.sessionId
+      ?? (options.reuseBlank === false ? undefined : await this.blankSessionInWorkspace(workspaceId, options.agentPreset))
     const payload = {
       workspaceId,
-      ...(options.sessionId === undefined ? {} : { sessionId: options.sessionId }),
+      ...(sessionId === undefined ? {} : { sessionId }),
       ...(options.agentPreset === undefined ? {} : { agentPreset: options.agentPreset }),
     }
     const value = unwrapDsh(await this.api.sessions.create({ rpcId: randomUUID(), payload }))
@@ -585,17 +601,97 @@ export class DshChatAdapter {
     principal: Principal,
     rootId: string,
     relativePath: string,
-    options: { sessionId?: string; agentPreset?: string },
+    options: CreateSessionOptions,
   ): Promise<{ id: string; agentPreset?: string }> {
     const root = this.requireAuthorizedRoot(principal, rootId)
     const resolved = await resolveAuthorizedPath(root.realPath, relativePath)
+    const sessionId = options.sessionId
+      ?? (options.reuseBlank === false ? undefined : await this.blankSessionAtPath(resolved.absolutePath, options.agentPreset))
     const payload = {
       cwd: resolved.absolutePath,
-      ...(options.sessionId === undefined ? {} : { sessionId: options.sessionId }),
+      ...(sessionId === undefined ? {} : { sessionId }),
       ...(options.agentPreset === undefined ? {} : { agentPreset: options.agentPreset }),
     }
     const value = unwrapDsh(await this.api.sessions.create({ rpcId: randomUUID(), payload }))
     return { id: value.sessionId, ...(value.agentPreset === undefined ? {} : { agentPreset: value.agentPreset }) }
+  }
+
+  /**
+   * 挑一个可复用的空白会话 —— DSH 0.2.1 起桌面端的「New Session 回到空白会话」语义。
+   *
+   * **内核自己不做这件事。** `sessionController.create` 只有调用方显式传了 `sessionId`
+   * 才会走 `claim` / `reuseLive` 去复用；不传就无条件 `createMinted` 新建一个。
+   * 「跳过 preset 不匹配的空白会话」那层挑选写在**客户端**（`dsh-client-ui-workspace`
+   * 的 `connectWorkspace` → `createInWorkspace`）里，而桥走 REST 直连内核，没有这一层 ——
+   * 于是手机端每点一次「新会话」就多一个空白会话，攒成一串永远没人用的空壳。
+   *
+   * 这里把客户端那条判据原样搬过来（`blank && cwd 匹配 && 未归档 && preset 匹配`），
+   * 取用顺序也照抄：**按内核返回的列表顺序取第一个**，不自己按时间排序 —— 同一份数据
+   * 在桌面与手机上应当落到同一条会话上，桥没有理由发明第三种顺序。
+   *
+   * preset 的口径也与内核一致：空白会话**没声明** preset 时对任何预设都算可用
+   * （只有 `typeof listed === 'string'` 才比较）。「没声明」不等于「声明了别的」——
+   * 把前者当成不匹配会让所有老会话都挑不中。
+   */
+  private reusableBlankId(
+    sessions: readonly DshSessionSummary[],
+    archived: ReadonlySet<string>,
+    agentPreset: string | undefined,
+    matches: (session: DshSessionSummary) => boolean,
+  ): string | undefined {
+    for (const session of sessions) {
+      if (!session.blank || archived.has(session.sessionId) || !matches(session)) continue
+      // `agentPreset` 是桥已依赖的字段；`projections.values.agentPreset` 是内核投影里的
+      // 同一事实（内核 `presetForSession` 就是读它）。两个都看，谁也不独占真相。
+      const listed = session.agentPreset ?? session.projections?.values['agentPreset']
+      if (agentPreset !== undefined && typeof listed === 'string' && listed !== agentPreset) continue
+      return session.sessionId
+    }
+    return undefined
+  }
+
+  /**
+   * 工作区维度上找一个可复用的空白会话。
+   *
+   * 归属判据用**内核自己的两个字段**：`session.cwd === workspace.path` 且
+   * `workspace.sessionIds` 含它 —— 与客户端 `createInWorkspace` 逐字同义。
+   * 这里重新拉一次原始 workspace 列表（而不是复用 `listWorkspaces` 的投影结果），
+   * 因为 `ChatWorkspaceView` 刻意不含 `sessionIds` 与绝对路径。
+   */
+  private async blankSessionInWorkspace(workspaceId: string, agentPreset: string | undefined): Promise<string | undefined> {
+    const [sessionsResponse, workspaceResponse] = await Promise.all([
+      this.api.sessions.list({ rpcId: randomUUID(), payload: {} }),
+      this.api.workspace.list({ rpcId: randomUUID(), payload: {} }),
+    ])
+    const workspaceValue = unwrapDsh(workspaceResponse)
+    const summary = workspaceValue.items.find(item => item.workspaceId === workspaceId)
+    if (summary === undefined) return undefined
+    return this.reusableBlankId(
+      unwrapDsh(sessionsResponse).items,
+      new Set(workspaceValue.archivedSessionIds),
+      agentPreset,
+      session => session.cwd === summary.path && summary.sessionIds.includes(session.sessionId),
+    )
+  }
+
+  /**
+   * 绝对路径维度上找一个可复用的空白会话（老客户端的 `rootId` + `path` 入口）。
+   *
+   * 这里没有 workspace 摘要可用，判据就只剩「同一 cwd」—— 与客户端按 workspace
+   * 挑选相比少了两道（`sessionIds` 归属、workspace 存在性），但那两道在
+   * `rootId` + `path` 这条路上本来就由授权根解析替代了。
+   */
+  private async blankSessionAtPath(cwd: string, agentPreset: string | undefined): Promise<string | undefined> {
+    const [sessionsResponse, workspaceResponse] = await Promise.all([
+      this.api.sessions.list({ rpcId: randomUUID(), payload: {} }),
+      this.api.workspace.list({ rpcId: randomUUID(), payload: {} }),
+    ])
+    return this.reusableBlankId(
+      unwrapDsh(sessionsResponse).items,
+      new Set(unwrapDsh(workspaceResponse).archivedSessionIds),
+      agentPreset,
+      session => session.cwd === cwd,
+    )
   }
 
   async history(

@@ -629,6 +629,9 @@ export class ApiRouter {
         const options = {
           ...(typeof body.sessionId === 'string' ? { sessionId: body.sessionId } : {}),
           ...(typeof body.agentPreset === 'string' ? { agentPreset: body.agentPreset } : {}),
+          // 不传 `sessionId` 时是否复用工作区里已有的空白会话（DSH 0.2.1 的桌面语义）。
+          // 省略即 `true`：老客户端从不带这个字段，带上的行为才是它期待的那个。
+          ...(typeof body.reuseBlank === 'boolean' ? { reuseBlank: body.reuseBlank } : {}),
         }
         const usesWorkspace = typeof body.workspaceId === 'string'
         const usesLegacyPath = typeof body.rootId === 'string' && typeof body.path === 'string'

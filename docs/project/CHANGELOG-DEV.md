@@ -1,5 +1,90 @@
 # 开发日志
 
+## 2.7.0 · 对齐 DSH 0.2.1-rc.3 的四项能力提升（2026-10-25）
+
+**基于**：v2.6.1。rc.3 与桥的兼容性做了全量核对（305 个包逐个 sha256 比对：285 个代码零改动、
+20 个有实质改动，10 个硬依赖服务提供方全部落在零改动名单，4 个 slot 全保留、删除 0），
+结论是桥不改一行也能在 rc.3 上跑（已实测启动 + 探活 + 客户端模块图 + 桥 bundle 全通）。
+这一版做的是把 rc.3 送上门的新能力真正接进来，不是修兼容。
+
+### 一、模型目录补上 `contextWindow` / `maxTokens`
+
+`ModelProviderGroupView.models` 早就声明了这两个字段，但全仓无赋值 —— 永远是 undefined。
+根因在契约层：内核 `ModelCatalogModel` 只有 `id` / `name` / `description` / `reasoning`，
+容量只在 `llm.resolveModelInfo(provider, model)` 的 `context` / `defaultMaxTokens` 里。
+
+做法：新增 `modelCapacityOf`，按 `provider + model` 缓存 10 分钟（与内核
+`DEFAULT_MODELS_MAX_AGE_MS` 对齐），**失败不缓存**（一次 RPC 抖动不该让某模型十分钟没容量），
+`Promise.all` 并发查（几十个模型串行会把选择器拖成几秒空白），且**内核自己给了就不覆盖**。
+接入 `sessions.models` 与 `llm.models` 两处门面（两者同源）。
+
+wire schema 无需改 —— `docs/api/openapi.yaml` 的 `Model` 与 `ProviderModel` 早已含这两个字段。
+
+**实测注意**：DSH Web 的模型选择器只渲染 `name`，不读 `contextWindow`，所以 Web 界面上看不到
+容量数字。该字段的实际受益方是读 REST 的客户端（安卓端已接，见 dsh-companion v2.2.55）。
+
+### 二、插件清单多了右侧栏形态
+
+成为 `SidebarRightTabDefinition` 提供方：注册 `dsh-remote-bridge-plugins` 这个 tab 类型，
+带一个 `guide` 条目（`order: 40`，排在官方 files/terminal/browser 之后），body 复用
+`/settings/plugins`。rc.3 起该卡片可被 pin、出现在 guide 的 More 菜单里；rc.2 的 `GuideBody`
+没有 `entryPins` / `entryActions` / `setPinned`，卡片正常显示但**没有 pin 与 More 菜单** —— 属预期降级。
+
+用 `ctx.inject(['sidebarRightTabs'], ...)` 动态注入而不是写进静态 `inject`：`sidebarRightTabs`
+来自可选安装的 `@deepseek-ai/dsh-client-ui-sidebar-right`，写死会让那种宿主上整个桥不启动。
+
+### 三、`POST /chat/sessions` 新增可选 `reuseBlank`
+
+DSH 0.2.1 桌面端点「新会话」会回到那个工作区已有的空白会话，但内核 RPC 不做这层挑选
+（`sessionController.create` 只在调用方显式传了 `sessionId` 时才复用）。桥补上这层：
+
+- `reuseBlank` 省略 = `true`，对齐桌面语义；显式 `false` 强制新建。
+- 判据与官方客户端 `createInWorkspace` 逐字同义：`blank && !archived && cwd 匹配 && 属于该工作区`，
+  外加「声明了别的 preset 就跳过」（没声明不等于声明了别的，否则老会话全挑不中）。
+- 老的 `rootId + path` 入口没有工作区摘要可用，判据退化为「同 cwd 且空白」。
+
+**为什么默认 `true` 是安全的**：老客户端从不带这个字段，带上的行为才是它期待的那个；
+安卓端一直不传 `sessionId`，所以这一版让它每点一次「新会话」回到同一空白会话 —— 那正是
+DSH 0.2.1 桌面端的行为。
+
+### 四、设置页新增「插件」卡片
+
+`GET/PATCH /settings/plugins` 两个端点 v2.5.0 就有了，但桥客户端一直没有调用它们的方法。
+这一版补齐：`WorkspaceApi.pluginInventory(checkUpdates)` / `togglePlugin(name, loaded)`，
+设置页第七张卡（清单 / 启停 / 检查更新），以及「打开插件列表」按钮。
+
+按钮调 `pluginNavigation.openList()` —— **rc.2 没有这个方法**（只有 `openBundle`），
+所以做 `typeof nav.openList === 'function'` 特性检测，不支持时提示而不是假装成功。
+版本判断在这里是错的：能力位才是契约，版本号只是间接证据。
+
+插件清单的四个类型（`PluginEntry` / `PluginInventory` / `PluginState` / `PluginToggleResult`）
+从 `src/host/plugin-inventory.ts` 迁到 `src/shared/contracts.ts`：浏览器半边必须能 import 它们，
+而 `client/` → `host/` 是 STRUCTURE.md 明令禁止的依赖方向（会把 Node 内置模块拖进浏览器包）。
+`host/plugin-inventory.ts` 保留 re-export，既有 import 路径不变。
+
+### 测试与门禁
+
+`tsc --noEmit` 0；`vitest run` **76 files / 698 tests** 全过（新增
+`tests/client-plugins-api.spec.ts` 5 例钉请求形状、`tests/plugins-tab.spec.ts` 5 例钉 tab 定义
+与 CSS 变量块）；`docs:check` 51/55 锚点双向一致；`build` client 757 kB + host 441 kB。
+
+### 实测（rc.3 隔离实例，非静态推断）
+
+启动 rc.3 隔离 profile 装入本版后：`GET /settings/plugins` 返回
+`profile: web, available: true, loaded: 14, problems: 2, items: 16`；
+`GET /chat/sessions/{id}/models` 返回 `free:mimo-v2.6-flash-free ctx=1048576`、
+`free:beam-free ctx=131072`（容量已填）；`reuseBlank` 四种语义逐一验过
+（默认复用同一空白 / `false` 新建 / 指定 preset 跳过不符的空白 / 不带 preset 取列表第一个）；
+客户端 bundle 757102 字节，含 `dsh-remote-bridge-plugins`、`sidebarRightTabs`、`daw-plugins-tab`。
+截图存于 `dsh-021cmp/shots/`（右侧栏 guide 出现「插件」卡片、点开后完整清单、guide More 菜单）。
+
+### 未做
+
+- 遥测扩充（`send_button_click` 加 `is_new_session` / `agent_preset`、`code_work_view_toggle` 等）——
+  那是 DSH 官方遥测 schema，与桥无关。
+- rc.3 的 `draft.whenDraftExists` —— 它是**客户端** `dsh-client-ui-workspace` 的草稿行为，
+  不经内核 RPC，桥无从透传。
+
 ## 2.6.1 · SEC-H11 SSRF 与凭据外泄修复 + 设备身份自动识别（2026-10-23）
 
 **基于**：v2.6.0（含 `settings-namespaces-v1` 能力位补漏）。这是一次**安全修复**，

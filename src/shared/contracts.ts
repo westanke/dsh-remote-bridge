@@ -102,6 +102,96 @@ export interface WorkspaceEvent {
   data: Record<string, unknown>
 }
 
+/**
+ * 单个插件的状态。
+ *
+ * 这四种状态是**产品语义**，不是内部实现细节：手机端的插件卡片要按它上色、决定给不给
+ * 启停按钮，所以它必须住在 `src/shared/`（浏览器半边与宿主半边同时用），
+ * 而不是只留在 `src/host/plugin-inventory.ts` 里。
+ */
+export type PluginState =
+  /** 已声明加载，且能在 profile 的 node_modules 里找到。 */
+  | 'loaded'
+  /**
+   * 官方包（`@deepseek-ai/` 前缀），由 DSH 运行时自带。
+   *
+   * 它们出现在 `dsh.profile.bundles` 里，但**不会**装在 profile 的 `node_modules` 下
+   * （随 DSH 主包一起安装）。这不是异常 —— 早期实现把它误判成 `declared-missing`，
+   * 在真实机器上一次性产生 5 条假警报，所以必须与「真的缺失」区分开。
+   */
+  | 'runtime-provided'
+  /** 装了（在 dependencies 里）但不在加载列表里 —— 通常是有意为之，值得展示但不必报错。 */
+  | 'installed-not-loaded'
+  /** 非官方包，声明要加载但 profile 里找不到 —— 这通常意味着启动会出问题。 */
+  | 'declared-missing'
+
+export interface PluginEntry {
+  name: string
+  /** `dependencies` 里的版本声明，例如 `^0.4.5`；没有则为 null。 */
+  declared: string | null
+  /** `node_modules/<name>/package.json` 里实际装上的版本；找不到则为 null。 */
+  installed: string | null
+  /** 是否出现在 `dsh.profile.bundles` 中。 */
+  loaded: boolean
+  /** 是否 DSH 官方包（`@deepseek-ai/` 前缀）。 */
+  official: boolean
+  state: PluginState
+  /**
+   * 包自己的 `description`；没有则为 null。
+   *
+   * 手机上的插件列表若只有一串 `@scope/name@1.2.3`，用户没法判断「这个能不能停用」——
+   * 描述是那个判断的主要依据（「哦这是识图插件，我不用，可以关」）。
+   */
+  description: string | null
+  /** 包自己声明的仓库 / 主页地址；没有则为 null。 */
+  homepage: string | null
+  /**
+   * 是否有**更新的版本**可装（`installed` 落后于 npm 上的 latest）；未知则为 null。
+   *
+   * 三态而非布尔：`null` 表示「没查/查不到」。压成 false 会让界面在离线时
+   * 理直气壮地说「已是最新」—— 那是谎话，比什么都不说更糟。
+   */
+  updateAvailable: boolean | null
+  /** npm 上的最新版本号；查不到则为 null。 */
+  latestVersion: string | null
+  /**
+   * 能否在手机上启用 / 停用。
+   *
+   * 官方包（`@deepseek-ai/`）恒为 false：它们随 DSH 运行时安装、不由 profile 管理，
+   * 改 bundles 也加载不出来。其余情况在「包确实装进了 profile」时为 true。
+   */
+  toggleable: boolean
+}
+
+export interface PluginInventory {
+  /** 当前 profile 名；无法判定时为 null。 */
+  profile: string | null
+  /** profile 目录绝对路径；无法判定时为 null。 */
+  profilePath: string | null
+  /** 是否成功读到 package.json。 */
+  available: boolean
+  /** 读不到时的原因（供界面提示，不含敏感信息）。 */
+  reason: string | null
+  /** 已加载的插件数量（含运行时自带的官方包）。 */
+  loadedCount: number
+  /** 需要用户注意的条目数量：装了没启用、或非官方包声明加载却缺失。 */
+  problemCount: number
+  items: PluginEntry[]
+}
+
+export interface PluginToggleResult {
+  /** 目标插件名。 */
+  name: string
+  /** 操作后的加载状态。 */
+  loaded: boolean
+  /** 备份文件的**文件名**（不含目录）。 */
+  backupName: string
+  /** bundle 数组的新长度，便于界面显示「17 → 18」。 */
+  bundleCount: number
+  /** 恒为 true：bundles 只在启动时读一次，改了文件不等于改了运行中的进程。 */
+  restartRequired: boolean
+}
+
 export interface AdminPrincipal {
   kind: 'admin'
   id: 'loopback-admin'

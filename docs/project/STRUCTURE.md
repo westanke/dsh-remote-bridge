@@ -149,12 +149,13 @@ host services 之上重建 0.1.x 的 `apiProxy` 面容，让 `chat-adapter` / `s
 | `cloudflared.ts` | `CloudflaredTunnelManager`：cloudflared 二进制下载（择源）与隧道进程管理 |
 | `host-service-probe.ts` | 注入面探针：记录哪些 host service 真的注入了（**只在 apply 期间采样**） |
 
-### 3.2 `src/client/` —— DSH WebUI 浏览器半边（7 个文件）
+### 3.2 `src/client/` —— DSH WebUI 浏览器半边（8 个文件）
 
 | 文件 | 职责 |
 | --- | --- |
 | `index.tsx` | 客户端插件入口：向 `settings.section` 等 slot 注册组件 |
-| `workspace.tsx` | 「📱 手机设置」面板主体（七张折叠卡片：根目录/远程访问/设备/识图/回收站/审计/App 下载） |
+| `workspace.tsx` | 「📱 手机设置」面板主体（七张折叠卡片：根目录/远程访问/设备/识图/回收站/插件/App 下载） |
+| `plugins.tsx` | 插件清单的右侧栏形态：`SidebarRightTabDefinition` + guide 卡片（rc.3 起可 pin），body 复用 `/settings/plugins` |
 | `handoff.tsx` | 图片交接消息 → 真图片（只认用户消息里的行首标记，挂在 `conversation.chat.turnTail` 座位） |
 | `i18n.tsx` | 双语文案与语言 store（`zh-CN` / `en`），跨 slot 同步 |
 | `styles.ts` | 面板全部 CSS（含 `.daw-root` 与 `.daw-settings-section` 双覆盖的不变量） |
@@ -228,7 +229,7 @@ host services 之上重建 0.1.x 的 `apiProxy` 面容，让 `chat-adapter` / `s
 | `src/host/provider-url-policy.ts` | ≈190 行 | 供应商 baseURL 地址策略（纯函数） |
 | `src/host/device-identity.ts` | ≈200 行 | 设备身份探测（纯函数） |
 | `src/host/cloudflared.ts` | ≈430 行 | 隧道与二进制下载 |
-| `src/client/workspace.tsx` | ≈660 行 | 面板全部交互 |
+| `src/client/workspace.tsx` | ≈1230 行 | 面板全部交互 |
 | `src/shared/version.ts` | 1 行 | 版本号；与 `package.json`、两站 README、OpenAPI/AsyncAPI 版本同源 |
 
 > 行数只是**量级提示**，精确基线与债务状态以 [TECH-DEBT.md](TECH-DEBT.md) 为准
@@ -300,6 +301,7 @@ host services 之上重建 0.1.x 的 `apiProxy` 面容，让 `chat-adapter` / `s
 | `src/client/handoff.tsx` | file | 图片交接消息渲染 |
 | `src/client/i18n.tsx` | file | 双语文案与语言 store |
 | `src/client/index.tsx` | file | 客户端插件入口与 slot 注册 |
+| `src/client/plugins.tsx` | file | 插件清单的右侧栏 tab 形态 |
 | `src/client/styles.ts` | file | 面板 CSS |
 | `src/client/workspace.tsx` | file | 手机设置面板主体 |
 | `src/shared/` | dir | 双端共享契约与版本 |

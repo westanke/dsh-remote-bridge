@@ -9,7 +9,7 @@
 </p>
 
 <p align="center">
-  <img alt="Version" src="https://img.shields.io/badge/version-v2.6.1-087f8c">
+  <img alt="Version" src="https://img.shields.io/badge/version-v2.7.0-087f8c">
   <img alt="DSH plugin" src="https://img.shields.io/badge/DeepSeek_Harness-plugin-1f2328">
   <img alt="Platforms" src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-586069">
   <img alt="License" src="https://img.shields.io/badge/license-AGPL--3.0-2da44e">
@@ -102,10 +102,10 @@ dsh plugin --profile web add dsh-remote-bridge
 dsh plugin --profile web add dsh-remote-bridge --registry https://registry.npmmirror.com
 
 # 2. tarball from the GitHub release
-dsh plugin --profile web add https://github.com/westanke/dsh-remote-bridge/releases/download/v2.6.1/dsh-remote-bridge-v2.6.1.tgz
+dsh plugin --profile web add https://github.com/westanke/dsh-remote-bridge/releases/download/v2.7.0/dsh-remote-bridge-v2.7.0.tgz
 
 # 3. tarball from the Gitee release (faster from mainland China)
-dsh plugin --profile web add https://gitee.com/westanke/dsh-remote-bridge/releases/download/v2.6.1/dsh-remote-bridge-v2.6.1.tgz
+dsh plugin --profile web add https://gitee.com/westanke/dsh-remote-bridge/releases/download/v2.7.0/dsh-remote-bridge-v2.7.0.tgz
 
 npx @deepseek-ai/dsh web
 ```
@@ -122,7 +122,7 @@ Restart DSH after installation, then open settings — The section is titled **�
 To install a downloaded release archive:
 
 ```sh
-dsh plugin --profile web add ./dsh-remote-bridge-v2.6.1.tgz
+dsh plugin --profile web add ./dsh-remote-bridge-v2.7.0.tgz
 ```
 
 ## First connection
@@ -380,22 +380,37 @@ pnpm check
 pnpm pack
 ```
 
-`pnpm check` covers type-checking, documentation consistency, and tests. It currently passes **67 test files / 557 cases**, plus **8 browser-layer cases** (Playwright measuring real computed styles, including the 375px narrow-viewport contract).
+`pnpm check` covers type-checking, documentation consistency, and tests. It currently passes **76 test files / 698 cases**, plus **8 browser-layer cases** (Playwright measuring real computed styles, including the 375px narrow-viewport contract).
 
 `npm pack` produces roughly a **0.64 MB** archive (v2.6.1 measured 669,434 bytes, SHA-256 `9bf0189b…2cd35`): 2.2.0 dropped the standalone page and its editor dependencies and turned source maps off, down from 1.72 MB; it has since grown slightly with projection passthrough, the permission BFF, and the five-dimension hardening.
 
 v2.5.0 was verified on DSH **0.2.1-rc.2** on real hardware: all 14/14 host services injected, the three jobs endpoints exercised, and the permission catalog returned the kernel's real three presets. The development baseline is upstream `dsh-v0.2.1-rc.2` (commit `687f282e8625c6b8d11ff58211a90524be2e4317`); see `engines.dsh` above for the supported range. CI covers Windows, Ubuntu, and macOS.
 
-**v2.6.1 verification status**: 74 test files / 682 cases green, plus 8 Playwright browser cases
+**v2.7.0 verification status**: 76 test files / 698 cases green, plus 8 Playwright browser cases
 (including the 375px narrow-viewport contract); `typecheck`, `docs:check`, and the build all pass.
-The SEC-H11 attack chain was confirmed **by measurement** (a fake LLM endpoint was stood up and the
-kernel was observed sending the real `Authorization: Bearer` to it); each of the four gates now has a
-regression assertion. The three device-identity specs (27 + 13 + 12 cases) cover the UA detection
-order, "a `declared` name is never overwritten", and idempotent migration of the old table shape.
+All four capabilities were exercised on an isolated DSH **0.2.1-rc.3** instance rather than inferred:
+the plugin inventory returned `loaded: 14 / 16 / problems: 2`, the model catalog reported
+`ctx=1048576` for `free:mimo-v2.6-flash-free`, the four `reuseBlank` semantics were each verified,
+and the client bundle contains `dsh-remote-bridge-plugins` and `sidebarRightTabs`. Screenshots live
+in `dsh-021cmp/shots/`. The compatibility review was itself measured: 305 packages compared by
+sha256, 285 with zero code changes and 20 substantively changed, all ten hard-dependency providers
+inside the zero-change set, and 4 slots retained with 0 removed.
 
 ## Project
 
-- Version: `v2.6.1`
+- Version: `v2.7.0`
+- **v2.7.0 aligns with DSH 0.2.1-rc.3 and lifts four capabilities**: (1) the model catalog now carries
+  `contextWindow` / `maxTokens` — the kernel's `ModelCatalogModel` only has id/name/description, so the
+  bridge resolves capacity through `llm.resolveModelInfo`, caching per `provider + model` for ten
+  minutes, never caching a failure, and never overwriting a value the kernel already supplied;
+  (2) the plugin inventory gains a right-sidebar form (the bridge becomes a `SidebarRightTabDefinition`
+  provider, so from DSH 0.2.1-rc.3 the card can be pinned; on rc.2 it still renders but has no pin or
+  More menu, which is the expected degradation); (3) `POST /chat/sessions` accepts an optional
+  `reuseBlank`, matching the 0.2.1 desktop behaviour where New Session returns to the workspace's
+  existing blank session, skipping blanks whose preset contradicts the request; (4) the settings page
+  gains a Plugins card (inventory / enable / disable / check for updates) and an "open plugin list"
+  button (rc.2 has no `pluginNavigation.openList`, so the bridge feature-detects instead of checking
+  versions).
 - **v2.6.1 is the security-fix + device-identity release**: it closes a **high-severity** hole —
   the three provider `baseURL` entry points (create / update / model discovery) performed no
   validation at all, so a device holding `settings.write` could point the baseURL at its own server

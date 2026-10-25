@@ -1,4 +1,12 @@
-import type { DeviceScope, DeviceView, FileEntryView, ImageHandoffSettings, RootView } from '../shared/contracts.ts'
+import type {
+  DeviceScope,
+  DeviceView,
+  FileEntryView,
+  ImageHandoffSettings,
+  PluginInventory,
+  PluginToggleResult,
+  RootView,
+} from '../shared/contracts.ts'
 
 export interface DirectoryPage {
   path: string
@@ -331,6 +339,29 @@ export class WorkspaceApi {
    */
   async saveImageSubdir(subdir: string): Promise<ImageHandoffSettings> {
     return this.manageJson('/image', { method: 'PUT', body: JSON.stringify({ subdir }) })
+  }
+
+  /**
+   * 读插件清单。
+   *
+   * `checkUpdates` 默认关：版本检查要打 npm registry，十次里九次用户只想看「装了啥」。
+   * 面板上那个「检查更新」按钮才把它打开。
+   */
+  async pluginInventory(checkUpdates = false): Promise<PluginInventory> {
+    return this.json(`/settings/plugins${checkUpdates ? '?checkUpdates=1' : ''}`)
+  }
+
+  /**
+   * 启用 / 停用插件。
+   *
+   * 只对 `toggleable` 的条目有效；官方包（`@deepseek-ai/`）会被宿主拒绝并回
+   * `PLUGIN_OFFICIAL_IMMUTABLE` —— 它们随 DSH 运行时安装，改 bundles 也加载不出来。
+   *
+   * 返回 `restartRequired: true` 是常态：bundles 只在启动时读一次，改了文件不等于
+   * 改了运行中的进程。界面必须把这句话说出来，别让用户以为点了没反应。
+   */
+  async togglePlugin(name: string, loaded: boolean): Promise<PluginToggleResult> {
+    return this.json('/settings/plugins', { method: 'PATCH', body: JSON.stringify({ name, loaded }) })
   }
 
   private async json<T>(path: string, init: RequestInit = {}): Promise<T> {

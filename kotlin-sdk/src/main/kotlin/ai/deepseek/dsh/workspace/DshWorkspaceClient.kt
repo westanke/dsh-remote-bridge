@@ -488,14 +488,21 @@ class DshWorkspaceClient(
         ).models
     }
 
+    /**
+     * 在工作区里新建会话。
+     *
+     * [reuseBlank] 省略时由桥按桌面语义处理（复用该位置已有的空白会话）；传 `false`
+     * 可强制新建一个全新会话。老客户端不传这个参数，行为与之前一致。
+     */
     fun createSessionInWorkspace(
         workspaceId: String,
         clientRequestId: String,
         agentPreset: String? = null,
+        reuseBlank: Boolean? = null,
     ): JsonElement {
         val body = json.encodeToString(
             WorkspaceSessionRequest.serializer(),
-            WorkspaceSessionRequest(workspaceId, agentPreset, clientRequestId),
+            WorkspaceSessionRequest(workspaceId, agentPreset, clientRequestId, reuseBlank),
         )
         return executeJsonElement("chat/sessions", "POST", body)
     }
@@ -806,6 +813,7 @@ class EventSubscription internal constructor(
     val workspaceId: String,
     val agentPreset: String? = null,
     val clientRequestId: String,
+    val reuseBlank: Boolean? = null,
 )
 @Serializable private data class SendMessageRequest(val text: String, val mode: String, val clientRequestId: String)
 @Serializable private data class ErrorEnvelope(val error: ApiErrorBody)

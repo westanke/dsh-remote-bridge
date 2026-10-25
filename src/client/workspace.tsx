@@ -5,6 +5,8 @@ import {
   File,
   HardDrive,
   Image as ImageIcon,
+  Package,
+  RefreshCw,
   ScrollText,
   Smartphone,
   Trash2,
@@ -12,7 +14,14 @@ import {
 } from 'lucide-react'
 import type { ReactNode } from 'react'
 import { useCallback, useEffect, useRef, useState } from 'react'
-import type { DeviceScope, DeviceView, ImageHandoffSettings, RootView } from '../shared/contracts.ts'
+import type {
+  DeviceScope,
+  DeviceView,
+  ImageHandoffSettings,
+  PluginEntry,
+  PluginInventory,
+  RootView,
+} from '../shared/contracts.ts'
 import { DEFAULT_DEVICE_SCOPES, DEVICE_SCOPES } from '../shared/contracts.ts'
 import { APP_QR_CODES } from './app-qr.ts'
 import { WorkspaceApi, WorkspaceApiError } from './api.ts'
@@ -21,10 +30,10 @@ import { LanguageToggle, type MessageKey, scopeLabel, type Translate, useWorkspa
 import { installWorkspaceStyles } from './styles.ts'
 import { PLUGIN_VERSION } from '../shared/version.ts'
 
-export type AdminTab = 'roots' | 'remote' | 'devices' | 'image' | 'trash' | 'app-download'
+export type AdminTab = 'roots' | 'remote' | 'devices' | 'image' | 'trash' | 'plugins' | 'app-download'
 export type PanelSection = AdminTab
 
-export const ADMIN_TABS: readonly AdminTab[] = ['roots', 'remote', 'devices', 'image', 'trash', 'app-download']
+export const ADMIN_TABS: readonly AdminTab[] = ['roots', 'remote', 'devices', 'image', 'trash', 'plugins', 'app-download']
 
 /** What the settings-page launcher opens: authorized roots, the first section. */
 export const DEFAULT_PANEL_SECTION: AdminTab = 'roots'
@@ -97,6 +106,7 @@ const TAB_DESC_KEYS: Record<AdminTab, MessageKey> = {
   devices: 'devicesTabDesc',
   image: 'imageTabDesc',
   trash: 'trashTabDesc',
+  plugins: 'pluginsTabDesc',
   'app-download': 'appDownloadTabDesc',
 }
 
@@ -142,8 +152,16 @@ export function PhoneSettingsBody(props: {
   api: WorkspaceApi
   section: PanelSection
   onSection(section: PanelSection): void
+  /**
+   * 打开 DSH 自己的插件主列表（`pluginNavigation.openList`）。
+   *
+   * 由 `index.tsx` 从 cordis 服务上取，因为服务只能在 `apply(ctx)` 里拿到，而这里是纯组件。
+   * 返回 `false` 表示当前 DSH 版本没有这个方法（rc.2 只有 `openBundle`），
+   * 卡片据此提示「这个版本还不支持」，而不是静默失败。
+   */
+  onOpenPluginList?: (() => boolean) | undefined
 }): JSX.Element {
-  return <AdminPanel api={props.api} initialOpen={props.section} />
+  return <AdminPanel api={props.api} initialOpen={props.section} onOpenPluginList={props.onOpenPluginList} />
 }
 
 /**
@@ -192,7 +210,11 @@ function SettingsCard(props: {
  * `initialOpen` 决定进页面时先展开哪一张（默认第一张），之后完全由用户点卡片头控制。
  * 展开状态存 Set —— 这样「同时展开两张」是自然结果，不需要额外的互斥逻辑。
  */
-export function AdminPanel(props: { api: WorkspaceApi; initialOpen: AdminTab }): JSX.Element {
+export function AdminPanel(props: {
+  api: WorkspaceApi
+  initialOpen: AdminTab
+  onOpenPluginList?: (() => boolean) | undefined
+}): JSX.Element {
   const { locale, t } = useWorkspaceI18n()
   const [status, setStatus] = useState<Awaited<ReturnType<WorkspaceApi['status']>>>()
   const [trash, setTrash] = useState<Awaited<ReturnType<WorkspaceApi['trashItems']>>['items']>([])
@@ -792,8 +814,152 @@ export function AdminPanel(props: { api: WorkspaceApi; initialOpen: AdminTab }):
               ? <div className="daw-list-meta daw-empty">{t('trashEmpty')}</div>
               : <div className="daw-list">{trash.map(item => <div className="daw-list-row" key={item.id}><div><div className="daw-list-title">{item.path}</div><div className="daw-list-meta">{item.kind} · {formatBytes(item.size)} · {new Date(item.createdAt).toLocaleString(locale)}</div></div><div><button className="daw-command" onClick={() => { setError(undefined); void props.api.restoreTrash(item.id).then(() => { notify('trashRestored'); return refresh() }).catch(setError) }}>{t('restore')}</button><button className="daw-icon danger" title={t('deletePermanently')} aria-label={t('deletePermanently')} onClick={() => { if (confirm(t('purgeConfirm'))) void props.api.purgeTrash(item.id).then(() => { notify('trashPurged'); return refresh() }).catch(setError) }}><Trash2 size={15} /></button></div></div>)}</div>}
           </SettingsCard>
+          <PluginsSection
+            api={props.api}
+            open={isOpen('plugins')}
+            onToggle={() => toggleCard('plugins')}
+            onOpenPluginList={props.onOpenPluginList}
+          />
           <AppDownloadSection open={isOpen('app-download')} onToggle={() => toggleCard('app-download')} />
         </main>
+}
+
+/**
+ * 插件卡片：这台机器 profile 里装了哪些插件、能不能停用、有没有更新。
+ *
+ * ## 为什么加这张卡
+ *
+ * 用户的反馈是「功能单调点，无法查看装的插件情况」—— 想知道装了哪些插件、有没有出问题的，
+ * 必须回到电脑前的 WebUI。宿主的 `GET /settings/plugins` 与 `PATCH /settings/plugins` 早就有，
+ * 只是浏览器半边从来没有消费它们；这张卡补的就是那半截。
+ *
+ * ## 三个必须说清楚的地方
+ *
+ * 1. **官方包不能停**（`toggleable === false`）。它们随 DSH 运行时安装、不由 profile 管理，
+ *    改 bundles 也加载不出来。服务端会拒绝并回 `PLUGIN_OFFICIAL_IMMUTABLE`，这里干脆不给按钮。
+ * 2. **`runtime-provided` 不是故障**。官方包出现在 `dsh.profile.bundles` 里但不在 profile 的
+ *    node_modules 下，早期实现把它误判成「声明加载但缺失」，真机上一次冒出 5 条假警报。
+ * 3. **改完要重启**。bundles 只在启动时读一次，所以成功提示不是「已停用」而是
+ *    「已写进 package.json，重启后生效」—— 否则用户会以为点了没反应，再点几次。
+ *
+ * ## 更新检查为什么是按钮而不是自动
+ *
+ * 它要打 npm registry，十次里九次用户只想看「装了啥」。默认不查，`updateAvailable` 因此是
+ * 三态（`null` = 没查），而不是压成 `false` 去谎称「已是最新」。
+ */
+function PluginsSection(props: {
+  api: WorkspaceApi
+  open: boolean
+  onToggle(): void
+  onOpenPluginList?: (() => boolean) | undefined
+}): JSX.Element {
+  const { t } = useWorkspaceI18n()
+  const [inventory, setInventory] = useState<PluginInventory | undefined>(undefined)
+  const [busy, setBusy] = useState(false)
+  const [checking, setChecking] = useState(false)
+  const [toggling, setToggling] = useState<string | undefined>(undefined)
+  const [error, setError] = useState<string | undefined>(undefined)
+  const [restartRequired, setRestartRequired] = useState(false)
+  const [openListMissing, setOpenListMissing] = useState(false)
+
+  const load = useCallback(async (checkUpdates: boolean) => {
+    if (checkUpdates) setChecking(true)
+    else setBusy(true)
+    setError(undefined)
+    try {
+      setInventory(await props.api.pluginInventory(checkUpdates))
+    } catch (cause) {
+      setError(messageOf(cause, t))
+    } finally {
+      if (checkUpdates) setChecking(false)
+      else setBusy(false)
+    }
+  }, [props.api, t])
+
+  // 懒加载：卡片展开过才发请求。设置页一进来就拉清单会白等一次 npm 读盘，
+  // 而大多数人打开设置页是为了配权限。
+  useEffect(() => {
+    if (!props.open || inventory !== undefined) return
+    void load(false)
+  }, [props.open, inventory, load])
+
+  const toggle = useCallback(async (entry: PluginEntry) => {
+    setToggling(entry.name)
+    setError(undefined)
+    try {
+      await props.api.togglePlugin(entry.name, !entry.loaded)
+      // 重读一遍而不是本地改 `loaded`：服务端会把 backups、bundleCount 一起回给我们，
+      // 而 `state` 的四种取值是由服务端算的，本地猜容易与它打架。
+      setInventory(await props.api.pluginInventory(false))
+      setRestartRequired(true)
+    } catch (cause) {
+      setError(messageOf(cause, t))
+    } finally {
+      setToggling(undefined)
+    }
+  }, [props.api, t])
+
+  return <SettingsCard tab="plugins" nameKey={tabLabelKey('plugins')} descKey={tabDescKey('plugins')} open={props.open} onToggle={props.onToggle}>
+    <p className="daw-list-meta">{t('pluginsHint')}</p>
+    {error !== undefined && <div className="daw-warning" role="alert">{error}</div>}
+    {restartRequired && <div className="daw-success" role="status">{t('pluginsRestartRequired')}</div>}
+    {openListMissing && <div className="daw-warning" role="status">{t('pluginsOpenListUnavailable')}</div>}
+    <div className="daw-form-row">
+      <button type="button" className="daw-command" disabled={checking} onClick={() => { void load(true) }}>
+        <RefreshCw size={14} /> {checking ? t('pluginsChecking') : t('pluginsCheckUpdates')}
+      </button>
+      {props.onOpenPluginList !== undefined && <button
+        type="button"
+        className="daw-command"
+        onClick={() => { setOpenListMissing(props.onOpenPluginList?.() === false) }}
+      >{t('pluginsOpenList')}</button>}
+    </div>
+    {inventory === undefined
+      ? (busy ? <div className="daw-list-meta">{t('loading')}</div> : null)
+      : !inventory.available
+        ? <div className="daw-list-meta">{t('pluginsUnavailable', { reason: inventory.reason ?? '' })}</div>
+        : <>
+          <div className="daw-list-meta">
+            {inventory.profile !== null && <>{inventory.profile} · </>}
+            {inventory.loadedCount} / {inventory.items.length}
+            {inventory.problemCount > 0 && <> · {t('pluginsProblems', { count: inventory.problemCount })}</>}
+          </div>
+          {inventory.items.length === 0
+            ? <div className="daw-list-meta daw-empty">{t('pluginsEmpty')}</div>
+            : <div className="daw-list">{inventory.items.map(entry => <div className="daw-list-row" key={entry.name}>
+              <div>
+                <div className="daw-list-title">
+                  {entry.name}
+                  {entry.installed !== null && <span className="daw-list-meta"> · {entry.installed}</span>}
+                </div>
+                <div className="daw-list-meta">{entry.description ?? t('pluginsNoDescription')}</div>
+                <div className="daw-list-meta">
+                  <span className={`daw-pill${entry.loaded ? ' on' : ''}`}>{t(pluginStateKey(entry.state))}</span>
+                  {entry.updateAvailable === true && entry.latestVersion !== null && <>
+                    {' '}<span className="daw-pill">{t('pluginsUpdateAvailable', { version: entry.latestVersion })}</span>
+                  </>}
+                  {entry.updateAvailable === false && <> · {t('pluginsLatest')}</>}
+                </div>
+              </div>
+              <div>
+                {entry.toggleable && <button
+                  type="button"
+                  className="daw-command"
+                  disabled={toggling === entry.name}
+                  onClick={() => { void toggle(entry) }}
+                >{entry.loaded ? t('pluginsDisable') : t('pluginsEnable')}</button>}
+              </div>
+            </div>)}</div>}
+        </>}
+  </SettingsCard>
+}
+
+/** 四种 `PluginState` 各自的中文/英文说法 —— 状态本身是产品语义，不该在界面上露出裸码。 */
+export function pluginStateKey(state: PluginEntry['state']): MessageKey {
+  if (state === 'loaded') return 'pluginsStateLoaded'
+  if (state === 'runtime-provided') return 'pluginsStateRuntimeProvided'
+  if (state === 'installed-not-loaded') return 'pluginsStateInstalledNotLoaded'
+  return 'pluginsStateDeclaredMissing'
 }
 
 /**
@@ -986,6 +1152,7 @@ function tabIcon(tab: string): JSX.Element {
   if (tab === 'devices') return <Smartphone size={15} />
   if (tab === 'image') return <ImageIcon size={15} />
   if (tab === 'trash') return <Trash2 size={15} />
+  if (tab === 'plugins') return <Package size={15} />
   if (tab === 'remote') return <Upload size={15} />
   // A download arrow, not a phone: the phone glyph already belongs to 设备, and this page is about
   // getting the app onto one.
@@ -993,7 +1160,7 @@ function tabIcon(tab: string): JSX.Element {
   return <File size={15} />
 }
 
-function messageOf(cause: unknown, t: Translate): string {
+export function messageOf(cause: unknown, t: Translate): string {
   if (cause instanceof WorkspaceApiError) {
     const translated = apiErrorKey(cause)
     if (translated !== undefined) return t(translated)
@@ -1032,6 +1199,14 @@ function apiErrorKey(error: WorkspaceApiError): MessageKey | undefined {
   if (error.code === 'ADMIN_PROXY_FORWARDED') return 'errorAdminProxyForwarded'
   if (error.code === 'ADMIN_HOST_NOT_LOOPBACK') return 'errorAdminHostNotLoopback'
   if (error.code === 'ADMIN_LOOPBACK_REQUIRED') return 'errorAdminLoopbackRequired'
+  // 插件启停的五种拒绝（v2.7.0）。每一种都指向不同的下一步：官方包只能作罢、
+  // 名字写错要改、profile 找不到要去查安装、package.json 坏了不能硬写、
+  // 没装要先装 —— 压成一句「操作失败」会让人反复点同一个按钮。
+  if (error.code === 'PLUGIN_OFFICIAL_IMMUTABLE') return 'pluginsErrorOfficial'
+  if (error.code === 'PLUGIN_NAME_INVALID') return 'pluginsErrorNameInvalid'
+  if (error.code === 'PROFILE_UNKNOWN') return 'pluginsErrorProfileUnknown'
+  if (error.code === 'MANIFEST_UNREADABLE') return 'pluginsErrorManifestUnreadable'
+  if (error.code === 'PLUGIN_NOT_INSTALLED') return 'pluginsErrorNotInstalled'
   if (error.code.includes('PATH') || error.code.includes('SYMLINK') || error.code.includes('REPARSE')) return 'errorPathInvalid'
   if (error.status === 403) return 'errorForbidden'
   if (error.status === 404) return 'errorNotFound'

@@ -9,7 +9,7 @@
 </p>
 
 <p align="center">
-  <img alt="Version" src="https://img.shields.io/badge/version-v2.6.1-087f8c">
+  <img alt="Version" src="https://img.shields.io/badge/version-v2.7.0-087f8c">
   <img alt="DSH plugin" src="https://img.shields.io/badge/DeepSeek_Harness-plugin-1f2328">
   <img alt="Platforms" src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-586069">
   <img alt="License" src="https://img.shields.io/badge/license-AGPL--3.0-2da44e">
@@ -93,10 +93,10 @@ dsh plugin --profile web add dsh-remote-bridge
 dsh plugin --profile web add dsh-remote-bridge --registry https://registry.npmmirror.com
 
 # ② GitHub Release 的 tarball
-dsh plugin --profile web add https://github.com/westanke/dsh-remote-bridge/releases/download/v2.6.1/dsh-remote-bridge-v2.6.1.tgz
+dsh plugin --profile web add https://github.com/westanke/dsh-remote-bridge/releases/download/v2.7.0/dsh-remote-bridge-v2.7.0.tgz
 
 # ③ Gitee Release 的 tarball（国内访问更快）
-dsh plugin --profile web add https://gitee.com/westanke/dsh-remote-bridge/releases/download/v2.6.1/dsh-remote-bridge-v2.6.1.tgz
+dsh plugin --profile web add https://gitee.com/westanke/dsh-remote-bridge/releases/download/v2.7.0/dsh-remote-bridge-v2.7.0.tgz
 
 npx @deepseek-ai/dsh web
 ```
@@ -112,7 +112,7 @@ npx @deepseek-ai/dsh web
 从 GitHub Release 下载离线安装包时，可直接安装 tarball：
 
 ```sh
-dsh plugin --profile web add ./dsh-remote-bridge-v2.6.1.tgz
+dsh plugin --profile web add ./dsh-remote-bridge-v2.7.0.tgz
 ```
 
 ## 第一次使用
@@ -411,7 +411,7 @@ pnpm check
 pnpm pack
 ```
 
-`pnpm check` 覆盖类型检查、文档一致性与测试；当前 **67 个测试文件 / 557 个用例**，外加 **8 个浏览器层用例**（Playwright 实测量出的计算样式，含 375px 窄屏契约），全部通过。
+`pnpm check` 覆盖类型检查、文档一致性与测试；当前 **76 个测试文件 / 698 个用例**，外加 **8 个浏览器层用例**（Playwright 实测量出的计算样式，含 375px 窄屏契约），全部通过。
 
 `npm pack` 的产物约 **0.64 MB**（v2.6.1 实测 669,434 字节，SHA-256 `9bf0189b…2cd35`）：2.2.0 删除独立页及其编辑器依赖、并关闭 source map 之后从 1.72 MB 降下来，之后随投影透传、权限 BFF 与五维加固小幅增长。
 
@@ -419,15 +419,26 @@ v2.5.0 在 DSH **0.2.1-rc.2** 上完成真机验证：14/14 宿主服务全部�
 权限档位目录返回内核真实三档。开发基线为上游 `dsh-v0.2.1-rc.2`（commit `687f282e8625c6b8d11ff58211a90524be2e4317`），
 兼容范围见上文 `engines.dsh`。CI 覆盖 Windows、Ubuntu 和 macOS。
 
-**v2.6.1 的验证状态**：74 个测试文件 / 682 个用例全绿、8 个 Playwright 浏览器用例
-（含 375px 窄屏契约）、`typecheck`/`docs:check`/构建通过。SEC-H11 的攻击链是**用实测**
-确认的（起一个假 LLM 端点，抓到内核把真实 `Authorization: Bearer` 打过去），修复后的
-四道闸门各有回归断言；设备身份的三个 spec（27 + 13 + 12 例）覆盖 UA 判定顺序、
-「`declared` 永不覆盖」与老表结构迁移幂等。
+**v2.7.0 的验证状态**：76 个测试文件 / 698 个用例全绿、8 个 Playwright 浏览器用例
+（含 375px 窄屏契约）、`typecheck`/`docs:check`/构建通过。这一版的四项能力都在
+DSH **0.2.1-rc.3** 隔离实例上**实跑验过**，不是静态推断：插件清单返回
+`loaded: 14 / 16 / problems: 2`、模型目录里 `free:mimo-v2.6-flash-free` 带出
+`ctx=1048576`、`reuseBlank` 的四种语义逐一验过、客户端 bundle 里能找到
+`dsh-remote-bridge-plugins` 与 `sidebarRightTabs`。截图存于 `dsh-021cmp/shots/`。
+兼容性核对本身也是实测：305 个包逐个 sha256 比对，285 个代码零改动、20 个有实质改动，
+10 个硬依赖服务的提供方**全部**落在零改动名单，4 个 slot 全保留、删除 0。
 
 ## 项目信息
 
-- 当前版本：`v2.6.1`
+- 当前版本：`v2.7.0`
+- **v2.7.0 是对齐 DSH 0.2.1-rc.3 的能力提升版**：四项 —— ①模型目录补上 `contextWindow` / `maxTokens`
+  （内核的 `ModelCatalogModel` 只有 id/name/description，容量得另走 `llm.resolveModelInfo`，桥按
+  `provider + model` 缓存 10 分钟、失败不缓存、内核自己给了就不覆盖）；②插件清单多了右侧栏形态
+  （成为 `SidebarRightTabDefinition` 提供方，DSH 0.2.1-rc.3 起该卡片可被 pin；rc.2 上正常显示但
+  没有 pin 与 More 菜单，属预期降级）；③`POST /chat/sessions` 新增可选 `reuseBlank`，对齐 0.2.1
+  桌面端「新会话回到那个工作区已有的空白会话」的语义，并跳过 preset 与请求不符的空白；
+  ④设置页新增「插件」卡片（清单 / 启停 / 检查更新）与「打开插件列表」按钮（rc.2 无
+  `pluginNavigation.openList`，故做特性检测而非版本判断）。
 - **v2.6.1 是安全修复 + 设备身份版**：修掉一个**高危**问题 —— 供应商 `baseURL` 的三个入口
   （新建 / 修改 / 探测模型）此前不做任何校验，持有 `settings.write` 的设备可以把 baseURL
   指向自己的服务器，内核会带着**该供应商的真实 API key** 去请求 `/models`，等于凭据直接外泄；

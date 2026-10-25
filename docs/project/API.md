@@ -141,6 +141,8 @@ curl "http://192.168.1.20:3090/api/v1/roots/resolve?path=%2Fmedia%2Fdata%2Fproje
 
 `GET /chat/agent-presets` 返回 DSH 当前可用的 Agent 模式及默认项。客户端使用所选 `workspaceId` 和可选 `agentPreset` 调用 `POST /chat/sessions`。为兼容早期客户端，`rootId + path` 创建方式仍保留，但新客户端应优先使用 `workspaceId`。
 
+`POST /chat/sessions` 在不带 `sessionId` 时，默认先找该位置已有的**空白**会话并复用（`reuseBlank` 省略即 `true`），与 DSH 0.2.1 桌面端「新会话」回到空白会话的行为一致；传 `reuseBlank: false` 可强制新建。挑选时按内核列表顺序取第一个 `blank` 且未被归档的会话，若它记录的 `agentPreset` 与本次请求的预设冲突则跳过、继续找下一个（「没记录预设」不算冲突，否则历史会话永远挑不中）。复用语义完全由桥实现：内核 `sessionController.create` 只在调用方显式传了 `sessionId` 时才会复用，不会自己挑。老的 `rootId + path` 入口没有工作区摘要可用，判据退化为「`cwd` 相同且空白」。
+
 `PUT /chat/sessions/{sessionId}/agent-preset` 可重新组合空白会话的 Agent Preset。DSH 只允许在第一条消息被接受前切换；会话开始后返回 `409 AGENT_PRESET_LOCKED`，客户端应展示当前 Agent 但禁用切换。
 
 `GET /chat/permission-presets` 返回可选权限档位清单（`options` 与部署默认 `defaultPreset`），scope 与 agent-presets 同为 `chat.read`。
@@ -173,6 +175,8 @@ curl "http://192.168.1.20:3090/api/v1/roots/resolve?path=%2Fmedia%2Fdata%2Fproje
 ## 模型与供应商
 
 `GET /chat/sessions/{sessionId}/models` 返回当前会话选中的供应商、模型、思考强度以及 DSH 判定为可路由的模型组；`PUT /chat/sessions/{sessionId}/model` 使用 `provider + model + reasoningEffort?` 更新当前会话。两者仍执行 session/root 授权检查。
+
+模型条目上的 `contextWindow`（上下文窗口，token）与 `maxTokens`（单次输出上限）由桥补齐：DSH 的 `ModelCatalogModel` 只有 `id` / `name` / `description` / `reasoning`，容量字段在另一处 —— 桥对每个 `provider + model` 调 `llm.resolveModelInfo` 取值（并发查询，按 `provider + model` 缓存 10 分钟，与内核模型列表的 `DEFAULT_MODELS_MAX_AGE_MS` 对齐），失败不缓存以免一次 RPC 抖动让某个模型十分钟没有容量。内核若自己在目录条目里给了这两个字段，桥不覆盖（内核更权威）。同样的补齐也作用于 `GET /settings/models` 的 `ProviderModel`。两个字段都是可选的：查不到就不出现，客户端不得把它当作 0 或「无限制」。
 
 `GET /settings/providers` 只返回供应商有效配置和凭据是否已配置，不返回 API 密钥正文。有效配置会合并 DSH 模板默认值与用户覆盖值；未显式固化模型时从实时 `llm.models` 目录投影并标记 `modelsInherited: true`。响应中的 `customProvider` 同时说明当前 DSH 是否允许自定义供应商和可用协议。
 
@@ -277,6 +281,27 @@ DSH 的设置是**一份按插件命名空间划分的文档**（`ui-chat` 的 `
 `declared` 是 `dependencies` 里的版本声明，`installed` 是 `node_modules` 里**实际装上的版本**（前者回答不了「现在跑的是哪个版本」）。`problemCount` 统计 `installed-not-loaded` 与 `declared-missing`，**不计** `runtime-provided`。
 
 profile 名依次取自 `DSH_PROFILE`、`--profile=<name>`、`--profile <name>`；`DSH_HOME` 缺省为 `~/.dsh`。无法判定时**不猜**，返回 `available: false` 与 `reason`（`PROFILE_UNKNOWN` 或 `MANIFEST_UNREADABLE`）而不是 500。返回值只包含包名、版本与状态，不返回任何文件内容。
+
+`?checkUpdates=1` 时逐条比对 npm registry 上的 latest，填充 `updateAvailable` 与 `latestVersion`。**默认不查**：这是要打网络的活，而绝大多数调用只想看「装了啥」。`updateAvailable` 是三态 —— `null` 表示没查或查不到；压成 `false` 会让界面在离线时谎称「已是最新」，比什么都不说更糟。
+
+`PATCH /settings/plugins` 启用 / 停用单个插件，要求 `settings.write`：
+
+```json
+{ "name": "dsh-ffmpeg", "loaded": false }
+```
+
+成功返回 `{ name, loaded, backupName, bundleCount, restartRequired }`，其中 `restartRequired` **恒为 `true`**：`dsh.profile.bundles` 只在 DSH 启动时读一次，改了 `package.json` 不等于改了运行中的进程。界面必须把这句说出来，否则用户会以为点了没反应、反复点击。
+
+写入有三条硬约束：写前备份成 `package.json.bak-<时间戳>`（写坏 profile 会让 DSH 下次起不来，而此刻用户可能正在手机上、够不着电脑）、先写临时文件再 `rename`（同分区原子，避免写一半留下残缺 JSON）、官方包一律拒绝。
+
+| 错误码 | 状态 | 含义 |
+| --- | --- | --- |
+| `REQUEST_INVALID` | 400 | 请求体不是 JSON，或不是 `{ name: string, loaded: boolean }` |
+| `PLUGIN_NAME_INVALID` | 400 | 包名不合法（npm 包名允许的字符集，含 scope 的 `/`） |
+| `PLUGIN_OFFICIAL_IMMUTABLE` | 400 | 官方包随 DSH 运行时安装，改 bundles 也加载不出来 |
+| `PLUGIN_NOT_INSTALLED` | 400 | 包不在 profile 的 `dependencies` 里，先安装再启用 |
+| `PROFILE_UNKNOWN` | 503 | 解析不出 profile 目录，不敢猜着写 |
+| `MANIFEST_UNREADABLE` | 503 | `package.json` 读不懂，原文件未被改动 |
 
 ## 识图路径与交接图片
 

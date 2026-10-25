@@ -665,3 +665,113 @@ function fakeApi(options: {
     },
   }
 }
+
+describe('blank session reuse', () => {
+  /**
+   * DSH 0.2.1 起桌面端点「新会话」会回到该工作区已有的空白会话，而内核
+   * `sessionController.create` 只在调用方显式传 `sessionId` 时才复用 —— 挑选逻辑
+   * 原本只在客户端（`connectWorkspace` / `createInWorkspace`）里。桥走 REST 直连
+   * 内核，没有这一层，于是手机端每点一次「新会话」就多一个空壳。这里钉住桥补上的
+   * 那层挑选：判据、顺序、preset 口径都要与客户端一致。
+   */
+  async function setup(blankAgentPreset: string | undefined) {
+    const base = await mkdtemp(path.join(os.tmpdir(), 'daw-reuse-'))
+    cleanup.dir(base)
+    const project = path.join(base, 'project')
+    const workspacePath = path.join(project, 'ws')
+    await mkdir(workspacePath, { recursive: true })
+    const database = cleanup.db(new WorkspaceDatabase(path.join(base, 'state')))
+    const root = await database.addRoot(project, 'Project')
+    const created: Record<string, unknown>[] = []
+    const ok = <T>(value: T) => ({ result: { ok: true as const, value } })
+    const sessions = [
+      // 排在前面的空白会话**声明了别的 preset** —— 请求 `standard` 时必须跳过它，
+      // 这正是 0.2.1 相对 rc.2 修掉的那个错配。
+      { sessionId: 'session-blank-minimal', updatedAt: 3, running: false, blank: true, cwd: workspacePath, agentPreset: 'minimal' },
+      // 这一条没声明 preset：对任何请求的预设都算可用（「没声明」≠「声明了别的」）。
+      ...(blankAgentPreset === undefined
+        ? [{ sessionId: 'session-blank-unstated', updatedAt: 2, running: false, blank: true, cwd: workspacePath }]
+        : [{ sessionId: 'session-blank-standard', updatedAt: 2, running: false, blank: true, cwd: workspacePath, agentPreset: blankAgentPreset }]),
+      // 非空白会话永不复用，哪怕位置和预设都对。
+      { sessionId: 'session-used', updatedAt: 1, running: false, blank: false, cwd: workspacePath, agentPreset: 'standard' },
+    ]
+    const api = {
+      sessions: {
+        list: async () => ok({ items: sessions }),
+        create: async (request: { payload: Record<string, unknown> }) => {
+          created.push(request.payload)
+          return ok({ sessionId: 'created-session', agentPreset: request.payload.agentPreset as string | undefined })
+        },
+      },
+      workspace: {
+        list: async () => ok({
+          items: [{
+            workspaceId: 'workspace-visible',
+            path: workspacePath,
+            title: 'Workspace',
+            sessionIds: sessions.map(item => item.sessionId),
+            createdAt: '2026-08-14T00:00:00.000Z',
+            updatedAt: '2026-08-14T00:00:00.000Z',
+          }],
+          archivedSessionIds: [],
+        }),
+      },
+    }
+    const adapter = new DshChatAdapter(api as never, database)
+    const principal: DevicePrincipal = {
+      kind: 'device',
+      id: 'phone',
+      name: 'Phone',
+      scopes: new Set(['chat.read', 'chat.write']),
+      rootIds: new Set([root.id]),
+    }
+    return { adapter, principal, created }
+  }
+
+  it('reuses a blank whose preset matches and skips the one that does not', async () => {
+    const { adapter, principal, created } = await setup('standard')
+    await expect(adapter.createSessionInWorkspace(principal, 'workspace-visible', { agentPreset: 'standard' }))
+      .resolves.toEqual({ id: 'created-session', agentPreset: 'standard' })
+    // 挑中的是声明 `standard` 的那条，而不是列表里排在前面、声明 `minimal` 的那条。
+    expect(created[0]).toEqual({ workspaceId: 'workspace-visible', sessionId: 'session-blank-standard', agentPreset: 'standard' })
+  })
+
+  it('treats an unstated preset as usable for any requested one', async () => {
+    // 把「没声明」当成不匹配，会让所有历史空白会话都挑不中 —— 那等于没实现。
+    const { adapter, principal, created } = await setup(undefined)
+    await adapter.createSessionInWorkspace(principal, 'workspace-visible', { agentPreset: 'standard' })
+    expect(created[0]?.sessionId).toBe('session-blank-unstated')
+  })
+
+  it('reuses the first blank in kernel list order when no preset is requested', async () => {
+    const { adapter, principal, created } = await setup('standard')
+    await adapter.createSessionInWorkspace(principal, 'workspace-visible', {})
+    // 不按 updatedAt 自己排序：同一份数据在桌面与手机上必须落到同一条会话。
+    expect(created[0]?.sessionId).toBe('session-blank-minimal')
+    expect(created[0]).not.toHaveProperty('agentPreset')
+  })
+
+  it('always mints a fresh session when reuseBlank is false', async () => {
+    const { adapter, principal, created } = await setup('standard')
+    await adapter.createSessionInWorkspace(principal, 'workspace-visible', { agentPreset: 'standard', reuseBlank: false })
+    expect(created[0]).toEqual({ workspaceId: 'workspace-visible', agentPreset: 'standard' })
+  })
+
+  it('lets an explicit sessionId win over the reuse search', async () => {
+    const { adapter, principal, created } = await setup('standard')
+    await adapter.createSessionInWorkspace(principal, 'workspace-visible', { sessionId: 'session-named' })
+    expect(created[0]).toEqual({ workspaceId: 'workspace-visible', sessionId: 'session-named' })
+  })
+
+  it('reuses a blank at the same absolute cwd on the legacy rootId + path entry', async () => {
+    const { adapter, principal, created } = await setup('standard')
+    await adapter.createSession(principal, rootIdOf(principal), 'ws', { agentPreset: 'standard' })
+    expect(created[0]).toMatchObject({ sessionId: 'session-blank-standard' })
+  })
+})
+
+function rootIdOf(principal: DevicePrincipal): string {
+  const [rootId] = principal.rootIds as Set<string>
+  if (rootId === undefined) throw new Error('test principal has no root')
+  return rootId
+}

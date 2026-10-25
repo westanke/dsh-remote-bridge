@@ -1,6 +1,25 @@
 # 当前状态
 
-- 日期：2026-10-23
+- 日期：2026-10-25
+- **已发版 v2.7.0（2026-10-25）**：**对齐 DSH 0.2.1-rc.3 的四项能力提升**。
+  - **模型目录容量**：`contextWindow` / `maxTokens` 此前声明了却永不赋值（内核
+    `ModelCatalogModel` 不含这两项，只在 `llm.resolveModelInfo` 的 `context` /
+    `defaultMaxTokens` 里）。新增 `modelCapacityOf`：按 `provider + model` 缓存 10 分钟、
+    失败不缓存、并发查、内核给了不覆盖，接入 `sessions.models` 与 `llm.models` 两处门面。
+    wire schema 无需改（`openapi.yaml` 早有这两个字段）。
+  - **插件右侧栏形态**：成为 `SidebarRightTabDefinition` 提供方（tab id
+    `dsh-remote-bridge-plugins`，guide 条目 `order: 40`），rc.3 起可 pin；rc.2 的 `GuideBody`
+    无 pin/More 菜单，正常显示但不可 pin（预期降级）。用 `ctx.inject(['sidebarRightTabs'], …)`
+    动态注入，避免可选依赖变硬依赖。
+  - **`reuseBlank`**：`POST /chat/sessions` 新增可选字段，省略即 `true`（对齐 0.2.1 桌面
+    「新会话回到工作区已有空白会话」），判据与官方 `createInWorkspace` 同义并额外跳过
+    preset 不符的空白；老的 `rootId + path` 入口退化为「同 cwd 且空白」。
+  - **设置页插件卡片**：补齐 `WorkspaceApi.pluginInventory` / `togglePlugin`，第七张卡
+    （清单 / 启停 / 检查更新）+「打开插件列表」按钮（`openList` 在 rc.2 不存在，
+    做特性检测而非版本判断）。插件四类型迁到 `src/shared/contracts.ts`（`client/` → `host/`
+    是禁止的依赖方向）。
+  - 门禁：`tsc` 0 / `vitest` 76 files 698 tests / `docs:check` 51+55 锚点 / `build` 通过。
+    rc.3 隔离实例实测通过（插件清单 14/16、容量已填、`reuseBlank` 四语义、客户端 bundle 757 kB）。
 - **已发版 v2.6.1（2026-10-23）**：**SEC-H11 安全修复 + 设备身份自动识别**。
   - **SEC-H11（高危）**：供应商 `baseURL` 的三个入口（`createProvider` / `updateProvider` /
     `discover`）此前不做任何校验，持 `settings.write` 的设备可把 baseURL 指向自己的服务器，

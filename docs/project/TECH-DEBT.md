@@ -19,11 +19,12 @@
 
 | 文件 | 行数 | 为什么是债 | 清账阶段 |
 |---|---|---|---|
-| `src/host/dsh-0.2-bridge.ts` | 1 818 | **兼容适配层**：重建 0.1.x `apiProxy` 面容，一个文件里装了会话、审批、提问、模型多条链路的重建逻辑。改一条要读 1 700 行 | 按链路拆（session / approval / question / model 各一模块），公共面容抽 `api-proxy-facade.ts` |
-| `src/host/router.ts` | 1 931 | 全部 REST 路由集中一处；新端点往里加，旧端点没人敢删 | 按资源域拆 `routes/*.ts`，router 只做组装 |
-| `src/host/chat-adapter.ts` | 1 409 | 会话链路适配：列表/历史/发送/取消/workspace/agent-preset 全在一个文件 | 按端点族拆 |
+| `src/host/dsh-0.2-bridge.ts` | 2 682 | **兼容适配层**：重建 0.1.x `apiProxy` 面容，一个文件里装了会话、审批、提问、模型多条链路的重建逻辑。改一条要读 1 700 行 | 按链路拆（session / approval / question / model 各一模块），公共面容抽 `api-proxy-facade.ts` |
+| `src/host/router.ts` | 1 934 | 全部 REST 路由集中一处；新端点往里加，旧端点没人敢删 | 按资源域拆 `routes/*.ts`，router 只做组装 |
+| `src/host/chat-adapter.ts` | 1 663 | 会话链路适配：列表/历史/发送/取消/workspace/agent-preset 全在一个文件 | 按端点族拆 |
 | `src/host/database.ts` | 1 005 | 用户数据（根/设备/回收站/配对/幂等/审计）全在一个类里；每次加字段都要在这个文件里写迁移 | 按表族拆 `db/{roots,devices,trash,pairings}.ts`，迁移独立成 `db/migrations.ts` |
 | `src/host/settings-adapter.ts` | 731 | 提供商与模型目录、通用设置命名空间两件事挤在一个类；SEC-H11 的重定向闸门也落在这里 | 拆 `providers-adapter.ts` 与 `namespaces-adapter.ts` |
+| `src/client/workspace.tsx` | 1 225 | 「📱 手机设置」面板七张卡的全部状态与交互挤在一个组件文件里；v2.7.0 加插件卡后越线 | 每张卡拆独立文件（`client/cards/*.tsx`），`workspace.tsx` 只留外壳与导航 |
 
 > 这三个是**已登记的债，不是许可**。新增超预算文件必须先入本表再写码。
 >
@@ -43,6 +44,15 @@
 > 再写码」的纪律补登（严格说是既有文件越线，处置相同：可见、带清账阶段）。
 > `provider-url-policy.ts`（186）与 `device-identity.ts`（180）是两个新文件，
 > **刻意拆出去就是为了不把既有超预算文件推得更高**。
+> **2026-10-24 v2.7.0 四项能力提升后复核**（`wc -l` 实测）：`src/client/workspace.tsx` 660 → **1 225**
+> （插件清单卡片与其四态文案、`pluginInventory`/`togglePlugin` 两个调用、五条插件错误码映射），
+> `chat-adapter.ts` 1 409 → **1 663**（`reuseBlank` 复用空白会话 + `CreateSessionOptions`；
+> 注：台账原记 1 409 已过期，中间几轮改动未回填，本轮按 `wc -l` 一次性纠正），
+> `dsh-0.2-bridge.ts` 1 818 → **2 682**（模型容量补齐 `modelCapacityOf` / `enrichModelGroups`；
+> 同上，原记 1 818 亦为过期值），`router.ts` 1 931 → **1 934**（`reuseBlank` 透传）。
+> **新登记一条**：`src/client/workspace.tsx` 本轮越线，按纪律补登。
+> 新增的 `src/client/plugins.tsx`（201）**刻意独立成文件**就是为了不把 `workspace.tsx` 推得更高 ——
+> 与 `provider-url-policy.ts` / `device-identity.ts` 同一处置。
 > **预算（600 行/文件）未变，清账阶段未变** —— 变的只是「事实数字」。
 > 本文件第 41 行自己写着「旧值会骗人」，这次就是被它抓到：上一轮我引用台账时，
 > 记的还是几个月前的数字。
