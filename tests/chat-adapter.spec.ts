@@ -678,10 +678,15 @@ describe('blank session reuse', () => {
     const base = await mkdtemp(path.join(os.tmpdir(), 'daw-reuse-'))
     cleanup.dir(base)
     const project = path.join(base, 'project')
-    const workspacePath = path.join(project, 'ws')
-    await mkdir(workspacePath, { recursive: true })
+    await mkdir(path.join(project, 'ws'), { recursive: true })
     const database = cleanup.db(new WorkspaceDatabase(path.join(base, 'state')))
     const root = await database.addRoot(project, 'Project')
+    // 必须用 `root.realPath` 拼路径，不能用上面那个 `project`。
+    // `addRoot` 会过 `canonicalRoot` → `realpath()`，而 `realpath` 在 macOS 上把
+    // `/var/...` 解成 `/private/var/...`、在 Windows 上把临时目录解成 8.3 短名。
+    // 内核回报的 `session.cwd` 与 `workspace.path` 都是规范化后的形态，
+    // 拿未规范化的路径去比会永远不相等 —— 测试在 Linux 上过、在 macOS/Windows 上红。
+    const workspacePath = path.join(root.realPath, 'ws')
     const created: Record<string, unknown>[] = []
     const ok = <T>(value: T) => ({ result: { ok: true as const, value } })
     const sessions = [

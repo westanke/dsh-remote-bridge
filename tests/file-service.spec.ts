@@ -121,12 +121,27 @@ describe('directory listing concurrency', () => {
     const database = cleanup.db(new WorkspaceDatabase(path.join(base, 'state')))
     const root = await database.addRoot(project, 'Project')
     const files = new FileService(database, () => undefined)
-    // readdir 与 stat 之间的竞态：条目在列出来之后被删掉。
+    // readdir 与 lstat 之间的竞态：条目在列出来之后被删掉。
     // 行为必须是**抛错**（交由上层映射 404/500），而不是静默少一条 ——
     // 静默少一条会让客户端以为文件不存在，而它可能只是被另一个进程挪走了。
-    await writeFile(path.join(project, 'gone.txt'), 'x')
-    const listing = files.list(root, '', 10)
-    await rm(path.join(project, 'gone.txt'), { force: true })
-    await expect(listing).rejects.toThrow()
+    //
+    // 为什么这里要重试：真正要验的窗口只有「readdir 返回之后、该条目的 lstat
+    // 发出之前」那么几十微秒。`rm` 早一步（readdir 还没返回）会让名字压根不出现在
+    // 清单里，晚一步（该条目的 lstat 已经完成）则什么都不会失败 —— 两种都**不是**
+    // 本用例要验的路径。早先的写法只跑一次，实测 15 次红 1 次，在 CI 上表现为随机红。
+    // 现在铺 40 个填充项把窗口撑大（每批 32 个 lstat，目标排在最后一批），
+    // 并在没命中时重试，让「命中」变成确定性结果而不是运气。
+    const filler = Array.from({ length: 40 }, (_, index) => `filler-${String(index).padStart(2, '0')}.txt`)
+    await Promise.all(filler.map(name => writeFile(path.join(project, name), 'x')))
+    // 字典序排在最后 → 落在最后一批 lstat 里，前面 40 次 stat 都在替它撑窗口。
+    const target = 'zzz-gone.txt'
+    let threw = false
+    for (let attempt = 0; attempt < 25 && !threw; attempt += 1) {
+      await writeFile(path.join(project, target), 'x')
+      const listing = files.list(root, '', 500)
+      await rm(path.join(project, target), { force: true })
+      threw = await listing.then(() => false, () => true)
+    }
+    expect(threw, '25 次都没命中竞态窗口 —— 说明 list() 可能不再对 lstat 失败抛错了').toBe(true)
   })
 })

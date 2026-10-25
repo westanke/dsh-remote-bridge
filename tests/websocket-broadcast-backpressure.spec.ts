@@ -56,6 +56,7 @@ interface Harness {
 
 async function startHarness(options: {
   socketQueueLimit?: number
+  highWaterMarkBytes?: number
 } = {}): Promise<Harness> {
   const base = await mkdtemp(path.join(os.tmpdir(), 'daw-ws-bp-'))
   cleanup.dir(base)
@@ -79,6 +80,7 @@ async function startHarness(options: {
     events,
     handle: (req, res) => router.handle(req, res),
     ...(options.socketQueueLimit === undefined ? {} : { socketQueueLimit: options.socketQueueLimit }),
+    ...(options.highWaterMarkBytes === undefined ? {} : { highWaterMarkBytes: options.highWaterMarkBytes }),
     // 心跳默认 30 s，对这些用例来说太长；拉长避免测试期间被心跳逻辑干扰。
     heartbeatIntervalMs: 60_000_000,
   })
@@ -147,17 +149,30 @@ describe('broadcast isolation and backpressure', () => {
   })
 
   it('closes a connection that stays over the high-water mark twice', async () => {
-    const harness = await startHarness()
+    // 高水位压到 64 KiB，不再靠「一条 8 MiB 帧必然越过 4 MiB」这个平台假设。
+    //
+    // 原先写死默认 4 MiB + 8 MiB 帧，在 Windows 上稳定红：`socket.bufferedAmount`
+    // 是**内核发送缓冲还没被对端确认**的字节数，而 Windows 的默认 socket 缓冲远大于
+    // Linux 的 loopback —— 8 MiB 能被内核一口气吞下，`bufferedAmount` 始终在水位以下，
+    // 于是 `noteHighWater()` 一次都不触发，连接自然永远不关。这不是产品 bug，
+    // 是测试对「多大帧才会造成背压」做了平台相关的假设。
+    //
+    // 压小水位之后，判据与平台无关：只要对端不读，64 KiB 迟早会堆住。
+    const harness = await startHarness({ highWaterMarkBytes: 64 * 1024 })
     try {
       const slow = await harness.connect()
       pauseReading(slow.socket)
-      // 一条 8 MiB 帧就越过高水位（默认 4 MiB），drain 停下并安排复查。
       harness.events.emit(fileEvent(harness.rootId, 'big', BIG_PAYLOAD_CHARS))
       // 等两个复查周期：第一拍只是「可疑」，第二拍才 close(1013)。
       // 客户端此刻读不动，close 帧排在它的接收缓冲里 —— 所以**必须**先恢复读，
       // 才可能观察到关闭（否则只能看到「一直 OPEN」，那是暂停读的假象）。
       await new Promise(resolve => setTimeout(resolve, 700))
+      // 服务端侧判据：连接已被摘出登记表 = `closeBackpressured()` 已经跑过。
+      // 这条比客户端 `readyState` 可靠 —— 它不依赖 close 帧穿过暂停的读取路径，
+      // 也正是上一条用例（stop() 及时返回）已经在用的判据。
+      await waitFor(() => serverSocketCount(harness.remote) === 0, 300)
       resumeReading(slow.socket)
+      // 恢复读之后，客户端才可能真的看到 CLOSED 与关闭码。
       await waitFor(() => slow.socket.readyState === WebSocket.CLOSED, 300)
       // 1013 = 服务端主动「稍后再试」；1006 是客户端库对不带码关闭的呈现差异。
       expect([1013, 1006]).toContain(slow.closeCode() ?? 1006)

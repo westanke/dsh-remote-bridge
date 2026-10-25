@@ -85,6 +85,50 @@ DSH 0.2.1 桌面端的行为。
 - rc.3 的 `draft.whenDraftExists` —— 它是**客户端** `dsh-client-ui-workspace` 的草稿行为，
   不经内核 RPC，桥无从透传。
 
+### 补记（2026-10-25 晚）：三个跨平台测试缺陷
+
+v2.7.0 的 CI 在 macOS / Windows 上红了一片。查下来是**三个独立的测试缺陷**，产品代码零改动。
+其中两个是既有的（v2.6.1 就在红），一个是我这版引入的。三处一起修掉。
+
+**一、`tests/chat-adapter.spec.ts` —— 路径未规范化（本版引入，影响 6 个 OS×Node 组合）**
+
+新增的 6 条 `reuseBlank` 用例用 `path.join(base, 'project', 'ws')` 拼路径去比对
+`session.cwd`，但 `database.addRoot()` 内部走 `canonicalRoot()` → `realpath()`。
+macOS 上 `/var` 解成 `/private/var`、Windows 上临时目录解成 8.3 短名，于是
+`session.cwd === summary.path` 永远不相等 → `WORKSPACE_NOT_FOUND`。Linux 上两者恰好
+相同，所以本地一直绿。用符号链接实验实证过差异真实存在。
+
+修法：先 `mkdir` 出 `ws`，再 `addRoot`，然后用 `root.realPath` 拼路径 —— 规范化的唯一真源
+是数据库返回的那个 `realPath`，不是测试自己拼的字符串。
+
+**二、`tests/file-service.spec.ts` —— 竞态测试靠运气（既有，v2.6.1 的 macOS 失败就是它）**
+
+原测试 `files.list()` 后立刻 `await rm()`，靠「rm 恰好落在 `readdir` 之后、`lstat` 之前」
+那个几十微秒的窗口。rm 早一步则名字压根不在清单里，晚一步则该条目的 lstat 已完成 ——
+两种都不抛错。实测 15 次红 1 次（约 7%）。
+
+修法：铺 40 个填充项把窗口撑开（每批 32 个 lstat，目标 `zzz-gone.txt` 字典序排最后 →
+落在最后一批），循环最多 25 次直到命中，并用下限断言兜底。连跑 20 次全过。
+
+**三、`tests/websocket-broadcast-backpressure.spec.ts` —— 背压阈值是平台假设（既有，Windows 必红）**
+
+原用例写死「一条 8 MiB 帧必然越过默认 4 MiB 高水位」。但 `socket.bufferedAmount` 是
+**内核发送缓冲还没被对端确认**的字节数，Windows 的默认 socket 缓冲远大于 Linux loopback，
+8 MiB 能被内核一口气吞下，`bufferedAmount` 始终在水位以下 → `noteHighWater()` 一次都不触发
+→ 连接永远不关。这不是产品 bug，是测试对「多大帧才造成背压」做了平台相关假设。
+
+修法两条：①`startHarness` 支持 `highWaterMarkBytes`，该用例压到 64 KiB，判据与平台无关；
+②判据从客户端 `readyState` 换成服务端连接表 `serverSocketCount(remote) === 0` ——
+客户端读被暂停时它本来就看不到 close 帧，那个判据在同文件另一条用例的注释里已经被指出
+不可靠，但这条用例自己还在用。
+
+三处修完后四道门禁：`tsc --noEmit` 0；`vitest run` 76 files / 698 tests；`docs:check`
+51/55 锚点；`build` client 757.03 kB + host 440.69 kB。
+
+**仍红的是 CI 基础设施层面的既有问题**，不在本仓代码内：Windows / macOS 的
+`profile-install` 需要 checkout 上游 `deepseek-ai/deepseek-harness` 并 `pnpm install`，
+那两个平台的 runner 上一直失败，与插件本身无关。
+
 ## 2.6.1 · SEC-H11 SSRF 与凭据外泄修复 + 设备身份自动识别（2026-10-23）
 
 **基于**：v2.6.0（含 `settings-namespaces-v1` 能力位补漏）。这是一次**安全修复**，
