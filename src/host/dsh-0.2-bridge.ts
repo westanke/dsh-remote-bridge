@@ -2222,9 +2222,32 @@ export function createDsh02ApiProxy(
     hostFrames.push({ type: 'host/remote-event', event: 'agent-preset/selected', args: [sessionId, agentPreset] })
   })
 
-  /** Ask the host for the Agent backing a session before agent-scoped calls. */
+  /**
+   * Ask the host for the Agent backing a session before agent-scoped calls.
+   *
+   * 🔴 `sessionController.resolveAgent()` 返回的是**包装对象**，不是 Agent 本体：
+   * `{ agent }` 成功、`{ error }` 失败（内核
+   * `dsh-api-session-controller/lib/index.js:365-368` 的 `liveAgent()` 与 `:221-246`
+   * 的 `resolve()` 都是这个形状）。早先这里直接把包装对象当 Agent 返回，调用方读
+   * `agent.session.header` 就变成读 `undefined.header`，真机上表现为
+   * `DSH_TYPEERROR: Cannot read properties of undefined (reading 'header')` ——
+   * 上传附件、选 agent preset 全挂在这里，而报错信息完全指不到真正的原因。
+   */
   async function agentFor(sessionId: string): Promise<unknown> {
-    const agent = await host.sessionController.resolveAgent(sessionId)
+    const resolved = (await host.sessionController.resolveAgent(sessionId)) as
+      | { agent?: unknown; error?: unknown }
+      | null
+      | undefined
+    // 兼容：万一某个内核版本直接返回 Agent 本体（没有 agent/error 两个键），照旧用它。
+    const wrapped = resolved !== null && typeof resolved === 'object'
+      && ('agent' in resolved || 'error' in resolved)
+    const failure = wrapped ? (resolved as { error?: unknown }).error : undefined
+    if (failure !== undefined && failure !== null) {
+      // 内核已经给了稳定的 code（如 session/not-found），原样往上抛，
+      // 不要一律压成 agent-unavailable —— 那会让「会话不存在」看起来像「会话没在跑」。
+      throw failure
+    }
+    const agent = wrapped ? (resolved as { agent?: unknown }).agent : resolved
     if (agent === undefined || agent === null) {
       throw Object.assign(new Error(`no live Agent for session ${sessionId}`), { code: 'session/agent-unavailable' })
     }

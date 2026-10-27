@@ -483,6 +483,68 @@ describe('dsh 0.2.x bridge: attachments', () => {
     expect(host.sessionController.resolveAgent).toHaveBeenCalledWith('session-1')
   })
 
+  /**
+   * 🔴 回归：内核 `sessionController.resolveAgent()` 返回的是 `{ agent }` / `{ error }`
+   * **包装对象**，不是 Agent 本体（`dsh-api-session-controller/lib/index.js:365-368`
+   * 的 `liveAgent()` 与 `:221-246` 的 `resolve()` 都是这个形状）。
+   *
+   * 早先桥直接把包装对象当 Agent 传给 `fileUploads.upload()`，内核读
+   * `agent.session.header.origin` 就炸成
+   * `DSH_TYPEERROR: Cannot read properties of undefined (reading 'header')`。
+   * 真机表现是「发文件永远 500，报错信息完全指不到原因」。
+   *
+   * 下面三条把三种返回形状都钉住：包装成功 / 包装失败 / 裸对象（旧内核或测试替身）。
+   */
+  it('unwraps the { agent } envelope the kernel actually returns', async () => {
+    const { host } = makeHost()
+    const realAgent = { session: { header: { origin: 'user' } } }
+    vi.mocked(host.sessionController.resolveAgent).mockResolvedValueOnce({ agent: realAgent } as never)
+    const api = createDsh02ApiProxy(host)
+
+    const response = await api.sessions.uploadAttachment({
+      rpcId: 'r',
+      payload: { sessionId: 'session-1', data: 'QUJD', name: 'notes.txt' },
+    })
+
+    expect(response.result.ok).toBe(true)
+    // 传给 upload 的必须是解包后的 Agent 本体，不是 `{ agent: … }`。
+    const [passedAgent] = vi.mocked(host.fileUploads!.upload).mock.calls[0] as [unknown, unknown, AbortSignal]
+    expect(passedAgent).toBe(realAgent)
+  })
+
+  it('surfaces the kernel error carried in the { error } envelope', async () => {
+    const { host } = makeHost()
+    vi.mocked(host.sessionController.resolveAgent).mockResolvedValueOnce({
+      error: new RemoteErrorStub('session/not-found', 'session "session-1" not found'),
+    } as never)
+    const api = createDsh02ApiProxy(host)
+
+    const response = await api.sessions.uploadAttachment({
+      rpcId: 'r',
+      payload: { sessionId: 'session-1', data: 'QUJD', name: 'notes.txt' },
+    })
+
+    expect(response.result.ok).toBe(false)
+    // 不能压成 agent-unavailable：「会话不存在」和「会话没在跑」是两回事。
+    expect(response.result.ok === false && response.result.error.message).toMatch(/not found/i)
+  })
+
+  it('still accepts a bare Agent for kernels that return one directly', async () => {
+    const { host } = makeHost()
+    const bareAgent = { session: { header: { origin: 'user' } } }
+    vi.mocked(host.sessionController.resolveAgent).mockResolvedValueOnce(bareAgent as never)
+    const api = createDsh02ApiProxy(host)
+
+    const response = await api.sessions.uploadAttachment({
+      rpcId: 'r',
+      payload: { sessionId: 'session-1', data: 'QUJD', name: 'notes.txt' },
+    })
+
+    expect(response.result.ok).toBe(true)
+    const [passedAgent] = vi.mocked(host.fileUploads!.upload).mock.calls[0] as [unknown, unknown, AbortSignal]
+    expect(passedAgent).toBe(bareAgent)
+  })
+
   it('omits an empty name rather than sending a blank one', async () => {
     const { host } = makeHost()
     const api = createDsh02ApiProxy(host)
