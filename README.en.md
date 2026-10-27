@@ -9,7 +9,7 @@
 </p>
 
 <p align="center">
-  <img alt="Version" src="https://img.shields.io/badge/version-v2.7.0-087f8c">
+  <img alt="Version" src="https://img.shields.io/badge/version-v2.7.1-087f8c">
   <img alt="DSH plugin" src="https://img.shields.io/badge/DeepSeek_Harness-plugin-1f2328">
   <img alt="Platforms" src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-586069">
   <img alt="License" src="https://img.shields.io/badge/license-AGPL--3.0-2da44e">
@@ -102,10 +102,10 @@ dsh plugin --profile web add dsh-remote-bridge
 dsh plugin --profile web add dsh-remote-bridge --registry https://registry.npmmirror.com
 
 # 2. tarball from the GitHub release
-dsh plugin --profile web add https://github.com/westanke/dsh-remote-bridge/releases/download/v2.7.0/dsh-remote-bridge-v2.7.0.tgz
+dsh plugin --profile web add https://github.com/westanke/dsh-remote-bridge/releases/download/v2.7.1/dsh-remote-bridge-v2.7.1.tgz
 
 # 3. tarball from the Gitee release (faster from mainland China)
-dsh plugin --profile web add https://gitee.com/westanke/dsh-remote-bridge/releases/download/v2.7.0/dsh-remote-bridge-v2.7.0.tgz
+dsh plugin --profile web add https://gitee.com/westanke/dsh-remote-bridge/releases/download/v2.7.1/dsh-remote-bridge-v2.7.1.tgz
 
 npx @deepseek-ai/dsh web
 ```
@@ -122,7 +122,7 @@ Restart DSH after installation, then open settings — The section is titled **�
 To install a downloaded release archive:
 
 ```sh
-dsh plugin --profile web add ./dsh-remote-bridge-v2.7.0.tgz
+dsh plugin --profile web add ./dsh-remote-bridge-v2.7.1.tgz
 ```
 
 ## First connection
@@ -386,6 +386,10 @@ pnpm pack
 
 v2.5.0 was verified on DSH **0.2.1-rc.2** on real hardware: all 14/14 host services injected, the three jobs endpoints exercised, and the permission catalog returned the kernel's real three presets. The development baseline is upstream `dsh-v0.2.1-rc.2` (commit `687f282e8625c6b8d11ff58211a90524be2e4317`); see `engines.dsh` above for the supported range. CI covers Windows, Ubuntu, and macOS.
 
+**v2.7.1 verification status**: 76 test files / **701 cases** green; `typecheck`, `docs:check`, and the
+build all pass. This release touches only `agentFor` in `src/host/dsh-0.2-bridge.ts` plus its regression
+tests; every other byte is identical to v2.7.0.
+
 **v2.7.0 verification status**: 76 test files / 698 cases green, plus 8 Playwright browser cases
 (including the 375px narrow-viewport contract); `typecheck`, `docs:check`, and the build all pass.
 All four capabilities were exercised on an isolated DSH **0.2.1-rc.3** instance rather than inferred:
@@ -398,7 +402,17 @@ inside the zero-change set, and 4 slots retained with 0 removed.
 
 ## Project
 
-- Version: `v2.7.0`
+- Version: `v2.7.1`
+- **v2.7.1 is a defect-fix release**: the kernel's `sessionController.resolveAgent()` returns an
+  `{ agent }` / `{ error }` **envelope**, not the Agent itself (`dsh-api-session-controller/lib/index.js:365-368`
+  `liveAgent()` and `:221-246` `resolve()` both have that shape). The bridge used to hand the envelope
+  straight to `fileUploads.upload()`, so the kernel reading `agent.session.header.origin` blew up with
+  `DSH_TYPEERROR: Cannot read properties of undefined (reading 'header')` — on a real device this showed up
+  as "sending a file always fails with 400/500 and the message points nowhere", breaking both attachment
+  upload and agent-preset selection. The bridge now detects the envelope, unwraps `.agent` on success, and
+  rethrows `.error` as-is (keeping the kernel's stable code, so "session not found" is no longer flattened
+  into "session not running"), while still accepting a bare object. Three regression tests pin all three
+  return shapes.
 - **v2.7.0 aligns with DSH 0.2.1-rc.3 and lifts four capabilities**: (1) the model catalog now carries
   `contextWindow` / `maxTokens` — the kernel's `ModelCatalogModel` only has id/name/description, so the
   bridge resolves capacity through `llm.resolveModelInfo`, caching per `provider + model` for ten

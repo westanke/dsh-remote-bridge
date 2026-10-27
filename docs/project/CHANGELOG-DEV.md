@@ -1,5 +1,41 @@
 # 开发日志
 
+## 2.7.1 · 修「发文件永远失败」：解包内核的 `{agent}` / `{error}` 包装对象（2026-10-27）
+
+**基于**：v2.7.0。一次**纯缺陷修复**，只有一处实现改动 + 三条回归用例，其余代码零改动。
+
+### 现象与根因
+
+真机上的表现是「发文件永远 400/500，报错信息完全指不到原因」，附件上传与 agent preset
+选择两条路径都挂，而日志里只有一句：
+
+```
+DSH_TYPEERROR: Cannot read properties of undefined (reading 'header')
+```
+
+追到 `agentFor()`：它拿 `host.sessionController.resolveAgent(sessionId)` 的返回值直接当
+Agent 用。但内核**返回的是包装对象**，不是 Agent 本体 ——
+`dsh-api-session-controller/lib/index.js:365-368` 的 `liveAgent()` 与 `:221-246` 的
+`resolve()` 都是 `{ agent }`（成功）/ `{ error }`（失败）这个形状。
+
+于是 `agent.session.header.origin` 变成 `undefined.header.origin` —— 桥把 `{agent: {...}}`
+当成 Agent 传给 `fileUploads.upload()`，内核按 Agent 契约去读 `session.header`，
+读到的是 `undefined`。**报错点在消费侧**，所以栈里看不到桥的位置，这也是它「指不到原因」
+的真正理由（`PITFALLS.md` §论证要先追到消费侧 的又一例）。
+
+### 修法
+
+- 识别包装形状（对象且含 `agent` 或 `error` 键）：成功解出 `.agent`；失败**原样抛 `.error`**，
+  保留内核给的稳定 code。这一点是刻意的 —— 一律压成 `session/agent-unavailable` 会让
+  「会话不存在」看起来像「会话没在跑」，排查方向直接跑偏。
+- **保留裸对象兼容**：某个内核版本或测试替身直接返回 Agent 本体时照旧可用，不制造新分支。
+- 三条回归用例钉住三种返回形状（包装成功 / 包装失败 / 裸对象），失败路径断言的是
+  「内核的 code 原样透出」而不是「抛了错」。
+
+### 门验
+
+`tsc` 0 错误、`vitest` **76 文件 / 701 用例**全绿、`docs:check` 通过、`build` 通过。
+
 ## 2.7.0 · 对齐 DSH 0.2.1-rc.3 的四项能力提升（2026-10-25）
 
 **基于**：v2.6.1。rc.3 与桥的兼容性做了全量核对（305 个包逐个 sha256 比对：285 个代码零改动、

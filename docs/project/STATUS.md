@@ -1,6 +1,16 @@
 # 当前状态
 
-- 日期：2026-10-25
+- 日期：2026-10-27
+- **已发版 v2.7.1（2026-10-27）**：**修「发文件永远失败」—— 解包内核的 `{agent}` / `{error}` 包装对象**。
+  - 根因：`host.sessionController.resolveAgent()` 返回的是包装对象而非 Agent 本体
+    （`dsh-api-session-controller/lib/index.js:365-368` 的 `liveAgent()` 与 `:221-246` 的
+    `resolve()` 都是 `{agent}` / `{error}` 形状），`agentFor()` 直接把包装对象当 Agent 传给
+    `fileUploads.upload()`，内核读 `agent.session.header.origin` 炸成
+    `DSH_TYPEERROR: Cannot read properties of undefined (reading 'header')`。真机表现是
+    「发文件永远 400/500，报错完全指不到原因」，附件上传与 agent preset 选择两条路径都挂。
+  - 修法：识别包装形状 → 成功解 `.agent`、失败原样抛 `.error`（保留内核稳定 code，
+    「会话不存在」不被压成「会话没在跑」），并保留裸对象兼容。新增 3 条回归用例钉住三种形状。
+  - 门禁：`tsc` 0 / `vitest` **76 files 701 tests** / `docs:check` / `build` 全绿。
 - **已发版 v2.7.0（2026-10-25）**：**对齐 DSH 0.2.1-rc.3 的四项能力提升**。
   - **模型目录容量**：`contextWindow` / `maxTokens` 此前声明了却永不赋值（内核
     `ModelCatalogModel` 不含这两项，只在 `llm.resolveModelInfo` 的 `context` /

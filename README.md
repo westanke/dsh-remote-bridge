@@ -9,7 +9,7 @@
 </p>
 
 <p align="center">
-  <img alt="Version" src="https://img.shields.io/badge/version-v2.7.0-087f8c">
+  <img alt="Version" src="https://img.shields.io/badge/version-v2.7.1-087f8c">
   <img alt="DSH plugin" src="https://img.shields.io/badge/DeepSeek_Harness-plugin-1f2328">
   <img alt="Platforms" src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-586069">
   <img alt="License" src="https://img.shields.io/badge/license-AGPL--3.0-2da44e">
@@ -93,10 +93,10 @@ dsh plugin --profile web add dsh-remote-bridge
 dsh plugin --profile web add dsh-remote-bridge --registry https://registry.npmmirror.com
 
 # ② GitHub Release 的 tarball
-dsh plugin --profile web add https://github.com/westanke/dsh-remote-bridge/releases/download/v2.7.0/dsh-remote-bridge-v2.7.0.tgz
+dsh plugin --profile web add https://github.com/westanke/dsh-remote-bridge/releases/download/v2.7.1/dsh-remote-bridge-v2.7.1.tgz
 
 # ③ Gitee Release 的 tarball（国内访问更快）
-dsh plugin --profile web add https://gitee.com/westanke/dsh-remote-bridge/releases/download/v2.7.0/dsh-remote-bridge-v2.7.0.tgz
+dsh plugin --profile web add https://gitee.com/westanke/dsh-remote-bridge/releases/download/v2.7.1/dsh-remote-bridge-v2.7.1.tgz
 
 npx @deepseek-ai/dsh web
 ```
@@ -112,7 +112,7 @@ npx @deepseek-ai/dsh web
 从 GitHub Release 下载离线安装包时，可直接安装 tarball：
 
 ```sh
-dsh plugin --profile web add ./dsh-remote-bridge-v2.7.0.tgz
+dsh plugin --profile web add ./dsh-remote-bridge-v2.7.1.tgz
 ```
 
 ## 第一次使用
@@ -419,6 +419,9 @@ v2.5.0 在 DSH **0.2.1-rc.2** 上完成真机验证：14/14 宿主服务全部�
 权限档位目录返回内核真实三档。开发基线为上游 `dsh-v0.2.1-rc.2`（commit `687f282e8625c6b8d11ff58211a90524be2e4317`），
 兼容范围见上文 `engines.dsh`。CI 覆盖 Windows、Ubuntu 和 macOS。
 
+**v2.7.1 的验证状态**：76 个测试文件 / **701 个用例**全绿、`typecheck`/`docs:check`/构建通过。
+这一版只改 `src/host/dsh-0.2-bridge.ts` 的 `agentFor` 与对应回归测试，其余代码与 v2.7.0 逐字节相同。
+
 **v2.7.0 的验证状态**：76 个测试文件 / 698 个用例全绿、8 个 Playwright 浏览器用例
 （含 375px 窄屏契约）、`typecheck`/`docs:check`/构建通过。这一版的四项能力都在
 DSH **0.2.1-rc.3** 隔离实例上**实跑验过**，不是静态推断：插件清单返回
@@ -430,7 +433,15 @@ DSH **0.2.1-rc.3** 隔离实例上**实跑验过**，不是静态推断：插件
 
 ## 项目信息
 
-- 当前版本：`v2.7.0`
+- 当前版本：`v2.7.1`
+- **v2.7.1 是缺陷修复版**：内核 `sessionController.resolveAgent()` 返回的是 `{ agent }` / `{ error }`
+  **包装对象**而非 Agent 本体（`dsh-api-session-controller/lib/index.js:365-368` 的 `liveAgent()` 与
+  `:221-246` 的 `resolve()` 都是这个形状），桥此前把包装对象直接当 Agent 传给 `fileUploads.upload()`，
+  内核读 `agent.session.header.origin` 就炸成
+  `DSH_TYPEERROR: Cannot read properties of undefined (reading 'header')` —— 真机表现是
+  「发文件永远 400/500，报错信息完全指不到原因」，附件上传与 agent preset 选择两条路径都挂在这里。
+  现在识别包装形状、成功解出 `.agent`、失败原样抛 `.error`（保留内核稳定 code，「会话不存在」不再
+  被压成「会话没在跑」），同时保留裸对象兼容。新增 3 条回归测试钉住三种返回形状。
 - **v2.7.0 是对齐 DSH 0.2.1-rc.3 的能力提升版**：四项 —— ①模型目录补上 `contextWindow` / `maxTokens`
   （内核的 `ModelCatalogModel` 只有 id/name/description，容量得另走 `llm.resolveModelInfo`，桥按
   `provider + model` 缓存 10 分钟、失败不缓存、内核自己给了就不覆盖）；②插件清单多了右侧栏形态
