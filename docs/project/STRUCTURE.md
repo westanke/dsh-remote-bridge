@@ -295,6 +295,8 @@ host services 之上重建 0.1.x 的 `apiProxy` 面容，让 `chat-adapter` / `s
 | `src/host/settings-adapter.ts` | file | 提供商/模型设置 adapter |
 | `src/host/settings-namespace.ts` | file | 通用设置命名空间的写策略、脱敏与 ops 校验（纯函数） |
 | `src/host/wire-json.ts` | file | 出网 JSON 安全序列化 |
+| `src/host/ws-handler.ts` | file | 移动端网关 WebSocket（/ws/mobile）：子协议 dsh-pair/dsh-auth，hello 帧，双向请求/响应 |
+| `src/host/ws-protocol.ts` | file | WS 线路协议常量、帧类型与编解码（/ws/mobile） |
 | `src/client/` | dir | DSH WebUI 浏览器半边 |
 | `src/client/api.ts` | file | 浏览器侧 REST 客户端 |
 | `src/client/app-qr.ts` | file | 应用下载二维码（生成物，勿手改） |

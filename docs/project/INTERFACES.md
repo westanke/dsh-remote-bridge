@@ -224,7 +224,20 @@
   `dsh-companion` 的 `BridgeCapabilities.kt`）；其余全是特性探测。
 - 最高频的新增动作：加 REST 路由 → 加能力位 → 写依据 → 跑 `capabilities.spec`。
 
-### 3.5 与 `dsh-companion` 的门槛
+### 3.5 移动端网关 WebSocket (/ws/mobile)
+
+- 端点：`/ws/mobile`（双向请求/响应，挂主 HTTP server upgrade），与 `/api/v1/events` 并存；端口默认 `3090`。
+- 子协议（`Sec-WebSocket-Protocol`）：`dsh-mobile-v1, dsh-pair.<code>`（首次配对，随请求带 `X-DSH-Device-ID`；成功后推 `paired` 再推 `hello`）；`dsh-mobile-v1, dsh-auth.<token>` 或 HTTP 头 `Authorization: Bearer <token>`（后续连接）。不允许 URL query 带 token。
+- 连接即推 `hello`：`{kind:'hello', protocol:3, capabilities, authenticated, device, port, clients}`；能力位与 §3.4 同源（`src/host/capabilities.ts`）。
+- 客户端帧 `{type:…}`：`ping` / `subscribe` / `unsubscribe` / `message` / `workspaces` / `sessions` / `history` / `attachment` / `file-download-open/read/cancel` / `search` / `host` / `default-model` / `save-default-model` / `models` / `providers` / `commands` / `command-execute` / `command-options` / `command-select` / `select-model` / `permission-options` / `permission` / `context-usage` / `session-stats` / `tasks` / `goal` / `goal-edit` / `goal-pause` / `goal-resume` / `goal-clear` / `plugin-catalog/inspect/install/settings` / `agent-presets` / `defaults` / `set-default` / `question-answer` / `question-cancel` / `approval-response`。
+- 服务端帧 `{kind:…}`：`hello` / `pong` / `subscribed` / `sent` / `workspaces` / `sessions` / `history` / `search` / `commands` / `command-options` / `command-executed` / `command-selected` / `attachment` / `file-list` / `file-download-opened/chunk/cancelled` / `session-cancelled` / `queue-item-updated` / `session-queues` / `session-queue` / `session-archived` / `session-renamed` / `session-archives` / `session-title-changed` / `error` / `event` / `tasks` / `goal` / `goal-edit` / `goal-pause` / `goal-resume` / `goal-clear` / `tasks-updated` / `goal-updated` / `question-requested/response/resolved` / `approval-requested/response/resolved`。
+- `message` 帧：`sessionId` 可选（省略自动建会话）、`mode:'queue'|'steer'`、`content`（PromptContentPart[]，图片 Base64 无 `data:` 前缀）、`clientTimeZone`、`workspaceId`/`cwd`。
+- `history` 帧：`beforeSeq`/`maxMessages`/`maxBytes`（默认 4 MiB）、`view:'conversation'`；响应带 `hasMore`+`nextBeforeSeq`。
+- HITL：`question-answer`/`approval-response` 双向；server→client `question-requested`/`approval-requested`（`outcome: 'allowed-once'|'rejected'`，**不支持始终允许**）；重放待处理项 `replayed=true`，客户端按 `approvalId`/`callId` 去重。
+- 背压与关闭：同 §3.1（单帧 1 MiB、发送队列 512 帧、30s ping、连续错过 2 周期 terminate、设备撤销 close(4001)）；`connection.resyncRequired` 通知客户端改走 REST 重取基线。
+- 鉴权与授权：复用 `principal()` 与 `eventAllowed`（scope/root/session 三层）；会话级操作再用 `isSessionAuthorized` 过滤；未带凭据 401，越权 scope 403，系统错误不回显绝对路径。
+
+### 3.6 与 `dsh-companion` 的门槛
 
 README 双站的「要求 bridge ≥ X.Y.Z」是**安装门槛**，不是功能判据；
 功能判据一律走能力位。改门槛要同步：根 README 双站两处、`docs/project/PITFALLS.md`
@@ -462,6 +475,16 @@ export const PLUGIN_VERSION: string          // shared/version.ts，与 package.
 | `export class FixedWindowLimiter` | `src/host/rate-limit.ts` | class |
 | `export class ApiError` | `src/host/errors.ts` | class |
 | `export function stringifyWire` | `src/host/wire-json.ts` | function |
+| `export class MobileGatewayWsHandler` | `src/host/ws-handler.ts` | class |
+| `export const WS_PATH` | `src/host/ws-protocol.ts` | const |
+| `export const WS_PROTOCOL` | `src/host/ws-protocol.ts` | const |
+| `export const PROTOCOL_PAIR_PREFIX` | `src/host/ws-protocol.ts` | const |
+| `export const PROTOCOL_AUTH_PREFIX` | `src/host/ws-protocol.ts` | const |
+| `export type ClientFrameType` | `src/host/ws-protocol.ts` | type |
+| `export type ServerFrameKind` | `src/host/ws-protocol.ts` | type |
+| `export function encodeFrame` | `src/host/ws-protocol.ts` | function |
+| `export function decodeFrame` | `src/host/ws-protocol.ts` | function |
+| `export function makeServerFrame` | `src/host/ws-protocol.ts` | function |
 | `export function validateRelativePath` | `src/host/path-policy.ts` | function |
 | `export function matchAuthorizedRoot` | `src/host/root-resolver.ts` | function |
 | `export function clampHistoryEvents` | `src/host/history-budget.ts` | function |

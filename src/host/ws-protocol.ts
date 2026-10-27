@@ -1,0 +1,241 @@
+/**
+ * 移动端网关 WebSocket 线路协议（/ws/mobile）。
+ *
+ * 与 `dsh-plugin-mobile-gateway` 对齐：全 JSON 文本帧，连接即推 `hello`，
+ * 子协议 `dsh-mobile-v1, dsh-pair.<code>`（首次配对）或
+ * `dsh-mobile-v1, dsh-auth.<token>`（后续连接，或等价的 Authorization: Bearer 头）。
+ * 不允许 URL query 带 token。
+ *
+ * 帧形状（两端一致）：{ kind: string; [key: string]: unknown }
+ * 服务端主帽头：{ id, kind, time, data } —— 方便与现有事件流复用基础设施。
+ */
+
+// ───────────────────────── 路径与子协议 ─────────────────────────
+
+/** WS 升级路径（与 server.ts 的 `/api/v1/events` 并存）。 */
+export const WS_PATH = '/ws/mobile'
+
+/** 子协议首项：始终是 dsh-mobile-v1。 */
+export const WS_PROTOCOL = 'dsh-mobile-v1'
+
+/** 首次配对子协议前缀：`dsh-pair.<6-hex-code>`。 */
+export const PROTOCOL_PAIR_PREFIX = 'dsh-pair.'
+
+/** 长期令牌子协议前缀：`dsh-auth.<base64url-token>`。 */
+export const PROTOCOL_AUTH_PREFIX = 'dsh-auth.'
+
+// ───────────────────────── 常量（与 PROTOCOL.md 对齐）─────────────────────────
+
+/** 单帧最大字节数：超限由 `ws` 直接 close(1009)。 */
+export const DEFAULT_MAX_FRAME_BYTES = 1024 * 1024
+
+/** WS 消息体总上限（含分片文件下载）。 */
+export const DEFAULT_MAX_WS_PAYLOAD_BYTES = 144 * 1024 * 1024
+
+/** 配对码 TTL（默认 5 min）。 */
+export const DEFAULT_PAIRING_TTL_MS = 5 * 60 * 1000
+
+/** 文件下载最大字节数（512 MiB）。 */
+export const DEFAULT_FILE_DOWNLOAD_MAX_BYTES = 512 * 1024 * 1024
+
+/** 文件下载分片大小（512 KiB）。 */
+export const DEFAULT_FILE_DOWNLOAD_CHUNK_BYTES = 512 * 1024
+
+/** 文件下载空闲超时（2 min）。 */
+export const DEFAULT_FILE_DOWNLOAD_IDLE_MS = 2 * 60 * 1000
+
+/** 同一设备最大并发文件下载数。 */
+export const DEFAULT_FILE_DOWNLOAD_MAX_TRANSFERS = 4
+
+/** 交互协议修订版（HITL 双向所用）。 */
+export const INTERACTION_PROTOCOL_REVISION = 'question-approval-v2'
+
+// ───────────────────────── 帧类型 ─────────────────────────
+
+/** 客户端 → 服务端的 `type` 取值。 */
+export type ClientFrameType =
+  | 'ping'
+  | 'subscribe'
+  | 'unsubscribe'
+  | 'message'
+  | 'workspaces'
+  | 'sessions'
+  | 'history'
+  | 'attachment'
+  | 'file-download-open'
+  | 'file-download-read'
+  | 'file-download-cancel'
+  | 'search'
+  | 'host'
+  | 'default-model'
+  | 'save-default-model'
+  | 'models'
+  | 'providers'
+  | 'commands'
+  | 'command-execute'
+  | 'command-options'
+  | 'command-select'
+  | 'select-model'
+  | 'permission-options'
+  | 'permission'
+  | 'context-usage'
+  | 'session-stats'
+  | 'tasks'
+  | 'goal'
+  | 'goal-edit'
+  | 'goal-pause'
+  | 'goal-resume'
+  | 'goal-clear'
+  | 'plugin-catalog'
+  | 'plugin-inspect'
+  | 'plugin-install'
+  | 'plugin-settings'
+  | 'agent-presets'
+  | 'defaults'
+  | 'set-default'
+  | 'question-answer'
+  | 'question-cancel'
+  | 'approval-response'
+
+/** 服务端 → 客户端的 `kind` 取值。 */
+export type ServerFrameKind =
+  | 'hello'
+  | 'pong'
+  | 'subscribed'
+  | 'sent'
+  | 'workspaces'
+  | 'sessions'
+  | 'history'
+  | 'search'
+  | 'commands'
+  | 'command-options'
+  | 'command-executed'
+  | 'command-selected'
+  | 'attachment'
+  | 'file-list'
+  | 'file-download-opened'
+  | 'file-download-chunk'
+  | 'file-download-cancelled'
+  | 'session-cancelled'
+  | 'queue-item-updated'
+  | 'session-queues'
+  | 'session-queue'
+  | 'session-archived'
+  | 'session-renamed'
+  | 'session-archives'
+  | 'session-title-changed'
+  | 'error'
+  | 'event'
+  | 'tasks'
+  | 'goal'
+  | 'goal-edit'
+  | 'goal-pause'
+  | 'goal-resume'
+  | 'goal-clear'
+  | 'tasks-updated'
+  | 'goal-updated'
+  | 'question-requested'
+  | 'question-response'
+  | 'question-resolved'
+  | 'approval-requested'
+  | 'approval-response'
+  | 'approval-resolved'
+
+// ───────────────────────── 帧载荷类型 ─────────────────────────
+
+/** 客户端帧的通用外壳（解码后）。 */
+export interface ClientFrame {
+  type: string
+  [key: string]: unknown
+}
+
+/** 服务端帧的通用外壳（编码前）。 */
+export interface ServerFrame {
+  kind: string
+  [key: string]: unknown
+}
+
+/** 带序号与时间戳的服务端主帽头。 */
+export interface ServerEnvelope {
+  id: string
+  kind: ServerFrameKind
+  time: number
+  data: unknown
+}
+
+/** `hello` 载荷：连接后首帧。 */
+export interface HelloData {
+  protocol: number
+  capabilities: string[]
+  authenticated: boolean
+  device?: { id: string; name: string; scopes: string[]; rootIds: string[] }
+  port?: number
+  clients?: number
+}
+
+/** `paired` 载荷：配对成功后。 */
+export interface PairedData {
+  token: string
+  device: { id: string; name: string }
+}
+
+/** `message` 客户端帧：发消息 / 创建会话。 */
+export interface MessageFrame extends ClientFrame {
+  type: 'message'
+  sessionId?: string
+  mode?: 'queue' | 'steer'
+  content?: Array<{ type: string; text?: string; mediaType?: string; data?: string; name?: string; receiptId?: string }>
+  clientTimeZone?: string
+  workspaceId?: string
+  cwd?: string
+}
+
+/** `history` 客户端帧：拉历史。 */
+export interface HistoryFrame extends ClientFrame {
+  type: 'history'
+  sessionId: string
+  beforeSeq?: number
+  maxMessages?: number
+  maxBytes?: number
+  view?: 'conversation'
+}
+
+/** 审批决定客户端帧。 */
+export interface ApprovalResponseFrame extends ClientFrame {
+  type: 'approval-response'
+  approvalId: string
+  outcome: 'allowed-once' | 'rejected'
+}
+
+/** 提问回答客户端帧。 */
+export interface QuestionAnswerFrame extends ClientFrame {
+  type: 'question-answer'
+  callId: string
+  answers: Record<string, unknown>
+}
+
+// ───────────────────────── 编解码 ─────────────────────────
+
+/** 把任意 JSON 可序列化对象编码为 `ws` 能发的文本帧。 */
+export function encodeFrame(frame: unknown): string {
+  return JSON.stringify(frame)
+}
+
+/** 解码一条文本帧；解码失败返回 null（由调用方决定关闭或忽略）。 */
+export function decodeFrame(text: string): unknown | null {
+  try {
+    return JSON.parse(text)
+  } catch {
+    return null
+  }
+}
+
+/** 构造一条带 `id`/`time` 的服务端主帽头帧。 */
+export function makeServerFrame(kind: ServerFrameKind, data: unknown): ServerEnvelope {
+  return { id: crypto.randomUUID(), kind, time: Date.now(), data }
+}
+
+/** 构造一条错误帧。 */
+export function makeErrorFrame(code: string, message: string, requestId?: string): ServerEnvelope {
+  return makeServerFrame('error', { code, message, requestId })
+}

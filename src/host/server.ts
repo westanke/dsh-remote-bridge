@@ -12,6 +12,7 @@ import type { DshChatAdapter } from './chat-adapter.ts'
 import type { WorkspaceDatabase } from './database.ts'
 import { ApiError } from './errors.ts'
 import type { WorkspaceEventBus } from './event-bus.ts'
+import { MobileGatewayWsHandler } from './ws-handler.ts'
 import { DEFAULT_REMOTE_HOST, loopbackFor, normalizeListenerHost, normalizeListenerPort } from './listener-config.ts'
 import {
   recordBroadcastEvent,
@@ -142,6 +143,8 @@ export class RemoteApiServer implements RemoteControl {
   private readonly operations = new Map<string, OperationState>()
   private readonly sockets = new Map<WebSocket, SocketState>()
   private readonly webSockets: WebSocketServer
+  /** 移动端网关 WebSocket（/ws/mobile）：与 /api/v1/events 并存，WS 优先、REST 兜底。 */
+  private readonly wsMobile: MobileGatewayWsHandler
   private readonly eventsAbort = new AbortController()
   private unsubscribeEvents: (() => void) | undefined
   /** 所有连接的 drain 完成信号；`Promise.all` 它们即可等排空。 */
@@ -170,6 +173,14 @@ export class RemoteApiServer implements RemoteControl {
       clientTracking: false,
       maxPayload: Math.max(1, options.maxPayloadBytes ?? DEFAULT_MAX_PAYLOAD_BYTES),
     })
+    // 移动端网关 WS（/ws/mobile）：与 /api/v1/events 共享同一 HTTP server upgrade，
+    // 各自按 pathname 分流。
+    this.wsMobile = new MobileGatewayWsHandler(
+      options.database,
+      options.chat,
+      options.auth,
+      { jobs: options.capabilities?.jobs === true },
+    )
   }
 
   async start(): Promise<void> {
@@ -204,6 +215,7 @@ export class RemoteApiServer implements RemoteControl {
     // 等排空，但**有上限**：一条读不动的连接不该让插件卸载挂死。
     await this.drainAll(STOP_DRAIN_TIMEOUT_MS)
     await this.closeCurrent()
+    await this.wsMobile.stop()
     this.webSockets.close()
     setWsConnections(0)
   }
@@ -427,6 +439,14 @@ export class RemoteApiServer implements RemoteControl {
   private handleUpgrade(req: IncomingMessage, socket: Duplex, head: Buffer): void {
     try {
       const url = new URL(req.url ?? '/', 'http://workspace.local')
+      // 移动端网关 WS（/ws/mobile）优先分流：子协议 dsh-pair / dsh-auth，配对 + 令牌认证。
+      // 复用同一 WebSocketServer 实例做 HTTP upgrade，升级完成后交给 wsMobile 鉴权与分发。
+      if (this.wsMobile.ownsPath(req)) {
+        this.webSockets.handleUpgrade(req, socket, head, (webSocket) => {
+          this.wsMobile.onConnection(webSocket, req)
+        })
+        return
+      }
       if (url.pathname !== '/api/v1/events') {
         socket.destroy()
         return

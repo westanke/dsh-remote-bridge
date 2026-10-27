@@ -679,6 +679,95 @@ data 字段与实时路径**一致**（只多 `replayed`）；数据来自适配
 收到后客户端应改走 REST 重新拉历史与待处理状态（被丢的帧不会重放）；`dropped` 仅用于诊断，
 不要按数值做逻辑。老客户端不认识该事件类型，忽略即可，无破坏性。
 
+## 移动端网关 WebSocket (/ws/mobile)
+
+v2.8 新增。独立于现有 `/api/v1/events`（单向广播，保留不动）的双向请求/响应通道，专供移动端客户端，协议形参考上游 `dsh-plugin-mobile-gateway`：连接即推 `hello`，客户端发 `{type: …}` 帧，服务端回 `{kind: …}` 响应帧，并可主动推送 `event`/`question-requested`/`approval-requested` 等。
+
+**WS 优先，REST 兜底**：移动端业务（发消息、查历史、选模型、回复审批/提问、执行命令、文件下载）优先走 WS；REST `/api/v1` 保留作为兜底与管理面（`/manage/*`），两者共享同一套设备 token / loopback admin 鉴权与 scope/root/session 授权。
+
+### 端点与鉴权
+
+- 路径：`ws://HOST:PORT/ws/mobile`（挂主 HTTP server 的 upgrade，`PORT` 默认 `3090`）
+- 子协议（`Sec-WebSocket-Protocol`）：
+  - 首次配对：`dsh-mobile-v1, dsh-pair.<code>`，随请求带 `X-DSH-Device-ID`；成功后服务端推 `paired`（`{kind:'paired', token, device}`），再推 `hello`。
+  - 后续连接：`dsh-mobile-v1, dsh-auth.<token>`，或 HTTP 头 `Authorization: Bearer <token>`。
+  - 不允许 URL query 带 token，避免令牌进入 URL 日志。
+- 配对码：一次性，10 分钟有效期（复用 `/api/v1/pairings/exchange` 产出的 code），256-bit，Base64URL 载荷；设备令牌不过期，撤销即时生效。
+- 鉴权：`dsh-pair`/`dsh-auth`/`bearer.<token>` 均复用 `principal()`，与 `/api/v1` 同一套判据；`allowAdmin: true` 允许 loopback admin；连接上限 32（鉴权后计数）。
+
+### 连接即推 hello
+
+每条被接受的连接，第一帧是 `hello`：
+
+```json
+{ "kind": "hello", "protocol": 3, "capabilities": [...], "authenticated": true|false, "device": {...}, "port": 3090, "clients": N }
+```
+
+`capabilities` 与 `connection.ready` 的能力位同源（见 `src/host/capabilities.ts`），命名 `<能力>-v<主版本>`，只增不撤。
+
+### 客户端→服务端帧（{type: …}）
+
+| type | 说明 | 关键字段 |
+|---|---|---|
+| `ping` | 心跳 | — |
+| `subscribe` / `unsubscribe` | 订阅/取消事件订阅 | `types` 数组 |
+| `message` | 发消息（sessionId 可选，省略自动创建新会话） | `sessionId?`, `mode:'queue'|'steer'`, `content` (PromptContentPart[]), `clientTimeZone?`, `workspaceId?`, `cwd?` |
+| `workspaces` | 列工作区 | — |
+| `sessions` | 列会话（按授权过滤） | `archived?` |
+| `history` | 分页拉历史 | `sessionId`, `beforeSeq?`, `maxMessages?`, `maxBytes?`（默认 4 MiB）, `view:'conversation'` |
+| `attachment` | 取附件/图片 base64 | `attachmentId` 或 `sessionId+name` |
+| `file-download-open/read/cancel` | 分片下载文件 | `transferId`, `offset`, `chunk`；最大 512 MiB，chunk 512 KiB，最大 4 并发，idle 2 min |
+| `search` | 搜索会话/消息 | `q`, `sessionId?` |
+| `host` | 查主机信息 | — |
+| `default-model` / `save-default-model` | 读/保存默认模型 | `provider`, `model`, `reasoningEffort?` |
+| `models` / `providers` | 模型目录与供应商 | — |
+| `commands` / `command-options` / `command-select` | 命令目录 | — |
+| `command-execute` | 执行斜杠命令 | `line`, `ui.kind` ('immediate'|'input'|'select'), `source` ('host'|'skill') |
+| `select-model` | 切换当前会话模型 | `sessionId`, `provider`, `model`, `reasoningEffort?` |
+| `permission-options` / `permission` | 权限档位 | — |
+| `context-usage` | 上下文占用 | `sessionId` |
+| `session-stats` | 会话统计 | `sessionId` |
+| `tasks` / `goal` / `goal-edit` / `goal-pause` / `goal-resume` / `goal-clear` | 任务/目标投影 | `sessionId`, `asOfSeq?` |
+| `plugin-catalog` / `plugin-inspect` / `plugin-install` / `plugin-settings` | 插件管理（paired 控制连接） | — |
+| `agent-presets` / `defaults` / `set-default` | Agent 预设 | — |
+| `question-answer` / `question-cancel` | HITL 提问回应 | `callId`, `answer` |
+| `approval-response` | HITL 审批回应 | `approvalId`, `outcome: 'allowed-once'|'rejected'` |
+| `session-cancel` / `session-archive` / `session-rename` / `fork` | 会话生命周期 | `sessionId` |
+| `queue-update` | 队列编辑（edit/remove/steer） | `sessionId`, `turn` |
+| `directories` / `directory-create` / `workspace-create` | 目录/工作区操作 | `path`, `name` |
+
+### 服务端→客户端帧（{kind: …}）
+
+| kind | 说明 |
+|---|---|
+| `hello` | 连接即推（见上） |
+| `pong` | 心跳应答 |
+| `subscribed` | 订阅确认 |
+| `sent` | 消息已发 |
+| `workspaces` / `sessions` / `history` / `search` | 查询响应 |
+| `commands` / `command-options` / `command-executed` / `command-selected` | 命令响应 |
+| `attachment` / `file-list` / `file-download-opened/chunk/cancelled` | 附件与文件下载 |
+| `session-cancelled` / `queue-item-updated` / `session-queues` / `session-queue` | 会话与队列状态 |
+| `session-archived` / `session-renamed` / `session-archives` / `session-title-changed` | 会话生命周期 |
+| `error` | 错误（不回显绝对路径） |
+| `event` | 内部事件透传（与 `/api/v1/events` 同源，受 scope/授权过滤） |
+| `tasks` / `goal` / `goal-edit` / `goal-pause` / `goal-resume` / `goal-clear` / `tasks-updated` / `goal-updated` | 目标/任务投影 |
+| `question-requested` / `question-response` / `question-resolved` | HITL 提问（server→client 主动推送） |
+| `approval-requested` / `approval-response` / `approval-resolved` | HITL 审批（server→client 主动推送；outcome `allowed-once`\|`rejected`，不支持始终允许） |
+
+### HITL（提问与审批）双向
+
+- `question-answer` / `question-cancel`：客户端回应服务端推送的 `question-requested`；迟到或非待处理返回 `{accepted:false, reason:'not-pending'|'reply-queued'|'answer-invalid'|'not-answerable'|'unavailable'}`。
+- `approval-response`：`outcome` 为 `allowed-once` 或 `rejected`，**v1 不提供永久允许**；已解决、过期或重复决定返回 `APPROVAL_NOT_PENDING` 等价帧。
+- 重放：建立后，待处理的审批与提问按本条连接的授权逐条补推（`replayed=true`），客户端按 `approvalId`/`callId` 去重。
+- 审批/提问卡片对应 DSH 内部 `chat.approval.*` / `chat.userQuestions/*` 事件，通过 `/api/v1` REST 兜底同步。
+
+### 背压与关闭
+
+与 `/api/v1/events` 同一套参数（单帧上限 1 MiB，发送队列 512 帧，溢出优先丢可重建帧，连续错过 2 个心跳周期 terminate）；设备撤销或授权变更时 `close(4001,'Device revoked')`；`connection.resyncRequired` 通知客户端改走 REST 重取基线。
+
+> 注：`message` 帧图片/文件按 Base64 无 `data:` 前缀传输（同 mobile-gateway），单帧 1 MiB 上限，大附件先走 REST 上传拿回执，再在 WS 消息里用 `file` 部件引用。
+
 ## Android 功能对等矩阵
 
 当前 `v1` 已覆盖设备配对、授权根、文件管理、回收站、工作区发现/创建/重命名/移除、会话列表/创建/重命名/分叉/归档、历史、发消息（含图片与文件附件）、steer、取消、实时事件、Agent Preset、TODO/权限投影、当前会话 host 斜杠命令、待审批查询与允许一次/拒绝、供应商有效配置/凭据状态、自定义供应商、模型发现以及会话模型/推理等级选择。以下 DSH WebUI 能力尚未进入稳定外部契约：会话搜索、消息队列、通用问题回答、工作区自定义排序、归档恢复、目标、子代理、技能和后台任务。
