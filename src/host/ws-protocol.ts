@@ -96,6 +96,16 @@ export type ClientFrameType =
   | 'question-answer'
   | 'question-cancel'
   | 'approval-response'
+  | 'session-create'
+  | 'session-cancel'
+  | 'session-archive'
+  | 'session-rename'
+  | 'session-agent-preset'
+  | 'select-agent-preset'
+  | 'file-upload-open'
+  | 'file-upload-chunk'
+  | 'file-upload-finish'
+  | 'file-upload-cancel'
 
 /** 服务端 → 客户端的 `kind` 取值。 */
 export type ServerFrameKind =
@@ -116,7 +126,12 @@ export type ServerFrameKind =
   | 'file-download-opened'
   | 'file-download-chunk'
   | 'file-download-cancelled'
+  | 'file-upload-opened'
+  | 'file-upload-chunk'
+  | 'file-upload-finished'
+  | 'file-upload-cancelled'
   | 'session-cancelled'
+  | 'session-created'
   | 'queue-item-updated'
   | 'session-queues'
   | 'session-queue'
@@ -203,15 +218,167 @@ export interface HistoryFrame extends ClientFrame {
 /** 审批决定客户端帧。 */
 export interface ApprovalResponseFrame extends ClientFrame {
   type: 'approval-response'
+  sessionId?: string
   approvalId: string
   outcome: 'allowed-once' | 'rejected'
 }
 
-/** 提问回答客户端帧。 */
+/** 提问回答客户端帧（answers 为 [{id,selected,custom?}]，由 handler 归一化）。 */
 export interface QuestionAnswerFrame extends ClientFrame {
   type: 'question-answer'
+  sessionId?: string
   callId: string
-  answers: Record<string, unknown>
+  answers?: unknown
+}
+
+/** 会话创建客户端帧。 */
+export interface SessionCreateFrame extends ClientFrame {
+  type: 'session-create'
+  rootId?: string
+  cwd?: string
+  workspaceId?: string
+}
+
+/** 会话取消客户端帧。 */
+export interface SessionCancelFrame extends ClientFrame {
+  type: 'session-cancel'
+  sessionId: string
+}
+
+/** 会话归档客户端帧。 */
+export interface SessionArchiveFrame extends ClientFrame {
+  type: 'session-archive'
+  sessionId: string
+}
+
+/** 会话重命名客户端帧。 */
+export interface SessionRenameFrame extends ClientFrame {
+  type: 'session-rename'
+  sessionId: string
+  title: string
+}
+
+/** 会话 agent-preset 锁定客户端帧。 */
+export interface SessionAgentPresetFrame extends ClientFrame {
+  type: 'session-agent-preset'
+  sessionId: string
+  agentPresetId: string
+}
+
+/** 会话 agent-preset 选择客户端帧。 */
+export interface SelectAgentPresetFrame extends ClientFrame {
+  type: 'select-agent-preset'
+  sessionId?: string
+  agentPresetId: string
+}
+
+/** 模型列表客户端帧。 */
+export interface ModelsFrame extends ClientFrame {
+  type: 'models'
+  sessionId?: string
+}
+
+/** 选择模型客户端帧。 */
+export interface SelectModelFrame extends ClientFrame {
+  type: 'select-model'
+  sessionId: string
+  provider: string
+  model: string
+  reasoningEffort?: string
+}
+
+/** 默认模型查询客户端帧。 */
+export interface DefaultModelFrame extends ClientFrame {
+  type: 'default-model'
+}
+
+/** 保存默认模型客户端帧。 */
+export interface SaveDefaultModelFrame extends ClientFrame {
+  type: 'save-default-model'
+  provider: string
+  model: string
+  reasoningEffort?: string
+}
+
+/** 会话统计客户端帧。 */
+export interface SessionStatsFrame extends ClientFrame {
+  type: 'session-stats'
+  sessionId?: string
+}
+
+/** 任务/目标客户端帧。 */
+export interface TasksFrame extends ClientFrame {
+  type: 'tasks'
+  sessionId?: string
+}
+
+/** 目标编辑客户端帧。 */
+export interface GoalFrame extends ClientFrame {
+  type: 'goal'
+  sessionId?: string
+}
+
+/** 目标暂停客户端帧。 */
+export interface GoalPauseFrame extends ClientFrame {
+  type: 'goal-pause'
+  sessionId: string
+}
+
+/** 目标恢复客户端帧。 */
+export interface GoalResumeFrame extends ClientFrame {
+  type: 'goal-resume'
+  sessionId: string
+}
+
+/** 目标清除客户端帧。 */
+export interface GoalClearFrame extends ClientFrame {
+  type: 'goal-clear'
+  sessionId: string
+}
+
+/** 命令列表客户端帧。 */
+export interface CommandsFrame extends ClientFrame {
+  type: 'commands'
+  sessionId: string
+}
+
+/** 命令执行客户端帧。 */
+export interface CommandExecuteFrame extends ClientFrame {
+  type: 'command-execute'
+  sessionId: string
+  line: string
+}
+
+/** 文件上传开始客户端帧。 */
+export interface FileUploadOpenFrame extends ClientFrame {
+  type: 'file-upload-open'
+  sessionId: string
+  name: string
+  size: number
+  mimeType?: string
+}
+
+/** 文件上传分片客户端帧。 */
+export interface FileUploadChunkFrame extends ClientFrame {
+  type: 'file-upload-chunk'
+  sessionId: string
+  receiptId: string
+  offset: number
+  data: string // base64
+}
+
+/** 文件上传完成客户端帧。 */
+export interface FileUploadFinishFrame extends ClientFrame {
+  type: 'file-upload-finish'
+  sessionId: string
+  receiptId: string
+}
+
+/** 文件上传取消客户端帧。 */
+export interface FileUploadCancelFrame extends ClientFrame {
+  type: 'file-upload-cancel'
+  sessionId: string
+  receiptId: string
 }
 
 // ───────────────────────── 编解码 ─────────────────────────

@@ -2,16 +2,16 @@
  * 移动端网关 WebSocket 处理器（/ws/mobile）。
  *
  * 与 `dsh-plugin-mobile-gateway` 对齐：**WS 优先，REST 兜底**。连接即推 `hello`，
- * 子协议 `dsh-mobile-v1, dsh-pair.<code>`（首次配对）或 `dsh-mobile-v1, dsh-auth.<token>`
- *（后续连接）。全 JSON 文本帧，帧形状 { type/kind, ... }。
+ * 子协议 `dsh-mobile-v1, dsh-pair.<code>`（首次配对）或
+ * `dsh-mobile-v1, dsh-auth.<token>`（后续连接）。全 JSON 文本帧，帧形状 { type/kind, ... }。
  *
  * 所有业务操作先走 WS 帧直接调用 chat-adapter；客户端若 WS 不可用，可退回同等的
  * REST /api/v1/* 端点（两者由同一套 chat-adapter 实现，结果一致）。
  *
  * 由 server.ts 负责 HTTP upgrade（复用同一 WebSocketServer 实例），升级完成后把
- * WebSocket 交给 onConnection 做鉴权与帧分发。
+ * WebSocket 交给 onConnection 做鉴权与帧分发。具体帧处理由域处理器委托：
+ * ws-sessions / ws-hitl / ws-models / ws-commands / ws-presets / ws-goals。
  */
-
 import type { IncomingMessage } from 'node:http'
 import { WebSocket } from 'ws'
 import type { DevicePrincipal, DeviceScope, Principal } from '../shared/contracts.ts'
@@ -29,13 +29,15 @@ import {
   type ClientFrame,
   type HelloData,
   type PairedData,
-  type MessageFrame,
-  type HistoryFrame,
-  type ApprovalResponseFrame,
-  type QuestionAnswerFrame,
   encodeFrame,
   decodeFrame,
 } from './ws-protocol.ts'
+import { SessionHandler } from './ws-sessions.ts'
+import { HitlHandler } from './ws-hitl.ts'
+import { ModelsHandler } from './ws-models.ts'
+import { CommandsHandler } from './ws-commands.ts'
+import { PresetsHandler } from './ws-presets.ts'
+import { GoalsHandler } from './ws-goals.ts'
 
 // ───────────────────────── 状态机 ─────────────────────────
 
@@ -52,6 +54,15 @@ interface MobileSocketState {
   queue: Array<() => void>
   draining: boolean
   isAlive: boolean
+  /** 域处理器实例（由构造函数注入）。 */
+  handlers: {
+    sessions: SessionHandler
+    hitl: HitlHandler
+    models: ModelsHandler
+    commands: CommandsHandler
+    presets: PresetsHandler
+    goals: GoalsHandler
+  }
 }
 
 /** 单条连接的最大发送队列深度（与 /api/v1/events 保持一致）。 */
@@ -188,10 +199,12 @@ export class MobileGatewayWsHandler {
       const authReq = { ...req, headers: { ...req.headers, authorization: `Bearer ${token}` } }
       principal = this.auth.principal(authReq as IncomingMessage, { allowAdmin: true })
     } catch (error) {
+      // WS 关闭码只接受 1000 或 3000–4999；HTTP 401 是三位非法码（会抛 RangeError
+      // 让连接裸断成 1006），所以鉴权失败一律走 4001，错误语义放在 reason（error.code）。
       if (error instanceof ApiError) {
-        webSocket.close(error.status ?? 401, error.code)
+        webSocket.close(4001, error.code)
       } else {
-        webSocket.close(401, 'AUTH_FAILED')
+        webSocket.close(4001, 'AUTH_FAILED')
       }
       return true
     }
@@ -218,6 +231,14 @@ export class MobileGatewayWsHandler {
       queue: [],
       draining: false,
       isAlive: true,
+      handlers: {
+        sessions: new SessionHandler(this.chat, (frame) => this.sendFrame(webSocket, frame)),
+        hitl: new HitlHandler(this.chat, (frame) => this.sendFrame(webSocket, frame)),
+        models: new ModelsHandler(this.chat, (frame) => this.sendFrame(webSocket, frame)),
+        commands: new CommandsHandler(this.chat, (frame) => this.sendFrame(webSocket, frame)),
+        presets: new PresetsHandler(this.chat, (frame) => this.sendFrame(webSocket, frame)),
+        goals: new GoalsHandler((frame) => this.sendFrame(webSocket, frame)),
+      },
     }
 
     this.sockets.set(webSocket, state)
@@ -269,7 +290,7 @@ export class MobileGatewayWsHandler {
     return undefined
   }
 
-  // ───────────────────────── 消息分发 ─────────────────────────
+  // ───────────────────────── 消息分发（委托域处理器）─────────────────────────
 
   private async handleMessage(webSocket: WebSocket, state: MobileSocketState, text: string): Promise<void> {
     const frame = decodeFrame(text)
@@ -285,54 +306,47 @@ export class MobileGatewayWsHandler {
       return
     }
 
-    try {
-      switch (type) {
-        case 'ping':
-          this.handlePing(webSocket)
-          break
-        case 'subscribe':
-          this.handleSubscribe(webSocket, clientFrame)
-          break
-        case 'unsubscribe':
-          this.handleUnsubscribe(webSocket, clientFrame)
-          break
-        case 'message':
-          await this.handleMessageFrame(webSocket, state, clientFrame as MessageFrame)
-          break
-        case 'workspaces':
-          await this.handleWorkspaces(webSocket, state)
-          break
-        case 'sessions':
-          await this.handleSessions(webSocket, state, clientFrame)
-          break
-        case 'history':
-          await this.handleHistory(webSocket, state, clientFrame as HistoryFrame)
-          break
-        case 'attachment':
-          await this.handleAttachment(webSocket, state, clientFrame)
-          break
-        case 'approval-response':
-          await this.handleApprovalResponse(webSocket, state, clientFrame as ApprovalResponseFrame)
-          break
-        case 'question-answer':
-          await this.handleQuestionAnswer(webSocket, state, clientFrame as QuestionAnswerFrame)
-          break
-        case 'agent-presets':
-          await this.handleAgentPresets(webSocket, state)
-          break
-        default:
-          this.sendError(webSocket, 'UNKNOWN_TYPE', `Unknown frame type: ${type}`)
-      }
-    } catch (error) {
-      if (error instanceof ApiError) {
-        this.sendError(webSocket, error.code, error.message, error.status)
-      } else {
-        this.sendError(webSocket, 'INTERNAL_ERROR', 'An internal error occurred while handling the frame.')
-      }
+    // 基础帧（不依赖域处理器）。
+    switch (type) {
+      case 'ping':
+        this.handlePing(webSocket)
+        return
+      case 'subscribe':
+        this.handleSubscribe(webSocket, clientFrame)
+        return
+      case 'unsubscribe':
+        this.handleUnsubscribe(webSocket, clientFrame)
+        return
+      case 'message':
+        await this.handleMessageFrame(webSocket, state, clientFrame)
+        return
+      case 'workspaces':
+        await this.handleWorkspaces(webSocket, state)
+        return
+      case 'sessions':
+        await this.handleSessions(webSocket, state, clientFrame)
+        return
+      case 'history':
+        await this.handleHistory(webSocket, state, clientFrame)
+        return
+      case 'attachment':
+        await this.handleAttachment(webSocket, state, clientFrame)
+        return
     }
+
+    // 委托域处理器。
+    const { handlers } = state
+    if (await handlers.sessions.handle(state.principal, clientFrame)) return
+    if (await handlers.hitl.handle(state.principal, clientFrame)) return
+    if (await handlers.models.handle(state.principal, clientFrame)) return
+    if (await handlers.commands.handle(state.principal, clientFrame)) return
+    if (await handlers.presets.handle(state.principal, clientFrame)) return
+    if (await handlers.goals.handle(state.principal, clientFrame)) return
+
+    this.sendError(webSocket, 'UNKNOWN_TYPE', `Unknown frame type: ${type}`)
   }
 
-  // ───────────────────────── 帧处理器 ─────────────────────────
+  // ───────────────────────── 基础帧处理器（保留在主类）─────────────────────────
 
   private handlePing(webSocket: WebSocket): void {
     this.sendFrame(webSocket, { kind: 'pong', data: { time: Date.now() } })
@@ -351,8 +365,8 @@ export class MobileGatewayWsHandler {
    * 再把内容送进 chat.prompt。响应 `sent`，客户端后续通过 WS 的 `event` 帧
    * （或 REST /api/v1/events）拿回流式增量。
    */
-  private async handleMessageFrame(webSocket: WebSocket, state: MobileSocketState, frame: MessageFrame): Promise<void> {
-    let sessionId = frame.sessionId
+  private async handleMessageFrame(webSocket: WebSocket, state: MobileSocketState, frame: ClientFrame): Promise<void> {
+    let sessionId = (frame as { sessionId?: string }).sessionId
     if (sessionId === undefined || sessionId === '') {
       // 自动建会话：在用户首个授权根目录下新建空会话。
       const rootIds = state.device?.rootIds ?? [...state.principal.rootIds]
@@ -361,13 +375,18 @@ export class MobileGatewayWsHandler {
       sessionId = created.id
     }
 
+    const content = (frame as { content?: unknown }).content
+    const mode = (frame as { mode?: string }).mode ?? 'queue'
+    const clientTimeZone = (frame as { clientTimeZone?: string }).clientTimeZone
+    const locale = (frame as { locale?: string }).locale
+
     const { accepted, command } = await this.chat.prompt(
       state.principal,
       sessionId,
-      frame.content as import('./chat-adapter.ts').PromptContentPart[],
-      frame.mode ?? 'queue',
-      frame.clientTimeZone,
-      frame.locale as import('./dsh-0.2-bridge.ts').HandoffLocale | undefined,
+      content as import('./chat-adapter.ts').PromptContentPart[],
+      mode as 'queue' | 'steer',
+      clientTimeZone,
+      locale as import('./dsh-0.2-bridge.ts').HandoffLocale | undefined,
     )
 
     this.sendFrame(webSocket, {
@@ -391,18 +410,21 @@ export class MobileGatewayWsHandler {
     this.sendFrame(webSocket, { kind: 'sessions', data: { sessions } })
   }
 
-  private async handleHistory(webSocket: WebSocket, state: MobileSocketState, frame: HistoryFrame): Promise<void> {
-    const { events, hasMore } = await this.chat.history(
-      state.principal,
-      frame.sessionId,
-      {
-        ...(frame.beforeSeq !== undefined ? { beforeSeq: frame.beforeSeq } : {}),
-        ...(frame.maxMessages !== undefined ? { maxMessages: frame.maxMessages } : {}),
-      },
-    )
+  private async handleHistory(webSocket: WebSocket, state: MobileSocketState, frame: ClientFrame): Promise<void> {
+    const sessionId = (frame as { sessionId?: string }).sessionId
+    if (sessionId === undefined) {
+      this.sendFrame(webSocket, { kind: 'error', data: { code: 'MISSING_PARAMS', message: 'history needs sessionId.' } })
+      return
+    }
+    const beforeSeq = (frame as { beforeSeq?: number }).beforeSeq
+    const maxMessages = (frame as { maxMessages?: number }).maxMessages
+    const opts: Record<string, unknown> = {}
+    if (beforeSeq !== undefined) opts.beforeSeq = beforeSeq
+    if (maxMessages !== undefined) opts.maxMessages = maxMessages
+    const { events, hasMore } = await this.chat.history(state.principal, sessionId, opts)
     this.sendFrame(webSocket, {
       kind: 'history',
-      data: { sessionId: frame.sessionId, events, hasMore },
+      data: { sessionId, events, hasMore },
     })
   }
 
@@ -411,45 +433,11 @@ export class MobileGatewayWsHandler {
     const data = typeof frame.data === 'string' ? frame.data : undefined
     const name = typeof frame.name === 'string' ? frame.name : undefined
     if (sessionId === undefined || data === undefined) {
-      this.sendError(webSocket, 'MISSING_PARAMS', 'attachment frame needs sessionId and data (base64).')
+      this.sendFrame(webSocket, { kind: 'error', data: { code: 'MISSING_PARAMS', message: 'attachment frame needs sessionId and data (base64).' } })
       return
     }
     const result = await this.chat.uploadAttachment(state.principal, sessionId, data, name)
     this.sendFrame(webSocket, { kind: 'attachment', data: { receiptId: result.receiptId, name: result.name } })
-  }
-
-  private async handleApprovalResponse(webSocket: WebSocket, state: MobileSocketState, frame: ApprovalResponseFrame): Promise<void> {
-    const sessionId = typeof frame.sessionId === 'string' ? frame.sessionId : undefined
-    const approvalId = frame.approvalId
-    const outcome = frame.outcome
-    if (sessionId === undefined || approvalId === undefined || (outcome !== 'allowed-once' && outcome !== 'rejected')) {
-      this.sendError(webSocket, 'MISSING_PARAMS', 'approval-response needs sessionId, approvalId, outcome (allowed-once|rejected).')
-      return
-    }
-    const view = await this.chat.decideApproval(state.principal, sessionId, approvalId, outcome)
-    this.sendFrame(webSocket, { kind: 'approval-resolved', data: { view } })
-  }
-
-  private async handleQuestionAnswer(webSocket: WebSocket, state: MobileSocketState, frame: QuestionAnswerFrame): Promise<void> {
-    const sessionId = typeof frame.sessionId === 'string' ? frame.sessionId : undefined
-    const callId = frame.callId
-    const answers = frame.answers
-    if (sessionId === undefined || callId === undefined || answers === undefined || typeof answers !== 'object') {
-      this.sendError(webSocket, 'MISSING_PARAMS', 'question-answer needs sessionId, callId, answers.')
-      return
-    }
-    await this.chat.answerUserQuestion(
-      state.principal,
-      sessionId,
-      callId,
-      answers as unknown as import('./chat-adapter.ts').UserQuestionAnswer,
-    )
-    this.sendFrame(webSocket, { kind: 'question-response', data: { callId, accepted: true } })
-  }
-
-  private async handleAgentPresets(webSocket: WebSocket, state: MobileSocketState): Promise<void> {
-    const presets = await this.chat.listAgentPresets()
-    this.sendFrame(webSocket, { kind: 'agent-presets', data: { presets } })
   }
 
   // ───────────────────────── 发送与背压 ─────────────────────────
