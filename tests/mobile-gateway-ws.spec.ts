@@ -26,7 +26,7 @@ afterEach(async () => {
 })
 
 /** 起一个带 /ws/mobile 的真实 server（port:0 随机端口），返回地址与夹具。 */
-async function startHarness() {
+async function startHarness(options: { initialMuxFrames?: unknown[] } = {}) {
   const base = await mkdtemp(path.join(os.tmpdir(), 'daw-mgw-'))
   cleanup.dir(base)
   const project = path.join(base, 'project')
@@ -37,7 +37,7 @@ async function startHarness() {
   const events = new WorkspaceEventBus()
   const auth = new AuthService(database)
   const files = new FileService(database, event => events.emit(event))
-  const chat = new DshChatAdapter(fakeApi() as never, database)
+  const chat = new DshChatAdapter(fakeApi(options.initialMuxFrames ?? []) as never, database)
   const settings = new DshSettingsAdapter(fakeApi() as never)
   let router!: ApiRouter
   const remote = new RemoteApiServer({
@@ -280,6 +280,35 @@ describe('mobile gateway WebSocket (/ws/mobile) — WS-first RPC', () => {
 })
 
 describe('mobile gateway WebSocket (/ws/mobile) — server push', () => {
+  it('replays a pending approval as an event with replayed:true right after hello', async () => {
+    const pendingFrame = {
+      rpcId: 'rpc-pending',
+      payload: { type: 'approval/requested', sessionId: 'sess-1', approvalId: 'appr-1', toolName: 'shell', reason: 'standard' },
+    }
+    const { database, root, url } = await startHarness({ initialMuxFrames: [pendingFrame] })
+
+    const pairing = database.createPairing([root.id], ['chat.read'])
+    const credentials = database.exchangePairing(pairing.code, 'Mobile device')
+    const socket = connect(url, {
+      protocols: 'dsh-mobile-v1',
+      headers: { Authorization: `Bearer ${credentials.token}` },
+    })
+    const { frames } = collect(socket)
+    await new Promise<void>((resolve, reject) => {
+      socket.once('open', resolve)
+      socket.once('error', reject)
+    })
+    await nextKind(frames, 'hello')
+    await nextKind(frames, 'event')
+
+    const eventFrame = frames.find(frame => frame.kind === 'event')
+    const event = eventFrame?.data as { id?: string; data?: { approvalId?: string; replayed?: boolean } }
+    expect(event.id).toBe('appr-1:requested')
+    expect(event.data?.approvalId).toBe('appr-1')
+    expect(event.data?.replayed).toBe(true)
+    socket.close()
+  })
+
   it('pushes authorized events as {kind:"event"} and filters by scope', async () => {
     const { database, root, url, events } = await startHarness()
 
@@ -344,9 +373,14 @@ describe('mobile gateway WebSocket (/ws/mobile) — server push', () => {
   })
 })
 
-function fakeApi() {
+function fakeApi(initialMuxFrames: unknown[] = []) {
   const empty = async function* () {
     // no live events in this test
+  }
+  // startEvents 的 mux 流：先吐出预置帧（用于捕获待处理审批），再保持挂起。
+  const muxWithInitial = async function* () {
+    for (const frame of initialMuxFrames) yield frame
+    await new Promise<void>(() => {}) // 永不结束，模拟长连接
   }
   // create 后要能在 list 里看到新建工作区（幂等用例依赖）。
   const workspaceItems = [
@@ -391,6 +425,7 @@ function fakeApi() {
         }
       },
     },
-    events: { mux: empty, host: empty },
+    events: { mux: muxWithInitial, host: empty },
+    userQuestions: { pendingAll: () => [] },
   }
 }

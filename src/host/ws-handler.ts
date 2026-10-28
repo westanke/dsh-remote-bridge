@@ -225,6 +225,9 @@ export class MobileGatewayWsHandler {
     const device = this.principalToDeviceView(principal)
     this.acceptSocket(webSocket, principal, device)
     this.sendHello(webSocket, principal)
+    // 与 /api/v1/events 同一服务端保证：新连接立刻补推仍待处理的审批/提问，
+    // App 重连不会漏掉待办 HITL（重放事件带 replayed:true，客户端按 id/callId 去重）。
+    void this.replayPendingInteractions(webSocket, principal)
     return true
   }
 
@@ -268,6 +271,26 @@ export class MobileGatewayWsHandler {
     }
     webSocket.on('close', teardown)
     webSocket.on('error', teardown)
+  }
+
+  // ───────────────────────── HITL 重放 ─────────────────────────
+
+  /**
+   * 连接建立后补推待处理的审批/提问。逐连接按本连接身份做会话授权过滤（复用
+   * chat.replayPending* 内部的 isSessionAuthorized），绝不因别的设备授权过就串推。
+   * 失败静默：与 server.ts 同名方法一致，重放失败不应让连接崩掉（实时事件仍走桥）。
+   */
+  private async replayPendingInteractions(webSocket: WebSocket, principal: Principal): Promise<void> {
+    if (!principal.scopes.has('chat.read')) return
+    try {
+      const events = [
+        ...(await this.chat.replayPendingApprovals(principal)),
+        ...(await this.chat.replayPendingQuestions(principal)),
+      ]
+      for (const event of events) this.sendFrame(webSocket, { kind: 'event', data: event })
+    } catch {
+      // 静默：重放是「尽量补上」，不是连接成立的前提。
+    }
   }
 
   private sendHello(webSocket: WebSocket, principal: Principal): void {
