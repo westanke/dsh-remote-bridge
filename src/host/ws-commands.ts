@@ -17,6 +17,7 @@ import {
   type CommandOptionsFrame,
   type CommandSelectFrame,
   type CommandsFrame,
+  type PermissionFrame,
 } from './ws-protocol.ts'
 
 /** 单条连接的发送回调签名。 */
@@ -49,6 +50,8 @@ export class CommandsHandler {
         return await this.handleCommandOptions(principal, frame as CommandOptionsFrame)
       case 'command-select':
         return await this.handleCommandSelect(principal, frame as CommandSelectFrame)
+      case 'permission':
+        return await this.handlePermission(principal, frame as PermissionFrame)
       default:
         return false
     }
@@ -151,6 +154,28 @@ export class CommandsHandler {
       })
     } catch (error) {
       this.reportError(error, 'Failed to apply command option.', 'command-select', sessionId)
+    }
+    return true
+  }
+
+  // ───────────────────────── permission（会话级档位切换） ─────────────────────────
+
+  private async handlePermission(principal: Principal, frame: PermissionFrame): Promise<boolean> {
+    const sessionId = frame.sessionId
+    const name = typeof frame.name === 'string' ? frame.name.trim() : ''
+    if (name === '') {
+      this.sendFrame({ kind: 'error', data: { code: 'bad-request', message: 'permission requires a name', requestType: 'permission', sessionId } })
+      return true
+    }
+    try {
+      // 与通用二级菜单的 permission 提交一致：走官方 /permission 斜杠命令，不触发模型。
+      const execution = await this.chat.executeCommand(principal, sessionId, `/permission ${name}`)
+      this.sendFrame({
+        kind: 'permission',
+        data: { sessionId, set: name, commandId: execution.commandId, result: execution.result },
+      })
+    } catch (error) {
+      this.reportError(error, 'Failed to switch permission preset.', 'permission', sessionId)
     }
     return true
   }

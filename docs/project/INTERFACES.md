@@ -492,7 +492,8 @@ export const PLUGIN_VERSION: string          // shared/version.ts，与 package.
 | `expire` | `src/host/ws-file-transfer.ts` | method（空闲传输回收） |
 | `dispose` | `src/host/ws-file-transfer.ts` | method（停机清理全部传输） |
 | `export class SettingsHandler` | `src/host/ws-settings.ts` | class |
-| `export class CommandsHandler` | `src/host/ws-commands.ts` | class（commands/execute + model/permission 通用二级菜单） |
+| `export class CommandsHandler` | `src/host/ws-commands.ts` | class（commands/execute + model/permission 通用二级菜单 + permission 档位切换） |
+| `export class HostHandler` | `src/host/ws-host.ts` | class（host 主机快照） |
 | `export class MobileEventBridge` | `src/host/ws-event-bridge.ts` | class |
 | `export function makeEventAuthorizer` | `src/host/ws-event-bridge.ts` | function |
 | `export const WS_PATH` | `src/host/ws-protocol.ts` | const |

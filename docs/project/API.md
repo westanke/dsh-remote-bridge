@@ -718,20 +718,20 @@ v2.8 新增。独立于现有 `/api/v1/events`（单向广播，保留不动）�
 | `attachment` | 取附件/图片 base64 | `attachmentId` 或 `sessionId+name` |
 | `file-download-open/read/cancel` | 分片下载文件 | open 带 `requestId`,`sessionId`,`path`（相对会话根，禁 `..`）；read 带 `transferId`,`offset`（严格顺序）；最大 512 MiB，chunk 512 KiB，最大 4 并发，idle 2 min，末块附 `sha256` |
 | `file-upload-open/chunk/finish/cancel` | 分片上传文件 | open 带 `requestId`,`sessionId`,`name`（叶子名）,`size`,`sha256`；chunk 带 `uploadId`,`offset`,`data`（顺序 base64，块 256 KiB）；finish 校验 SHA-256 后经内核附件通道换 `receiptId`；需 `files.write` scope |
-| `search` | 搜索会话/消息 | `q`, `sessionId?` |
-| `host` | 查主机信息 | — |
+| `search` | 搜索会话/消息 | `q`, `sessionId?` | 当前内核无搜索 RPC：回 `NOT_IMPLEMENTED` |
+| `host` | 查主机信息 | — | 回 `{version,dshVersion,cwd,attachedSessions,canOpenPath,defaultProvider?,defaultModel?}`；`cwd` 仅 `os.homedir()`，不回显授权根绝对路径；无 `canOpenWorkspacePath` 通道时 `canOpenPath:false` |
 | `default-model` / `save-default-model` | 读/保存默认模型 | `provider`, `model`, `reasoningEffort?` |
 | `models` / `providers` | 模型目录与供应商 | — |
 | `commands` / `command-options` / `command-select` | 命令目录与通用二级菜单 | `command-options`：`sessionId`、`command`（仅 `model`/`permission`）；`command-select`：再加 `optionId`（model 的 id 为 base64url 的 `[provider,model]`，opaque 原样回传；permission 为档位 value，提交走 `/permission <id>`） |
 | `command-execute` | 执行斜杠命令 | `line`, `ui.kind` ('immediate'|'input'|'select'), `source` ('host'|'skill') |
 | `select-model` | 切换当前会话模型 | `sessionId`, `provider`, `model`, `reasoningEffort?` |
-| `permission-options` / `permission` | 权限档位 | — |
+| `permission-options` / `permission` | 权限档位 | `permission`：`sessionId`、`name`（走官方 `/permission <name>` 命令，不触发模型，回 `{set,commandId,result}`） |
 | `context-usage` | token 用量 + 上下文占用投影 | `sessionId`；读会话投影 `tokenUsage`/`contextPressure` |
 | `session-stats` | 会话执行统计（输入框统计条） | `sessionId`；读投影 `sessionStats`/`tokenUsage`/`contextPressure` |
 | `tasks` / `goal` | 任务列表/当前目标基线（只读会话投影） | `sessionId`；回 `asOfSeq` + `todos`/`goal`，未写入过为 `null` |
 | `goal-edit` / `goal-pause` / `goal-resume` / `goal-clear` | 当前目标写操作（compare-and-set） | `sessionId`, `ref:{id,revision}`，edit 另带 `objective?`/`maxGoalRounds?`；代理内核 goals Remote，老内核回 `unsupported` 走 REST |
 | `plugin-catalog` / `plugin-inspect` / `plugin-install` / `plugin-settings` | 插件管理（paired 控制连接） | — |
-| `agent-presets` / `defaults` / `set-default` | Agent 预设 | — |
+| `agent-presets` / `defaults` / `set-default` | Agent 预设 | `agent-presets` 已实现；全局默认 `defaults`/`set-default` 当前内核无写通道，回 `NOT_IMPLEMENTED` |
 | `question-answer` / `question-cancel` | HITL 提问回应 | `callId`, `answer` |
 | `approval-response` | HITL 审批回应 | `approvalId`, `outcome: 'allowed-once'|'rejected'` |
 | `session-cancel` / `session-archive` / `session-rename` / `fork` | 会话生命周期 | `sessionId` |

@@ -295,13 +295,14 @@ host services 之上重建 0.1.x 的 `apiProxy` 面容，让 `chat-adapter` / `s
 | `src/host/settings-adapter.ts` | file | 提供商/模型设置 adapter |
 | `src/host/settings-namespace.ts` | file | 通用设置命名空间的写策略、脱敏与 ops 校验（纯函数） |
 | `src/host/wire-json.ts` | file | 出网 JSON 安全序列化 |
-| `src/host/ws-commands.ts` | file | 移动端网关 WS 命令域（commands/command-execute，/ws/mobile） |
+| `src/host/ws-commands.ts` | file | 移动端网关 WS 命令域（commands/command-execute、model/permission 通用二级菜单 command-options/select、permission 会话档位切换，/ws/mobile） |
 | `src/host/ws-event-bridge.ts` | file | 移动端网关 WS 事件桥：订阅事件总线，按主体授权过滤后主动推 {kind:'event'}（/ws/mobile） |
 | `src/host/ws-file-transfer.ts` | file | 移动端网关 WS 分块文件传输域（file-download open/read/cancel 随机读+末块 SHA-256；file-upload open/chunk/finish/cancel spool 落盘+校验+内核附件换 receiptId，/ws/mobile） |
-| `src/host/ws-files.ts` | file | 移动端网关 WS 文件浏览域（file-list，授权根内目录列举与分页，/ws/mobile） |
+| `src/host/ws-files.ts` | file | 移动端网关 WS 文件浏览域（file-list、directory-create，授权根内目录列举/建目录与分页，/ws/mobile） |
 | `src/host/ws-goals.ts` | file | 移动端网关 WS 任务/目标/统计域（tasks/goal/session-stats/context-usage 读会话投影；goal-* 写代理内核 goals Remote，缺失回 unsupported） |
 | `src/host/ws-handler.ts` | file | 移动端网关 WebSocket（/ws/mobile）：子协议 dsh-pair/dsh-auth，hello 帧，双向请求/响应 |
 | `src/host/ws-hitl.ts` | file | 移动端网关 WS 人机交互域（approval-response/question-answer，/ws/mobile） |
+| `src/host/ws-host.ts` | file | 移动端网关 WS 主机快照域（host：版本/主目录/附着会话数/默认模型精简版，/ws/mobile） |
 | `src/host/ws-host-services.ts` | file | 可选内核远程服务封装（typertGateway+owner peer，定时任务/语音代理用，缺失即降级） |
 | `src/host/ws-models.ts` | file | 移动端网关 WS 会话模型域（models/select-model，无会话全局目录交 ws-settings，/ws/mobile） |
 | `src/host/ws-presets.ts` | file | 移动端网关 WS agent 预设域（agent-presets/select-agent-preset，/ws/mobile） |

@@ -43,6 +43,7 @@ import { GoalsHandler } from './ws-goals.ts'
 import { FilesHandler } from './ws-files.ts'
 import { FileTransferHandler } from './ws-file-transfer.ts'
 import { SettingsHandler } from './ws-settings.ts'
+import { HostHandler } from './ws-host.ts'
 import { TeamHandler } from './ws-team.ts'
 import { ScheduleHandler } from './ws-schedule.ts'
 import { SpeechHandler } from './ws-speech.ts'
@@ -77,12 +78,33 @@ interface MobileSocketState {
     team: TeamHandler
     files?: FilesHandler
     settings?: SettingsHandler
+    host: HostHandler
     schedule: ScheduleHandler
   }
 }
 
 /** 单条连接的最大发送队列深度（与 /api/v1/events 保持一致）。 */
 const SOCKET_QUEUE_LIMIT = 512
+
+/**
+ * 协议里声明、但本桥当前内核没有对应 RPC / 暂只走 REST 的帧 → 结构化兜底指引。
+ * 客户端据此区分「能力暂缺（NOT_IMPLEMENTED，可降级 REST）」与「未知帧（UNKNOWN_TYPE，客户端 bug）」。
+ * key 必须是 ClientFrameType 联合成员；新增内核通道后把对应帧挪进域处理器并从这里删除。
+ */
+const KNOWN_UNSUPPORTED_FRAMES: Readonly<Record<string, string>> = {
+  // 会话全文搜索：dsh-0.2-bridge 无内核搜索 RPC；客户端暂用 REST/本地检索兜底。
+  search: 'session full-text search is not available over WS on this kernel build.',
+  // 全局默认 Agent 预设 / 默认权限：本桥无 settings.update 全局写通道，REST 也暂无对应端点。
+  defaults: 'global defaults are not available over WS on this kernel build.',
+  'set-default': 'setting a global default preset is not available over WS on this kernel build.',
+  // 取消一个挂起中的用户提问：内核 userQuestions 只暴露 answer，没有 cancel RPC。
+  'question-cancel': 'cancelling a pending question is not supported by this kernel build.',
+  // 插件管理：走 REST /api/v1/settings/plugins 兜底（需要 settings.write）。
+  'plugin-catalog': 'plugin management over WS is unavailable; use REST GET /api/v1/settings/plugins as fallback.',
+  'plugin-inspect': 'plugin management over WS is unavailable; use REST GET /api/v1/settings/plugins as fallback.',
+  'plugin-install': 'plugin management over WS is unavailable; use REST POST /api/v1/settings/plugins as fallback.',
+  'plugin-settings': 'plugin settings over WS are unavailable; use REST /api/v1/settings/plugins as fallback.',
+}
 
 // ───────────────────────── 处理器主类 ─────────────────────────
 
@@ -329,6 +351,12 @@ export class MobileGatewayWsHandler {
         ...(this.settingsService === undefined ? {} : {
           settings: new SettingsHandler(this.chat, (frame) => this.sendFrame(webSocket, frame), this.settingsService),
         }),
+        // host 快照：全局模型目录在 settings 注入时才给默认模型，否则只回版本/会话数。
+        host: new HostHandler(
+          this.chat,
+          (frame) => this.sendFrame(webSocket, frame),
+          this.settingsService === undefined ? undefined : () => this.settingsService!.catalog(),
+        ),
       },
     }
 
@@ -461,6 +489,7 @@ export class MobileGatewayWsHandler {
     if (await handlers.presets.handle(state.principal, clientFrame)) return
     if (await handlers.goals.handle(state.principal, clientFrame)) return
     if (await handlers.team.handle(state.principal, clientFrame)) return
+    if (await handlers.host.handle(state.principal, clientFrame)) return
     if (await handlers.schedule.handle(state.principal, clientFrame)) return
     if (handlers.files !== undefined && await handlers.files.handle(state.principal, clientFrame)) return
     // 文件分块下载/上传（跨连接共享，按 connectionKey 隔离归属）。
@@ -474,6 +503,17 @@ export class MobileGatewayWsHandler {
     // 语音处理器跨连接共享（全局转写并发计数），按连接 key 管理状态；缺内核服务时回结构化 unavailable。
     if (type.startsWith('speech-')) {
       await this.speech.handle(webSocket, state.principal, clientFrame)
+      return
+    }
+
+    // 协议里声明、但当前内核没有对应 RPC / 暂只走 REST 的帧：显式回 NOT_IMPLEMENTED +
+    // REST 兜底指引，而不是笼统的 UNKNOWN_TYPE（客户端能区分「帧拼错」与「能力暂缺」）。
+    const unsupported = KNOWN_UNSUPPORTED_FRAMES[type]
+    if (unsupported !== undefined) {
+      this.sendFrame(webSocket, {
+        kind: 'error',
+        data: { code: 'NOT_IMPLEMENTED', message: unsupported, requestType: type },
+      })
       return
     }
 

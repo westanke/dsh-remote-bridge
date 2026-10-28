@@ -629,6 +629,102 @@ describe('mobile gateway WebSocket (/ws/mobile) — command submenu (model/permi
     expect(error.requestType).toBe('command-options')
     socket.close()
   })
+  it('switches the session permission preset via the permission frame', async () => {
+    const { services, executions } = commandServicesWithLog()
+    const { database, root, url } = await startHarness({ commandServices: services })
+    const { socket, frames } = await authed(database, root.id, url)
+    socket.send(JSON.stringify({ type: 'permission', sessionId: 'sess-1', name: 'workspace-write' }))
+    await nextKind(frames, 'permission')
+    const reply = frames.find(frame => frame.kind === 'permission')?.data as
+      { set?: string; commandId?: string; result?: { kind: string } }
+    expect(reply.set).toBe('workspace-write')
+    expect(reply.commandId).toBe('permission')
+    expect(reply.result?.kind).toBe('success')
+    expect(executions).toContain('/permission workspace-write')
+    socket.close()
+  })
+
+  it('rejects permission without a name', async () => {
+    const { services } = commandServicesWithLog()
+    const { database, root, url } = await startHarness({ commandServices: services })
+    const { socket, frames } = await authed(database, root.id, url)
+    socket.send(JSON.stringify({ type: 'permission', sessionId: 'sess-1', name: '  ' }))
+    await nextKind(frames, 'error')
+    const error = frames.find(frame => frame.kind === 'error')?.data as { code?: string; requestType?: string }
+    expect(error.code).toBe('bad-request')
+    expect(error.requestType).toBe('permission')
+    socket.close()
+  })
+})
+
+describe('mobile gateway WebSocket (/ws/mobile) — host snapshot', () => {
+  async function authed(database: WorkspaceDatabase, rootId: string, url: string) {
+    const pairing = database.createPairing([rootId], ['chat.read'] as never)
+    const credentials = database.exchangePairing(pairing.code, 'Mobile device')
+    const socket = connect(url, {
+      protocols: 'dsh-mobile-v1',
+      headers: { Authorization: `Bearer ${credentials.token}` },
+    })
+    const { frames } = collect(socket)
+    await new Promise<void>((resolve, reject) => {
+      socket.once('open', resolve)
+      socket.once('error', reject)
+    })
+    await nextKind(frames, 'hello')
+    return { socket, frames }
+  }
+
+  it('returns a host snapshot with version, cwd, attachedSessions and default model', async () => {
+    const { database, root, url } = await startHarness()
+    const { socket, frames } = await authed(database, root.id, url)
+    socket.send(JSON.stringify({ type: 'host' }))
+    await nextKind(frames, 'host')
+    const reply = frames.find(frame => frame.kind === 'host')?.data as
+      { version?: string; dshVersion?: string; cwd?: string; attachedSessions?: number; canOpenPath?: boolean; defaultProvider?: string; defaultModel?: string }
+    expect(reply.version).toBe('remote-bridge')
+    expect(reply.dshVersion).toBe('2.7.1')
+    expect(typeof reply.cwd).toBe('string')
+    // fakeApi sessions.list 返回 sess-1 / fork-of-sess-1 两条。
+    expect(reply.attachedSessions).toBe(2)
+    expect(reply.canOpenPath).toBe(false)
+    expect(reply.defaultProvider).toBe('openai')
+    expect(reply.defaultModel).toBe('gpt-x')
+    socket.close()
+  })
+
+  it('answers declared-but-unbacked frames with NOT_IMPLEMENTED (REST fallback), not UNKNOWN_TYPE', async () => {
+    const { database, root, url } = await startHarness()
+    const { socket, frames } = await authed(database, root.id, url)
+    // 按 requestType 等「新」错误帧（nextKind 对历史帧立即返回，不能用于连发场景）。
+    const waitForError = async (requestType: string): Promise<{ code?: string; requestType?: string }> => {
+      const deadline = Date.now() + 3000
+      while (Date.now() < deadline) {
+        const match = [...frames].reverse().find(frame =>
+          frame.kind === 'error' && (frame.data as { requestType?: string }).requestType === requestType)
+        if (match !== undefined) return match.data as { code?: string; requestType?: string }
+        await new Promise(resolve => setTimeout(resolve, 10))
+      }
+      throw new Error(`Timed out waiting for error requestType=${requestType}`)
+    }
+    for (const type of ['search', 'defaults', 'set-default', 'question-cancel', 'plugin-catalog']) {
+      socket.send(JSON.stringify({ type, query: 'x' }))
+      const error = await waitForError(type)
+      expect(error.code).toBe('NOT_IMPLEMENTED')
+      expect(error.requestType).toBe(type)
+    }
+    // 真正拼错的帧仍然回 UNKNOWN_TYPE，区分客户端 bug 与能力暂缺。
+    socket.send(JSON.stringify({ type: 'not-a-real-frame' }))
+    const deadline = Date.now() + 3000
+    let unknown: { code?: string } | undefined
+    while (Date.now() < deadline) {
+      const candidate = [...frames].reverse().find(frame =>
+        frame.kind === 'error' && (frame.data as { code?: string }).code === 'UNKNOWN_TYPE')
+      if (candidate !== undefined) { unknown = candidate.data as { code?: string }; break }
+      await new Promise(resolve => setTimeout(resolve, 10))
+    }
+    expect(unknown?.code).toBe('UNKNOWN_TYPE')
+    socket.close()
+  })
 })
 
 describe('mobile gateway WebSocket (/ws/mobile) — agent team & subagents', () => {

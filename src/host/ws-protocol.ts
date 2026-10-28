@@ -408,6 +408,13 @@ export interface CommandSelectFrame extends ClientFrame {
   optionId: string
 }
 
+/** 会话权限档位切换客户端帧（走官方 /permission 命令，不触发模型）。 */
+export interface PermissionFrame extends ClientFrame {
+  type: 'permission'
+  sessionId: string
+  name: string
+}
+
 /** 文件下载开始客户端帧（v0.11.1：path 为会话工作区相对路径）。 */
 export interface FileDownloadOpenFrame extends ClientFrame {
   type: 'file-download-open'
