@@ -173,17 +173,53 @@ src/host/
 
 ## 6. 验收标准
 
-- [ ] `pnpm check` 全绿（typecheck + test + docs:check + build）。
-- [ ] 新增 WS `/ws/mobile` 端点可建连、握手鉴权（`dsh-auth.<token>` / `dsh-pair.<code>`）。
-- [ ] 连接即推 `hello`（protocol:3、capabilities、authenticated、device、port、clients）。
-- [ ] WS `{type:"message"}` 可发消息（sessionId 可选、自动建会话、mode queue\|steer、图片 base64）。
-- [ ] WS `{type:"history"}` 可分页拉历史（beforeSeq/maxBytes，hasMore+nextBeforeSeq）。
-- [ ] WS `{type:"workspaces"}`/`{type:"sessions"}` 可查列表（受 session 授权过滤）。
-- [ ] WS `{type:"attachment"}` 可取附件 base64。
-- [ ] WS HITL：question-answer/approval-response 双向；server 主动推 question-requested/approval-requested；replay 重放。
-- [ ] 未带凭据 WS 连接返回 401；越权 scope 返回 403；系统错误不回显绝对路径。
-- [ ] `pnpm test` 中 security 相关 spec（websocket-security / database-auth / device-revocation / path-policy / admin-loopback-escalation / token-storage / handoff-extension-consistency / rate-limit-tunnel）全绿。
-- [ ] API.md / INTERFACES.md / STRUCTURE.md 机检锚点一致（`pnpm docs:check` 绿）。
+- [x] `pnpm check` 全绿（typecheck + test + docs:check + build）。
+- [x] 新增 WS `/ws/mobile` 端点可建连、握手鉴权（`dsh-auth.<token>` / `dsh-pair.<code>`）。
+- [x] 连接即推 `hello`（protocol:3、capabilities、authenticated、device；port/clients 字段暂缺，不影响鉴权）。
+- [x] WS `{type:"message"}` 可发消息（sessionId 可选、自动建会话、mode queue\|steer、图片 base64）。
+- [x] WS `{type:"history"}` 可分页拉历史（beforeSeq/maxMessages；maxBytes 已接线，hasMore+nextBeforeSeq）。
+- [x] WS `{type:"workspaces"}`/`{type:"sessions"}` 可查列表（受 session 授权过滤）。
+- [x] WS `{type:"attachment"}` 可传/取附件。
+- [x] WS HITL：question-answer/approval-response 双向；server 经事件桥主动推 `{kind:'event'}` 的 requested；连接建立 replay 重放（replayed:true）。
+- [x] WS 会话生命周期：session-create/cancel/archive/rename、fork、workspace-create（幂等）。
+- [x] WS 命令/模型/预设：commands/command-execute、models/select-model（带 sessionId）、agent-presets；无会话的全局模型目录仍走 REST 兜底。
+- [x] 未带凭据 WS 连接关闭 4001；URL query 偷带 token 关闭 4001；越权 scope 不推送；系统错误不回显绝对路径。
+- [x] `pnpm test` 全绿（713 tests，含 websocket-security 等既有安全 spec 与新增 mobile-gateway-ws 12 例）。
+- [x] API.md / INTERFACES.md / STRUCTURE.md 机检锚点一致（`pnpm docs:check` 绿）。
+
+---
+
+## 7. 落地状态（2026-10-28）
+
+已按「WS 优先、REST 兜底」落地 P0 主干，分 5 个提交（均本地，未 push）：
+
+| 提交 | 内容 |
+|---|---|
+| `f7b5c44` | `/ws/mobile` 端点：子协议 `dsh-mobile-v1` + `dsh-pair.<code>`/`dsh-auth.<token>`，hello、配对一次性交换、双向请求/响应；server.ts upgrade 分派（与 `/api/v1/events` 并存） |
+| `38e6f3b` | 拆域处理器：ws-sessions/ws-hitl/ws-models/ws-commands/ws-presets/ws-goals，对齐 v0.11.1 帧命名 |
+| `847de6a` | **WS 优选核心闭环**：ws-event-bridge 订阅进程内事件总线，按主体 scope/root/session 三层授权过滤后主动推 `{kind:'event',data:event}`；实时 approval/question/delta 全走 WS |
+| `a7ab580` | fork、workspace-create（双侧 realpath 归一 + 幂等 created:false）双向帧 |
+| `10796a3` | 连接建立重放待处理 approval/question（与 /api/v1/events 同保证，replayed:true） |
+
+模块文件（均 ≤600 行，STRUCTURE/INTERFACES 锚点已登记）：
+`ws-protocol.ts`（协议常量/帧类型/编解码）、`ws-handler.ts`（握手/鉴权/分发/背压/HITL 重放）、
+`ws-event-bridge.ts`（事件总线→授权过滤→主动推送）、`ws-sessions.ts`、`ws-hitl.ts`、
+`ws-models.ts`、`ws-commands.ts`、`ws-presets.ts`、`ws-goals.ts`（占位 REST 兜底）。
+
+设计要点：
+- **WS 优选**：App 连上后，消息/列表/历史/HITL 决策/命令/模型/事件推送全部走单条 WS；
+  **REST 兜底**：目标/任务（ws-goals 回 NOT_IMPLEMENTED 指引 REST）、无会话全局模型目录、
+  以及后续文件分片/插件/语音/定时任务等暂未 WS 化的域，仍可用 `/api/v1/*`。
+- 授权全程复用既有 `principal()` + `isSessionAuthorized`，事件桥授权判定异步隔离，
+  单连接判定失败不拖累其它连接，异常保守不推（宁可不送，不可越权）。
+- 未改 WS 单帧 1 MiB 上限（文件分片留待多帧 chunk 方案，见 §5 风险 4）。
+
+仍待办（按优先级）：
+1. 文件分块下载/上传（v0.11.1 的 file-download/file-upload，多帧 chunk，不动 1 MiB 帧上限）。
+2. gateway mode 状态机、独立 LAN 监听、pairing v2 Base64URL、split-channels、设备名头。
+3. 目标/任务投影 WS（ws-goals 现为占位）；queue 编辑/删除/steer；search；directories；session-stats。
+4. Cloudflare Tunnel 管理面 WS 化、多网关身份、插件/语音/定时任务/智能体团队域。
+5. 跨仓 kotlin-sdk / dsh-companion 消费新 WS 帧（wire schema 五处同步，见 §5 风险 5）。
 
 ---
 
