@@ -710,7 +710,7 @@ v2.8 新增。独立于现有 `/api/v1/events`（单向广播，保留不动）�
 | type | 说明 | 关键字段 |
 |---|---|---|
 | `ping` | 心跳 | — |
-| `subscribe` / `unsubscribe` | 订阅/取消事件订阅 | `types` 数组 |
+| `subscribe` / `unsubscribe` | 事件流会话白名单过滤 | `subscribe`：非空 `sessionId`（可重复订阅多个会话）；缺省未订阅 = 接收所有已授权会话。订阅后只放行这些会话的事件，无 `sessionId` 的全局/文件帧仍放行；紧接着补推该会话待处理审批/提问（`replayed:true`）。`unsubscribe` 恢复全量 |
 | `message` | 发消息（sessionId 可选，省略自动创建新会话） | `sessionId?`, `mode:'queue'|'steer'`, `content` (PromptContentPart[]), `clientTimeZone?`, `workspaceId?`, `cwd?` |
 | `workspaces` | 列工作区 | — |
 | `sessions` | 列会话（按授权过滤） | `archived?` |
@@ -735,7 +735,7 @@ v2.8 新增。独立于现有 `/api/v1/events`（单向广播，保留不动）�
 | `question-answer` / `question-cancel` | HITL 提问回应 | `callId`, `answer` |
 | `approval-response` | HITL 审批回应 | `approvalId`, `outcome: 'allowed-once'|'rejected'` |
 | `session-cancel` / `session-archive` / `session-rename` / `fork` | 会话生命周期 | `sessionId` |
-| `queue-update` | 队列编辑（edit/remove/steer） | `sessionId`, `turn` |
+| `queue-update` | 队列编辑（edit/remove/steer） | 当前内核 sessions 面只有 `prompt(mode:queue\|steer)`，无按 `itemId` 编辑/删除队列项的 RPC：回 `NOT_IMPLEMENTED`；插队 steer 可直接发 `message` 帧 `mode:'steer'` |
 | `directories` / `directory-create` / `workspace-create` | 目录/工作区操作 | `path`, `name` |
 | `agent-team` / `subagents` | 智能体团队/子会话目录（只读会话投影） | `sessionId`, `requestId`；回 `projectionState:'ready'|'unavailable'|'migration-required'` |
 | `speech-catalog` / `speech-subscribe` / `speech-unsubscribe` / `speech-configure` / `speech-prepare` / `speech-cancel-preparation` / `speech-transcribe` / `speech-cancel` | 官方语音输入（纯代理内核 speech Remote） | `requestId`，transcribe 带 `audioBase64`（16k PCM16 WAV，≤4 MiB）、`providerId?`、`language?` |

@@ -426,6 +426,75 @@ describe('mobile gateway WebSocket (/ws/mobile) — server push', () => {
     socketA.close()
     socketB.close()
   })
+
+  it('subscribe narrows the event stream to one session and unsubscribe restores all', async () => {
+    const { database, root, url, events } = await startHarness()
+    // 订阅态要放行无 sessionId 的 file.* 帧，需要 files.read；chat 事件需要 chat.read。
+    const pairing = database.createPairing([root.id], ['chat.read', 'files.read'])
+    const credentials = database.exchangePairing(pairing.code, 'Chat device')
+    const socket = connect(url, {
+      protocols: 'dsh-mobile-v1',
+      headers: { Authorization: `Bearer ${credentials.token}` },
+    })
+    const { frames } = collect(socket)
+    await new Promise<void>((resolve, reject) => {
+      socket.once('open', resolve)
+      socket.once('error', reject)
+    })
+    await nextKind(frames, 'hello')
+
+    // 订阅 sess-1：只收该会话事件（sess-1 是夹具授权工作区 ws-1 里的会话）。
+    socket.send(JSON.stringify({ type: 'subscribe', sessionId: 'sess-1' }))
+    await nextKind(frames, 'subscribed')
+    const subscribed = frames.find(frame => frame.kind === 'subscribed')
+    expect((subscribed?.data as { sessionId?: string }).sessionId).toBe('sess-1')
+
+    // 等一拍让过滤生效，发两条不同会话的事件。
+    await new Promise(resolve => setTimeout(resolve, 20))
+    events.emit({ id: 'ev-other', type: 'chat.delta', time: Date.now(), data: { rootId: root.id, sessionId: 'sess-other' } })
+    events.emit({ id: 'ev-keep', type: 'chat.delta', time: Date.now(), data: { rootId: root.id, sessionId: 'sess-1' } })
+    await new Promise(resolve => setTimeout(resolve, 120))
+    const ids = frames.filter(f => f.kind === 'event').map(f => (f.data as { id?: string }).id)
+    expect(ids).toContain('ev-keep')
+    expect(ids).not.toContain('ev-other')
+
+    // 无 sessionId 的全局/文件帧在订阅态仍放行。
+    events.emit({ id: 'ev-global', type: 'file.changed', time: Date.now(), data: { rootId: root.id } })
+    await new Promise(resolve => setTimeout(resolve, 80))
+    expect(frames.some(f => f.kind === 'event' && (f.data as { id?: string }).id === 'ev-global')).toBe(true)
+
+    // unsubscribe 恢复全量：另一个授权会话 fork-of-sess-1 重新可达。
+    socket.send(JSON.stringify({ type: 'unsubscribe' }))
+    await nextKind(frames, 'sent')
+    await new Promise(resolve => setTimeout(resolve, 20))
+    events.emit({ id: 'ev-fork', type: 'chat.delta', time: Date.now(), data: { rootId: root.id, sessionId: 'fork-of-sess-1' } })
+    await new Promise(resolve => setTimeout(resolve, 120))
+    expect(frames.some(f => f.kind === 'event' && (f.data as { id?: string }).id === 'ev-fork')).toBe(true)
+
+    socket.close()
+  })
+
+  it('rejects subscribe without a sessionId', async () => {
+    const { database, root, url } = await startHarness()
+    const pairing = database.createPairing([root.id], ['chat.read'])
+    const credentials = database.exchangePairing(pairing.code, 'Chat device')
+    const socket = connect(url, {
+      protocols: 'dsh-mobile-v1',
+      headers: { Authorization: `Bearer ${credentials.token}` },
+    })
+    const { frames } = collect(socket)
+    await new Promise<void>((resolve, reject) => {
+      socket.once('open', resolve)
+      socket.once('error', reject)
+    })
+    await nextKind(frames, 'hello')
+    socket.send(JSON.stringify({ type: 'subscribe' }))
+    await nextKind(frames, 'error')
+    const error = frames.filter(f => f.kind === 'error').pop()?.data as { code?: string; requestType?: string }
+    expect(error.code).toBe('MISSING_PARAMS')
+    expect(error.requestType).toBe('subscribe')
+    socket.close()
+  })
 })
 
 describe('mobile gateway WebSocket (/ws/mobile) — global catalog & files', () => {
@@ -706,8 +775,8 @@ describe('mobile gateway WebSocket (/ws/mobile) — host snapshot', () => {
       }
       throw new Error(`Timed out waiting for error requestType=${requestType}`)
     }
-    for (const type of ['search', 'defaults', 'set-default', 'question-cancel', 'plugin-catalog']) {
-      socket.send(JSON.stringify({ type, query: 'x' }))
+    for (const type of ['search', 'defaults', 'set-default', 'question-cancel', 'plugin-catalog', 'queue-update']) {
+      socket.send(JSON.stringify({ type, query: 'x', sessionId: 'sess-1', itemId: 'message-1', action: 'remove' }))
       const error = await waitForError(type)
       expect(error.code).toBe('NOT_IMPLEMENTED')
       expect(error.requestType).toBe(type)

@@ -494,8 +494,9 @@ export const PLUGIN_VERSION: string          // shared/version.ts，与 package.
 | `export class SettingsHandler` | `src/host/ws-settings.ts` | class |
 | `export class CommandsHandler` | `src/host/ws-commands.ts` | class（commands/execute + model/permission 通用二级菜单 + permission 档位切换） |
 | `export class HostHandler` | `src/host/ws-host.ts` | class（host 主机快照） |
-| `export class MobileEventBridge` | `src/host/ws-event-bridge.ts` | class |
+| `export class MobileEventBridge` | `src/host/ws-event-bridge.ts` | class（attach/detach/setFilter/clearFilter，连接级订阅白名单） |
 | `export function makeEventAuthorizer` | `src/host/ws-event-bridge.ts` | function |
+| `export function makeSessionFilter` | `src/host/ws-event-bridge.ts` | function（subscribe 会话白名单谓词） |
 | `export const WS_PATH` | `src/host/ws-protocol.ts` | const |
 | `export const WS_PROTOCOL` | `src/host/ws-protocol.ts` | const |
 | `export const PROTOCOL_PAIR_PREFIX` | `src/host/ws-protocol.ts` | const |

@@ -48,7 +48,7 @@ import { TeamHandler } from './ws-team.ts'
 import { ScheduleHandler } from './ws-schedule.ts'
 import { SpeechHandler } from './ws-speech.ts'
 import type { HostRemoteHandle } from './ws-host-services.ts'
-import { MobileEventBridge, makeEventAuthorizer } from './ws-event-bridge.ts'
+import { MobileEventBridge, makeEventAuthorizer, makeSessionFilter } from './ws-event-bridge.ts'
 
 // ───────────────────────── 状态机 ─────────────────────────
 
@@ -67,6 +67,13 @@ interface MobileSocketState {
   queue: Array<() => void>
   draining: boolean
   isAlive: boolean
+  /**
+   * 当前订阅的会话白名单（subscribe 帧）。
+   * - undefined = 未订阅（接收所有已授权会话，上游缺省语义）；
+   * - 空 Set 不合法：subscribe 至少一个 sessionId，unsubscribe 回到 undefined；
+   * - 非空 = 只收这些会话的事件（无 sessionId 的全局/文件帧仍放行）。
+   */
+  subscribed: Set<string> | undefined
   /** 域处理器实例（由构造函数注入）。 */
   handlers: {
     sessions: SessionHandler
@@ -99,6 +106,9 @@ const KNOWN_UNSUPPORTED_FRAMES: Readonly<Record<string, string>> = {
   'set-default': 'setting a global default preset is not available over WS on this kernel build.',
   // 取消一个挂起中的用户提问：内核 userQuestions 只暴露 answer，没有 cancel RPC。
   'question-cancel': 'cancelling a pending question is not supported by this kernel build.',
+  // 编辑/删除排队中的回合或插队 steer：本桥 sessions 面只有 prompt(mode:queue|steer)，
+  // 没有按 itemId 编辑/删除队列项的 RPC；steer 新回合可直接用 message 帧 mode:'steer'。
+  'queue-update': 'editing/removing a queued turn is not supported by this kernel build; send a new message with mode:"steer" to steer the running turn.',
   // 插件管理：走 REST /api/v1/settings/plugins 兜底（需要 settings.write）。
   'plugin-catalog': 'plugin management over WS is unavailable; use REST GET /api/v1/settings/plugins as fallback.',
   'plugin-inspect': 'plugin management over WS is unavailable; use REST GET /api/v1/settings/plugins as fallback.',
@@ -335,6 +345,7 @@ export class MobileGatewayWsHandler {
       queue: [],
       draining: false,
       isAlive: true,
+      subscribed: undefined,
       handlers: {
         sessions: new SessionHandler(this.chat, (frame) => this.sendFrame(webSocket, frame), this.database),
         hitl: new HitlHandler(this.chat, (frame) => this.sendFrame(webSocket, frame)),
@@ -386,15 +397,23 @@ export class MobileGatewayWsHandler {
    * 连接建立后补推待处理的审批/提问。逐连接按本连接身份做会话授权过滤（复用
    * chat.replayPending* 内部的 isSessionAuthorized），绝不因别的设备授权过就串推。
    * 失败静默：与 server.ts 同名方法一致，重放失败不应让连接崩掉（实时事件仍走桥）。
+   *
+   * @param onlySessionId - 给 subscribe 帧用：只补推该会话的待处理项；缺省补全部。
    */
-  private async replayPendingInteractions(webSocket: WebSocket, principal: Principal): Promise<void> {
+  private async replayPendingInteractions(webSocket: WebSocket, principal: Principal, onlySessionId?: string): Promise<void> {
     if (!principal.scopes.has('chat.read')) return
     try {
       const events = [
         ...(await this.chat.replayPendingApprovals(principal)),
         ...(await this.chat.replayPendingQuestions(principal)),
       ]
-      for (const event of events) this.sendFrame(webSocket, { kind: 'event', data: event })
+      for (const event of events) {
+        if (onlySessionId !== undefined) {
+          const sessionId = typeof event.data?.sessionId === 'string' ? event.data.sessionId : undefined
+          if (sessionId !== onlySessionId) continue
+        }
+        this.sendFrame(webSocket, { kind: 'event', data: event })
+      }
     } catch {
       // 静默：重放是「尽量补上」，不是连接成立的前提。
     }
@@ -527,10 +546,29 @@ export class MobileGatewayWsHandler {
   }
 
   private handleSubscribe(webSocket: WebSocket, frame: ClientFrame): void {
-    this.sendFrame(webSocket, { kind: 'subscribed', data: { type: frame.type } })
+    const state = this.stateOf(webSocket)
+    const sessionId = typeof frame.sessionId === 'string' ? frame.sessionId.trim() : ''
+    if (sessionId === '') {
+      this.sendFrame(webSocket, {
+        kind: 'error',
+        data: { code: 'MISSING_PARAMS', message: 'subscribe needs a non-empty sessionId.', requestType: 'subscribe' },
+      })
+      return
+    }
+    // 订阅白名单：首次订阅建 Set，重复订阅合并（上游可订阅多个会话）。
+    if (state.subscribed === undefined) state.subscribed = new Set<string>()
+    state.subscribed.add(sessionId)
+    this.eventBridge.setFilter(webSocket, makeSessionFilter(state.subscribed))
+    this.sendFrame(webSocket, { kind: 'subscribed', data: { sessionId } })
+    // 与上游一致：订阅后紧接着补推该会话仍待处理的提问/审批（replayed:true）。
+    void this.replayPendingInteractions(webSocket, state.principal, sessionId)
   }
 
-  private handleUnsubscribe(webSocket: WebSocket, frame: ClientFrame): void {
+  private handleUnsubscribe(webSocket: WebSocket, _frame: ClientFrame): void {
+    const state = this.stateOf(webSocket)
+    // 取消过滤：恢复「接收所有已授权会话」的缺省语义。
+    state.subscribed = undefined
+    this.eventBridge.clearFilter(webSocket)
     this.sendFrame(webSocket, { kind: 'sent', data: { type: 'unsubscribe', acknowledged: true } })
   }
 

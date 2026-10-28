@@ -296,7 +296,7 @@ host services 之上重建 0.1.x 的 `apiProxy` 面容，让 `chat-adapter` / `s
 | `src/host/settings-namespace.ts` | file | 通用设置命名空间的写策略、脱敏与 ops 校验（纯函数） |
 | `src/host/wire-json.ts` | file | 出网 JSON 安全序列化 |
 | `src/host/ws-commands.ts` | file | 移动端网关 WS 命令域（commands/command-execute、model/permission 通用二级菜单 command-options/select、permission 会话档位切换，/ws/mobile） |
-| `src/host/ws-event-bridge.ts` | file | 移动端网关 WS 事件桥：订阅事件总线，按主体授权过滤后主动推 {kind:'event'}（/ws/mobile） |
+| `src/host/ws-event-bridge.ts` | file | 移动端网关 WS 事件桥：订阅事件总线，按主体授权 + subscribe 会话白名单过滤后主动推 {kind:'event'}（/ws/mobile） |
 | `src/host/ws-file-transfer.ts` | file | 移动端网关 WS 分块文件传输域（file-download open/read/cancel 随机读+末块 SHA-256；file-upload open/chunk/finish/cancel spool 落盘+校验+内核附件换 receiptId，/ws/mobile） |
 | `src/host/ws-files.ts` | file | 移动端网关 WS 文件浏览域（file-list、directory-create，授权根内目录列举/建目录与分页，/ws/mobile） |
 | `src/host/ws-goals.ts` | file | 移动端网关 WS 任务/目标/统计域（tasks/goal/session-stats/context-usage 读会话投影；goal-* 写代理内核 goals Remote，缺失回 unsupported） |

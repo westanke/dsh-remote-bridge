@@ -113,6 +113,7 @@ export type ClientFrameType =
   | 'session-archive'
   | 'session-rename'
   | 'session-agent-preset'
+  | 'queue-update'
   | 'select-agent-preset'
   | 'file-upload-open'
   | 'file-upload-chunk'
