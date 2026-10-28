@@ -716,7 +716,8 @@ v2.8 新增。独立于现有 `/api/v1/events`（单向广播，保留不动）�
 | `sessions` | 列会话（按授权过滤） | `archived?` |
 | `history` | 分页拉历史 | `sessionId`, `beforeSeq?`, `maxMessages?`, `maxBytes?`（默认 4 MiB）, `view:'conversation'` |
 | `attachment` | 取附件/图片 base64 | `attachmentId` 或 `sessionId+name` |
-| `file-download-open/read/cancel` | 分片下载文件 | `transferId`, `offset`, `chunk`；最大 512 MiB，chunk 512 KiB，最大 4 并发，idle 2 min |
+| `file-download-open/read/cancel` | 分片下载文件 | open 带 `requestId`,`sessionId`,`path`（相对会话根，禁 `..`）；read 带 `transferId`,`offset`（严格顺序）；最大 512 MiB，chunk 512 KiB，最大 4 并发，idle 2 min，末块附 `sha256` |
+| `file-upload-open/chunk/finish/cancel` | 分片上传文件 | open 带 `requestId`,`sessionId`,`name`（叶子名）,`size`,`sha256`；chunk 带 `uploadId`,`offset`,`data`（顺序 base64，块 256 KiB）；finish 校验 SHA-256 后经内核附件通道换 `receiptId`；需 `files.write` scope |
 | `search` | 搜索会话/消息 | `q`, `sessionId?` |
 | `host` | 查主机信息 | — |
 | `default-model` / `save-default-model` | 读/保存默认模型 | `provider`, `model`, `reasoningEffort?` |
@@ -750,7 +751,8 @@ v2.8 新增。独立于现有 `/api/v1/events`（单向广播，保留不动）�
 | `sent` | 消息已发 |
 | `workspaces` / `sessions` / `history` / `search` | 查询响应 |
 | `commands` / `command-options` / `command-executed` / `command-selected` | 命令响应 |
-| `attachment` / `file-list` / `file-download-opened/chunk/cancelled` | 附件与文件下载 |
+| `attachment` / `file-list` / `file-download-opened/chunk/cancelled` | 附件与文件下载（chunk 末块带 `sha256`） |
+| `file-upload-opened/chunk-accepted/completed/cancelled` | 分片上传（completed 带 `receiptId` 与 `sha256`） |
 | `session-cancelled` / `queue-item-updated` / `session-queues` / `session-queue` | 会话与队列状态 |
 | `session-archived` / `session-renamed` / `session-archives` / `session-title-changed` | 会话生命周期 |
 | `error` | 错误（不回显绝对路径） |

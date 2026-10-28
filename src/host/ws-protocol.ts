@@ -47,6 +47,18 @@ export const DEFAULT_FILE_DOWNLOAD_IDLE_MS = 2 * 60 * 1000
 /** 同一设备最大并发文件下载数。 */
 export const DEFAULT_FILE_DOWNLOAD_MAX_TRANSFERS = 4
 
+/** 文件上传最大字节数（512 MiB）。 */
+export const DEFAULT_FILE_UPLOAD_MAX_BYTES = 512 * 1024 * 1024
+
+/** 文件上传分片大小（256 KiB，对齐 v0.11.1）。 */
+export const DEFAULT_FILE_UPLOAD_CHUNK_BYTES = 256 * 1024
+
+/** 文件上传空闲超时（2 min）。 */
+export const DEFAULT_FILE_UPLOAD_IDLE_MS = 2 * 60 * 1000
+
+/** 同一设备最大并发文件上传数。 */
+export const DEFAULT_FILE_UPLOAD_MAX_TRANSFERS = 4
+
 /** 交互协议修订版（HITL 双向所用）。 */
 export const INTERACTION_PROTOCOL_REVISION = 'question-approval-v2'
 
@@ -142,8 +154,8 @@ export type ServerFrameKind =
   | 'file-download-chunk'
   | 'file-download-cancelled'
   | 'file-upload-opened'
-  | 'file-upload-chunk'
-  | 'file-upload-finished'
+  | 'file-upload-chunk-accepted'
+  | 'file-upload-completed'
   | 'file-upload-cancelled'
   | 'agent-team'
   | 'subagents'
@@ -380,36 +392,58 @@ export interface CommandExecuteFrame extends ClientFrame {
   line: string
 }
 
-/** 文件上传开始客户端帧。 */
-export interface FileUploadOpenFrame extends ClientFrame {
-  type: 'file-upload-open'
+/** 文件下载开始客户端帧（v0.11.1：path 为会话工作区相对路径）。 */
+export interface FileDownloadOpenFrame extends ClientFrame {
+  type: 'file-download-open'
+  requestId: string
   sessionId: string
-  name: string
-  size: number
-  mimeType?: string
+  path: string
 }
 
-/** 文件上传分片客户端帧。 */
+/** 文件下载读下一块客户端帧（offset 必须等于下一个未读字节）。 */
+export interface FileDownloadReadFrame extends ClientFrame {
+  type: 'file-download-read'
+  transferId: string
+  offset: number
+}
+
+/** 文件下载取消客户端帧。 */
+export interface FileDownloadCancelFrame extends ClientFrame {
+  type: 'file-download-cancel'
+  transferId: string
+}
+
+/** 文件上传开始客户端帧（对齐 v0.11.1：uploadId 握手 + 预检 SHA-256）。 */
+export interface FileUploadOpenFrame extends ClientFrame {
+  type: 'file-upload-open'
+  requestId: string
+  sessionId: string
+  name: string // 叶子文件名，绝不解释成宿主路径
+  size: number
+  sha256: string // 64 位十六进制
+}
+
+/** 文件上传分片客户端帧（base64 规范编码，≤ chunkBytes）。 */
 export interface FileUploadChunkFrame extends ClientFrame {
   type: 'file-upload-chunk'
-  sessionId: string
-  receiptId: string
+  requestId: string
+  uploadId: string
   offset: number
   data: string // base64
 }
 
-/** 文件上传完成客户端帧。 */
+/** 文件上传提交客户端帧（全部字节到齐后校验 SHA-256 并入库）。 */
 export interface FileUploadFinishFrame extends ClientFrame {
   type: 'file-upload-finish'
-  sessionId: string
-  receiptId: string
+  requestId: string
+  uploadId: string
 }
 
 /** 文件上传取消客户端帧。 */
 export interface FileUploadCancelFrame extends ClientFrame {
   type: 'file-upload-cancel'
-  sessionId: string
-  receiptId: string
+  requestId: string
+  uploadId: string
 }
 
 // ───────────────────────── 编解码 ─────────────────────────

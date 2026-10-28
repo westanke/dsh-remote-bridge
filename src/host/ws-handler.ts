@@ -13,6 +13,7 @@
  * ws-sessions / ws-hitl / ws-models / ws-commands / ws-presets / ws-goals。
  */
 import type { IncomingMessage } from 'node:http'
+import { randomUUID } from 'node:crypto'
 import { WebSocket } from 'ws'
 import type { DevicePrincipal, DeviceScope, Principal } from '../shared/contracts.ts'
 import { AuthenticatedDevice } from './database.ts'
@@ -40,6 +41,7 @@ import { CommandsHandler } from './ws-commands.ts'
 import { PresetsHandler } from './ws-presets.ts'
 import { GoalsHandler } from './ws-goals.ts'
 import { FilesHandler } from './ws-files.ts'
+import { FileTransferHandler } from './ws-file-transfer.ts'
 import { SettingsHandler } from './ws-settings.ts'
 import { TeamHandler } from './ws-team.ts'
 import { ScheduleHandler } from './ws-schedule.ts'
@@ -58,6 +60,8 @@ interface MobileSocketState {
   pairingToken: string | undefined
   /** 是否已发过 hello（配对流需要先 paired 再 hello）。 */
   helloSent: boolean
+  /** 连接唯一标识（文件传输归属隔离用）。 */
+  connectionKey: string
   /** 发送队列（背压）。 */
   queue: Array<() => void>
   draining: boolean
@@ -98,6 +102,8 @@ export class MobileGatewayWsHandler {
   private hostRemote: HostRemoteHandle | undefined
   /** 语音管理器：跨连接共享（全局转写并发计数需要进程级单一实例）。 */
   private speech: SpeechHandler
+  /** 文件分块下载/上传管理器：跨连接共享（每连接并发计数 + spool 落盘需要进程级状态）。 */
+  private fileTransfer: FileTransferHandler | undefined
 
   /**
    * 装配全局模型目录与文件浏览依赖。这两个域需要 DshSettingsAdapter / FileService，
@@ -110,6 +116,10 @@ export class MobileGatewayWsHandler {
   }): void {
     this.settingsService = services.settings
     this.filesService = services.files
+    // 文件传输依赖 FileService 同款授权根 + chat 的会话授权/附件通道，spool 落 database.dataDir/uploads。
+    if (this.fileTransfer === undefined) {
+      this.fileTransfer = new FileTransferHandler(this.database, this.chat as never)
+    }
   }
 
   /**
@@ -298,6 +308,7 @@ export class MobileGatewayWsHandler {
       },
       pairingToken: device?.pairingToken ?? undefined,
       helloSent: false,
+      connectionKey: randomUUID(),
       queue: [],
       draining: false,
       isAlive: true,
@@ -333,6 +344,8 @@ export class MobileGatewayWsHandler {
       this.eventBridge.detach(webSocket)
       // 语音连接级状态（跟随流/活动转写）随连接关闭全部中止。
       this.speech?.closeClient(webSocket)
+      // 文件传输归属该连接的全部下载/上传随连接关闭中止并清理 spool。
+      void this.fileTransfer?.closeConnection(state.connectionKey)
     }
     webSocket.on('close', teardown)
     webSocket.on('error', teardown)
@@ -449,6 +462,14 @@ export class MobileGatewayWsHandler {
     if (await handlers.team.handle(state.principal, clientFrame)) return
     if (await handlers.schedule.handle(state.principal, clientFrame)) return
     if (handlers.files !== undefined && await handlers.files.handle(state.principal, clientFrame)) return
+    // 文件分块下载/上传（跨连接共享，按 connectionKey 隔离归属）。
+    if (type.startsWith('file-download-') || type.startsWith('file-upload-')) {
+      await this.fileTransfer?.handle(
+        state.principal, clientFrame, state.connectionKey,
+        frame => this.sendFrame(webSocket, frame),
+      )
+      return
+    }
     // 语音处理器跨连接共享（全局转写并发计数），按连接 key 管理状态；缺内核服务时回结构化 unavailable。
     if (type.startsWith('speech-')) {
       await this.speech.handle(webSocket, state.principal, clientFrame)

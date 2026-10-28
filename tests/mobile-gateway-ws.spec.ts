@@ -1,4 +1,5 @@
-import { mkdtemp, mkdir } from 'node:fs/promises'
+import { mkdtemp, mkdir, writeFile } from 'node:fs/promises'
+import { createHash } from 'node:crypto'
 import { TestCleanup } from './test-cleanup.ts'
 import os from 'node:os'
 import path from 'node:path'
@@ -81,6 +82,50 @@ async function nextKind(frames: Array<{ kind?: string }>, kind: string): Promise
     await new Promise(resolve => setTimeout(resolve, 10))
   }
   throw new Error(`Timed out waiting for frame kind=${kind}`)
+}
+
+type ReceivedFrame = { kind?: string; data?: unknown }
+
+/** 等到一个落在 `afterIndex` 之后的新帧；中途出现 error 帧立刻抛出（避免静默死循环）。 */
+async function awaitNewFrame(
+  frames: ReceivedFrame[],
+  afterIndex: number,
+  predicate: (frame: ReceivedFrame) => boolean,
+  label: string,
+): Promise<ReceivedFrame> {
+  for (let index = 0; index < 500; index += 1) {
+    for (let at = afterIndex + 1; at < frames.length; at += 1) {
+      const frame = frames[at]
+      if (frame === undefined) continue
+      if (frame.kind === 'error') {
+        throw new Error(`error frame while waiting for ${label}: ${JSON.stringify(frame.data)}`)
+      }
+      if (predicate(frame)) return frame
+    }
+    afterIndex = frames.length - 1
+    await new Promise(resolve => setTimeout(resolve, 10))
+  }
+  throw new Error(`Timed out waiting for frame ${label}`)
+}
+
+/** 顺序读一个下载传输的下一块（按 transferId 与期望 offset 精确匹配，忽略旧块）。 */
+async function readDownloadChunk(
+  socket: WebSocket,
+  frames: ReceivedFrame[],
+  transferId: string,
+  expectedOffset: number,
+): Promise<{ data: Buffer; eof: boolean; sha256: string | undefined }> {
+  const before = frames.length - 1
+  socket.send(JSON.stringify({ type: 'file-download-read', transferId, offset: expectedOffset }))
+  const frame = await awaitNewFrame(
+    frames, before,
+    item => item.kind === 'file-download-chunk'
+      && (item.data as { transferId?: string; offset?: number })?.transferId === transferId
+      && (item.data as { offset?: number })?.offset === expectedOffset,
+    `file-download-chunk offset=${expectedOffset}`,
+  )
+  const payload = frame.data as { data: string; eof: boolean; sha256?: string }
+  return { data: Buffer.from(payload.data, 'base64'), eof: payload.eof, sha256: payload.sha256 }
 }
 
 describe('mobile gateway WebSocket (/ws/mobile) — auth', () => {
@@ -671,6 +716,13 @@ function fakeApi(initialMuxFrames: unknown[] = [], projection: 'sequenced' | 'mi
         rpcId: request.rpcId,
         result: { ok: true, value: { sessionId: `fork-of-${request.payload.sessionId}` } },
       }),
+      uploadAttachment: async (request: { rpcId: string; payload: { sessionId: string; data: string; name?: string } }) => ({
+        rpcId: request.rpcId,
+        result: {
+          ok: true,
+          value: { receiptId: `att-${request.payload.sessionId}-001`, name: request.payload.name ?? null },
+        },
+      }),
       projections: async (request: { rpcId: string }) => {
         if (projection === 'null') {
           return { rpcId: request.rpcId, result: { ok: true, value: null } }
@@ -912,5 +964,180 @@ describe('mobile gateway WebSocket (/ws/mobile) — tasks, goal & session stats 
     const reply = frames.find(frame => frame.kind === 'goal')?.data as { goal?: unknown }
     expect(reply.goal).toBeDefined()
     socket.close()
+  })
+})
+
+describe('mobile gateway WebSocket (/ws/mobile) — chunked file download & upload', () => {
+  async function authedScopes(database: WorkspaceDatabase, rootId: string, url: string, scopes: string[]) {
+    const pairing = database.createPairing([rootId], scopes as never)
+    const credentials = database.exchangePairing(pairing.code, 'Mobile device')
+    const socket = connect(url, {
+      protocols: 'dsh-mobile-v1',
+      headers: { Authorization: `Bearer ${credentials.token}` },
+    })
+    const { frames } = collect(socket)
+    await new Promise<void>((resolve, reject) => {
+      socket.once('open', resolve)
+      socket.once('error', reject)
+    })
+    await nextKind(frames, 'hello')
+    return { socket, frames }
+  }
+
+  /** 从第一块到 EOF 顺序读完整个下载（每块按精确 offset 等待新帧，杜绝命中旧帧）。 */
+  async function drainDownload(socket: WebSocket, frames: ReceivedFrame[], transferId: string, size: number, chunkBytes: number): Promise<{ bytes: Buffer; sha256: string | undefined }> {
+    const chunks: Buffer[] = []
+    let offset = 0
+    let sha256: string | undefined
+    while (offset < size) {
+      const chunk = await readDownloadChunk(socket, frames, transferId, offset)
+      chunks.push(chunk.data)
+      offset += chunk.data.length
+      expect(offset).toBeLessThanOrEqual(size)
+      if (chunk.eof) {
+        sha256 = chunk.sha256
+        expect(offset).toBe(size)
+        break
+      }
+    }
+    expect(chunkBytes).toBeGreaterThan(0)
+    return { bytes: Buffer.concat(chunks), sha256 }
+  }
+
+  it('downloads a file end to end (fixture via harness db)', async () => {
+    const harness = await startHarness()
+    const { root, url } = harness
+    const payload = Buffer.from('hello-mobile-gateway'.repeat(40000)) // ≈ 760 KiB → 跨多个 chunk
+    await mkdir(path.join(root.realPath, 'downloads'), { recursive: true })
+    await writeFile(path.join(root.realPath, 'downloads/notes.txt'), payload)
+    const sha256 = createHash('sha256').update(payload).digest('hex')
+    const { socket, frames } = await authedScopes(harness.database, root.id, url, ['chat.read', 'files.read'])
+
+    socket.send(JSON.stringify({ type: 'file-download-open', requestId: 'd1', sessionId: 'sess-1', path: 'downloads/notes.txt' }))
+    await nextKind(frames, 'file-download-opened')
+    const opened = frames.find(frame => frame.kind === 'file-download-opened')?.data as
+      { transferId: string; size: number; chunkBytes: number; name: string }
+    expect(opened.size).toBe(payload.length)
+    expect(opened.name).toBe('notes.txt')
+
+    const { bytes, sha256: eofSha } = await drainDownload(socket, frames, opened.transferId, opened.size, opened.chunkBytes)
+    expect(bytes.equals(payload)).toBe(true)
+    expect(eofSha).toBe(sha256)
+
+    // 路径逃逸：.. 段直接 bad-request。
+    socket.send(JSON.stringify({ type: 'file-download-open', requestId: 'd2', sessionId: 'sess-1', path: '../../etc/passwd' }))
+    await nextKind(frames, 'error')
+    const error = frames.filter(frame => frame.kind === 'error').pop()?.data as { code?: string }
+    expect(['bad-request', 'PATH_OUTSIDE_ROOTS']).toContain(error.code)
+    socket.close()
+  })
+
+  it('forbids download without files.read scope', async () => {
+    const { database, root, url } = await startHarness()
+    const { socket, frames } = await authedScopes(database, root.id, url, ['chat.read'])
+    socket.send(JSON.stringify({ type: 'file-download-open', requestId: 'd3', sessionId: 'sess-1', path: 'x.txt' }))
+    await nextKind(frames, 'error')
+    const error = frames.find(frame => frame.kind === 'error')?.data as { code?: string }
+    expect(error.code).toBe('FORBIDDEN_SCOPE')
+    socket.close()
+  })
+
+  it('uploads a file in chunks with SHA-256 precheck and returns a receiptId', async () => {
+    const { database, root, url } = await startHarness()
+    const { socket, frames } = await authedScopes(database, root.id, url, ['chat.read', 'chat.write', 'files.write'])
+    const payload = Buffer.from('uploaded-bytes'.repeat(100))
+    const sha256 = createHash('sha256').update(payload).digest('hex')
+
+    socket.send(JSON.stringify({
+      type: 'file-upload-open', requestId: 'u1', sessionId: 'sess-1',
+      name: 'report.txt', size: payload.length, sha256,
+    }))
+    await nextKind(frames, 'file-upload-opened')
+    const opened = frames.find(frame => frame.kind === 'file-upload-opened')?.data as
+      { uploadId: string; chunkBytes: number }
+    const uploadId = opened.uploadId
+    expect(opened.chunkBytes).toBeGreaterThan(0)
+
+    const chunkBytes = opened.chunkBytes
+    let offset = 0
+    while (offset < payload.length) {
+      const slice = payload.subarray(offset, Math.min(offset + chunkBytes, payload.length))
+      const requestId = `u-c-${offset}`
+      const before = frames.length - 1
+      socket.send(JSON.stringify({
+        type: 'file-upload-chunk', requestId, uploadId,
+        offset, data: slice.toString('base64'),
+      }))
+      const accepted = await awaitNewFrame(
+        frames, before,
+        item => item.kind === 'file-upload-chunk-accepted'
+          && (item.data as { requestId?: string })?.requestId === requestId,
+        `file-upload-chunk-accepted ${requestId}`,
+      )
+      expect((accepted.data as { nextOffset?: number }).nextOffset).toBe(offset + slice.length)
+      offset += slice.length
+    }
+    const finishBefore = frames.length - 1
+    socket.send(JSON.stringify({ type: 'file-upload-finish', requestId: 'u-finish', uploadId }))
+    const completedFrame = await awaitNewFrame(
+      frames, finishBefore,
+      item => item.kind === 'file-upload-completed',
+      'file-upload-completed',
+    )
+    const completed = completedFrame.data as
+      { receiptId: string; sha256: string; file: { name: string; bytes: number } }
+    expect(completed.receiptId).toMatch(/^att-/)
+    expect(completed.sha256).toBe(sha256)
+    expect(completed.file.bytes).toBe(payload.length)
+    socket.close()
+  })
+
+  it('rejects upload with a mismatched SHA-256 at finish', async () => {
+    const { database, root, url } = await startHarness()
+    const { socket, frames } = await authedScopes(database, root.id, url, ['chat.read', 'chat.write', 'files.write'])
+    const payload = Buffer.from('integrity-check')
+    socket.send(JSON.stringify({
+      type: 'file-upload-open', requestId: 'u2', sessionId: 'sess-1',
+      name: 'evil.txt', size: payload.length, sha256: 'a'.repeat(64),
+    }))
+    await nextKind(frames, 'file-upload-opened')
+    const opened = frames.find(frame => frame.kind === 'file-upload-opened')?.data as { uploadId: string }
+    const before = frames.length - 1
+    socket.send(JSON.stringify({
+      type: 'file-upload-chunk', requestId: 'u2-c', uploadId: opened.uploadId,
+      offset: 0, data: payload.toString('base64'),
+    }))
+    await awaitNewFrame(
+      frames, before,
+      item => item.kind === 'file-upload-chunk-accepted',
+      'file-upload-chunk-accepted u2',
+    )
+    socket.send(JSON.stringify({ type: 'file-upload-finish', requestId: 'u2-finish', uploadId: opened.uploadId }))
+    await nextKind(frames, 'error')
+    const error = frames.filter(frame => frame.kind === 'error').pop()?.data as { code?: string }
+    expect(error.code).toBe('file-upload-checksum')
+    socket.close()
+  })
+
+  it('rejects upload without files.write scope and with a path-like name', async () => {
+    const { database, root, url } = await startHarness()
+
+    const noWrite = await authedScopes(database, root.id, url, ['chat.read'])
+    noWrite.socket.send(JSON.stringify({
+      type: 'file-upload-open', requestId: 'u3', sessionId: 'sess-1',
+      name: 'a.txt', size: 1, sha256: createHash('sha256').update(Buffer.from('x')).digest('hex'),
+    }))
+    await nextKind(noWrite.frames, 'error')
+    expect((noWrite.frames.find(frame => frame.kind === 'error')?.data as { code?: string }).code).toBe('FORBIDDEN_SCOPE')
+    noWrite.socket.close()
+
+    const scoped = await authedScopes(database, root.id, url, ['chat.read', 'files.write'])
+    scoped.socket.send(JSON.stringify({
+      type: 'file-upload-open', requestId: 'u4', sessionId: 'sess-1',
+      name: '../escape.txt', size: 1, sha256: 'b'.repeat(64),
+    }))
+    await nextKind(scoped.frames, 'error')
+    expect((scoped.frames.find(frame => frame.kind === 'error')?.data as { code?: string }).code).toBe('bad-request')
+    scoped.socket.close()
   })
 })

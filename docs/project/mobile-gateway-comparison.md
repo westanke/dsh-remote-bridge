@@ -202,33 +202,36 @@ src/host/
 | `10796a3` | 连接建立重放待处理 approval/question（与 /api/v1/events 同保证，replayed:true） |
 | `1991147` | file-list（授权根内列举+分页+双侧 realpath 防逃逸）、全局模型目录/providers/permission-options 走 WS |
 | `f1dd82b` | **P4 三块落地**：`ws-team.ts`（agent-team/subagents 读会话投影，projectionState 三态）、`ws-schedule.ts`（schedule-* 代理内核 schedule Remote）、`ws-speech.ts`（speech-* 代理内核 speech Remote，4 MiB/全局 4 并发/180s/连接关闭清理）、`ws-host-services.ts`（typertGateway+owner peer 可选封装，缺失即降级）；新增 chat-adapter `sessionProjections()` + apiProxy `sessions.projections` |
-| 本次（未提交） | **任务/目标/统计落地**：`ws-goals.ts` 重写——`tasks`/`goal`/`session-stats`/`context-usage` 读会话投影（todos/goal/sessionStats/tokenUsage/contextPressure，缺失键回 null），`goal-edit/pause/resume/clear` 代理内核 `goals` Remote（namespace `goals`，`{agentId,ref,request?}`，CAS 校验 ref.id+revision），无 Remote 回 `unsupported` 指引 REST；新增能力位 mobile-tasks-v1/mobile-goal-read-v1/mobile-session-stats-v1；8 个新合约测试 |
+| `d854c05` | **任务/目标/统计落地**：`ws-goals.ts` 重写——`tasks`/`goal`/`session-stats`/`context-usage` 读会话投影（todos/goal/sessionStats/tokenUsage/contextPressure，缺失键回 null），`goal-edit/pause/resume/clear` 代理内核 `goals` Remote（namespace `goals`，`{agentId,ref,request?}`，CAS 校验 ref.id+revision），无 Remote 回 `unsupported` 指引 REST；新增能力位 mobile-tasks-v1/mobile-goal-read-v1/mobile-session-stats-v1；8 个新合约测试 |
+| 本次（未提交） | **v0.11.1 分块文件传输落地**：新增 `ws-file-transfer.ts`（597 行）——下载 `file-download-open/read/cancel`（会话 cwd 定位授权根、path 禁 `..`、双侧 realpath 归一 + O_NOFOLLOW、严格顺序 offset、随机读 512 KiB 块、末块附 SHA-256、size 复核、4 并发/连接）；上传 `file-upload-open/chunk/finish/cancel`（name 叶子名白名单、size/sha256 预检、256 KiB 块顺序写入 `<dataDir>/uploads/<uploadId>` 0600 spool、busy 串行、finish 校验 SHA-256 后读回走内核 `uploadAttachment` 换 `receiptId`、连接关闭/空闲回收清理）；连接隔离 + 传输归属校验。5 个新合约测试（端到端下载跨块校验/scope 拒绝/上传 receiptId/校验和不符/路径名与 scope） |
 
 模块文件（均 ≤600 行，STRUCTURE/INTERFACES 锚点已登记）：
 `ws-protocol.ts`（协议常量/帧类型/编解码）、`ws-handler.ts`（握手/鉴权/分发/背压/HITL 重放）、
 `ws-event-bridge.ts`（事件总线→授权过滤→主动推送）、`ws-sessions.ts`、`ws-hitl.ts`、
 `ws-models.ts`、`ws-commands.ts`、`ws-presets.ts`、`ws-goals.ts`（tasks/goal/stats 读投影 + goal 写代理）、
-`ws-team.ts`、`ws-schedule.ts`、`ws-speech.ts`、`ws-host-services.ts`。
+`ws-team.ts`、`ws-schedule.ts`、`ws-speech.ts`、`ws-host-services.ts`、`ws-settings.ts`（全局模型目录/providers/权限选项）、
+`ws-files.ts`（file-list 浏览）、`ws-file-transfer.ts`（分块下载/上传）。
 
 设计要点：
-- **WS 优选**：App 连上后，消息/列表/历史/HITL 决策/命令/模型/事件推送全部走单条 WS；
-  **REST 兜底**：目标/任务（ws-goals 回 NOT_IMPLEMENTED 指引 REST）、无会话全局模型目录、
-  以及后续文件分片/插件/语音/定时任务等暂未 WS 化的域，仍可用 `/api/v1/*`。
+- **WS 优选**：App 连上后，消息/列表/历史/附件/文件分块传输/HITL 决策/命令/模型/事件推送全部走单条 WS；
+  **REST 兜底**：无会话全局模型目录、插件管理，以及目标写操作遇老内核 goals Remote 缺失时回 `unsupported`，仍可用 `/api/v1/*`。
 - 授权全程复用既有 `principal()` + `isSessionAuthorized`，事件桥授权判定异步隔离，
   单连接判定失败不拖累其它连接，异常保守不推（宁可不送，不可越权）。
-- 未改 WS 单帧 1 MiB 上限（文件分片留待多帧 chunk 方案，见 §5 风险 4）。
+- 分块传输不动 WS 单帧 1 MiB 上限：每块 base64 后 ≤ ~700 KiB（下载 512 KiB 原始 / 上传 256 KiB 原始），
+  spool 落盘避免大文件占内存，文件名绝不解释为宿主路径。
 
 仍待办（按优先级）：
-1. 文件分块下载/上传（v0.11.1 的 file-download/file-upload，多帧 chunk，不动 1 MiB 帧上限）。
-2. gateway mode 状态机、独立 LAN 监听、pairing v2 Base64URL、split-channels、设备名头。
-3. 目标/任务投影 WS（ws-goals 现为占位）；queue 编辑/删除/steer；search；directories；session-stats。
+1. gateway mode 状态机、独立 LAN 监听、pairing v2 Base64URL、split-channels、设备名头（`X-DSH-Device-Name`）。
+2. queue 编辑/删除/steer（queue-update）、search、directories/directory-create、session-title-changed 主动推送。
+3. tasks-updated/goal-updated/projection-baseline/schedule-changed 主动推送、turn-outline、llm/retry 事件透传。
 4. Cloudflare Tunnel 管理面 WS 化、多网关身份、插件管理 WS 化（plugin-*）。
 5. 跨仓 kotlin-sdk / dsh-companion 消费新 WS 帧（wire schema 五处同步，见 §5 风险 5）。
 
-已完成的 v0.11.1 新增面（本次）：agent-team/subagents（只读会话投影，三态 projectionState）、
+已完成的 v0.11.1 新增面：agent-team/subagents（只读会话投影，三态 projectionState）、
 speech-*（8 帧，纯代理官方 speech Remote；catalog 不可用时回 available:false）、schedule-*
-（5 帧，代理 schedule Remote；不可用时回 schedule/unavailable）。三者都遵循「内核有就 WS 代理，
-没有就结构化降级指引 REST 兜底」，不自带识别模型或调度器。
+（5 帧，代理 schedule Remote；不可用时回 schedule/unavailable）、**file-download/file-upload 七帧
+（分块 + SHA-256 + receiptId + spool 清理）**。都遵循「内核有就 WS 代理，没有就结构化降级指引
+REST 兜底」，不自带识别模型或调度器。
 
 ---
 
