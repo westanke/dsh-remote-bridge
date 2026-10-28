@@ -245,7 +245,7 @@ export class MobileGatewayWsHandler {
       draining: false,
       isAlive: true,
       handlers: {
-        sessions: new SessionHandler(this.chat, (frame) => this.sendFrame(webSocket, frame)),
+        sessions: new SessionHandler(this.chat, (frame) => this.sendFrame(webSocket, frame), this.database),
         hitl: new HitlHandler(this.chat, (frame) => this.sendFrame(webSocket, frame)),
         models: new ModelsHandler(this.chat, (frame) => this.sendFrame(webSocket, frame)),
         commands: new CommandsHandler(this.chat, (frame) => this.sendFrame(webSocket, frame)),

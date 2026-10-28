@@ -215,6 +215,68 @@ describe('mobile gateway WebSocket (/ws/mobile) — WS-first RPC', () => {
     expect(sessions?.map(session => session.id)).toContain('sess-1')
     socket.close()
   })
+
+  it('forks a session over a bidirectional fork frame', async () => {
+    const { database, root, url } = await startHarness()
+    const pairing = database.createPairing([root.id], ['chat.read', 'chat.write'])
+    const credentials = database.exchangePairing(pairing.code, 'Mobile device')
+
+    const socket = connect(url, {
+      protocols: 'dsh-mobile-v1',
+      headers: { Authorization: `Bearer ${credentials.token}` },
+    })
+    const { frames } = collect(socket)
+    await new Promise<void>((resolve, reject) => {
+      socket.once('open', resolve)
+      socket.once('error', reject)
+    })
+    await nextKind(frames, 'hello')
+
+    socket.send(JSON.stringify({ type: 'fork', sessionId: 'sess-1', atSeq: 42 }))
+    await nextKind(frames, 'fork')
+
+    const reply = frames.find(frame => frame.kind === 'fork')
+    expect((reply?.data as { sessionId?: string }).sessionId).toBe('fork-of-sess-1')
+    socket.close()
+  })
+
+  it('creates a workspace over a bidirectional workspace-create frame', async () => {
+    const { database, root, url } = await startHarness()
+    const pairing = database.createPairing([root.id], ['chat.read', 'chat.write'])
+    const credentials = database.exchangePairing(pairing.code, 'Mobile device')
+
+    const socket = connect(url, {
+      protocols: 'dsh-mobile-v1',
+      headers: { Authorization: `Bearer ${credentials.token}` },
+    })
+    const { frames } = collect(socket)
+    await new Promise<void>((resolve, reject) => {
+      socket.once('open', resolve)
+      socket.once('error', reject)
+    })
+    await nextKind(frames, 'hello')
+
+    // 一个落在授权根内、尚不是工作区的新目录。
+    const { mkdir: makeDir } = await import('node:fs/promises')
+    const fresh = path.join(root.realPath, 'fresh-ws')
+    await makeDir(fresh)
+
+    socket.send(JSON.stringify({ type: 'workspace-create', path: fresh }))
+    await nextKind(frames, 'workspace-create')
+    const reply = frames.find(frame => frame.kind === 'workspace-create')
+    const data = reply?.data as { created?: boolean; workspace?: { id: string } }
+    expect(data.created).toBe(true)
+    expect(data.workspace?.id).toBe('ws-new')
+
+    // 幂等：再来一次返回既有工作区，created:false。
+    socket.send(JSON.stringify({ type: 'workspace-create', path: fresh }))
+    await new Promise(resolve => setTimeout(resolve, 80))
+    const replies = frames.filter(frame => frame.kind === 'workspace-create')
+    const second = replies[replies.length - 1]?.data as { created?: boolean }
+    expect(second.created).toBe(false)
+
+    socket.close()
+  })
 })
 
 describe('mobile gateway WebSocket (/ws/mobile) — server push', () => {
@@ -286,6 +348,10 @@ function fakeApi() {
   const empty = async function* () {
     // no live events in this test
   }
+  // create 后要能在 list 里看到新建工作区（幂等用例依赖）。
+  const workspaceItems = [
+    { workspaceId: 'ws-1', path: activeProject, title: 'Project', sessionIds: ['sess-1'], createdAt: 1, updatedAt: 1 },
+  ]
   return {
     sessions: {
       list: async (request: { rpcId: string }) => ({
@@ -295,9 +361,14 @@ function fakeApi() {
           value: {
             items: [
               { sessionId: 'sess-1', cwd: activeProject, updatedAt: 1, running: false, blank: true },
+              { sessionId: 'fork-of-sess-1', cwd: activeProject, updatedAt: 2, running: false, blank: true },
             ],
           },
         },
+      }),
+      fork: async (request: { rpcId: string; payload: { sessionId: string } }) => ({
+        rpcId: request.rpcId,
+        result: { ok: true, value: { sessionId: `fork-of-${request.payload.sessionId}` } },
       }),
     },
     workspace: {
@@ -306,13 +377,19 @@ function fakeApi() {
         result: {
           ok: true,
           value: {
-            items: [
-              { workspaceId: 'ws-1', path: activeProject, title: 'Project', sessionIds: ['sess-1'], createdAt: 1, updatedAt: 1 },
-            ],
+            items: workspaceItems,
             archivedSessionIds: [],
           },
         },
       }),
+      create: async (request: { rpcId: string; payload: { path: string } }) => {
+        const workspace = { workspaceId: 'ws-new', path: request.payload.path, title: 'New', sessionIds: [], createdAt: 2, updatedAt: 2 }
+        if (!workspaceItems.some(item => item.path === request.payload.path)) workspaceItems.push(workspace)
+        return {
+          rpcId: request.rpcId,
+          result: { ok: true, value: { workspace } },
+        }
+      },
     },
     events: { mux: empty, host: empty },
   }
