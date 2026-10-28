@@ -179,6 +179,7 @@ export class RemoteApiServer implements RemoteControl {
       options.database,
       options.chat,
       options.auth,
+      options.events,
       { jobs: options.capabilities?.jobs === true },
     )
   }

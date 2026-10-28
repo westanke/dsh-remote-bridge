@@ -19,6 +19,7 @@ import { AuthenticatedDevice } from './database.ts'
 import { WorkspaceDatabase } from './database.ts'
 import type { DshChatAdapter } from './chat-adapter.ts'
 import type { AuthService } from './auth.ts'
+import type { WorkspaceEventBus } from './event-bus.ts'
 import { ApiError } from './errors.ts'
 import { availableCapabilities } from './capabilities.ts'
 import {
@@ -38,6 +39,7 @@ import { ModelsHandler } from './ws-models.ts'
 import { CommandsHandler } from './ws-commands.ts'
 import { PresetsHandler } from './ws-presets.ts'
 import { GoalsHandler } from './ws-goals.ts'
+import { MobileEventBridge, makeEventAuthorizer } from './ws-event-bridge.ts'
 
 // ───────────────────────── 状态机 ─────────────────────────
 
@@ -77,8 +79,19 @@ export class MobileGatewayWsHandler {
     private readonly database: WorkspaceDatabase,
     private readonly chat: DshChatAdapter,
     private readonly auth: AuthService,
+    events: WorkspaceEventBus,
     private readonly capabilitiesFlags: { jobs?: boolean },
-  ) {}
+  ) {
+    // 事件桥：授权过滤后把 bridge 事件以 {kind:'event', data:event} 主动推给每条连接。
+    this.eventBridge = new MobileEventBridge<WebSocket>(
+      events,
+      makeEventAuthorizer(chat),
+      // 统一线路信封：所有帧都是 {kind, data}，所以桥事件作为 data 透传。
+      (conn, event) => this.sendFrame(conn, { kind: 'event', data: event }),
+    )
+  }
+
+  private readonly eventBridge: MobileEventBridge<WebSocket>
 
   // ───────────────────────── 路径判定（由 server.ts 调用）─────────────────────────
 
@@ -242,18 +255,19 @@ export class MobileGatewayWsHandler {
     }
 
     this.sockets.set(webSocket, state)
+    this.eventBridge.attach(webSocket, state.principal)
 
     webSocket.on('pong', () => { state.isAlive = true })
     webSocket.on('message', (data: Buffer | string) => {
       const text = typeof data === 'string' ? data : data.toString('utf8')
       void this.handleMessage(webSocket, state, text)
     })
-    webSocket.on('close', () => {
+    const teardown = () => {
       this.sockets.delete(webSocket)
-    })
-    webSocket.on('error', () => {
-      this.sockets.delete(webSocket)
-    })
+      this.eventBridge.detach(webSocket)
+    }
+    webSocket.on('close', teardown)
+    webSocket.on('error', teardown)
   }
 
   private sendHello(webSocket: WebSocket, principal: Principal): void {
@@ -499,6 +513,7 @@ export class MobileGatewayWsHandler {
 
   /** 关闭所有连接（server.stop 时调用）。 */
   async stop(timeoutMs = 1000): Promise<void> {
+    this.eventBridge.dispose()
     const closures: Array<Promise<void>> = []
     for (const webSocket of [...this.sockets.keys()]) {
       closures.push(new Promise(resolve => {

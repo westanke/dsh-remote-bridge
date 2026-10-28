@@ -52,7 +52,7 @@ async function startHarness() {
   await remote.start()
   remotes.push(remote)
   const url = `ws://127.0.0.1:${remote.status().port}/ws/mobile`
-  return { database, root, url }
+  return { database, root, url, events }
 }
 
 function connect(url: string, opts: { protocols?: string | string[]; headers?: Record<string, string> }): WebSocket {
@@ -214,6 +214,71 @@ describe('mobile gateway WebSocket (/ws/mobile) — WS-first RPC', () => {
     const sessions = (reply?.data as { sessions?: Array<{ id: string }> }).sessions
     expect(sessions?.map(session => session.id)).toContain('sess-1')
     socket.close()
+  })
+})
+
+describe('mobile gateway WebSocket (/ws/mobile) — server push', () => {
+  it('pushes authorized events as {kind:"event"} and filters by scope', async () => {
+    const { database, root, url, events } = await startHarness()
+
+    // 设备 A：有 chat.read，应收到 chat.delta。
+    const pairingA = database.createPairing([root.id], ['chat.read'])
+    const credA = database.exchangePairing(pairingA.code, 'Chat device')
+    const socketA = connect(url, {
+      protocols: 'dsh-mobile-v1',
+      headers: { Authorization: `Bearer ${credA.token}` },
+    })
+    const framesA = collect(socketA)
+    await new Promise<void>((resolve, reject) => {
+      socketA.once('open', resolve)
+      socketA.once('error', reject)
+    })
+    await nextKind(framesA.frames, 'hello')
+
+    // 设备 B：只有 files.read，不应收到 chat.delta。
+    const pairingB = database.createPairing([root.id], ['files.read'])
+    const credB = database.exchangePairing(pairingB.code, 'Files device')
+    const socketB = connect(url, {
+      protocols: 'dsh-mobile-v1',
+      headers: { Authorization: `Bearer ${credB.token}` },
+    })
+    const framesB = collect(socketB)
+    await new Promise<void>((resolve, reject) => {
+      socketB.once('open', resolve)
+      socketB.once('error', reject)
+    })
+    await nextKind(framesB.frames, 'hello')
+
+    events.emit({
+      id: 'push-1',
+      type: 'chat.delta',
+      time: Date.now(),
+      data: { rootId: root.id, sessionId: undefined },
+    })
+
+    // A 收到 event 帧且原始事件 id 透传。
+    await new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error('device A never got the event')), 1000)
+      const tick = () => {
+        const hit = framesA.frames.find(
+          frame => frame.kind === 'event' && (frame.data as { id?: string })?.id === 'push-1',
+        )
+        if (hit !== undefined) {
+          clearTimeout(timer)
+          resolve()
+        } else {
+          setTimeout(tick, 10)
+        }
+      }
+      tick()
+    })
+
+    // B 等一拍，确认没有 event 帧（scope 过滤）。
+    await new Promise(resolve => setTimeout(resolve, 120))
+    expect(framesB.frames.some(frame => frame.kind === 'event')).toBe(false)
+
+    socketA.close()
+    socketB.close()
   })
 })
 
