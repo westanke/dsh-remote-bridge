@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, writeFile } from 'node:fs/promises'
+import { mkdtemp, mkdir, writeFile, stat } from 'node:fs/promises'
 import { createHash } from 'node:crypto'
 import { TestCleanup } from './test-cleanup.ts'
 import os from 'node:os'
@@ -507,6 +507,39 @@ describe('mobile gateway WebSocket (/ws/mobile) — global catalog & files', () 
     const error = frames.find(frame => frame.kind === 'error')
     expect((error?.data as { code?: string }).code).toBe('PATH_OUTSIDE_ROOTS')
     socket.close()
+  })
+
+  it('creates a directory inside the authorized root over directory-create', async () => {
+    const { database, root, url } = await startHarness()
+    // 先在盘上备好父目录（上游语义：父目录不存在回 directory-create-failed，不递归建父）。
+    await mkdir(path.join(root.realPath, 'src'), { recursive: true })
+    const { socket, frames } = await connectAuthenticated(database, root.id, ['chat.read', 'files.write'], url)
+    socket.send(JSON.stringify({ type: 'directory-create', requestId: 'dc1', rootId: root.id, path: 'src/new-dir' }))
+    await nextKind(frames, 'directory-create')
+    const reply = frames.find(frame => frame.kind === 'directory-create')?.data as
+      { requestId?: string; rootId?: string; entry?: { name: string; kind: string; path: string } }
+    expect(reply.requestId).toBe('dc1')
+    expect(reply.rootId).toBe(root.id)
+    expect(reply.entry).toMatchObject({ name: 'new-dir', kind: 'directory', path: 'src/new-dir' })
+    const created = await stat(path.join(root.realPath, 'src/new-dir'))
+    expect(created.isDirectory()).toBe(true)
+    socket.close()
+  })
+
+  it('forbids directory-create without files.write scope and rejects a path with ..', async () => {
+    const { database, root, url } = await startHarness()
+    const readOnly = await connectAuthenticated(database, root.id, ['chat.read', 'files.read'], url)
+    readOnly.socket.send(JSON.stringify({ type: 'directory-create', requestId: 'dc2', path: 'a' }))
+    await nextKind(readOnly.frames, 'error')
+    expect((readOnly.frames.find(frame => frame.kind === 'error')?.data as { code?: string }).code).toBe('FORBIDDEN_SCOPE')
+    readOnly.socket.close()
+
+    const scoped = await connectAuthenticated(database, root.id, ['chat.read', 'files.write'], url)
+    scoped.socket.send(JSON.stringify({ type: 'directory-create', requestId: 'dc3', path: '../escape' }))
+    await nextKind(scoped.frames, 'error')
+    const error = scoped.frames.find(frame => frame.kind === 'error')?.data as { code?: string }
+    expect(['PATH_INVALID', 'PATH_OUTSIDE_ROOTS', 'bad-request']).toContain(error.code)
+    scoped.socket.close()
   })
 })
 

@@ -486,6 +486,7 @@ export const PLUGIN_VERSION: string          // shared/version.ts，与 package.
 | `export interface HostRemoteHandle` | `src/host/ws-host-services.ts` | interface |
 | `sessionProjections` | `src/host/chat-adapter.ts` | method（读会话投影基线，agent-team/subagents 用） |
 | `export class FilesHandler` | `src/host/ws-files.ts` | class |
+| `FilesHandler.handleDirectoryCreate` | `src/host/ws-files.ts` | method |
 | `export class FileTransferHandler` | `src/host/ws-file-transfer.ts` | class（分块下载/上传，连接隔离 + 并发上限 + SHA-256） |
 | `closeConnection` | `src/host/ws-file-transfer.ts` | method（连接关闭清理该连接全部传输） |
 | `expire` | `src/host/ws-file-transfer.ts` | method（空闲传输回收） |

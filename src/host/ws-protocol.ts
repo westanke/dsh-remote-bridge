@@ -150,6 +150,7 @@ export type ServerFrameKind =
   | 'command-selected'
   | 'attachment'
   | 'file-list'
+  | 'directory-create'
   | 'file-download-opened'
   | 'file-download-chunk'
   | 'file-download-cancelled'

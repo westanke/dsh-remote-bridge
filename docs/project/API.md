@@ -751,7 +751,7 @@ v2.8 新增。独立于现有 `/api/v1/events`（单向广播，保留不动）�
 | `sent` | 消息已发 |
 | `workspaces` / `sessions` / `history` / `search` | 查询响应 |
 | `commands` / `command-options` / `command-executed` / `command-selected` | 命令响应 |
-| `attachment` / `file-list` / `file-download-opened/chunk/cancelled` | 附件与文件下载（chunk 末块带 `sha256`） |
+| `attachment` / `file-list` / `directory-create` / `file-download-opened/chunk/cancelled` | 附件、目录浏览/建目录（需 `files.write`）与文件下载（chunk 末块带 `sha256`） |
 | `file-upload-opened/chunk-accepted/completed/cancelled` | 分片上传（completed 带 `receiptId` 与 `sha256`） |
 | `session-cancelled` / `queue-item-updated` / `session-queues` / `session-queue` | 会话与队列状态 |
 | `session-archived` / `session-renamed` / `session-archives` / `session-title-changed` | 会话生命周期 |

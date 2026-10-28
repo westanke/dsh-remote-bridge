@@ -94,6 +94,7 @@ export class MobileGatewayWsHandler {
   } | undefined
   private filesService: {
     list: (root: import('./database.ts').StoredRoot, relativePath: string, limit?: number, cursor?: string) => Promise<unknown>
+    createEntry: (root: import('./database.ts').StoredRoot, relativePath: string, kind: 'file' | 'directory') => Promise<unknown>
   } | undefined
   /**
    * 可选内核远程服务（typertGateway + owner peer）。存在时才启用定时任务与官方语音代理；
