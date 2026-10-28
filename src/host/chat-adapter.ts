@@ -73,6 +73,13 @@ export interface DshApiProxy {
     fork(request: { rpcId: string; payload: { sessionId: string; atSeq?: number } }): Promise<RpcResponse<{ sessionId: string }>>
     models(request: { rpcId: string; payload: { sessionId: string } }): Promise<RpcResponse<SessionModelsView>>
     selectModel(request: { rpcId: string; payload: { sessionId: string; provider: string; model: string; reasoningEffort?: string } }): Promise<RpcResponse<{ selected: ModelSelectionView }>>
+    /**
+     * 读会话投影基线（内核 `sessionController.projections`）。
+     *
+     * 供 agent-team / subagents 等只读投影的 WS 帧使用：投影里的 `agentTeam` /
+     * `subagentCatalog` 键给出团队成员、任务与子会话目录。会话不存在时内核返回 null。
+     */
+    projections(request: { rpcId: string; payload: { sessionId: string } }): Promise<RpcResponse<{ asOfSeq?: number; kind?: string; values: Record<string, unknown> } | null>>
   }
   workspace: {
     list(request: { rpcId: string; payload: Record<string, never> }): Promise<RpcResponse<{
@@ -1014,6 +1021,24 @@ export class DshChatAdapter {
       ...(selection.reasoningEffort === undefined ? {} : { reasoningEffort: selection.reasoningEffort }),
     }
     return unwrapDsh(await this.api.sessions.selectModel({ rpcId: randomUUID(), payload })).selected
+  }
+
+  /**
+   * 读会话投影基线（agent-team / subagents 帧用）。
+   *
+   * 会话不存在（内核返回 null）映射成 404 SESSION_NOT_FOUND；取不到投影不打 500，
+   * 由调用方按 PROTOCOL 回 projectionState:'unavailable'。这里只做鉴权 + 透传。
+   */
+  async sessionProjections(
+    principal: Principal,
+    sessionId: string,
+  ): Promise<{ asOfSeq?: number; kind?: string; values: Record<string, unknown> }> {
+    await this.requireSession(principal, sessionId)
+    const baseline = unwrapDsh(await this.api.sessions.projections({ rpcId: randomUUID(), payload: { sessionId } }))
+    if (baseline === null || baseline === undefined) {
+      throw new ApiError(404, 'SESSION_NOT_FOUND', 'Session projections are unavailable.')
+    }
+    return baseline
   }
 
   async listCommands(principal: Principal, sessionId: string): Promise<CommandDescriptorView[]> {

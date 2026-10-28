@@ -301,11 +301,15 @@ host services 之上重建 0.1.x 的 `apiProxy` 面容，让 `chat-adapter` / `s
 | `src/host/ws-goals.ts` | file | 移动端网关 WS 任务/目标域（tasks/goal，/ws/mobile，暂 REST 兜底） |
 | `src/host/ws-handler.ts` | file | 移动端网关 WebSocket（/ws/mobile）：子协议 dsh-pair/dsh-auth，hello 帧，双向请求/响应 |
 | `src/host/ws-hitl.ts` | file | 移动端网关 WS 人机交互域（approval-response/question-answer，/ws/mobile） |
+| `src/host/ws-host-services.ts` | file | 可选内核远程服务封装（typertGateway+owner peer，定时任务/语音代理用，缺失即降级） |
 | `src/host/ws-models.ts` | file | 移动端网关 WS 会话模型域（models/select-model，无会话全局目录交 ws-settings，/ws/mobile） |
 | `src/host/ws-presets.ts` | file | 移动端网关 WS agent 预设域（agent-presets/select-agent-preset，/ws/mobile） |
 | `src/host/ws-protocol.ts` | file | WS 线路协议常量、帧类型与编解码（/ws/mobile） |
+| `src/host/ws-schedule.ts` | file | 移动端网关 WS 定时任务域（schedule-*，代理内核 schedule Remote，缺失回 unavailable） |
 | `src/host/ws-sessions.ts` | file | 移动端网关 WS 会话生命周期域（session-create/cancel/archive/rename，/ws/mobile） |
+| `src/host/ws-speech.ts` | file | 移动端网关 WS 官方语音域（speech-*，纯代理内核 speech Remote，4MiB/4并发/180s，缺失回 unavailable） |
 | `src/host/ws-settings.ts` | file | 移动端网关 WS 全局设置域（default-model 全局目录/providers/permission-options，/ws/mobile） |
+| `src/host/ws-team.ts` | file | 移动端网关 WS 智能体团队/子会话域（agent-team/subagents，只读会话投影，/ws/mobile） |
 | `src/client/` | dir | DSH WebUI 浏览器半边 |
 | `src/client/api.ts` | file | 浏览器侧 REST 客户端 |
 | `src/client/app-qr.ts` | file | 应用下载二维码（生成物，勿手改） |

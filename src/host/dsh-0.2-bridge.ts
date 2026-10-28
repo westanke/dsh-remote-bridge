@@ -2475,6 +2475,11 @@ export function createDsh02ApiProxy(
         } as never
       }),
       selectModel: request => call('sessions.selectModel', (signal) => host.sessionController.selectModel(request.payload) as never),
+      projections: request => call('sessions.projections', async (signal) => {
+        // 直接透传内核投影基线（可能为 null=会话不存在）。agent-team/subagents 帧
+        // 读取其中的 agentTeam / subagentCatalog 键；形状由 WS 层按 PROTOCOL 校验。
+        return (await host.sessionController.projections({ sessionId: request.payload.sessionId }, signal)) as never
+      }),
     },
 
     workspace: {

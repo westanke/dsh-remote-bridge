@@ -735,6 +735,9 @@ v2.8 新增。独立于现有 `/api/v1/events`（单向广播，保留不动）�
 | `session-cancel` / `session-archive` / `session-rename` / `fork` | 会话生命周期 | `sessionId` |
 | `queue-update` | 队列编辑（edit/remove/steer） | `sessionId`, `turn` |
 | `directories` / `directory-create` / `workspace-create` | 目录/工作区操作 | `path`, `name` |
+| `agent-team` / `subagents` | 智能体团队/子会话目录（只读会话投影） | `sessionId`, `requestId`；回 `projectionState:'ready'|'unavailable'|'migration-required'` |
+| `speech-catalog` / `speech-subscribe` / `speech-unsubscribe` / `speech-configure` / `speech-prepare` / `speech-cancel-preparation` / `speech-transcribe` / `speech-cancel` | 官方语音输入（纯代理内核 speech Remote） | `requestId`，transcribe 带 `audioBase64`（16k PCM16 WAV，≤4 MiB）、`providerId?`、`language?` |
+| `schedule-catalog` / `schedule-list` / `schedule-history` / `schedule-update` / `schedule-delete` | 定时任务（代理内核 schedule Remote） | catalog 无会话；其余带 `sessionId`；update 带完整 `expected`+`change` |
 
 ### 服务端→客户端帧（{kind: …}）
 
@@ -754,6 +757,9 @@ v2.8 新增。独立于现有 `/api/v1/events`（单向广播，保留不动）�
 | `tasks` / `goal` / `goal-edit` / `goal-pause` / `goal-resume` / `goal-clear` / `tasks-updated` / `goal-updated` | 目标/任务投影 |
 | `question-requested` / `question-response` / `question-resolved` | HITL 提问（server→client 主动推送） |
 | `approval-requested` / `approval-response` / `approval-resolved` | HITL 审批（server→client 主动推送；outcome `allowed-once`\|`rejected`，不支持始终允许） |
+| `agent-team` / `subagents` | 团队/子会话投影响应（随 `projectionState` 与 `asOfSeq`） |
+| `speech-catalog` / `speech-subscribed` / `speech-unsubscribed` / `speech-state` / `speech-configured` / `speech-preparing` / `speech-preparation-cancelled` / `speech-transcript` / `speech-cancelled` | 语音输入响应与就绪状态推送；内核无该服务时 catalog 回 `available:false, code:'speech/unavailable'`，其余回 `error` |
+| `schedule-catalog` / `schedule-list` / `schedule-history` / `schedule-update` / `schedule-delete` | 定时任务响应；内核无 schedule Remote 时回 `error code:'schedule/unavailable'`，引导 REST 兜底 |
 
 ### HITL（提问与审批）双向
 
@@ -767,6 +773,15 @@ v2.8 新增。独立于现有 `/api/v1/events`（单向广播，保留不动）�
 与 `/api/v1/events` 同一套参数（单帧上限 1 MiB，发送队列 512 帧，溢出优先丢可重建帧，连续错过 2 个心跳周期 terminate）；设备撤销或授权变更时 `close(4001,'Device revoked')`；`connection.resyncRequired` 通知客户端改走 REST 重取基线。
 
 > 注：`message` 帧图片/文件按 Base64 无 `data:` 前缀传输（同 mobile-gateway），单帧 1 MiB 上限，大附件先走 REST 上传拿回执，再在 WS 消息里用 `file` 部件引用。
+
+### 内核可选服务与 REST 兜底
+
+`agent-team`/`subagents` 只读内核会话投影（`sessionController.projections` 的 `agentTeam`/`subagentCatalog` 键）；`speech-*` 与 `schedule-*` 不自带能力，全部代理内核通过 Typert Remote 发布的 `speech`/`schedule` 服务（插件以宿主 owner peer 代发）。这些服务只在较新内核（DSH 0.2.1-rc.2+）提供；老内核缺服务时：
+
+- `speech-catalog` 回 `{kind:'speech-catalog', available:false, providers:[], code:'speech/unavailable'}`，其余 `speech-*` 回 `error code:'speech/unavailable'`；
+- `schedule-*` 回 `error code:'schedule/unavailable'`。
+
+客户端据此走等价 REST `/api/v1/*` 兜底，不把「服务端较旧」误判成「本来没有数据」。
 
 ## Android 功能对等矩阵
 

@@ -41,6 +41,10 @@ import { PresetsHandler } from './ws-presets.ts'
 import { GoalsHandler } from './ws-goals.ts'
 import { FilesHandler } from './ws-files.ts'
 import { SettingsHandler } from './ws-settings.ts'
+import { TeamHandler } from './ws-team.ts'
+import { ScheduleHandler } from './ws-schedule.ts'
+import { SpeechHandler } from './ws-speech.ts'
+import type { HostRemoteHandle } from './ws-host-services.ts'
 import { MobileEventBridge, makeEventAuthorizer } from './ws-event-bridge.ts'
 
 // ───────────────────────── 状态机 ─────────────────────────
@@ -66,8 +70,10 @@ interface MobileSocketState {
     commands: CommandsHandler
     presets: PresetsHandler
     goals: GoalsHandler
+    team: TeamHandler
     files?: FilesHandler
     settings?: SettingsHandler
+    schedule: ScheduleHandler
   }
 }
 
@@ -85,6 +91,13 @@ export class MobileGatewayWsHandler {
   private filesService: {
     list: (root: import('./database.ts').StoredRoot, relativePath: string, limit?: number, cursor?: string) => Promise<unknown>
   } | undefined
+  /**
+   * 可选内核远程服务（typertGateway + owner peer）。存在时才启用定时任务与官方语音代理；
+   * 缺失（老内核）时对应帧回结构化 unavailable，引导 REST 兜底。
+   */
+  private hostRemote: HostRemoteHandle | undefined
+  /** 语音管理器：跨连接共享（全局转写并发计数需要进程级单一实例）。 */
+  private speech: SpeechHandler
 
   /**
    * 装配全局模型目录与文件浏览依赖。这两个域需要 DshSettingsAdapter / FileService，
@@ -97,6 +110,21 @@ export class MobileGatewayWsHandler {
   }): void {
     this.settingsService = services.settings
     this.filesService = services.files
+  }
+
+  /**
+   * 装配内核可选远程服务（定时任务 / 官方语音）。在 index.ts apply 期取到
+   * typertGateway+connection 后注入；传入 undefined 表示当前内核不提供（优雅降级）。
+   */
+  attachRemoteServices(remote: HostRemoteHandle | undefined): void {
+    this.hostRemote = remote
+    // 语音管理器始终存在（这样缺内核服务时也能回 speech-catalog available:false 与
+    // 结构化 unavailable），只更新其远程句柄；它是进程级单一实例以维持全局转写并发计数。
+    if (this.speech === undefined) {
+      this.speech = new SpeechHandler(remote, key => (frame) => this.sendFrame(key as WebSocket, frame))
+    } else {
+      this.speech.setRemote(remote)
+    }
   }
 
   constructor(
@@ -113,6 +141,8 @@ export class MobileGatewayWsHandler {
       // 统一线路信封：所有帧都是 {kind, data}，所以桥事件作为 data 透传。
       (conn, event) => this.sendFrame(conn, { kind: 'event', data: event }),
     )
+    // 语音处理器在构造期就存在：缺内核服务时也能回结构化 unavailable，服务后到时再 setRemote。
+    this.speech = new SpeechHandler(undefined, key => (frame) => this.sendFrame(key as WebSocket, frame))
   }
 
   private readonly eventBridge: MobileEventBridge<WebSocket>
@@ -278,6 +308,9 @@ export class MobileGatewayWsHandler {
         commands: new CommandsHandler(this.chat, (frame) => this.sendFrame(webSocket, frame)),
         presets: new PresetsHandler(this.chat, (frame) => this.sendFrame(webSocket, frame)),
         goals: new GoalsHandler((frame) => this.sendFrame(webSocket, frame)),
+        team: new TeamHandler(this.chat, (frame) => this.sendFrame(webSocket, frame)),
+        // 定时任务处理器始终存在：缺内核服务时由其内部回 schedule/unavailable。
+        schedule: new ScheduleHandler(this.hostRemote, (frame) => this.sendFrame(webSocket, frame)),
         ...(this.filesService === undefined ? {} : {
           files: new FilesHandler(this.database, this.filesService, (frame) => this.sendFrame(webSocket, frame)),
         }),
@@ -298,6 +331,8 @@ export class MobileGatewayWsHandler {
     const teardown = () => {
       this.sockets.delete(webSocket)
       this.eventBridge.detach(webSocket)
+      // 语音连接级状态（跟随流/活动转写）随连接关闭全部中止。
+      this.speech?.closeClient(webSocket)
     }
     webSocket.on('close', teardown)
     webSocket.on('error', teardown)
@@ -411,7 +446,14 @@ export class MobileGatewayWsHandler {
     if (await handlers.commands.handle(state.principal, clientFrame)) return
     if (await handlers.presets.handle(state.principal, clientFrame)) return
     if (await handlers.goals.handle(state.principal, clientFrame)) return
+    if (await handlers.team.handle(state.principal, clientFrame)) return
+    if (await handlers.schedule.handle(state.principal, clientFrame)) return
     if (handlers.files !== undefined && await handlers.files.handle(state.principal, clientFrame)) return
+    // 语音处理器跨连接共享（全局转写并发计数），按连接 key 管理状态；缺内核服务时回结构化 unavailable。
+    if (type.startsWith('speech-')) {
+      await this.speech.handle(webSocket, state.principal, clientFrame)
+      return
+    }
 
     this.sendError(webSocket, 'UNKNOWN_TYPE', `Unknown frame type: ${type}`)
   }

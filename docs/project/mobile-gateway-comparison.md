@@ -200,6 +200,8 @@ src/host/
 | `847de6a` | **WS 优选核心闭环**：ws-event-bridge 订阅进程内事件总线，按主体 scope/root/session 三层授权过滤后主动推 `{kind:'event',data:event}`；实时 approval/question/delta 全走 WS |
 | `a7ab580` | fork、workspace-create（双侧 realpath 归一 + 幂等 created:false）双向帧 |
 | `10796a3` | 连接建立重放待处理 approval/question（与 /api/v1/events 同保证，replayed:true） |
+| `1991147` | file-list（授权根内列举+分页+双侧 realpath 防逃逸）、全局模型目录/providers/permission-options 走 WS |
+| 本次（未提交） | **P4 三块落地**：`ws-team.ts`（agent-team/subagents 读会话投影，projectionState 三态）、`ws-schedule.ts`（schedule-* 代理内核 schedule Remote）、`ws-speech.ts`（speech-* 代理内核 speech Remote，4 MiB/全局 4 并发/180s/连接关闭清理）、`ws-host-services.ts`（typertGateway+owner peer 可选封装，缺失即降级）；新增 chat-adapter `sessionProjections()` + apiProxy `sessions.projections` |
 
 模块文件（均 ≤600 行，STRUCTURE/INTERFACES 锚点已登记）：
 `ws-protocol.ts`（协议常量/帧类型/编解码）、`ws-handler.ts`（握手/鉴权/分发/背压/HITL 重放）、
@@ -218,8 +220,13 @@ src/host/
 1. 文件分块下载/上传（v0.11.1 的 file-download/file-upload，多帧 chunk，不动 1 MiB 帧上限）。
 2. gateway mode 状态机、独立 LAN 监听、pairing v2 Base64URL、split-channels、设备名头。
 3. 目标/任务投影 WS（ws-goals 现为占位）；queue 编辑/删除/steer；search；directories；session-stats。
-4. Cloudflare Tunnel 管理面 WS 化、多网关身份、插件/语音/定时任务/智能体团队域。
+4. Cloudflare Tunnel 管理面 WS 化、多网关身份、插件管理 WS 化（plugin-*）。
 5. 跨仓 kotlin-sdk / dsh-companion 消费新 WS 帧（wire schema 五处同步，见 §5 风险 5）。
+
+已完成的 v0.11.1 新增面（本次）：agent-team/subagents（只读会话投影，三态 projectionState）、
+speech-*（8 帧，纯代理官方 speech Remote；catalog 不可用时回 available:false）、schedule-*
+（5 帧，代理 schedule Remote；不可用时回 schedule/unavailable）。三者都遵循「内核有就 WS 代理，
+没有就结构化降级指引 REST 兜底」，不自带识别模型或调度器。
 
 ---
 

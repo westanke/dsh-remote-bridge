@@ -477,6 +477,13 @@ export const PLUGIN_VERSION: string          // shared/version.ts，与 package.
 | `export function stringifyWire` | `src/host/wire-json.ts` | function |
 | `export class MobileGatewayWsHandler` | `src/host/ws-handler.ts` | class |
 | `attachHostServices` | `src/host/ws-handler.ts` | method（注入全局模型目录与文件浏览依赖） |
+| `attachRemoteServices` | `src/host/ws-handler.ts` | method（注入内核可选 typert 远程服务，定时任务/语音代理） |
+| `export class TeamHandler` | `src/host/ws-team.ts` | class |
+| `export class ScheduleHandler` | `src/host/ws-schedule.ts` | class |
+| `export class SpeechHandler` | `src/host/ws-speech.ts` | class |
+| `export function createHostRemoteServices` | `src/host/ws-host-services.ts` | function |
+| `export interface HostRemoteHandle` | `src/host/ws-host-services.ts` | interface |
+| `sessionProjections` | `src/host/chat-adapter.ts` | method（读会话投影基线，agent-team/subagents 用） |
 | `export class FilesHandler` | `src/host/ws-files.ts` | class |
 | `export class SettingsHandler` | `src/host/ws-settings.ts` | class |
 | `export class MobileEventBridge` | `src/host/ws-event-bridge.ts` | class |

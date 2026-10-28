@@ -21,6 +21,7 @@ import { DEFAULT_REMOTE_HOST, normalizeListenerHost, normalizeListenerPort } fro
 import { ApiRouter } from './host/router.ts'
 import { attachEmbeddedRoutes, RemoteApiServer } from './host/server.ts'
 import { DshSettingsAdapter } from './host/settings-adapter.ts'
+import { createHostRemoteServices } from './host/ws-host-services.ts'
 import { PLUGIN_VERSION } from './shared/version.ts'
 
 /**
@@ -231,6 +232,10 @@ export async function apply(ctx: HostContext, config: Config = {}): Promise<void
   // /ws/mobile 的全局模型目录 / providers / 文件浏览需要 settings 与 files 适配器，
   // 它们在此刻才构造完成（晚于 RemoteApiServer），通过 setter 注入避免构造顺序环。
   remote.attachMobileHostServices({ settings, files })
+  // 定时任务 / 官方语音走内核 typertGateway Remote（DSH 0.2.1-rc.2+ 才有）。
+  // 同样是可选服务：reflect.get 取不到就不启用，WS 帧回结构化 unavailable 引导 REST。
+  const hostRemote = createHostRemoteServices(reflect)
+  remote.attachMobileRemoteServices(hostRemote.services)
   router = new ApiRouter({
     database,
     auth,
@@ -313,6 +318,7 @@ export async function apply(ctx: HostContext, config: Config = {}): Promise<void
   ctx.effect(() => async () => {
     disposeEmbedded()
     await remote.stop()
+    await hostRemote.dispose()
     database.close()
   }, 'dsh-remote-bridge lifecycle')
   const status = remote.status()

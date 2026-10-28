@@ -12,6 +12,7 @@ import { FileService } from '../src/host/file-service.ts'
 import { ApiRouter } from '../src/host/router.ts'
 import { RemoteApiServer } from '../src/host/server.ts'
 import { DshSettingsAdapter } from '../src/host/settings-adapter.ts'
+import type { HostRemoteHandle } from '../src/host/ws-host-services.ts'
 
 const cleanup = new TestCleanup()
 const remotes: RemoteApiServer[] = []
@@ -26,7 +27,11 @@ afterEach(async () => {
 })
 
 /** 起一个带 /ws/mobile 的真实 server（port:0 随机端口），返回地址与夹具。 */
-async function startHarness(options: { initialMuxFrames?: unknown[] } = {}) {
+async function startHarness(options: {
+  initialMuxFrames?: unknown[]
+  hostRemote?: HostRemoteHandle | undefined
+  projection?: 'sequenced' | 'migration' | 'null'
+} = {}) {
   const base = await mkdtemp(path.join(os.tmpdir(), 'daw-mgw-'))
   cleanup.dir(base)
   const project = path.join(base, 'project')
@@ -37,7 +42,7 @@ async function startHarness(options: { initialMuxFrames?: unknown[] } = {}) {
   const events = new WorkspaceEventBus()
   const auth = new AuthService(database)
   const files = new FileService(database, event => events.emit(event))
-  const chat = new DshChatAdapter(fakeApi(options.initialMuxFrames ?? []) as never, database)
+  const chat = new DshChatAdapter(fakeApi(options.initialMuxFrames ?? [], options.projection ?? 'sequenced') as never, database)
   const settings = new DshSettingsAdapter(fakeApi() as never)
   let router!: ApiRouter
   const remote = new RemoteApiServer({
@@ -51,6 +56,8 @@ async function startHarness(options: { initialMuxFrames?: unknown[] } = {}) {
   router = new ApiRouter({ database, auth, files, chat, settings, remote, maxUploadBytes: 1024 })
   // 与 src/index.ts 装配一致：注入全局模型目录与文件浏览依赖。
   remote.attachMobileHostServices({ settings, files })
+  // 定时任务 / 官方语音的可选内核远程服务；缺省时相关帧回结构化 unavailable。
+  remote.attachMobileRemoteServices(options.hostRemote)
   await remote.start()
   remotes.push(remote)
   const url = `ws://127.0.0.1:${remote.status().port}/ws/mobile`
@@ -458,7 +465,182 @@ describe('mobile gateway WebSocket (/ws/mobile) — global catalog & files', () 
   })
 })
 
-function fakeApi(initialMuxFrames: unknown[] = []) {
+describe('mobile gateway WebSocket (/ws/mobile) — agent team & subagents', () => {
+  async function authed(database: WorkspaceDatabase, rootId: string, url: string, scopes: string[] = ['chat.read']) {
+    const pairing = database.createPairing([rootId], scopes as never)
+    const credentials = database.exchangePairing(pairing.code, 'Mobile device')
+    const socket = connect(url, {
+      protocols: 'dsh-mobile-v1',
+      headers: { Authorization: `Bearer ${credentials.token}` },
+    })
+    const { frames } = collect(socket)
+    await new Promise<void>((resolve, reject) => {
+      socket.once('open', resolve)
+      socket.once('error', reject)
+    })
+    await nextKind(frames, 'hello')
+    return { socket, frames }
+  }
+
+  it('returns the ready agent-team projection with members and tasks', async () => {
+    const { database, root, url } = await startHarness()
+    const { socket, frames } = await authed(database, root.id, url)
+    socket.send(JSON.stringify({ type: 'agent-team', sessionId: 'sess-1', requestId: 'r1' }))
+    await nextKind(frames, 'agent-team')
+    const reply = frames.find(frame => frame.kind === 'agent-team')?.data as
+      { projectionState?: string; asOfSeq?: number; agentTeam?: { members: unknown[]; tasks: unknown[] }; requestId?: string }
+    expect(reply.projectionState).toBe('ready')
+    expect(reply.asOfSeq).toBe(7)
+    expect(reply.agentTeam?.members).toHaveLength(1)
+    expect(reply.agentTeam?.tasks).toHaveLength(1)
+    expect(reply.requestId).toBe('r1')
+    socket.close()
+  })
+
+  it('returns the ready subagents catalog projection', async () => {
+    const { database, root, url } = await startHarness()
+    const { socket, frames } = await authed(database, root.id, url)
+    socket.send(JSON.stringify({ type: 'subagents', sessionId: 'sess-1', requestId: 'r2' }))
+    await nextKind(frames, 'subagents')
+    const reply = frames.find(frame => frame.kind === 'subagents')?.data as
+      { projectionState?: string; subagentCatalog?: unknown[] }
+    expect(reply.projectionState).toBe('ready')
+    expect(Array.isArray(reply.subagentCatalog)).toBe(true)
+    socket.close()
+  })
+
+  it('reports migration-required without projection data', async () => {
+    const { database, root, url } = await startHarness({ projection: 'migration' })
+    const { socket, frames } = await authed(database, root.id, url)
+    socket.send(JSON.stringify({ type: 'agent-team', sessionId: 'sess-1' }))
+    await nextKind(frames, 'agent-team')
+    const reply = frames.find(frame => frame.kind === 'agent-team')?.data as { projectionState?: string; agentTeam?: unknown }
+    expect(reply.projectionState).toBe('migration-required')
+    expect(reply.agentTeam).toBeUndefined()
+    socket.close()
+  })
+
+  it('errors when sessionId is missing', async () => {
+    const { database, root, url } = await startHarness()
+    const { socket, frames } = await authed(database, root.id, url)
+    socket.send(JSON.stringify({ type: 'agent-team' }))
+    await nextKind(frames, 'error')
+    const error = frames.find(frame => frame.kind === 'error')?.data as { requestType?: string }
+    expect(error.requestType).toBe('agent-team')
+    socket.close()
+  })
+})
+
+describe('mobile gateway WebSocket (/ws/mobile) — schedule & speech remote fallback', () => {
+  /** 记录调用的假远程服务句柄。 */
+  function fakeRemote(overrides: Partial<Record<string, unknown>> = {}): { handle: HostRemoteHandle; calls: Array<{ namespace: string; method: string }> } {
+    const calls: Array<{ namespace: string; method: string }> = []
+    const handle: HostRemoteHandle = {
+      invoke: async (namespace, method) => {
+        calls.push({ namespace, method })
+        if (namespace === 'schedule') return { items: [] }
+        if (namespace === 'speech' && method === 'catalog') {
+          return { providers: [{ id: 'p1' }], selection: { providerId: 'p1' }, maxAudioBytes: 1_000_000, maxDurationSeconds: 30 }
+        }
+        return overrides[method] ?? { ok: true }
+      },
+      stream: async () => (async function* () {
+        yield { providers: [{ id: 'p1' }], selection: { providerId: 'p1' }, maxAudioBytes: 1_000_000, maxDurationSeconds: 30 }
+      })(),
+    }
+    return { handle, calls }
+  }
+
+  async function authed(database: WorkspaceDatabase, rootId: string, url: string) {
+    const pairing = database.createPairing([rootId], ['chat.read'] as never)
+    const credentials = database.exchangePairing(pairing.code, 'Mobile device')
+    const socket = connect(url, {
+      protocols: 'dsh-mobile-v1',
+      headers: { Authorization: `Bearer ${credentials.token}` },
+    })
+    const { frames } = collect(socket)
+    await new Promise<void>((resolve, reject) => {
+      socket.once('open', resolve)
+      socket.once('error', reject)
+    })
+    await nextKind(frames, 'hello')
+    return { socket, frames }
+  }
+
+  it('proxies schedule-catalog to the kernel schedule Remote when available', async () => {
+    const remote = fakeRemote()
+    const { database, root, url } = await startHarness({ hostRemote: remote.handle })
+    const { socket, frames } = await authed(database, root.id, url)
+    socket.send(JSON.stringify({ type: 'schedule-catalog', requestId: 'sc1' }))
+    await nextKind(frames, 'schedule-catalog')
+    const reply = frames.find(frame => frame.kind === 'schedule-catalog')?.data as { items?: unknown[]; requestId?: string }
+    expect(Array.isArray(reply.items)).toBe(true)
+    expect(reply.requestId).toBe('sc1')
+    expect(remote.calls).toContainEqual({ namespace: 'schedule', method: 'catalog' })
+    socket.close()
+  })
+
+  it('returns structured schedule/unavailable when the kernel has no schedule service', async () => {
+    const { database, root, url } = await startHarness({ hostRemote: undefined })
+    const { socket, frames } = await authed(database, root.id, url)
+    socket.send(JSON.stringify({ type: 'schedule-catalog' }))
+    await nextKind(frames, 'error')
+    const error = frames.find(frame => frame.kind === 'error')?.data as { code?: string; requestType?: string }
+    expect(error.code).toBe('schedule/unavailable')
+    expect(error.requestType).toBe('schedule-catalog')
+    socket.close()
+  })
+
+  it('validates schedule-update requires a complete expected record with matching id', async () => {
+    const remote = fakeRemote()
+    const { database, root, url } = await startHarness({ hostRemote: remote.handle })
+    const { socket, frames } = await authed(database, root.id, url)
+    socket.send(JSON.stringify({ type: 'schedule-update', sessionId: 'sess-1', id: 'job-1', expected: { id: 'different' } }))
+    await nextKind(frames, 'error')
+    const error = frames.find(frame => frame.kind === 'error')?.data as { code?: string }
+    expect(error.code).toBe('BAD_REQUEST')
+    socket.close()
+  })
+
+  it('proxies speech-catalog and clamps the official maxAudioBytes to the gateway limit', async () => {
+    const big = fakeRemote()
+    // 官方目录给一个超过本网关 4 MiB 的值，应被夹到网关上限。
+    big.handle.invoke = async () => ({ providers: [], selection: null, maxAudioBytes: 100 * 1024 * 1024, maxDurationSeconds: 60 })
+    const { database, root, url } = await startHarness({ hostRemote: big.handle })
+    const { socket, frames } = await authed(database, root.id, url)
+    socket.send(JSON.stringify({ type: 'speech-catalog', requestId: 'sp1' }))
+    await nextKind(frames, 'speech-catalog')
+    const reply = frames.find(frame => frame.kind === 'speech-catalog')?.data as { maxAudioBytes?: number; available?: boolean }
+    expect(reply.available).toBe(true)
+    expect(reply.maxAudioBytes).toBeLessThanOrEqual(4 * 1024 * 1024)
+    socket.close()
+  })
+
+  it('returns available:false speech-catalog when the kernel has no speech service', async () => {
+    const { database, root, url } = await startHarness({ hostRemote: undefined })
+    const { socket, frames } = await authed(database, root.id, url)
+    socket.send(JSON.stringify({ type: 'speech-catalog', requestId: 'sp3' }))
+    await nextKind(frames, 'speech-catalog')
+    const reply = frames.find(frame => frame.kind === 'speech-catalog')?.data as { available?: boolean; code?: string }
+    expect(reply.available).toBe(false)
+    expect(reply.code).toBe('speech/unavailable')
+    socket.close()
+  })
+
+  it('rejects a speech-transcribe frame with no audio via structured error', async () => {
+    const remote = fakeRemote()
+    const { database, root, url } = await startHarness({ hostRemote: remote.handle })
+    const { socket, frames } = await authed(database, root.id, url)
+    socket.send(JSON.stringify({ type: 'speech-transcribe', requestId: 'sp2' }))
+    await nextKind(frames, 'error')
+    const error = frames.find(frame => frame.kind === 'error')?.data as { code?: string; requestType?: string }
+    expect(error.code).toBe('speech/invalid-audio')
+    expect(error.requestType).toBe('speech-transcribe')
+    socket.close()
+  })
+})
+
+function fakeApi(initialMuxFrames: unknown[] = [], projection: 'sequenced' | 'migration' | 'null' = 'sequenced') {
   const empty = async function* () {
     // no live events in this test
   }
@@ -489,6 +671,28 @@ function fakeApi(initialMuxFrames: unknown[] = []) {
         rpcId: request.rpcId,
         result: { ok: true, value: { sessionId: `fork-of-${request.payload.sessionId}` } },
       }),
+      projections: async (request: { rpcId: string }) => {
+        if (projection === 'null') {
+          return { rpcId: request.rpcId, result: { ok: true, value: null } }
+        }
+        if (projection === 'migration') {
+          return { rpcId: request.rpcId, result: { ok: true, value: { kind: 'migration-required', values: {} } } }
+        }
+        return {
+          rpcId: request.rpcId,
+          result: {
+            ok: true,
+            value: {
+              kind: 'sequenced',
+              asOfSeq: 7,
+              values: {
+                agentTeam: { members: [{ id: 'lead' }], tasks: [{ id: 't1' }] },
+                subagentCatalog: [{ sessionId: 'sub-1' }],
+              },
+            },
+          },
+        }
+      },
     },
     workspace: {
       list: async (request: { rpcId: string }) => ({

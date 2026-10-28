@@ -192,6 +192,14 @@ export class RemoteApiServer implements RemoteControl {
     this.wsMobile.attachHostServices(services)
   }
 
+  /**
+   * 注入内核可选远程服务（typertGateway + owner peer），用于定时任务与官方语音 WS 代理。
+   * 传入 undefined（老内核无这两个服务）时相关帧回结构化 unavailable，引导 REST 兜底。
+   */
+  attachMobileRemoteServices(remote: Parameters<MobileGatewayWsHandler['attachRemoteServices']>[0]): void {
+    this.wsMobile.attachRemoteServices(remote)
+  }
+
   async start(): Promise<void> {
     this.remoteEnabled = this.options.database.getSetting('remote_enabled') === 'true'
     const requestedHost = this.remoteEnabled ? this.configuredHost : loopbackFor(this.configuredHost)
