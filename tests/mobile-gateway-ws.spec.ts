@@ -688,6 +688,19 @@ function fakeApi(initialMuxFrames: unknown[] = [], projection: 'sequenced' | 'mi
               values: {
                 agentTeam: { members: [{ id: 'lead' }], tasks: [{ id: 't1' }] },
                 subagentCatalog: [{ sessionId: 'sub-1' }],
+                todos: [
+                  { content: '检查 Android SDK', status: 'completed' },
+                  { content: '构建 APK', status: 'in_progress' },
+                ],
+                goal: {
+                  goal: { id: 'goal-1', revision: 7, objective: '初始化一个 Android app', phase: 'active', maxGoalRounds: 12 },
+                  roundsStarted: 3,
+                  createdAt: 1787111700000,
+                  updatedAt: 1787111800000,
+                },
+                tokenUsage: { totals: { inputTokens: 10, outputTokens: 5, cacheReadTokens: 1, cacheWriteTokens: 0, reasoningTokens: 0 } },
+                contextPressure: { contextWindow: 128000, pressureTokens: 1500, surfaceTokens: 2000 },
+                sessionStats: { turns: 6, steps: 69, llmMs: 2280000, decodeTokens: 385 },
               },
             },
           },
@@ -747,3 +760,157 @@ function fakeApi(initialMuxFrames: unknown[] = [], projection: 'sequenced' | 'mi
     },
   }
 }
+
+describe('mobile gateway WebSocket (/ws/mobile) — tasks, goal & session stats projections', () => {
+  async function authed(database: WorkspaceDatabase, rootId: string, url: string) {
+    const pairing = database.createPairing([rootId], ['chat.read', 'chat.write'] as never)
+    const credentials = database.exchangePairing(pairing.code, 'Mobile device')
+    const socket = connect(url, {
+      protocols: 'dsh-mobile-v1',
+      headers: { Authorization: `Bearer ${credentials.token}` },
+    })
+    const { frames } = collect(socket)
+    await new Promise<void>((resolve, reject) => {
+      socket.once('open', resolve)
+      socket.once('error', reject)
+    })
+    await nextKind(frames, 'hello')
+    return { socket, frames }
+  }
+
+  /** 记录 goals 调用的假内核远程句柄。 */
+  function goalsRemote(): { handle: HostRemoteHandle; calls: Array<{ method: string; args: Record<string, unknown> }> } {
+    const calls: Array<{ method: string; args: Record<string, unknown> }> = []
+    const handle: HostRemoteHandle = {
+      invoke: async (_ns, method, args) => {
+        calls.push({ method, args: args ?? {} })
+        if (method === 'clear') return undefined
+        return { ref: { id: 'goal-1', revision: 8 } }
+      },
+      stream: async () => (async function* () { yield {} })(),
+    }
+    return { handle, calls }
+  }
+
+  it('returns the todos projection for tasks', async () => {
+    const { database, root, url } = await startHarness()
+    const { socket, frames } = await authed(database, root.id, url)
+    socket.send(JSON.stringify({ type: 'tasks', sessionId: 'sess-1', requestId: 't1' }))
+    await nextKind(frames, 'tasks')
+    const reply = frames.find(frame => frame.kind === 'tasks')?.data as
+      { asOfSeq?: number; todos?: Array<{ content: string; status: string }>; requestId?: string }
+    expect(reply.asOfSeq).toBe(7)
+    expect(reply.todos?.map(todo => todo.status)).toEqual(['completed', 'in_progress'])
+    expect(reply.requestId).toBe('t1')
+    socket.close()
+  })
+
+  it('returns the current goal projection', async () => {
+    const { database, root, url } = await startHarness()
+    const { socket, frames } = await authed(database, root.id, url)
+    socket.send(JSON.stringify({ type: 'goal', sessionId: 'sess-1' }))
+    await nextKind(frames, 'goal')
+    const reply = frames.find(frame => frame.kind === 'goal')?.data as
+      { goal?: { goal: { id: string; revision: number } } }
+    expect(reply.goal?.goal.id).toBe('goal-1')
+    expect(reply.goal?.goal.revision).toBe(7)
+    socket.close()
+  })
+
+  it('returns session-stats with all three projection keys and context-usage without sessionStats', async () => {
+    const { database, root, url } = await startHarness()
+    const { socket, frames } = await authed(database, root.id, url)
+    socket.send(JSON.stringify({ type: 'session-stats', sessionId: 'sess-1' }))
+    await nextKind(frames, 'session-stats')
+    const stats = frames.find(frame => frame.kind === 'session-stats')?.data as
+      { sessionStats?: { turns: number }; tokenUsage?: unknown; contextPressure?: unknown }
+    expect(stats.sessionStats?.turns).toBe(6)
+    expect(stats.tokenUsage).toBeDefined()
+    expect(stats.contextPressure).toBeDefined()
+
+    socket.send(JSON.stringify({ type: 'context-usage', sessionId: 'sess-1' }))
+    await nextKind(frames, 'context-usage')
+    const usage = frames.find(frame => frame.kind === 'context-usage')?.data as
+      { sessionStats?: unknown; tokenUsage?: unknown; contextPressure?: unknown }
+    expect(usage.sessionStats).toBeUndefined()
+    expect(usage.tokenUsage).toBeDefined()
+    expect(usage.contextPressure).toBeDefined()
+    socket.close()
+  })
+
+  it('requires sessionId for tasks', async () => {
+    const { database, root, url } = await startHarness()
+    const { socket, frames } = await authed(database, root.id, url)
+    socket.send(JSON.stringify({ type: 'tasks' }))
+    await nextKind(frames, 'error')
+    const error = frames.find(frame => frame.kind === 'error')?.data as { code?: string }
+    expect(error.code).toBe('bad-request')
+    socket.close()
+  })
+
+  it('proxies goal-edit to the kernel goals Remote with compare-and-set ref', async () => {
+    const remote = goalsRemote()
+    const { database, root, url } = await startHarness({ hostRemote: remote.handle })
+    const { socket, frames } = await authed(database, root.id, url)
+    socket.send(JSON.stringify({
+      type: 'goal-edit',
+      sessionId: 'sess-1',
+      ref: { id: 'goal-1', revision: 7 },
+      objective: '新目标',
+      maxGoalRounds: 12,
+    }))
+    await nextKind(frames, 'goal-edit')
+    const reply = frames.find(frame => frame.kind === 'goal-edit')?.data as
+      { ref?: { id: string; revision: number } }
+    expect(reply.ref).toEqual({ id: 'goal-1', revision: 8 })
+    expect(remote.calls[0]).toMatchObject({
+      method: 'edit',
+      args: {
+        agentId: 'sess-1',
+        ref: { id: 'goal-1', revision: 7 },
+        request: { objective: '新目标', maxGoalRounds: 12 },
+      },
+    })
+    socket.close()
+  })
+
+  it('proxies goal-pause and goal-clear, and rejects a missing/invalid ref', async () => {
+    const remote = goalsRemote()
+    const { database, root, url } = await startHarness({ hostRemote: remote.handle })
+    const { socket, frames } = await authed(database, root.id, url)
+
+    socket.send(JSON.stringify({ type: 'goal-clear', sessionId: 'sess-1', ref: { id: 'goal-1', revision: 7 } }))
+    await nextKind(frames, 'goal-clear')
+    expect(frames.find(frame => frame.kind === 'goal-clear')?.data).toMatchObject({ cleared: true })
+
+    socket.send(JSON.stringify({ type: 'goal-pause', sessionId: 'sess-1' }))
+    await nextKind(frames, 'error')
+    const error = frames.filter(frame => frame.kind === 'error').pop()?.data as
+      { code?: string; requestType?: string }
+    expect(error.code).toBe('bad-request')
+    expect(error.requestType).toBe('goal-pause')
+
+    expect(remote.calls.map(call => call.method)).toEqual(['clear'])
+    socket.close()
+  })
+
+  it('returns unsupported for goal mutations when the kernel has no goals Remote', async () => {
+    const { database, root, url } = await startHarness({ hostRemote: undefined })
+    const { socket, frames } = await authed(database, root.id, url)
+    socket.send(JSON.stringify({ type: 'goal-pause', sessionId: 'sess-1', ref: { id: 'goal-1', revision: 7 } }))
+    await nextKind(frames, 'error')
+    const error = frames.find(frame => frame.kind === 'error')?.data as { code?: string }
+    expect(error.code).toBe('unsupported')
+    socket.close()
+  })
+
+  it('still serves goal reads when the kernel has no goals Remote', async () => {
+    const { database, root, url } = await startHarness({ hostRemote: undefined })
+    const { socket, frames } = await authed(database, root.id, url)
+    socket.send(JSON.stringify({ type: 'goal', sessionId: 'sess-1' }))
+    await nextKind(frames, 'goal')
+    const reply = frames.find(frame => frame.kind === 'goal')?.data as { goal?: unknown }
+    expect(reply.goal).toBeDefined()
+    socket.close()
+  })
+})

@@ -298,7 +298,7 @@ host services 之上重建 0.1.x 的 `apiProxy` 面容，让 `chat-adapter` / `s
 | `src/host/ws-commands.ts` | file | 移动端网关 WS 命令域（commands/command-execute，/ws/mobile） |
 | `src/host/ws-event-bridge.ts` | file | 移动端网关 WS 事件桥：订阅事件总线，按主体授权过滤后主动推 {kind:'event'}（/ws/mobile） |
 | `src/host/ws-files.ts` | file | 移动端网关 WS 文件浏览域（file-list，授权根内目录列举与分页，/ws/mobile） |
-| `src/host/ws-goals.ts` | file | 移动端网关 WS 任务/目标域（tasks/goal，/ws/mobile，暂 REST 兜底） |
+| `src/host/ws-goals.ts` | file | 移动端网关 WS 任务/目标/统计域（tasks/goal/session-stats/context-usage 读会话投影；goal-* 写代理内核 goals Remote，缺失回 unsupported） |
 | `src/host/ws-handler.ts` | file | 移动端网关 WebSocket（/ws/mobile）：子协议 dsh-pair/dsh-auth，hello 帧，双向请求/响应 |
 | `src/host/ws-hitl.ts` | file | 移动端网关 WS 人机交互域（approval-response/question-answer，/ws/mobile） |
 | `src/host/ws-host-services.ts` | file | 可选内核远程服务封装（typertGateway+owner peer，定时任务/语音代理用，缺失即降级） |

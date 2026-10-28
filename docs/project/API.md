@@ -725,9 +725,10 @@ v2.8 新增。独立于现有 `/api/v1/events`（单向广播，保留不动）�
 | `command-execute` | 执行斜杠命令 | `line`, `ui.kind` ('immediate'|'input'|'select'), `source` ('host'|'skill') |
 | `select-model` | 切换当前会话模型 | `sessionId`, `provider`, `model`, `reasoningEffort?` |
 | `permission-options` / `permission` | 权限档位 | — |
-| `context-usage` | 上下文占用 | `sessionId` |
-| `session-stats` | 会话统计 | `sessionId` |
-| `tasks` / `goal` / `goal-edit` / `goal-pause` / `goal-resume` / `goal-clear` | 任务/目标投影 | `sessionId`, `asOfSeq?` |
+| `context-usage` | token 用量 + 上下文占用投影 | `sessionId`；读会话投影 `tokenUsage`/`contextPressure` |
+| `session-stats` | 会话执行统计（输入框统计条） | `sessionId`；读投影 `sessionStats`/`tokenUsage`/`contextPressure` |
+| `tasks` / `goal` | 任务列表/当前目标基线（只读会话投影） | `sessionId`；回 `asOfSeq` + `todos`/`goal`，未写入过为 `null` |
+| `goal-edit` / `goal-pause` / `goal-resume` / `goal-clear` | 当前目标写操作（compare-and-set） | `sessionId`, `ref:{id,revision}`，edit 另带 `objective?`/`maxGoalRounds?`；代理内核 goals Remote，老内核回 `unsupported` 走 REST |
 | `plugin-catalog` / `plugin-inspect` / `plugin-install` / `plugin-settings` | 插件管理（paired 控制连接） | — |
 | `agent-presets` / `defaults` / `set-default` | Agent 预设 | — |
 | `question-answer` / `question-cancel` | HITL 提问回应 | `callId`, `answer` |
@@ -754,7 +755,8 @@ v2.8 新增。独立于现有 `/api/v1/events`（单向广播，保留不动）�
 | `session-archived` / `session-renamed` / `session-archives` / `session-title-changed` | 会话生命周期 |
 | `error` | 错误（不回显绝对路径） |
 | `event` | 内部事件透传（与 `/api/v1/events` 同源，受 scope/授权过滤） |
-| `tasks` / `goal` / `goal-edit` / `goal-pause` / `goal-resume` / `goal-clear` / `tasks-updated` / `goal-updated` | 目标/任务投影 |
+| `tasks` / `goal` / `goal-edit` / `goal-pause` / `goal-resume` / `goal-clear` / `tasks-updated` / `goal-updated` | 任务/目标投影（tasks/goal 读基线，goal-* 为写应答带新 `ref` 或 `cleared:true`；updated 主动推送本期未发，客户端仍可轮询读帧） |
+| `session-stats` / `context-usage` | 会话统计与上下文占用投影响应 |
 | `question-requested` / `question-response` / `question-resolved` | HITL 提问（server→client 主动推送） |
 | `approval-requested` / `approval-response` / `approval-resolved` | HITL 审批（server→client 主动推送；outcome `allowed-once`\|`rejected`，不支持始终允许） |
 | `agent-team` / `subagents` | 团队/子会话投影响应（随 `projectionState` 与 `asOfSeq`） |

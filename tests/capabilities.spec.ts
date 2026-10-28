@@ -65,6 +65,11 @@ const EVIDENCE: Record<string, { openapi?: string[]; asyncapi?: string[] }> = {
   },
   'turn-failure-v1': { asyncapi: ['chat.turn.failed'] },
   'session-snapshot-v1': { asyncapi: ['chat.session.snapshot'] },
+  // /ws/mobile 会话投影读取（tasks/goal/session-stats/context-usage）：与 history 同源
+  // （都读内核 session/projections），不新增 REST 路径，属行为面，故无契约字面量可指。
+  'mobile-tasks-v1': {},
+  'mobile-goal-read-v1': {},
+  'mobile-session-stats-v1': {},
   // 这两条是**行为保证**，不新增路径/事件，因此没有契约字面量可指：
   // 它们的依据在源码（history-budget.ts / chat-adapter 的 replay 方法）与 API.md 的说明里。
   'history-byte-budget-v1': {},

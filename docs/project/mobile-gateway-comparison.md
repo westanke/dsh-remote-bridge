@@ -201,12 +201,14 @@ src/host/
 | `a7ab580` | fork、workspace-create（双侧 realpath 归一 + 幂等 created:false）双向帧 |
 | `10796a3` | 连接建立重放待处理 approval/question（与 /api/v1/events 同保证，replayed:true） |
 | `1991147` | file-list（授权根内列举+分页+双侧 realpath 防逃逸）、全局模型目录/providers/permission-options 走 WS |
-| 本次（未提交） | **P4 三块落地**：`ws-team.ts`（agent-team/subagents 读会话投影，projectionState 三态）、`ws-schedule.ts`（schedule-* 代理内核 schedule Remote）、`ws-speech.ts`（speech-* 代理内核 speech Remote，4 MiB/全局 4 并发/180s/连接关闭清理）、`ws-host-services.ts`（typertGateway+owner peer 可选封装，缺失即降级）；新增 chat-adapter `sessionProjections()` + apiProxy `sessions.projections` |
+| `f1dd82b` | **P4 三块落地**：`ws-team.ts`（agent-team/subagents 读会话投影，projectionState 三态）、`ws-schedule.ts`（schedule-* 代理内核 schedule Remote）、`ws-speech.ts`（speech-* 代理内核 speech Remote，4 MiB/全局 4 并发/180s/连接关闭清理）、`ws-host-services.ts`（typertGateway+owner peer 可选封装，缺失即降级）；新增 chat-adapter `sessionProjections()` + apiProxy `sessions.projections` |
+| 本次（未提交） | **任务/目标/统计落地**：`ws-goals.ts` 重写——`tasks`/`goal`/`session-stats`/`context-usage` 读会话投影（todos/goal/sessionStats/tokenUsage/contextPressure，缺失键回 null），`goal-edit/pause/resume/clear` 代理内核 `goals` Remote（namespace `goals`，`{agentId,ref,request?}`，CAS 校验 ref.id+revision），无 Remote 回 `unsupported` 指引 REST；新增能力位 mobile-tasks-v1/mobile-goal-read-v1/mobile-session-stats-v1；8 个新合约测试 |
 
 模块文件（均 ≤600 行，STRUCTURE/INTERFACES 锚点已登记）：
 `ws-protocol.ts`（协议常量/帧类型/编解码）、`ws-handler.ts`（握手/鉴权/分发/背压/HITL 重放）、
 `ws-event-bridge.ts`（事件总线→授权过滤→主动推送）、`ws-sessions.ts`、`ws-hitl.ts`、
-`ws-models.ts`、`ws-commands.ts`、`ws-presets.ts`、`ws-goals.ts`（占位 REST 兜底）。
+`ws-models.ts`、`ws-commands.ts`、`ws-presets.ts`、`ws-goals.ts`（tasks/goal/stats 读投影 + goal 写代理）、
+`ws-team.ts`、`ws-schedule.ts`、`ws-speech.ts`、`ws-host-services.ts`。
 
 设计要点：
 - **WS 优选**：App 连上后，消息/列表/历史/HITL 决策/命令/模型/事件推送全部走单条 WS；

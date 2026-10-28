@@ -479,6 +479,7 @@ export const PLUGIN_VERSION: string          // shared/version.ts，与 package.
 | `attachHostServices` | `src/host/ws-handler.ts` | method（注入全局模型目录与文件浏览依赖） |
 | `attachRemoteServices` | `src/host/ws-handler.ts` | method（注入内核可选 typert 远程服务，定时任务/语音代理） |
 | `export class TeamHandler` | `src/host/ws-team.ts` | class |
+| `export class GoalsHandler` | `src/host/ws-goals.ts` | class（投影读 + goals Remote 写） |
 | `export class ScheduleHandler` | `src/host/ws-schedule.ts` | class |
 | `export class SpeechHandler` | `src/host/ws-speech.ts` | class |
 | `export function createHostRemoteServices` | `src/host/ws-host-services.ts` | function |

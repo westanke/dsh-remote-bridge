@@ -87,6 +87,10 @@ export const BRIDGE_CAPABILITIES: readonly string[] = [
   'history-byte-budget-v1', // 见 history-budget.ts：超预算时从最旧端丢并置 hasMore
   'interaction-replay-v1', // 见 chat-adapter.replayPending*：新连接会补推仍待处理的审批/提问
   'session-snapshot-v1', // chat.session.snapshot：订阅基线（持久 seq 的切点），供断档检测
+  // —— /ws/mobile 会话投影读取（2026-10-28）：都读 session/projections，不需额外内核服务 ——
+  'mobile-tasks-v1', // WS tasks：当前任务列表（todos 投影），只读
+  'mobile-goal-read-v1', // WS goal：当前目标投影（读基线）；写操作还需内核 goals Remote
+  'mobile-session-stats-v1', // WS session-stats / context-usage：统计条与上下文占用投影
   // —— 后台任务（ctx.jobController，2026-10-20 加）——
   // 远程场景下「任务跑飞了停不掉」是真焦虑：人不在电脑前，卡住的 bash 任务只能干等。
   'job-list-v1', // GET /chat/sessions/{sessionId}/jobs

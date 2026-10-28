@@ -307,7 +307,7 @@ export class MobileGatewayWsHandler {
         models: new ModelsHandler(this.chat, (frame) => this.sendFrame(webSocket, frame)),
         commands: new CommandsHandler(this.chat, (frame) => this.sendFrame(webSocket, frame)),
         presets: new PresetsHandler(this.chat, (frame) => this.sendFrame(webSocket, frame)),
-        goals: new GoalsHandler((frame) => this.sendFrame(webSocket, frame)),
+        goals: new GoalsHandler(this.chat, (frame) => this.sendFrame(webSocket, frame), this.hostRemote),
         team: new TeamHandler(this.chat, (frame) => this.sendFrame(webSocket, frame)),
         // 定时任务处理器始终存在：缺内核服务时由其内部回 schedule/unavailable。
         schedule: new ScheduleHandler(this.hostRemote, (frame) => this.sendFrame(webSocket, frame)),
