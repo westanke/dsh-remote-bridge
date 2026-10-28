@@ -228,6 +228,9 @@ export async function apply(ctx: HostContext, config: Config = {}): Promise<void
     // `CAPABILITY_REQUIREMENTS`。
     capabilities: { jobs: jobControllerAvailable },
   })
+  // /ws/mobile 的全局模型目录 / providers / 文件浏览需要 settings 与 files 适配器，
+  // 它们在此刻才构造完成（晚于 RemoteApiServer），通过 setter 注入避免构造顺序环。
+  remote.attachMobileHostServices({ settings, files })
   router = new ApiRouter({
     database,
     auth,

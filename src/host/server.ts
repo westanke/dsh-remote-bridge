@@ -184,6 +184,14 @@ export class RemoteApiServer implements RemoteControl {
     )
   }
 
+  /**
+   * 注入全局模型目录与文件浏览依赖（index.ts 在 router 装配期调用）。
+   * 这两个域依赖晚于本类构造的 DshSettingsAdapter / FileService，故走 setter 而非构造参数。
+   */
+  attachMobileHostServices(services: Parameters<MobileGatewayWsHandler['attachHostServices']>[0]): void {
+    this.wsMobile.attachHostServices(services)
+  }
+
   async start(): Promise<void> {
     this.remoteEnabled = this.options.database.getSetting('remote_enabled') === 'true'
     const requestedHost = this.remoteEnabled ? this.configuredHost : loopbackFor(this.configuredHost)

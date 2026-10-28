@@ -49,6 +49,8 @@ async function startHarness(options: { initialMuxFrames?: unknown[] } = {}) {
     handle: (req, res) => router.handle(req, res),
   })
   router = new ApiRouter({ database, auth, files, chat, settings, remote, maxUploadBytes: 1024 })
+  // 与 src/index.ts 装配一致：注入全局模型目录与文件浏览依赖。
+  remote.attachMobileHostServices({ settings, files })
   await remote.start()
   remotes.push(remote)
   const url = `ws://127.0.0.1:${remote.status().port}/ws/mobile`
@@ -373,6 +375,89 @@ describe('mobile gateway WebSocket (/ws/mobile) — server push', () => {
   })
 })
 
+describe('mobile gateway WebSocket (/ws/mobile) — global catalog & files', () => {
+  async function connectAuthenticated(database: WorkspaceDatabase, rootId: string, scopes: string[], url: string) {
+    const pairing = database.createPairing([rootId], scopes as never)
+    const credentials = database.exchangePairing(pairing.code, 'Mobile device')
+    const socket = connect(url, {
+      protocols: 'dsh-mobile-v1',
+      headers: { Authorization: `Bearer ${credentials.token}` },
+    })
+    const { frames } = collect(socket)
+    await new Promise<void>((resolve, reject) => {
+      socket.once('open', resolve)
+      socket.once('error', reject)
+    })
+    await nextKind(frames, 'hello')
+    return { socket, frames }
+  }
+
+  it('returns the global model catalog over default-model (settings.catalog)', async () => {
+    const { database, root, url } = await startHarness()
+    const { socket, frames } = await connectAuthenticated(database, root.id, ['chat.read', 'settings.read'], url)
+    socket.send(JSON.stringify({ type: 'default-model' }))
+    await nextKind(frames, 'default-model')
+    const reply = frames.find(frame => frame.kind === 'default-model')
+    expect((reply?.data as { groups?: unknown[] }).groups).toEqual([{ id: 'openai', models: ['gpt-x'] }])
+    socket.close()
+  })
+
+  it('forbids default-model without settings.read scope', async () => {
+    const { database, root, url } = await startHarness()
+    const { socket, frames } = await connectAuthenticated(database, root.id, ['chat.read'], url)
+    socket.send(JSON.stringify({ type: 'default-model' }))
+    await nextKind(frames, 'error')
+    const error = frames.find(frame => frame.kind === 'error')
+    expect((error?.data as { code?: string }).code).toBe('FORBIDDEN_SCOPE')
+    socket.close()
+  })
+
+  it('returns permission options over permission-options', async () => {
+    const { database, root, url } = await startHarness()
+    const { socket, frames } = await connectAuthenticated(database, root.id, ['chat.read'], url)
+    socket.send(JSON.stringify({ type: 'permission-options' }))
+    await nextKind(frames, 'permission-options')
+    const reply = frames.find(frame => frame.kind === 'permission-options')
+    expect((reply?.data as { defaultPreset?: string }).defaultPreset).toBe('standard')
+    socket.close()
+  })
+
+  it('lists the authorized root directory over file-list', async () => {
+    const { mkdir: makeDir, writeFile } = await import('node:fs/promises')
+    const { database, root, url } = await startHarness()
+    await makeDir(path.join(root.realPath, 'sub'))
+    await writeFile(path.join(root.realPath, 'a.txt'), 'hi')
+    const { socket, frames } = await connectAuthenticated(database, root.id, ['chat.read', 'files.read'], url)
+    socket.send(JSON.stringify({ type: 'file-list', rootId: root.id, path: '' }))
+    await nextKind(frames, 'file-list')
+    const reply = frames.find(frame => frame.kind === 'file-list')
+    const data = reply?.data as { rootId?: string; entries?: Array<{ name: string; kind: string }> }
+    expect(data.rootId).toBe(root.id)
+    expect(data.entries?.map(entry => entry.name).sort()).toEqual(['a.txt', 'sub'])
+    socket.close()
+  })
+
+  it('forbids file-list without files.read scope', async () => {
+    const { database, root, url } = await startHarness()
+    const { socket, frames } = await connectAuthenticated(database, root.id, ['chat.read'], url)
+    socket.send(JSON.stringify({ type: 'file-list', rootId: root.id, path: '' }))
+    await nextKind(frames, 'error')
+    const error = frames.find(frame => frame.kind === 'error')
+    expect((error?.data as { code?: string }).code).toBe('FORBIDDEN_SCOPE')
+    socket.close()
+  })
+
+  it('rejects file-list for a path escaping the authorized roots', async () => {
+    const { database, root, url } = await startHarness()
+    const { socket, frames } = await connectAuthenticated(database, root.id, ['chat.read', 'files.read'], url)
+    socket.send(JSON.stringify({ type: 'file-list', path: path.resolve(root.realPath, '..', '..') }))
+    await nextKind(frames, 'error')
+    const error = frames.find(frame => frame.kind === 'error')
+    expect((error?.data as { code?: string }).code).toBe('PATH_OUTSIDE_ROOTS')
+    socket.close()
+  })
+})
+
 function fakeApi(initialMuxFrames: unknown[] = []) {
   const empty = async function* () {
     // no live events in this test
@@ -427,5 +512,34 @@ function fakeApi(initialMuxFrames: unknown[] = []) {
     },
     events: { mux: muxWithInitial, host: empty },
     userQuestions: { pendingAll: () => [] },
+    // 全局模型目录 / providers（DshSettingsAdapter 调用 llm.models / settings.describe / llm.providers）。
+    llm: {
+      models: async (request: { rpcId: string }) => ({
+        rpcId: request.rpcId,
+        result: { ok: true, value: { groups: [{ id: 'openai', models: ['gpt-x'] }], failures: [] } },
+      }),
+      providers: async (request: { rpcId: string }) => ({
+        rpcId: request.rpcId,
+        result: { ok: true, value: { providers: [] } },
+      }),
+    },
+    settings: {
+      describe: async (request: { rpcId: string }) => ({
+        rpcId: request.rpcId,
+        result: { ok: true, value: { writable: false, namespaces: [] } },
+      }),
+    },
+    credentials: {
+      describe: async (request: { rpcId: string }) => ({
+        rpcId: request.rpcId,
+        result: { ok: true, value: { credentials: {} } },
+      }),
+    },
+    permissionPresets: {
+      catalog: async (request: { rpcId: string }) => ({
+        rpcId: request.rpcId,
+        result: { ok: true, value: { options: [{ id: 'standard', label: 'Standard' }], defaultPreset: 'standard' } },
+      }),
+    },
   }
 }

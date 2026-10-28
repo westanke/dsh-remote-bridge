@@ -476,6 +476,9 @@ export const PLUGIN_VERSION: string          // shared/version.ts，与 package.
 | `export class ApiError` | `src/host/errors.ts` | class |
 | `export function stringifyWire` | `src/host/wire-json.ts` | function |
 | `export class MobileGatewayWsHandler` | `src/host/ws-handler.ts` | class |
+| `attachHostServices` | `src/host/ws-handler.ts` | method（注入全局模型目录与文件浏览依赖） |
+| `export class FilesHandler` | `src/host/ws-files.ts` | class |
+| `export class SettingsHandler` | `src/host/ws-settings.ts` | class |
 | `export class MobileEventBridge` | `src/host/ws-event-bridge.ts` | class |
 | `export function makeEventAuthorizer` | `src/host/ws-event-bridge.ts` | function |
 | `export const WS_PATH` | `src/host/ws-protocol.ts` | const |

@@ -33,7 +33,9 @@ export class ModelsHandler {
       case 'select-model':
         return await this.handleSelectModel(principal, frame as SelectModelFrame)
       case 'default-model':
-        this.sendFrame({ kind: 'error', data: { code: 'NOT_IMPLEMENTED', message: 'default-model over WS needs no-session global catalog; use REST GET /api/v1/settings/providers as fallback.' } })
+        // 全局默认/目录由 ws-settings（排在分发链前）处理；走到这里说明 settings 未注入，
+        // 明确指引 REST 兜底而不是静默吞掉。
+        this.sendFrame({ kind: 'error', data: { code: 'NOT_IMPLEMENTED', message: 'global model catalog unavailable; use REST GET /api/v1/settings/providers as fallback.' } })
         return true
       case 'save-default-model':
         this.sendFrame({ kind: 'error', data: { code: 'NOT_IMPLEMENTED', message: 'save-default-model over WS is not available; use REST POST /api/v1/settings/providers as fallback.' } })

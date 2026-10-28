@@ -39,6 +39,8 @@ import { ModelsHandler } from './ws-models.ts'
 import { CommandsHandler } from './ws-commands.ts'
 import { PresetsHandler } from './ws-presets.ts'
 import { GoalsHandler } from './ws-goals.ts'
+import { FilesHandler } from './ws-files.ts'
+import { SettingsHandler } from './ws-settings.ts'
 import { MobileEventBridge, makeEventAuthorizer } from './ws-event-bridge.ts'
 
 // ───────────────────────── 状态机 ─────────────────────────
@@ -64,6 +66,8 @@ interface MobileSocketState {
     commands: CommandsHandler
     presets: PresetsHandler
     goals: GoalsHandler
+    files?: FilesHandler
+    settings?: SettingsHandler
   }
 }
 
@@ -74,6 +78,26 @@ const SOCKET_QUEUE_LIMIT = 512
 
 export class MobileGatewayWsHandler {
   private readonly sockets = new Map<WebSocket, MobileSocketState>()
+  private settingsService: {
+    catalog: () => Promise<{ groups: unknown[]; failures: unknown[] }>
+    listProviders: () => Promise<unknown>
+  } | undefined
+  private filesService: {
+    list: (root: import('./database.ts').StoredRoot, relativePath: string, limit?: number, cursor?: string) => Promise<unknown>
+  } | undefined
+
+  /**
+   * 装配全局模型目录与文件浏览依赖。这两个域需要 DshSettingsAdapter / FileService，
+   * 它们在 index.ts 里晚于 RemoteApiServer 构造（router 装配期），故用 setter 注入，
+   * 而不是塞进构造函数（避免 server↔router 的构造顺序环）。
+   */
+  attachHostServices(services: {
+    settings: MobileGatewayWsHandler['settingsService']
+    files: MobileGatewayWsHandler['filesService']
+  }): void {
+    this.settingsService = services.settings
+    this.filesService = services.files
+  }
 
   constructor(
     private readonly database: WorkspaceDatabase,
@@ -254,6 +278,12 @@ export class MobileGatewayWsHandler {
         commands: new CommandsHandler(this.chat, (frame) => this.sendFrame(webSocket, frame)),
         presets: new PresetsHandler(this.chat, (frame) => this.sendFrame(webSocket, frame)),
         goals: new GoalsHandler((frame) => this.sendFrame(webSocket, frame)),
+        ...(this.filesService === undefined ? {} : {
+          files: new FilesHandler(this.database, this.filesService, (frame) => this.sendFrame(webSocket, frame)),
+        }),
+        ...(this.settingsService === undefined ? {} : {
+          settings: new SettingsHandler(this.chat, (frame) => this.sendFrame(webSocket, frame), this.settingsService),
+        }),
       },
     }
 
@@ -375,10 +405,13 @@ export class MobileGatewayWsHandler {
     const { handlers } = state
     if (await handlers.sessions.handle(state.principal, clientFrame)) return
     if (await handlers.hitl.handle(state.principal, clientFrame)) return
+    // 全局目录（无会话 default-model/providers/permission-options）先于会话模型处理器。
+    if (handlers.settings !== undefined && await handlers.settings.handle(state.principal, clientFrame)) return
     if (await handlers.models.handle(state.principal, clientFrame)) return
     if (await handlers.commands.handle(state.principal, clientFrame)) return
     if (await handlers.presets.handle(state.principal, clientFrame)) return
     if (await handlers.goals.handle(state.principal, clientFrame)) return
+    if (handlers.files !== undefined && await handlers.files.handle(state.principal, clientFrame)) return
 
     this.sendError(webSocket, 'UNKNOWN_TYPE', `Unknown frame type: ${type}`)
   }
