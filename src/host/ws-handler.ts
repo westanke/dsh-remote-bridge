@@ -63,6 +63,8 @@ interface MobileSocketState {
   helloSent: boolean
   /** 连接唯一标识（文件传输归属隔离用）。 */
   connectionKey: string
+  /** 本条连接接入的监听端口（hello.port，取 socket 本地端口；LAN/隧道场景随实际监听）。 */
+  listenerPort: number | undefined
   /** 发送队列（背压）。 */
   queue: Array<() => void>
   draining: boolean
@@ -92,6 +94,25 @@ interface MobileSocketState {
 
 /** 单条连接的最大发送队列深度（与 /api/v1/events 保持一致）。 */
 const SOCKET_QUEUE_LIMIT = 512
+
+/** 从 IncomingMessage 取单个请求头（Node 里同名头可能是数组，取第一个）。 */
+function headerValue(req: IncomingMessage, name: string): string | undefined {
+  const raw = req.headers[name.toLowerCase()]
+  if (Array.isArray(raw)) return raw[0]
+  return typeof raw === 'string' ? raw : undefined
+}
+
+/**
+ * 解码上游约定的 Base64(UTF-8) 请求头（如 X-DSH-Device-Name）。
+ * 非法 Base64 / 非 UTF-8 时返回 undefined（调用方回退默认名，不让配对整个失败）。
+ */
+function decodeBase64Utf8(value: string): string | undefined {
+  try {
+    return Buffer.from(value, 'base64').toString('utf8')
+  } catch {
+    return undefined
+  }
+}
 
 /**
  * 协议里声明、但本桥当前内核没有对应 RPC / 暂只走 REST 的帧 → 结构化兜底指引。
@@ -254,16 +275,26 @@ export class MobileGatewayWsHandler {
   private handlePairingConnection(webSocket: WebSocket, pairCode: string, req: IncomingMessage): boolean {
     const code = pairCode.slice(PROTOCOL_PAIR_PREFIX.length)
 
-    const deviceName = req.headers['x-dsh-device-id']
-    if (typeof deviceName !== 'string' || deviceName.trim() === '') {
+    // 上游 v0.11.1：X-DSH-Device-ID 是安装级稳定 UUID（复用可信设备记录），
+    // X-DSH-Device-Name 是 Base64(UTF-8) 的展示名。本桥设备记录以「名称」为身份列，
+    // 没有独立的稳定设备 ID 列，因此这里把展示名（缺省回退 Device-ID，再缺省拒绝）
+    // 交给 exchangePairing；Device-ID 仅做必填校验，不落库（与老内核能力对齐）。
+    const stableId = headerValue(req, 'x-dsh-device-id')
+    if (stableId === undefined || stableId.trim() === '') {
       webSocket.close(4001, 'DEVICE_ID_REQUIRED')
       return true
+    }
+    const encodedName = headerValue(req, 'x-dsh-device-name')
+    let displayName = stableId
+    if (encodedName !== undefined && encodedName.trim() !== '') {
+      const decoded = decodeBase64Utf8(encodedName.trim())
+      if (decoded !== undefined && decoded.trim() !== '') displayName = decoded.trim().slice(0, 120)
     }
 
     let device: AuthenticatedDevice | undefined
     let pairingToken: string
     try {
-      const result = this.database.exchangePairing(code, deviceName.trim())
+      const result = this.database.exchangePairing(code, displayName)
       pairingToken = result.token
       device = this.database.getActiveDevice(result.device.id)
       if (device === undefined) throw new ApiError(500, 'DEVICE_NOT_FOUND', 'Device created but not readable.')
@@ -284,7 +315,7 @@ export class MobileGatewayWsHandler {
       rootIds: new Set(device.rootIds),
     }
 
-    this.acceptSocket(webSocket, principal, {
+    this.acceptSocket(webSocket, principal, req, {
       id: device.id,
       name: device.name,
       scopes: device.scopes,
@@ -320,7 +351,7 @@ export class MobileGatewayWsHandler {
     }
 
     const device = this.principalToDeviceView(principal)
-    this.acceptSocket(webSocket, principal, device)
+    this.acceptSocket(webSocket, principal, req, device)
     this.sendHello(webSocket, principal)
     // 与 /api/v1/events 同一服务端保证：新连接立刻补推仍待处理的审批/提问，
     // App 重连不会漏掉待办 HITL（重放事件带 replayed:true，客户端按 id/callId 去重）。
@@ -330,7 +361,7 @@ export class MobileGatewayWsHandler {
 
   // ───────────────────────── 接受连接（公共）─────────────────────────
 
-  private acceptSocket(webSocket: WebSocket, principal: Principal, device?: { id: string; name: string; scopes: DeviceScope[]; rootIds: string[]; pairingToken?: string }): void {
+  private acceptSocket(webSocket: WebSocket, principal: Principal, req: IncomingMessage, device?: { id: string; name: string; scopes: DeviceScope[]; rootIds: string[]; pairingToken?: string }): void {
     const state: MobileSocketState = {
       principal,
       device: device === undefined ? undefined : {
@@ -342,6 +373,7 @@ export class MobileGatewayWsHandler {
       pairingToken: device?.pairingToken ?? undefined,
       helloSent: false,
       connectionKey: randomUUID(),
+      listenerPort: req.socket.localPort,
       queue: [],
       draining: false,
       isAlive: true,
@@ -428,6 +460,9 @@ export class MobileGatewayWsHandler {
       protocol: 3,
       capabilities: availableCapabilities(this.capabilitiesFlags),
       authenticated: true,
+      // 与上游 hello 对齐：port 为本连接实际接入的监听端口，clients 为当前已鉴权连接数。
+      ...(state.listenerPort !== undefined ? { port: state.listenerPort } : {}),
+      clients: this.sockets.size,
       ...(state.device !== undefined ? {
         device: {
           id: state.device.id,
@@ -542,7 +577,9 @@ export class MobileGatewayWsHandler {
   // ───────────────────────── 基础帧处理器（保留在主类）─────────────────────────
 
   private handlePing(webSocket: WebSocket): void {
-    this.sendFrame(webSocket, { kind: 'pong', data: { time: Date.now() } })
+    // 上游 pong 用 at（毫秒时间戳）；time 一并带上兼容本桥早期客户端。
+    const now = Date.now()
+    this.sendFrame(webSocket, { kind: 'pong', data: { at: now, time: now } })
   }
 
   private handleSubscribe(webSocket: WebSocket, frame: ClientFrame): void {

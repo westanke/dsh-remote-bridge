@@ -243,6 +243,72 @@ describe('mobile gateway WebSocket (/ws/mobile) — authenticated session', () =
 
     socket.close()
   })
+
+  it('uses X-DSH-Device-Name (base64 UTF-8) as the paired device display name', async () => {
+    const { database, root, url } = await startHarness()
+    const pairing = database.createPairing([root.id], ['chat.read'])
+    const encodedName = Buffer.from('小明的 iPhone', 'utf8').toString('base64')
+    const socket = connect(url, {
+      protocols: ['dsh-mobile-v1', `dsh-pair.${pairing.code}`],
+      headers: { 'X-DSH-Device-ID': 'install-uuid-1', 'X-DSH-Device-Name': encodedName },
+    })
+    const { frames } = collect(socket)
+    await new Promise<void>((resolve, reject) => {
+      socket.once('open', resolve)
+      socket.once('error', reject)
+    })
+    await nextKind(frames, 'hello')
+    const hello = frames.find(frame => frame.kind === 'hello')?.data as
+      { device?: { name?: string }; port?: number; clients?: number }
+    expect(hello.device?.name).toBe('小明的 iPhone')
+    // hello 与上游对齐：带实际监听端口与当前已鉴权连接数。
+    expect(typeof hello.port).toBe('number')
+    expect(hello.clients).toBeGreaterThanOrEqual(1)
+    socket.close()
+  })
+
+  it('falls back to X-DSH-Device-ID when X-DSH-Device-Name is missing', async () => {
+    const { database, root, url } = await startHarness()
+    const pairing = database.createPairing([root.id], ['chat.read'])
+    const socket = connect(url, {
+      protocols: ['dsh-mobile-v1', `dsh-pair.${pairing.code}`],
+      headers: { 'X-DSH-Device-ID': 'install-uuid-2' },
+    })
+    const { frames } = collect(socket)
+    await new Promise<void>((resolve, reject) => {
+      socket.once('open', resolve)
+      socket.once('error', reject)
+    })
+    await nextKind(frames, 'hello')
+    const hello = frames.find(frame => frame.kind === 'hello')?.data as { device?: { name?: string } }
+    expect(hello.device?.name).toBe('install-uuid-2')
+    socket.close()
+  })
+
+  it('answers ping with pong carrying both at and time', async () => {
+    const { database, root, url } = await startHarness()
+    const credentials = database.exchangePairing(database.createPairing([root.id], ['chat.read']).code, 'Pong device')
+    const socket = connect(url, {
+      protocols: 'dsh-mobile-v1',
+      headers: { Authorization: `Bearer ${credentials.token}` },
+    })
+    const { frames } = collect(socket)
+    await new Promise<void>((resolve, reject) => {
+      socket.once('open', resolve)
+      socket.once('error', reject)
+    })
+    await nextKind(frames, 'hello')
+    const before = Date.now()
+    socket.send(JSON.stringify({ type: 'ping' }))
+    await nextKind(frames, 'pong')
+    const after = Date.now()
+    const pong = frames.find(frame => frame.kind === 'pong')?.data as { at?: number; time?: number }
+    expect(typeof pong.at).toBe('number')
+    expect(pong.at).toBe(pong.time)
+    expect(pong.at ?? 0).toBeGreaterThanOrEqual(before - 50)
+    expect(pong.at ?? 0).toBeLessThanOrEqual(after + 50)
+    socket.close()
+  })
 })
 
 describe('mobile gateway WebSocket (/ws/mobile) — WS-first RPC', () => {

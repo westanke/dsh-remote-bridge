@@ -689,7 +689,7 @@ v2.8 新增。独立于现有 `/api/v1/events`（单向广播，保留不动）�
 
 - 路径：`ws://HOST:PORT/ws/mobile`（挂主 HTTP server 的 upgrade，`PORT` 默认 `3090`）
 - 子协议（`Sec-WebSocket-Protocol`）：
-  - 首次配对：`dsh-mobile-v1, dsh-pair.<code>`，随请求带 `X-DSH-Device-ID`；成功后服务端推 `paired`（`{kind:'paired', token, device}`），再推 `hello`。
+  - 首次配对：`dsh-mobile-v1, dsh-pair.<code>`，随请求带 `X-DSH-Device-ID`（必填，安装级稳定标识，仅校验不落库）；可选 `X-DSH-Device-Name`（Base64(UTF-8) 展示名，缺省回退 Device-ID，非法编码同样回退）。成功后服务端推 `paired`（`{kind:'paired', token, device}`），再推 `hello`。
   - 后续连接：`dsh-mobile-v1, dsh-auth.<token>`，或 HTTP 头 `Authorization: Bearer <token>`。
   - 不允许 URL query 带 token，避免令牌进入 URL 日志。
 - 配对码：一次性，10 分钟有效期（复用 `/api/v1/pairings/exchange` 产出的 code），256-bit，Base64URL 载荷；设备令牌不过期，撤销即时生效。
@@ -745,8 +745,8 @@ v2.8 新增。独立于现有 `/api/v1/events`（单向广播，保留不动）�
 
 | kind | 说明 |
 |---|---|
-| `hello` | 连接即推（见上） |
-| `pong` | 心跳应答 |
+| `hello` | 连接即推（见上）；`port` 为本连接实际接入的本地端口，`clients` 为当前已鉴权连接数 |
+| `pong` | 心跳应答（`{at,time}`，同一毫秒时间戳） |
 | `subscribed` | 订阅确认 |
 | `sent` | 消息已发 |
 | `workspaces` / `sessions` / `history` / `search` | 查询响应 |
