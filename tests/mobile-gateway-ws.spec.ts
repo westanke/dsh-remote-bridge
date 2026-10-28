@@ -917,7 +917,7 @@ describe('mobile gateway WebSocket (/ws/mobile) — host snapshot', () => {
     const reply = frames.find(frame => frame.kind === 'host')?.data as
       { version?: string; dshVersion?: string; cwd?: string; attachedSessions?: number; canOpenPath?: boolean; defaultProvider?: string; defaultModel?: string }
     expect(reply.version).toBe('remote-bridge')
-    expect(reply.dshVersion).toBe('2.7.1')
+    expect(reply.dshVersion).toBe('2.7.2')
     expect(typeof reply.cwd).toBe('string')
     // fakeApi sessions.list 返回 sess-1 / fork-of-sess-1 两条。
     expect(reply.attachedSessions).toBe(2)
