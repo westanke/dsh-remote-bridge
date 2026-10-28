@@ -138,6 +138,14 @@ export interface DshApiProxy {
       rpcId: string
       payload: { sessionId: string; callId: string; answer: UserQuestionAnswer }
     }): Promise<RpcResponse<UserQuestionAnswerOutcome>>
+    /**
+     * 取消本桥接管的前台提问（question-cancel）。内核 userQuestions 服务无 cancel，
+     * 因此只能取消正阻塞 agent 的前台挂起项；带 timeout 的 continued 提问取消不了。
+     */
+    cancel(request: {
+      rpcId: string
+      payload: { sessionId: string; callId?: string; rpcId?: string }
+    }): Promise<RpcResponse<{ accepted: true; rpcId: string } | { accepted: false; reason: 'not-pending' }>>
   }
   events: {
     mux(request: { rpcId: string; payload: Record<string, never> }, signal: AbortSignal): AsyncIterable<{ rpcId: string; payload: Record<string, unknown> }>
@@ -998,6 +1006,32 @@ export class DshChatAdapter {
       case 'answer-invalid':
         throw new ApiError(400, 'QUESTION_ANSWER_INVALID', 'The answer batch must name each question of the call exactly once.')
     }
+  }
+
+  /**
+   * 取消一条正挂在前台的用户提问（WS `question-cancel`）。
+   *
+   * 只能取消本桥接管、此刻正阻塞 agent 的前台提问；带 timeout 的 continued 提问
+   * 内核没有取消通道。取消成功后事件总线会推 userQuestions/dismissed（见桥的竞速收尾），
+   * 移动端据此关闭卡片。
+   */
+  async cancelUserQuestion(
+    principal: Principal,
+    sessionId: string,
+    ref: { callId?: string; rpcId?: string },
+  ): Promise<void> {
+    await this.requireSession(principal, sessionId)
+    const outcome = unwrapDsh(await this.api.userQuestions.cancel({
+      rpcId: randomUUID(),
+      payload: {
+        sessionId,
+        ...(ref.callId !== undefined ? { callId: ref.callId } : {}),
+        ...(ref.rpcId !== undefined ? { rpcId: ref.rpcId } : {}),
+      },
+    }))
+    if (outcome.accepted) return
+    // 唯一失败形态是 not-pending（这条不在本桥前台挂起表里）。
+    throw new ApiError(409, 'QUESTION_NOT_PENDING', 'This question is no longer pending.')
   }
 
   async models(principal: Principal, sessionId: string): Promise<SessionModelsView> {

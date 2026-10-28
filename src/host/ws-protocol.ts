@@ -77,6 +77,7 @@ export type ClientFrameType =
   | 'file-download-open'
   | 'file-download-read'
   | 'file-download-cancel'
+  | 'file-resolve'
   | 'search'
   | 'host'
   | 'default-model'
@@ -155,6 +156,7 @@ export type ServerFrameKind =
   | 'file-download-opened'
   | 'file-download-chunk'
   | 'file-download-cancelled'
+  | 'file-resolved'
   | 'file-upload-opened'
   | 'file-upload-chunk-accepted'
   | 'file-upload-completed'
@@ -274,6 +276,21 @@ export interface QuestionAnswerFrame extends ClientFrame {
   sessionId?: string
   callId: string
   answers?: unknown
+}
+
+/**
+ * 提问取消客户端帧。
+ *
+ * 上游 v0.11.1 用 `rpcId`（网关 pendingQuestions 的 key）；本桥自家客户端习惯用
+ * `callId`（内核标识），两个都接受。取消只对本桥接管的前台提问有效。
+ */
+export interface QuestionCancelFrame extends ClientFrame {
+  type: 'question-cancel'
+  sessionId?: string
+  /** 上游字段：网关挂起表键（本桥推送 question-requested 时同帧带 rpcId）。 */
+  rpcId?: string
+  /** 本桥字段：内核 callId。 */
+  callId?: string
 }
 
 /** 会话创建客户端帧。 */

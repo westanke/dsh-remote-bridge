@@ -33,6 +33,9 @@ async function startHarness(options: {
   hostRemote?: HostRemoteHandle | undefined
   projection?: 'sequenced' | 'migration' | 'null'
   commandServices?: DshCommandServices
+  // 故意放宽：override 只替换个别方法，各方法签名与 fakeApi 不必逐字段一致（测试夹具）。
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  apiOverrides?: (api: ReturnType<typeof fakeApi>) => Record<string, any>
 } = {}) {
   const base = await mkdtemp(path.join(os.tmpdir(), 'daw-mgw-'))
   cleanup.dir(base)
@@ -44,7 +47,9 @@ async function startHarness(options: {
   const events = new WorkspaceEventBus()
   const auth = new AuthService(database)
   const files = new FileService(database, event => events.emit(event))
-  const chat = new DshChatAdapter(fakeApi(options.initialMuxFrames ?? [], options.projection ?? 'sequenced') as never, database, options.commandServices)
+  const baseApi = fakeApi(options.initialMuxFrames ?? [], options.projection ?? 'sequenced')
+  const api = options.apiOverrides === undefined ? baseApi : Object.assign(baseApi, options.apiOverrides(baseApi))
+  const chat = new DshChatAdapter(api as never, database, options.commandServices)
   const settings = new DshSettingsAdapter(fakeApi() as never)
   let router!: ApiRouter
   const remote = new RemoteApiServer({
@@ -312,6 +317,22 @@ describe('mobile gateway WebSocket (/ws/mobile) — authenticated session', () =
 })
 
 describe('mobile gateway WebSocket (/ws/mobile) — WS-first RPC', () => {
+  async function authed(database: WorkspaceDatabase, rootId: string, url: string) {
+    const pairing = database.createPairing([rootId], ['chat.read'] as never)
+    const credentials = database.exchangePairing(pairing.code, 'Mobile device')
+    const socket = connect(url, {
+      protocols: 'dsh-mobile-v1',
+      headers: { Authorization: `Bearer ${credentials.token}` },
+    })
+    const { frames } = collect(socket)
+    await new Promise<void>((resolve, reject) => {
+      socket.once('open', resolve)
+      socket.once('error', reject)
+    })
+    await nextKind(frames, 'hello')
+    return { socket, frames }
+  }
+
   it('returns the session list over a bidirectional sessions frame', async () => {
     const { database, root, url } = await startHarness()
     const pairing = database.createPairing([root.id], ['chat.read'])
@@ -396,6 +417,85 @@ describe('mobile gateway WebSocket (/ws/mobile) — WS-first RPC', () => {
     const second = replies[replies.length - 1]?.data as { created?: boolean }
     expect(second.created).toBe(false)
 
+    socket.close()
+  })
+
+  it('cancels a pending question over question-cancel (rpcId) and echoes action:cancel', async () => {
+    const cancelCalls: Array<{ sessionId: string; rpcId?: string; callId?: string }> = []
+    const { database, root, url } = await startHarness({
+      apiOverrides: api => ({
+        userQuestions: {
+          ...api.userQuestions,
+          cancel: async (request: { rpcId: string; payload: { sessionId: string; rpcId?: string; callId?: string } }) => {
+            cancelCalls.push(request.payload)
+            return {
+              rpcId: request.rpcId,
+              result: { ok: true, value: { accepted: true, rpcId: request.payload.rpcId } },
+            }
+          },
+        },
+      }),
+    })
+    const { socket, frames } = await authed(database, root.id, url)
+    socket.send(JSON.stringify({ type: 'question-cancel', requestId: 'qc1', sessionId: 'sess-1', rpcId: 'q-rpc-1' }))
+    await nextKind(frames, 'question-response')
+    const reply = frames.find(frame => frame.kind === 'question-response')?.data as
+      { action?: string; accepted?: boolean; rpcId?: string; sessionId?: string }
+    expect(reply.action).toBe('cancel')
+    expect(reply.accepted).toBe(true)
+    expect(reply.rpcId).toBe('q-rpc-1')
+    expect(cancelCalls).toContainEqual({ sessionId: 'sess-1', rpcId: 'q-rpc-1' })
+    socket.close()
+  })
+
+  it('accepts question-cancel with callId (bridge-native ref) as well as rpcId', async () => {
+    const cancelCalls: Array<{ sessionId: string; rpcId?: string; callId?: string }> = []
+    const { database, root, url } = await startHarness({
+      apiOverrides: api => ({
+        userQuestions: {
+          ...api.userQuestions,
+          cancel: async (request: { rpcId: string; payload: { sessionId: string; rpcId?: string; callId?: string } }) => {
+            cancelCalls.push(request.payload)
+            return {
+              rpcId: request.rpcId,
+              result: { ok: true, value: { accepted: true, rpcId: 'some-rpc' } },
+            }
+          },
+        },
+      }),
+    })
+    const { socket, frames } = await authed(database, root.id, url)
+    socket.send(JSON.stringify({ type: 'question-cancel', requestId: 'qc2', sessionId: 'sess-1', callId: 'call-9' }))
+    await nextKind(frames, 'question-response')
+    const reply = frames.find(frame => frame.kind === 'question-response')?.data as
+      { action?: string; accepted?: boolean; callId?: string }
+    expect(reply.action).toBe('cancel')
+    expect(reply.accepted).toBe(true)
+    expect(reply.callId).toBe('call-9')
+    expect(cancelCalls).toContainEqual({ sessionId: 'sess-1', callId: 'call-9' })
+    socket.close()
+  })
+
+  it('returns accepted:false reason:not-pending when nothing is pending to cancel', async () => {
+    const { database, root, url } = await startHarness()
+    const { socket, frames } = await authed(database, root.id, url)
+    socket.send(JSON.stringify({ type: 'question-cancel', requestId: 'qc3', sessionId: 'sess-1', rpcId: 'gone' }))
+    await nextKind(frames, 'question-response')
+    const reply = frames.find(frame => frame.kind === 'question-response')?.data as
+      { action?: string; accepted?: boolean; reason?: string }
+    expect(reply.action).toBe('cancel')
+    expect(reply.accepted).toBe(false)
+    expect(reply.reason).toBe('not-pending')
+    socket.close()
+  })
+
+  it('rejects question-cancel without sessionId/rpcId via structured error', async () => {
+    const { database, root, url } = await startHarness()
+    const { socket, frames } = await authed(database, root.id, url)
+    socket.send(JSON.stringify({ type: 'question-cancel', requestId: 'qc4' }))
+    await nextKind(frames, 'error')
+    const error = frames.find(frame => frame.kind === 'error')?.data as { code?: string }
+    expect(error.code).toBe('MISSING_PARAMS')
     socket.close()
   })
 })
@@ -841,7 +941,7 @@ describe('mobile gateway WebSocket (/ws/mobile) — host snapshot', () => {
       }
       throw new Error(`Timed out waiting for error requestType=${requestType}`)
     }
-    for (const type of ['search', 'defaults', 'set-default', 'question-cancel', 'plugin-catalog', 'queue-update']) {
+    for (const type of ['search', 'defaults', 'set-default', 'plugin-catalog', 'queue-update']) {
       socket.send(JSON.stringify({ type, query: 'x', sessionId: 'sess-1', itemId: 'message-1', action: 'remove' }))
       const error = await waitForError(type)
       expect(error.code).toBe('NOT_IMPLEMENTED')
@@ -1159,7 +1259,18 @@ function fakeApi(initialMuxFrames: unknown[] = [], projection: 'sequenced' | 'mi
       },
     },
     events: { mux: muxWithInitial, host: empty },
-    userQuestions: { pendingAll: () => [] },
+    userQuestions: {
+      pendingAll: () => [],
+      // 默认没有挂起项：cancel 返回 not-pending；answer 也报 not-pending。
+      cancel: async (request: { rpcId: string }) => ({
+        rpcId: request.rpcId,
+        result: { ok: true, value: { accepted: false, reason: 'not-pending' } },
+      }),
+      answer: async (request: { rpcId: string }) => ({
+        rpcId: request.rpcId,
+        result: { ok: true, value: { accepted: false, reason: 'not-pending' } },
+      }),
+    },
     // 全局模型目录 / providers（DshSettingsAdapter 调用 llm.models / settings.describe / llm.providers）。
     llm: {
       models: async (request: { rpcId: string }) => ({
@@ -1527,5 +1638,48 @@ describe('mobile gateway WebSocket (/ws/mobile) — chunked file download & uplo
     await nextKind(scoped.frames, 'error')
     expect((scoped.frames.find(frame => frame.kind === 'error')?.data as { code?: string }).code).toBe('bad-request')
     scoped.socket.close()
+  })
+
+  it('resolves a regular file to preview metadata over file-resolve', async () => {
+    const { database, root, url } = await startHarness()
+    await mkdir(path.join(root.realPath, 'docs'), { recursive: true })
+    const payload = Buffer.from('resolve-me')
+    await writeFile(path.join(root.realPath, 'docs/plan.md'), payload)
+    const { socket, frames } = await authedScopes(database, root.id, url, ['chat.read', 'files.read'])
+
+    socket.send(JSON.stringify({ type: 'file-resolve', requestId: 'fr1', sessionId: 'sess-1', path: 'docs/plan.md' }))
+    await nextKind(frames, 'file-resolved')
+    const reply = frames.find(frame => frame.kind === 'file-resolved')?.data as
+      { requestId?: string; sessionId?: string; path?: string; name?: string; mediaType?: string; size?: number; modifiedAt?: number }
+    expect(reply.requestId).toBe('fr1')
+    expect(reply.sessionId).toBe('sess-1')
+    expect(reply.path).toBe('docs/plan.md')
+    expect(reply.name).toBe('plan.md')
+    expect(reply.mediaType).toBe('text/plain; charset=utf-8')
+    expect(reply.size).toBe(payload.length)
+    expect(typeof reply.modifiedAt).toBe('number')
+    socket.close()
+  })
+
+  it('rejects file-resolve for a directory with file-not-regular', async () => {
+    const { database, root, url } = await startHarness()
+    await mkdir(path.join(root.realPath, 'afolder'), { recursive: true })
+    const { socket, frames } = await authedScopes(database, root.id, url, ['chat.read', 'files.read'])
+    socket.send(JSON.stringify({ type: 'file-resolve', requestId: 'fr2', sessionId: 'sess-1', path: 'afolder' }))
+    await nextKind(frames, 'error')
+    const error = frames.filter(frame => frame.kind === 'error').pop()?.data as { code?: string; requestType?: string }
+    expect(error.code).toBe('file-not-regular')
+    expect(error.requestType).toBe('file-resolve')
+    socket.close()
+  })
+
+  it('rejects file-resolve without files.read scope and without requestId', async () => {
+    const { database, root, url } = await startHarness()
+    const { socket, frames } = await authedScopes(database, root.id, url, ['chat.read'])
+    socket.send(JSON.stringify({ type: 'file-resolve', sessionId: 'sess-1', path: 'x' }))
+    await nextKind(frames, 'error')
+    const error = frames.filter(frame => frame.kind === 'error').pop()?.data as { code?: string }
+    expect(error.code).toBe('FORBIDDEN_SCOPE')
+    socket.close()
   })
 })

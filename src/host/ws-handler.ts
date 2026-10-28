@@ -122,11 +122,12 @@ function decodeBase64Utf8(value: string): string | undefined {
 const KNOWN_UNSUPPORTED_FRAMES: Readonly<Record<string, string>> = {
   // 会话全文搜索：dsh-0.2-bridge 无内核搜索 RPC；客户端暂用 REST/本地检索兜底。
   search: 'session full-text search is not available over WS on this kernel build.',
+  // 上游 directories 列「宿主任意绝对路径」供选工作区，与本桥「只授权根内可见」安全模型冲突；
+  // 授权根内浏览改用 file-list（rootId + 相对路径），新建工作区用 workspace-create。
+  directories: 'host-wide directory listing is unavailable; use file-list with a rootId for authorized roots.',
   // 全局默认 Agent 预设 / 默认权限：本桥无 settings.update 全局写通道，REST 也暂无对应端点。
   defaults: 'global defaults are not available over WS on this kernel build.',
   'set-default': 'setting a global default preset is not available over WS on this kernel build.',
-  // 取消一个挂起中的用户提问：内核 userQuestions 只暴露 answer，没有 cancel RPC。
-  'question-cancel': 'cancelling a pending question is not supported by this kernel build.',
   // 编辑/删除排队中的回合或插队 steer：本桥 sessions 面只有 prompt(mode:queue|steer)，
   // 没有按 itemId 编辑/删除队列项的 RPC；steer 新回合可直接用 message 帧 mode:'steer'。
   'queue-update': 'editing/removing a queued turn is not supported by this kernel build; send a new message with mode:"steer" to steer the running turn.',
@@ -546,8 +547,8 @@ export class MobileGatewayWsHandler {
     if (await handlers.host.handle(state.principal, clientFrame)) return
     if (await handlers.schedule.handle(state.principal, clientFrame)) return
     if (handlers.files !== undefined && await handlers.files.handle(state.principal, clientFrame)) return
-    // 文件分块下载/上传（跨连接共享，按 connectionKey 隔离归属）。
-    if (type.startsWith('file-download-') || type.startsWith('file-upload-')) {
+    // 文件分块下载/上传（跨连接共享，按 connectionKey 隔离归属）+ file-resolve 预览元数据。
+    if (type.startsWith('file-download-') || type.startsWith('file-upload-') || type === 'file-resolve') {
       await this.fileTransfer?.handle(
         state.principal, clientFrame, state.connectionKey,
         frame => this.sendFrame(webSocket, frame),

@@ -718,6 +718,7 @@ v2.8 新增。独立于现有 `/api/v1/events`（单向广播，保留不动）�
 | `attachment` | 取附件/图片 base64 | `attachmentId` 或 `sessionId+name` |
 | `file-download-open/read/cancel` | 分片下载文件 | open 带 `requestId`,`sessionId`,`path`（相对会话根，禁 `..`）；read 带 `transferId`,`offset`（严格顺序）；最大 512 MiB，chunk 512 KiB，最大 4 并发，idle 2 min，末块附 `sha256` |
 | `file-upload-open/chunk/finish/cancel` | 分片上传文件 | open 带 `requestId`,`sessionId`,`name`（叶子名）,`size`,`sha256`；chunk 带 `uploadId`,`offset`,`data`（顺序 base64，块 256 KiB）；finish 校验 SHA-256 后经内核附件通道换 `receiptId`；需 `files.write` scope |
+| `file-resolve` | 文件预览元数据（不取字节） | `requestId`,`sessionId`,`path`（相对会话根，禁 `..`）；回 `file-resolved` 带 `{path,name,mediaType,size,modifiedAt}`；非普通文件 `file-not-regular`，超下载上限 `file-too-large`；需 `files.read` |
 | `search` | 搜索会话/消息 | `q`, `sessionId?` | 当前内核无搜索 RPC：回 `NOT_IMPLEMENTED` |
 | `host` | 查主机信息 | — | 回 `{version,dshVersion,cwd,attachedSessions,canOpenPath,defaultProvider?,defaultModel?}`；`cwd` 仅 `os.homedir()`，不回显授权根绝对路径；无 `canOpenWorkspacePath` 通道时 `canOpenPath:false` |
 | `default-model` / `save-default-model` | 读/保存默认模型 | `provider`, `model`, `reasoningEffort?` |
@@ -732,11 +733,11 @@ v2.8 新增。独立于现有 `/api/v1/events`（单向广播，保留不动）�
 | `goal-edit` / `goal-pause` / `goal-resume` / `goal-clear` | 当前目标写操作（compare-and-set） | `sessionId`, `ref:{id,revision}`，edit 另带 `objective?`/`maxGoalRounds?`；代理内核 goals Remote，老内核回 `unsupported` 走 REST |
 | `plugin-catalog` / `plugin-inspect` / `plugin-install` / `plugin-settings` | 插件管理（paired 控制连接） | — |
 | `agent-presets` / `defaults` / `set-default` | Agent 预设 | `agent-presets` 已实现；全局默认 `defaults`/`set-default` 当前内核无写通道，回 `NOT_IMPLEMENTED` |
-| `question-answer` / `question-cancel` | HITL 提问回应 | `callId`, `answer` |
+| `question-answer` / `question-cancel` | HITL 提问回应 | answer：`callId`/`rpcId`,`answers[]`；cancel：`sessionId`+`rpcId`（上游）或 `callId`（本桥），回 `{kind:'question-response',action:'answer'\|'cancel',accepted}`。cancel 只能作废本桥接管、正阻塞 agent 的前台提问；内核无 continued 提问取消通道 |
 | `approval-response` | HITL 审批回应 | `approvalId`, `outcome: 'allowed-once'|'rejected'` |
 | `session-cancel` / `session-archive` / `session-rename` / `fork` | 会话生命周期 | `sessionId` |
 | `queue-update` | 队列编辑（edit/remove/steer） | 当前内核 sessions 面只有 `prompt(mode:queue\|steer)`，无按 `itemId` 编辑/删除队列项的 RPC：回 `NOT_IMPLEMENTED`；插队 steer 可直接发 `message` 帧 `mode:'steer'` |
-| `directories` / `directory-create` / `workspace-create` | 目录/工作区操作 | `path`, `name` |
+| `directories` / `directory-create` / `workspace-create` | 目录/工作区操作 | `directory-create`/`workspace-create`：`rootId?`,`path`（`directory-create` 还可带 `name`），均限授权根内。`directories`（上游列宿主任意绝对路径）与本桥「仅授权根可见」安全模型冲突，回 `NOT_IMPLEMENTED`，授权根内浏览请用 `file-list` |
 | `agent-team` / `subagents` | 智能体团队/子会话目录（只读会话投影） | `sessionId`, `requestId`；回 `projectionState:'ready'|'unavailable'|'migration-required'` |
 | `speech-catalog` / `speech-subscribe` / `speech-unsubscribe` / `speech-configure` / `speech-prepare` / `speech-cancel-preparation` / `speech-transcribe` / `speech-cancel` | 官方语音输入（纯代理内核 speech Remote） | `requestId`，transcribe 带 `audioBase64`（16k PCM16 WAV，≤4 MiB）、`providerId?`、`language?` |
 | `schedule-catalog` / `schedule-list` / `schedule-history` / `schedule-update` / `schedule-delete` | 定时任务（代理内核 schedule Remote） | catalog 无会话；其余带 `sessionId`；update 带完整 `expected`+`change` |

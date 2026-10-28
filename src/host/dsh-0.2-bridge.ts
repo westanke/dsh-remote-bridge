@@ -1370,6 +1370,43 @@ class QuestionBridge {
   }
 
   /**
+   * 取消（跳过）一条**正挂在前台等待**的提问 —— `question-cancel` 帧用。
+   *
+   * 与 [answer] 同形精确定位，区别只在结算形态：`dismissed` 让等待中的
+   * `ask_user_question` 作废（走与超时/中止相同的收尾路径），并把 delegate
+   * 原样交回下游（见 attach() 里的竞速）。内核 `ctx.userQuestions` 服务本身没有
+   * cancel 方法（只有 answer），所以**只能取消本桥接管的这批前台提问**；带 timeout
+   * 的 continued 提问取消不了——那种条目并不阻塞 agent 回合。
+   *
+   * @returns 被取消条目的 rpcId（事件去重用）；找不到返回 not-pending。
+   */
+  cancel(request: { sessionId: string; callId?: string; rpcId?: string }):
+    { accepted: true; rpcId: string } | { accepted: false; reason: 'not-pending' } {
+    // 上游 question-cancel 帧只带 rpcId（挂起表 Map 的 key 就是它）；本桥自家客户端
+    // 走 callId（内核标识）。两条定位路径都支持，sessionId 必须同时匹配。
+    if (request.rpcId !== undefined) {
+      const entry = this.pending.get(request.rpcId)
+      if (entry !== undefined && entry.sessionId === request.sessionId) {
+        this.pending.delete(request.rpcId)
+        clearTimeout(entry.timer)
+        entry.settle({ kind: 'dismissed' })
+        return { accepted: true, rpcId: request.rpcId }
+      }
+      return { accepted: false, reason: 'not-pending' }
+    }
+    const callId = request.callId
+    if (callId === undefined) return { accepted: false, reason: 'not-pending' }
+    for (const [rpcId, entry] of this.pending) {
+      if (entry.sessionId !== request.sessionId || entry.callId !== callId) continue
+      this.pending.delete(rpcId)
+      clearTimeout(entry.timer)
+      entry.settle({ kind: 'dismissed' })
+      return { accepted: true, rpcId }
+    }
+    return { accepted: false, reason: 'not-pending' }
+  }
+
+  /**
    * 清扫**已经超期**的挂起项。
    *
    * 为什么还需要这个「批量清扫」，既然每条都有自己的定时器：
@@ -2627,6 +2664,17 @@ export function createDsh02ApiProxy(
         if (kernelCouldNotAnswer) return { accepted: false, reason: 'not-answerable' } as never
         // 两条都不认 → 真的不再等待（409），而不是 503：装了本插件之后
         // 「没人能答」已经不存在，只是这一条不在等了。
+        return { accepted: false, reason: 'not-pending' } as never
+      }),
+      // question-cancel：只能取消本桥接管的前台提问（内核 userQuestions 服务无 cancel）。
+      cancel: request => call('userQuestions.cancel', async (signal) => {
+        const { sessionId, callId, rpcId } = request.payload
+        const result = questions.cancel({
+          sessionId,
+          ...(callId !== undefined ? { callId } : {}),
+          ...(rpcId !== undefined ? { rpcId } : {}),
+        })
+        if (result.accepted) return { accepted: true, rpcId: result.rpcId } as never
         return { accepted: false, reason: 'not-pending' } as never
       }),
     },

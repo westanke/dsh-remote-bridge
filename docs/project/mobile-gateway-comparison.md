@@ -221,8 +221,8 @@ src/host/
   spool 落盘避免大文件占内存，文件名绝不解释为宿主路径。
 
 仍待办（按优先级）：
-1. gateway mode 状态机、独立 LAN 监听、pairing v2 Base64URL、split-channels、设备名头（`X-DSH-Device-Name`）。
-2. queue 编辑/删除/steer（queue-update）、search、directories/directory-create、session-title-changed 主动推送。
+1. gateway mode 状态机、独立 LAN 监听、pairing v2 Base64URL、split-channels（`X-DSH-Device-Name` 设备名头已做，仅校验不落库；hello 的 `port`/`clients`、`pong.at` 已对齐）。
+2. ~~queue 编辑/删除/steer（queue-update）~~ 已结构化回 `NOT_IMPLEMENTED`（内核无按 itemId 编辑 RPC，指引 `mode:'steer'`）；~~search~~ 同兜底；~~directories/directory-create~~ directory-create 已实现（授权根内），directories 因与本桥授权根模型冲突回兜底指引 file-list；session-title-changed 主动推送仍待办。
 3. tasks-updated/goal-updated/projection-baseline/schedule-changed 主动推送、turn-outline、llm/retry 事件透传。
 4. Cloudflare Tunnel 管理面 WS 化、多网关身份、插件管理 WS 化（plugin-*）。
 5. 跨仓 kotlin-sdk / dsh-companion 消费新 WS 帧（wire schema 五处同步，见 §5 风险 5）。
@@ -230,7 +230,10 @@ src/host/
 已完成的 v0.11.1 新增面：agent-team/subagents（只读会话投影，三态 projectionState）、
 speech-*（8 帧，纯代理官方 speech Remote；catalog 不可用时回 available:false）、schedule-*
 （5 帧，代理 schedule Remote；不可用时回 schedule/unavailable）、**file-download/file-upload 七帧
-（分块 + SHA-256 + receiptId + spool 清理）**。都遵循「内核有就 WS 代理，没有就结构化降级指引
+（分块 + SHA-256 + receiptId + spool 清理）**、file-resolve（预览元数据不取字节）、
+command-options/command-select（model/permission 通用二级菜单）、permission 帧、host 快照、
+subscribe 会话白名单过滤（缺省全授权、订阅后白名单、unsubscribe 恢复、订阅补推该会话 HITL 重放）、
+question-cancel（仅可作废本桥接管的前台提问）。都遵循「内核有就 WS 代理，没有就结构化降级指引
 REST 兜底」，不自带识别模型或调度器。
 
 ---

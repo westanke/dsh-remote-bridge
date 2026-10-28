@@ -8,7 +8,7 @@
 import type { Principal } from '../shared/contracts.ts'
 import type { DshChatAdapter, UserQuestionAnswerItem } from './chat-adapter.ts'
 import { ApiError } from './errors.ts'
-import type { ApprovalResponseFrame, ClientFrame, QuestionAnswerFrame } from './ws-protocol.ts'
+import type { ApprovalResponseFrame, ClientFrame, QuestionAnswerFrame, QuestionCancelFrame } from './ws-protocol.ts'
 
 /** 单条连接的发送回调签名。 */
 export type SendFrame = (frame: { kind: string; data?: unknown }) => void
@@ -27,6 +27,8 @@ export class HitlHandler {
         return await this.handleApprovalResponse(principal, frame as ApprovalResponseFrame)
       case 'question-answer':
         return await this.handleQuestionAnswer(principal, frame as QuestionAnswerFrame)
+      case 'question-cancel':
+        return await this.handleQuestionCancel(principal, frame as QuestionCancelFrame)
       default:
         return false
     }
@@ -73,6 +75,40 @@ export class HitlHandler {
         this.sendFrame({ kind: 'question-response', data: { callId, action: 'answer', accepted: false, reason: this.questionReason(error.code) } })
       } else {
         this.reportError(error, 'Failed to answer question.')
+      }
+    }
+    return true
+  }
+
+  // ───────────────────────── question-cancel ─────────────────────────
+
+  private async handleQuestionCancel(principal: Principal, frame: QuestionCancelFrame): Promise<boolean> {
+    const sessionId = typeof frame.sessionId === 'string' ? frame.sessionId : undefined
+    const rpcId = typeof frame.rpcId === 'string' ? frame.rpcId : undefined
+    const callId = typeof frame.callId === 'string' ? frame.callId : undefined
+    if (sessionId === undefined || (rpcId === undefined && callId === undefined)) {
+      this.sendFrame({ kind: 'error', data: { code: 'MISSING_PARAMS', message: 'question-cancel needs sessionId and rpcId (or callId).' } })
+      return true
+    }
+    try {
+      await this.chat.cancelUserQuestion(principal, sessionId, {
+        ...(callId !== undefined ? { callId } : {}),
+        ...(rpcId !== undefined ? { rpcId } : {}),
+      })
+      // 上游回执：{kind:'question-response', action:'cancel', accepted:true}。
+      this.sendFrame({
+        kind: 'question-response',
+        data: { sessionId, action: 'cancel', accepted: true, ...(rpcId !== undefined ? { rpcId } : {}), ...(callId !== undefined ? { callId } : {}) },
+      })
+    } catch (error) {
+      // 与 question-answer 一致：not-pending 映射 accepted:false 回执，而非 error 帧。
+      if (error instanceof ApiError && error.code === 'QUESTION_NOT_PENDING') {
+        this.sendFrame({
+          kind: 'question-response',
+          data: { sessionId, action: 'cancel', accepted: false, reason: 'not-pending', ...(rpcId !== undefined ? { rpcId } : {}), ...(callId !== undefined ? { callId } : {}) },
+        })
+      } else {
+        this.reportError(error, 'Failed to cancel question.')
       }
     }
     return true

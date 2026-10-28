@@ -18,9 +18,9 @@
  * `/api/v1/roots/{id}/content`（下载）与 `/api/v1/attachments`（小文件直传）。
  */
 import { createHash, randomUUID } from 'node:crypto'
-import { open as fsOpen, mkdir, rm, type FileHandle } from 'node:fs/promises'
+import { open as fsOpen, mkdir, rm, stat, type FileHandle } from 'node:fs/promises'
 import { constants } from 'node:fs'
-import { join } from 'node:path'
+import { basename, extname, join } from 'node:path'
 import type { Principal } from '../shared/contracts.ts'
 import type { StoredRoot, WorkspaceDatabase } from './database.ts'
 import type { ClientFrame } from './ws-protocol.ts'
@@ -96,6 +96,27 @@ function failure(code: string, message: string, requestType: string, extra: Reco
   return { kind: 'error', data: { code, message, requestType, ...extra } }
 }
 
+/**
+ * 预览元数据用的媒体类型（与上游 fileMediaType 同档：常见图片/文本给具体类型，
+ * 其余 application/octet-stream）。仅用于客户端选预览器，不作为安全判据。
+ */
+function mediaTypeFor(relativePath: string): string {
+  switch (extname(relativePath).toLowerCase()) {
+    case '.png': return 'image/png'
+    case '.jpg':
+    case '.jpeg': return 'image/jpeg'
+    case '.gif': return 'image/gif'
+    case '.webp': return 'image/webp'
+    case '.svg': return 'image/svg+xml'
+    case '.pdf': return 'application/pdf'
+    case '.json': return 'application/json; charset=utf-8'
+    case '.md':
+    case '.txt':
+    case '.log': return 'text/plain; charset=utf-8'
+    default: return 'application/octet-stream'
+  }
+}
+
 /** 文件分块传输处理器（下载 + 上传），一个实例服务全部连接（按 connectionKey 隔离）。 */
 export class FileTransferHandler {
   private readonly downloads = new Map<string, DownloadTransfer>()
@@ -149,8 +170,60 @@ export class FileTransferHandler {
       case 'file-upload-cancel':
         await this.handleUpload(principal, frame, connectionKey, reply)
         return true
+      case 'file-resolve':
+        await this.fileResolve(principal, frame, reply)
+        return true
       default:
         return false
+    }
+  }
+
+  // ───────────────────────── file-resolve（预览元数据，不取字节） ─────────────────────────
+
+  /**
+   * 对齐 mobile-gateway v0.11.1 `file-resolve`：把会话工作目录内的相对路径解析为
+   * 预览元数据 {path,name,mediaType,size,modifiedAt}。只做 stat，不传字节；
+   * 非普通文件回 file-not-regular，超出下载上限回 file-too-large。
+   */
+  private async fileResolve(principal: Principal, frame: ClientFrame, reply: TransferSendFrame): Promise<void> {
+    if (!principal.scopes.has('files.read')) {
+      reply(failure('FORBIDDEN_SCOPE', 'file-resolve needs files.read scope.', frame.type))
+      return
+    }
+    const requestId = typeof frame.requestId === 'string' ? frame.requestId : undefined
+    try {
+      if (requestId === undefined) {
+        reply(failure('bad-request', 'file-resolve requires a requestId', frame.type))
+        return
+      }
+      const { root, relative } = await this.resolveSessionTarget(principal, frame.sessionId, frame.path, frame.type)
+      const absolute = join(root.realPath, relative)
+      const info = await stat(absolute)
+      if (!info.isFile()) {
+        reply(failure('file-not-regular', 'only regular files can be previewed', frame.type, { sessionId: frame.sessionId as string }))
+        return
+      }
+      if (info.size > this.downloadMaxBytes) {
+        reply(failure('file-too-large', 'file exceeds the configured download limit', frame.type, { sessionId: frame.sessionId as string }))
+        return
+      }
+      reply({
+        kind: 'file-resolved',
+        data: {
+          requestId,
+          sessionId: frame.sessionId as string,
+          path: relative,
+          name: basename(absolute),
+          mediaType: mediaTypeFor(relative),
+          size: info.size,
+          modifiedAt: info.mtimeMs,
+        },
+      })
+    } catch (error) {
+      const code = error instanceof Error && 'code' in error && typeof (error as { code?: unknown }).code === 'string'
+        ? (error as { code: string }).code
+        : 'INTERNAL_ERROR'
+      reply(failure(code, error instanceof Error ? error.message : 'Failed to resolve file.', frame.type))
     }
   }
 
