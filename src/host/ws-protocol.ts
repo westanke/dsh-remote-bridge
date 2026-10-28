@@ -393,6 +393,21 @@ export interface CommandExecuteFrame extends ClientFrame {
   line: string
 }
 
+/** 通用二级菜单选项查询客户端帧（command 目前仅 model / permission）。 */
+export interface CommandOptionsFrame extends ClientFrame {
+  type: 'command-options'
+  sessionId: string
+  command: string
+}
+
+/** 通用二级菜单选项提交客户端帧。 */
+export interface CommandSelectFrame extends ClientFrame {
+  type: 'command-select'
+  sessionId: string
+  command: string
+  optionId: string
+}
+
 /** 文件下载开始客户端帧（v0.11.1：path 为会话工作区相对路径）。 */
 export interface FileDownloadOpenFrame extends ClientFrame {
   type: 'file-download-open'

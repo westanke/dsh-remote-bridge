@@ -6,7 +6,7 @@ import path from 'node:path'
 import { WebSocket } from 'ws'
 import { afterEach, describe, expect, it } from 'vitest'
 import { AuthService } from '../src/host/auth.ts'
-import { DshChatAdapter } from '../src/host/chat-adapter.ts'
+import { DshChatAdapter, type DshCommandServices } from '../src/host/chat-adapter.ts'
 import { WorkspaceDatabase } from '../src/host/database.ts'
 import { WorkspaceEventBus } from '../src/host/event-bus.ts'
 import { FileService } from '../src/host/file-service.ts'
@@ -32,6 +32,7 @@ async function startHarness(options: {
   initialMuxFrames?: unknown[]
   hostRemote?: HostRemoteHandle | undefined
   projection?: 'sequenced' | 'migration' | 'null'
+  commandServices?: DshCommandServices
 } = {}) {
   const base = await mkdtemp(path.join(os.tmpdir(), 'daw-mgw-'))
   cleanup.dir(base)
@@ -43,7 +44,7 @@ async function startHarness(options: {
   const events = new WorkspaceEventBus()
   const auth = new AuthService(database)
   const files = new FileService(database, event => events.emit(event))
-  const chat = new DshChatAdapter(fakeApi(options.initialMuxFrames ?? [], options.projection ?? 'sequenced') as never, database)
+  const chat = new DshChatAdapter(fakeApi(options.initialMuxFrames ?? [], options.projection ?? 'sequenced') as never, database, options.commandServices)
   const settings = new DshSettingsAdapter(fakeApi() as never)
   let router!: ApiRouter
   const remote = new RemoteApiServer({
@@ -470,7 +471,7 @@ describe('mobile gateway WebSocket (/ws/mobile) — global catalog & files', () 
     socket.send(JSON.stringify({ type: 'permission-options' }))
     await nextKind(frames, 'permission-options')
     const reply = frames.find(frame => frame.kind === 'permission-options')
-    expect((reply?.data as { defaultPreset?: string }).defaultPreset).toBe('standard')
+    expect((reply?.data as { defaultPreset?: string }).defaultPreset).toBe('ask')
     socket.close()
   })
 
@@ -540,6 +541,93 @@ describe('mobile gateway WebSocket (/ws/mobile) — global catalog & files', () 
     const error = scoped.frames.find(frame => frame.kind === 'error')?.data as { code?: string }
     expect(['PATH_INVALID', 'PATH_OUTSIDE_ROOTS', 'bad-request']).toContain(error.code)
     scoped.socket.close()
+  })
+})
+
+describe('mobile gateway WebSocket (/ws/mobile) — command submenu (model/permission)', () => {
+  /** 假命令运行时：agent 注册表恒返回一个占位 agent，execute 记录被执行的行。 */
+  function commandServicesWithLog(): { services: DshCommandServices; executions: string[] } {
+    const executions: string[] = []
+    const services: DshCommandServices = {
+      agents: { get: () => ({}) },
+      commands: {
+        list: () => [{ name: 'permission', description: 'Permission' }],
+        execute: async (_agent: unknown, line: string) => {
+          executions.push(line)
+          return { commandId: 'permission', result: { kind: 'success' as const } }
+        },
+      },
+    }
+    return { services, executions }
+  }
+
+  async function authed(database: WorkspaceDatabase, rootId: string, url: string) {
+    const pairing = database.createPairing([rootId], ['chat.read', 'chat.write'] as never)
+    const credentials = database.exchangePairing(pairing.code, 'Mobile device')
+    const socket = connect(url, {
+      protocols: 'dsh-mobile-v1',
+      headers: { Authorization: `Bearer ${credentials.token}` },
+    })
+    const { frames } = collect(socket)
+    await new Promise<void>((resolve, reject) => {
+      socket.once('open', resolve)
+      socket.once('error', reject)
+    })
+    await nextKind(frames, 'hello')
+    return { socket, frames }
+  }
+
+  it('lists model options with the current model selected and applies the choice by opaque id', async () => {
+    const { database, root, url } = await startHarness({ commandServices: commandServicesWithLog().services })
+    const { socket, frames } = await authed(database, root.id, url)
+    socket.send(JSON.stringify({ type: 'command-options', sessionId: 'sess-1', command: 'model' }))
+    await nextKind(frames, 'command-options')
+    const optionsReply = frames.find(frame => frame.kind === 'command-options')?.data as
+      { command?: string; options?: Array<{ id: string; label: string; selected: boolean }> }
+    expect(optionsReply.command).toBe('model')
+    expect(optionsReply.options).toHaveLength(2)
+    expect(optionsReply.options?.[0]).toMatchObject({ label: 'GPT X', selected: true })
+    expect(optionsReply.options?.[1]).toMatchObject({ label: 'GPT Y', selected: false })
+
+    const targetId = optionsReply.options?.[1]?.id ?? ''
+    socket.send(JSON.stringify({ type: 'command-select', sessionId: 'sess-1', command: 'model', optionId: targetId }))
+    await nextKind(frames, 'command-selected')
+    const selected = frames.find(frame => frame.kind === 'command-selected')?.data as
+      { command?: string; selected?: { id: string; selected: boolean } }
+    expect(selected.command).toBe('model')
+    expect(selected.selected?.id).toBe(targetId)
+    expect(selected.selected?.selected).toBe(true)
+    socket.close()
+  })
+
+  it('lists permission options from projections+catalog and applies via /permission command', async () => {
+    const { services, executions } = commandServicesWithLog()
+    const { database, root, url } = await startHarness({ commandServices: services })
+    const { socket, frames } = await authed(database, root.id, url)
+    socket.send(JSON.stringify({ type: 'command-options', sessionId: 'sess-1', command: 'permission' }))
+    await nextKind(frames, 'command-options')
+    const optionsReply = frames.find(frame => frame.kind === 'command-options')?.data as
+      { command?: string; options?: Array<{ id: string; label: string; selected: boolean }> }
+    expect(optionsReply.options).toEqual([
+      { id: 'ask', label: 'Ask', selected: false },
+      { id: 'workspace-write', label: 'Workspace Write', selected: true },
+    ])
+
+    socket.send(JSON.stringify({ type: 'command-select', sessionId: 'sess-1', command: 'permission', optionId: 'ask' }))
+    await nextKind(frames, 'command-selected')
+    expect(executions).toContain('/permission ask')
+    socket.close()
+  })
+
+  it('rejects command-options for a command without a submenu', async () => {
+    const { database, root, url } = await startHarness({ commandServices: commandServicesWithLog().services })
+    const { socket, frames } = await authed(database, root.id, url)
+    socket.send(JSON.stringify({ type: 'command-options', sessionId: 'sess-1', command: 'compact' }))
+    await nextKind(frames, 'error')
+    const error = frames.find(frame => frame.kind === 'error')?.data as { code?: string; requestType?: string }
+    expect(error.code).toBe('bad-request')
+    expect(error.requestType).toBe('command-options')
+    socket.close()
   })
 })
 
@@ -756,6 +844,32 @@ function fakeApi(initialMuxFrames: unknown[] = [], projection: 'sequenced' | 'mi
           value: { receiptId: `att-${request.payload.sessionId}-001`, name: request.payload.name ?? null },
         },
       }),
+      // 会话内模型目录/切模型（command-options/select 的 model 子菜单用）。
+      models: async (request: { rpcId: string }) => ({
+        rpcId: request.rpcId,
+        result: {
+          ok: true,
+          value: {
+            current: { provider: 'openai', model: 'gpt-x' },
+            routable: true,
+            failures: [],
+            groups: [
+              {
+                id: 'openai',
+                name: 'OpenAI',
+                models: [
+                  { id: 'gpt-x', name: 'GPT X' },
+                  { id: 'gpt-y', name: 'GPT Y' },
+                ],
+              },
+            ],
+          },
+        },
+      }),
+      selectModel: async (request: { rpcId: string; payload: { provider: string; model: string } }) => ({
+        rpcId: request.rpcId,
+        result: { ok: true, value: { selected: { provider: request.payload.provider, model: request.payload.model } } },
+      }),
       projections: async (request: { rpcId: string }) => {
         if (projection === 'null') {
           return { rpcId: request.rpcId, result: { ok: true, value: null } }
@@ -786,6 +900,7 @@ function fakeApi(initialMuxFrames: unknown[] = [], projection: 'sequenced' | 'mi
                 tokenUsage: { totals: { inputTokens: 10, outputTokens: 5, cacheReadTokens: 1, cacheWriteTokens: 0, reasoningTokens: 0 } },
                 contextPressure: { contextWindow: 128000, pressureTokens: 1500, surfaceTokens: 2000 },
                 sessionStats: { turns: 6, steps: 69, llmMs: 2280000, decodeTokens: 385 },
+                permissions: { currentValue: 'workspace-write' },
               },
             },
           },
@@ -840,7 +955,16 @@ function fakeApi(initialMuxFrames: unknown[] = [], projection: 'sequenced' | 'mi
     permissionPresets: {
       catalog: async (request: { rpcId: string }) => ({
         rpcId: request.rpcId,
-        result: { ok: true, value: { options: [{ id: 'standard', label: 'Standard' }], defaultPreset: 'standard' } },
+        result: {
+          ok: true,
+          value: {
+            options: [
+              { value: 'ask', name: 'Ask' },
+              { value: 'workspace-write', name: 'Workspace Write' },
+            ],
+            defaultPreset: 'ask',
+          },
+        },
       }),
     },
   }

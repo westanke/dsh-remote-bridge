@@ -722,7 +722,7 @@ v2.8 新增。独立于现有 `/api/v1/events`（单向广播，保留不动）�
 | `host` | 查主机信息 | — |
 | `default-model` / `save-default-model` | 读/保存默认模型 | `provider`, `model`, `reasoningEffort?` |
 | `models` / `providers` | 模型目录与供应商 | — |
-| `commands` / `command-options` / `command-select` | 命令目录 | — |
+| `commands` / `command-options` / `command-select` | 命令目录与通用二级菜单 | `command-options`：`sessionId`、`command`（仅 `model`/`permission`）；`command-select`：再加 `optionId`（model 的 id 为 base64url 的 `[provider,model]`，opaque 原样回传；permission 为档位 value，提交走 `/permission <id>`） |
 | `command-execute` | 执行斜杠命令 | `line`, `ui.kind` ('immediate'|'input'|'select'), `source` ('host'|'skill') |
 | `select-model` | 切换当前会话模型 | `sessionId`, `provider`, `model`, `reasoningEffort?` |
 | `permission-options` / `permission` | 权限档位 | — |
