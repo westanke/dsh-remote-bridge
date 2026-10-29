@@ -252,6 +252,7 @@ docs/api/            ← OpenAPI + AsyncAPI（wire schema 的权威）
 - `Quick 隧道地址漂移后不会自动更新`
 - `创建隧道无提示`
 - `CI 判活把 401 当没起来`
+- `CI 矩阵上的跨平台路径规范化假失败`
 - `目录结构与接口说明漂移`
 - `隧道让回环判据失效`
 - `改 node_modules 里的插件产物不生效（pnpm 硬链接）`

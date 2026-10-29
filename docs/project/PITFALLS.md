@@ -616,6 +616,64 @@ DSH 0.2.x 起 WebUI **对 loopback 也要求 token**，裸请求 `GET /` 返回 
 
 ---
 
+### CI 矩阵上的跨平台路径规范化假失败
+
+**症状**：CI 上 `core (macos-latest, …)` / `core (windows-latest, …)` 与
+`profile-install (macos/windows)` 稳定红，失败数**一模一样**（实测 `24 failed | 38 passed`），
+而 ubuntu 的全部 job 全绿、本机（Linux，`/tmp` 不是符号链接）也全绿。
+首个失败断言是 `expected [] to include 'sess-1'` —— 列表**整个是空的**。
+凡是要内核真正干活的用例全挂（sessions list / fork / question-cancel / approval replay /
+subscribe / model & permission options / host snapshot / agent-team / subagents / todos /
+goal / session-stats / file download / chunked upload / file-resolve），
+纯校验与结构化报错的用例全过。
+
+**根因**：夹具 `startHarness` 用 `mkdtemp(path.join(os.tmpdir(), 'daw-mgw-'))` 建临时目录，
+把**未规范化**的路径直接当会话 `cwd` 塞进 `fakeApi`（`tests/mobile-gateway-ws.spec.ts:41`、
+`:1152`/`:1162`/`:1163`）；而 `database.addRoot` 内部 `canonicalRoot()` 会
+`realpath(path.resolve(input))` 规范化（`src/host/path-policy.ts:35`）。两条路径字符串不等 →
+`matchRoot`（`src/host/chat-adapter.ts:1585`）→ `wireRelative(root.realPath, cwd)`
+（`src/host/path-policy.ts:92`）→ `isPathInside` 判失败 → 会话被过滤 → 列表为空。
+
+**平台差异正是迷惑的来源**：Linux 的 `/tmp` 不是符号链接，`realpath` 等于原路径 → 全绿；
+macOS 的 `/var/folders → /private/var/folders`、Windows 的 8.3 短名都是符号链接 → 必红。
+所以「**本机全绿、CI 红**」是本条坑的签名，而不是「CI 环境有问题」。
+
+**复现手法（决定性）**：把 TMPDIR 指到符号链接上跑同一个文件，
+失败数与 CI 完全一致 —— 等于把 CI 环境搬到本机：
+
+```sh
+LINK_PARENT=$(mktemp -d)
+mkdir -p "$LINK_PARENT/real" && ln -s "$LINK_PARENT/real" "$LINK_PARENT/link"
+TMPDIR="$LINK_PARENT/link" npm run test -- tests/mobile-gateway-ws.spec.ts
+# 修复前：24 failed | 38 passed（与 CI 同数）；修复后：62 passed
+```
+
+**现在怎么办**：夹具里凡是要「落进授权根内」的路径，一律先 `realpath` 再喂给 `fakeApi`：
+
+```ts
+activeProject = await realpath(project)   // 而不是 activeProject = project
+```
+
+对齐既有约定：`tests/chat-adapter.spec.ts` 与 `tests/http-api.spec.ts` 早已在夹具里 realpath，
+`mobile-gateway-ws.spec.ts` 是漏做的那一个。
+
+**铁律**：
+- 夹具的路径口径必须与产品代码的规范化口径**一致** —— 产品那边 `canonicalRoot` 已经 realpath 了，
+  夹具就不能拿原始路径去比。
+- 排查顺序：**先怀疑路径规范化口径不一致，再怀疑 CI 环境**。
+- 「本机绿 + CI 红」先做符号链接 TMPDIR 复现；能复现就等于定位完成。
+- 修复后**必须同时跑两种 TMPDIR**：符号链接（复现原失败）与常规（回归），只跑一种会漏。
+
+**回归**：`tests/mobile-gateway-ws.spec.ts`（62 用例，覆盖会话列表 / fork / question-cancel /
+approval replay / subscribe / 各类 options / host snapshot / agent-team / subagents /
+todos / goal / session-stats / 分块上传 / file-resolve）。
+
+**CI 矩阵**（`.github/workflows/ci.yml`）：`os: [ubuntu-latest, windows-latest, macos-latest]`
+× `node: [22.19.0, 24]` —— 所以 macos 与 windows 的 core 与 profile-install 都会跑到，
+ubuntu 不会暴露这条。
+
+---
+
 ### 目录结构与接口说明漂移
 
 **症状**：两种表现，都很像「没问题」：
