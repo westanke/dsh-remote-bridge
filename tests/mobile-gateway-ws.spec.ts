@@ -1686,3 +1686,383 @@ describe('mobile gateway WebSocket (/ws/mobile) — chunked file download & uplo
     socket.close()
   })
 })
+
+/**
+ * `requestId` 统一回显（2026-10-29）。
+ *
+ * 背景：`/ws/mobile` 的帧分发是**并发**的 —— `webSocket.on('message', ...)` 里
+ * `void this.handleMessage(...)` 不 await，同一连接可以同时有多个请求在途。所以回显
+ * 不能靠实例字段/闭包变量暂存「当前 requestId」，必须用 `AsyncLocalStorage` 做异步
+ * 上下文隔离（见 `src/host/ws-handler.ts` 的 `frameRequestId`）。下面「concurrent」那条
+ * 是唯一能证明「不是实例字段」的用例：慢请求先发后回，快请求后发先回。
+ */
+describe('mobile gateway WebSocket (/ws/mobile) — requestId echo', () => {
+  /** 全部设备 scope：用例表覆盖会话/文件/设置各域，逐个裁剪只会让失败原因变模糊。 */
+  const ALL_SCOPES = [
+    'chat.read', 'chat.write', 'files.read', 'files.write', 'files.delete', 'settings.read', 'settings.write',
+  ]
+
+  async function connectWithScopes(
+    database: WorkspaceDatabase,
+    rootId: string,
+    url: string,
+    scopes: string[] = ALL_SCOPES,
+  ): Promise<{ socket: WebSocket; frames: ReceivedFrame[] }> {
+    const pairing = database.createPairing([rootId], scopes as never)
+    const credentials = database.exchangePairing(pairing.code, 'Mobile device')
+    const socket = connect(url, {
+      protocols: 'dsh-mobile-v1',
+      headers: { Authorization: `Bearer ${credentials.token}` },
+    })
+    const { frames } = collect(socket)
+    await new Promise<void>((resolve, reject) => {
+      socket.once('open', resolve)
+      socket.once('error', reject)
+    })
+    await nextKind(frames, 'hello')
+    return { socket, frames }
+  }
+
+  /**
+   * 一个「什么都能回成功应答」的 harness。
+   *
+   * `fakeApi` 只实现了网关测试历史上用到的那几个方法，而这份用例要把**每一类**应答帧都
+   * 打一遍，所以缺的内核方法在这里补齐（返回体形状照 `DshApiProxy` 的类型来）。
+   * 注意 override 里**不要**回手调 `api.<同名方法>`：`Object.assign` 已经把 baseApi 上的
+   * 同名键换成了 override 自身，那会变成无限递归。
+   */
+  async function echoHarness() {
+    return await startHarness({
+      // 待处理审批只能由 mux 事件捕获（`captureApproval` 只认 `approval/requested`），
+      // approval-response 的成功路径必须有它。
+      initialMuxFrames: [{
+        rpcId: 'rpc-echo-approval',
+        payload: { type: 'approval/requested', sessionId: 'sess-1', approvalId: 'appr-echo', toolName: 'shell', reason: 'standard' },
+      }],
+      commandServices: {
+        commands: {
+          list: () => [{ name: 'permission', description: 'Permission' }],
+          execute: async () => ({ commandId: 'permission', result: { kind: 'success' as const } }),
+        },
+        agents: { get: () => ({}) },
+      },
+      apiOverrides: api => ({
+        // `decideApproval` 直接读 `api.respond` 的 `accepted`，不过 unwrapDsh。
+        respond: async (message: { rpcId: string }) => ({ accepted: true, rpcId: message.rpcId }),
+        sessions: {
+          ...api.sessions,
+          history: async (request: { rpcId: string }) => ({
+            rpcId: request.rpcId,
+            result: { ok: true, value: { events: [], hasMore: false } },
+          }),
+          create: async (request: { rpcId: string }) => ({
+            rpcId: request.rpcId,
+            result: { ok: true, value: { sessionId: 'sess-new' } },
+          }),
+          rename: async (request: { rpcId: string; payload: { title: string } }) => ({
+            rpcId: request.rpcId,
+            result: { ok: true, value: { title: request.payload.title, seq: 4 } },
+          }),
+          cancel: async (request: { rpcId: string }) => ({
+            rpcId: request.rpcId,
+            result: { ok: true, value: {} },
+          }),
+          prompt: async (request: { rpcId: string }) => ({
+            rpcId: request.rpcId,
+            result: { ok: true, value: { accepted: true } },
+          }),
+        },
+        workspace: {
+          ...api.workspace,
+          archiveSession: async (request: { rpcId: string }) => ({
+            rpcId: request.rpcId,
+            result: { ok: true, value: { archivedSessionIds: ['sess-1'] } },
+          }),
+        },
+        userQuestions: {
+          ...api.userQuestions,
+          answer: async (request: { rpcId: string }) => ({
+            rpcId: request.rpcId,
+            result: { ok: true, value: { accepted: true } },
+          }),
+        },
+        agentPresets: {
+          list: async (request: { rpcId: string }) => ({
+            rpcId: request.rpcId,
+            result: {
+              ok: true,
+              value: { presets: [{ id: 'preset-1', name: 'Default', trust: 'trusted', isDefault: true }] },
+            },
+          }),
+        },
+      }),
+    })
+  }
+
+  /** 一条请求帧 → 它那条应答帧的 kind。 */
+  const echoCases: Array<{ label: string; frame: Record<string, unknown>; replyKind: string }> = [
+    { label: 'sessions', replyKind: 'sessions', frame: { type: 'sessions' } },
+    { label: 'history', replyKind: 'history', frame: { type: 'history', sessionId: 'sess-1' } },
+    { label: 'workspaces', replyKind: 'workspaces', frame: { type: 'workspaces' } },
+    { label: 'models', replyKind: 'models', frame: { type: 'models', sessionId: 'sess-1' } },
+    { label: 'commands', replyKind: 'commands', frame: { type: 'commands', sessionId: 'sess-1' } },
+    { label: 'goal', replyKind: 'goal', frame: { type: 'goal', sessionId: 'sess-1' } },
+    { label: 'agent-presets', replyKind: 'agent-presets', frame: { type: 'agent-presets' } },
+    { label: 'host', replyKind: 'host', frame: { type: 'host' } },
+    { label: 'session-create', replyKind: 'session-created', frame: { type: 'session-create' } },
+    {
+      label: 'session-rename',
+      replyKind: 'session-renamed',
+      frame: { type: 'session-rename', sessionId: 'sess-1', title: 'Renamed by test' },
+    },
+    { label: 'session-archive', replyKind: 'session-archived', frame: { type: 'session-archive', sessionId: 'sess-1' } },
+    { label: 'session-cancel', replyKind: 'session-cancelled', frame: { type: 'session-cancel', sessionId: 'sess-1' } },
+    {
+      label: 'message',
+      replyKind: 'sent',
+      frame: { type: 'message', sessionId: 'sess-1', content: [{ type: 'text', text: 'hello' }] },
+    },
+    {
+      label: 'approval-response',
+      replyKind: 'approval-response',
+      frame: { type: 'approval-response', sessionId: 'sess-1', approvalId: 'appr-echo', outcome: 'allowed-once' },
+    },
+    {
+      label: 'question-answer',
+      replyKind: 'question-response',
+      frame: {
+        type: 'question-answer', sessionId: 'sess-1', callId: 'call-echo',
+        answers: [{ id: 'q1', selected: ['a'] }],
+      },
+    },
+  ]
+
+  // 判据 1：每一类应答帧都回显（参数化，不复制 15 段）。
+  for (const item of echoCases) {
+    it(`echoes requestId on the ${item.label} response (${item.replyKind})`, async () => {
+      const { database, root, url } = await echoHarness()
+      const { socket, frames } = await connectWithScopes(database, root.id, url)
+      const requestId = `req-${item.label}`
+      socket.send(JSON.stringify({ ...item.frame, requestId }))
+      await nextKind(frames, item.replyKind)
+      const reply = frames.find(frame => frame.kind === item.replyKind)?.data as { requestId?: string } | undefined
+      expect(reply?.requestId).toBe(requestId)
+      socket.close()
+    })
+  }
+
+  // 判据 2：流式/主动推送帧确实不回显。
+  it('never echoes requestId on pong, event or subscribed frames', async () => {
+    const { database, root, url, events } = await echoHarness()
+    const { socket, frames } = await connectWithScopes(database, root.id, url)
+
+    socket.send(JSON.stringify({ type: 'ping', requestId: 'req-ping' }))
+    await nextKind(frames, 'pong')
+    const pong = frames.find(frame => frame.kind === 'pong')?.data as Record<string, unknown>
+    expect('requestId' in pong).toBe(false)
+
+    // 推送帧：先 emit 再 subscribe —— 一旦订阅，无 sessionId 的事件会被会话过滤掉。
+    events.emit({ id: 'echo-push', type: 'chat.delta', time: Date.now(), data: { rootId: root.id } })
+    await nextKind(frames, 'event')
+    const pushed = frames.find(frame => frame.kind === 'event')?.data as Record<string, unknown>
+    expect('requestId' in pushed).toBe(false)
+
+    socket.send(JSON.stringify({ type: 'subscribe', sessionId: 'sess-1', requestId: 'req-subscribe' }))
+    await nextKind(frames, 'subscribed')
+    const subscribed = frames.find(frame => frame.kind === 'subscribed')?.data as Record<string, unknown>
+    expect('requestId' in subscribed).toBe(false)
+
+    // hello 在连接建立时主动推（不在任何请求的异步上下文里），永远不该带 requestId。
+    const hello = frames.find(frame => frame.kind === 'hello')?.data as Record<string, unknown>
+    expect('requestId' in hello).toBe(false)
+    socket.close()
+  })
+
+  // 判据 3（最关键）：同一条连接上同时两个在途请求，各拿自己的 id。
+  // 慢的（sessions，60ms）先发后回；快的（workspaces，10ms）后发先回。
+  // 若实现用实例字段/闭包变量暂存「当前 requestId」，慢的那个会读到后写入的 id —— 立刻红。
+  it('keeps concurrent request ids on their own responses (no cross-talk)', async () => {
+    const { database, root, url } = await startHarness({
+      apiOverrides: api => {
+        // 先抓住原方法再包延迟：override 会被 Object.assign 写回 baseApi，
+        // 在包装器里回手调 `api.sessions.list` 就是无限递归（测试会挂死而非报错）。
+        const listSessions = api.sessions.list
+        const listWorkspaces = api.workspace.list
+        return {
+          sessions: {
+            ...api.sessions,
+            list: async (request: { rpcId: string }) => {
+              await new Promise(resolve => setTimeout(resolve, 60))
+              return listSessions(request)
+            },
+          },
+          workspace: {
+            ...api.workspace,
+            list: async (request: { rpcId: string }) => {
+              await new Promise(resolve => setTimeout(resolve, 10))
+              return listWorkspaces(request)
+            },
+          },
+        }
+      },
+    })
+    const { socket, frames } = await connectWithScopes(database, root.id, url)
+
+    // 同一 tick 连发两条：分发不 await，两条 handler 各自挂在自己的 await 上。
+    socket.send(JSON.stringify({ type: 'sessions', requestId: 'req-slow-sessions' }))
+    socket.send(JSON.stringify({ type: 'workspaces', requestId: 'req-fast-workspaces' }))
+
+    await nextKind(frames, 'sessions')
+    await nextKind(frames, 'workspaces')
+
+    const sessionsReply = frames.find(frame => frame.kind === 'sessions')?.data as { requestId?: string }
+    const workspacesReply = frames.find(frame => frame.kind === 'workspaces')?.data as { requestId?: string }
+
+    // 快的先回：若 requestId 存在实例字段里，后发的那次已经把它覆盖成 req-fast-workspaces。
+    expect(workspacesReply.requestId).toBe('req-fast-workspaces')
+    // 慢的后回：必须仍是自己那个 id，而不是「最后一次写入」的那个。
+    expect(sessionsReply.requestId).toBe('req-slow-sessions')
+    // 到达顺序也是证据：快请求的响应必须排在慢请求之前。
+    expect(frames.findIndex(frame => frame.kind === 'workspaces'))
+      .toBeLessThan(frames.findIndex(frame => frame.kind === 'sessions'))
+    socket.close()
+  })
+
+  // 判据 4：处理器自己已经写进 `data.requestId` 的，注入层不得覆盖。
+  it('preserves the requestId that handlers already echo themselves', async () => {
+    const { database, root, url } = await echoHarness()
+    const { socket, frames } = await connectWithScopes(database, root.id, url)
+
+    // goals 域的 goal / tasks 是历史上就手写回显的两条（`echoRequestId()`）。
+    socket.send(JSON.stringify({ type: 'goal', sessionId: 'sess-1', requestId: 'goal-own-1' }))
+    await nextKind(frames, 'goal')
+    const goal = frames.find(frame => frame.kind === 'goal')?.data as { requestId?: string }
+    expect(goal.requestId).toBe('goal-own-1')
+
+    socket.send(JSON.stringify({ type: 'tasks', sessionId: 'sess-1', requestId: 'tasks-own-2' }))
+    await nextKind(frames, 'tasks')
+    const tasks = frames.find(frame => frame.kind === 'tasks')?.data as { requestId?: string }
+    expect(tasks.requestId).toBe('tasks-own-2')
+    socket.close()
+  })
+
+  // 判据 5：请求没带 requestId ⇒ 响应里不该凭空出现这个键（契约：absent ⇒ no key at all）。
+  it('omits the requestId key entirely when the request carried none', async () => {
+    const { database, root, url } = await echoHarness()
+    const { socket, frames } = await connectWithScopes(database, root.id, url)
+
+    socket.send(JSON.stringify({ type: 'sessions' }))
+    await nextKind(frames, 'sessions')
+    const sessions = frames.find(frame => frame.kind === 'sessions')?.data as Record<string, unknown>
+    expect('requestId' in sessions).toBe(false)
+
+    socket.send(JSON.stringify({ type: 'goal', sessionId: 'sess-1' }))
+    await nextKind(frames, 'goal')
+    const goal = frames.find(frame => frame.kind === 'goal')?.data as Record<string, unknown>
+    expect('requestId' in goal).toBe(false)
+
+    // 空字符串等价于「没带」：绝不回显 ""。
+    socket.send(JSON.stringify({ type: 'workspaces', requestId: '' }))
+    await nextKind(frames, 'workspaces')
+    const workspaces = frames.find(frame => frame.kind === 'workspaces')?.data as Record<string, unknown>
+    expect('requestId' in workspaces).toBe(false)
+    socket.close()
+  })
+
+  // error 帧也必须能归属到具体请求（旧契约明写 error 不带 requestId，已作废）。
+  it('echoes requestId on error frames so a failure is attributable', async () => {
+    const { database, root, url } = await echoHarness()
+    const { socket, frames } = await connectWithScopes(database, root.id, url)
+
+    socket.send(JSON.stringify({ type: 'history', requestId: 'req-error-missing-session' }))
+    await nextKind(frames, 'error')
+    const error = frames.find(frame => frame.kind === 'error')?.data as { code?: string; requestId?: string }
+    expect(error.code).toBe('MISSING_PARAMS')
+    expect(error.requestId).toBe('req-error-missing-session')
+    socket.close()
+  })
+
+  /**
+   * 回归：`handleMessage` 抛出的异常不再变成裸 unhandledRejection。
+   *
+   * 调用方是 `void this.handleMessage(...)`（不 await），任何逃出分发的异常都会落到宿主
+   * 的 `installFailLoud` 上 —— 那会把**整个宿主进程** exit(1)。这里用一个无权访问的
+   * sessionId 触发 `ApiError(404,'SESSION_NOT_FOUND')`，断言它变成一条带 requestId 的
+   * error 帧，且进程级 unhandledRejection 里没有它。
+   */
+  it('turns a thrown frame error into a correlated error frame instead of an unhandledRejection', async () => {
+    const { database, root, url } = await echoHarness()
+    const { socket, frames } = await connectWithScopes(database, root.id, url)
+
+    const rejections: unknown[] = []
+    const onRejection = (reason: unknown) => { rejections.push(reason) }
+    process.on('unhandledRejection', onRejection)
+    try {
+      socket.send(JSON.stringify({ type: 'history', sessionId: 'sess-not-visible', requestId: 'req-boom' }))
+      await nextKind(frames, 'error')
+      const error = frames.find(frame => frame.kind === 'error')?.data as
+        { code?: string; requestType?: string; requestId?: string }
+      expect(error.code).toBe('SESSION_NOT_FOUND')
+      expect(error.requestType).toBe('history')
+      expect(error.requestId).toBe('req-boom')
+
+      // 等一拍让潜在 rejection 冒出（microtask/定时器都要跑过）。
+      await new Promise(resolve => setTimeout(resolve, 300))
+      const leaked = rejections.filter(reason => {
+        const candidate = reason as { code?: unknown } | null
+        return typeof candidate === 'object' && candidate !== null && candidate.code === 'SESSION_NOT_FOUND'
+      })
+      expect(leaked).toEqual([])
+      // 连接还活着：这条错误没有把 socket 带走。
+      socket.send(JSON.stringify({ type: 'ping' }))
+      await nextKind(frames, 'pong')
+    } finally {
+      process.removeListener('unhandledRejection', onRejection)
+      socket.close()
+    }
+  })
+
+  /**
+   * 回归：连接已经 teardown 之后，迟到的异步应答不得变成 unhandledRejection。
+   *
+   * `sendFrame` 第一行是 `stateOf(webSocket)`，而 `teardown`（`close`/`error`）会把连接从
+   * `sockets` 里摘掉 —— 于是「await 完再回帧」在断开后必抛 `ApiError(4001)`。这条路径覆盖的
+   * 是 `reportFrameError` 里那层二次 try/catch：发不出去就吞掉，不能让它自己变成 rejection。
+   */
+  it('swallows a late response after teardown instead of leaking an unhandledRejection', async () => {
+    const { database, root, url } = await startHarness({
+      apiOverrides: api => {
+        // 记住原方法再包延迟（override 会被写回 baseApi，回手调会无限递归）。
+        const listSessions = api.sessions.list
+        return {
+          sessions: {
+            ...api.sessions,
+            list: async (request: { rpcId: string }) => {
+              await new Promise(resolve => setTimeout(resolve, 120))
+              return listSessions(request)
+            },
+          },
+        }
+      },
+    })
+    const { socket, frames } = await connectWithScopes(database, root.id, url)
+
+    const rejections: unknown[] = []
+    const onRejection = (reason: unknown) => { rejections.push(reason) }
+    process.on('unhandledRejection', onRejection)
+    try {
+      socket.send(JSON.stringify({ type: 'sessions', requestId: 'req-late' }))
+      // 不等应答就断开：120ms 后 listSessions 回来时，这条连接已经在 sockets 之外了。
+      await new Promise<void>(resolve => {
+        socket.once('close', () => { resolve() })
+        socket.close()
+      })
+      await new Promise(resolve => setTimeout(resolve, 400))
+      expect(rejections).toEqual([])
+    } finally {
+      process.removeListener('unhandledRejection', onRejection)
+    }
+    // 连接确实已经断开，且没有帧发出去。
+    expect(frames.some(frame => frame.kind === 'sessions')).toBe(false)
+  })
+})

@@ -99,45 +99,68 @@ channels:
 
       ## requestId correlation (request/response)
 
-      `requestId` is an **opaque client-chosen string**. Correlation is **not
-      uniform across frame types** — this is a known asymmetry, not an oversight
-      in the docs. Two families:
+      `requestId` is an **opaque client-chosen string**. Correlation is
+      **uniform**: every frame that answers a client request carries the
+      request's `requestId` back verbatim on `data.requestId`.
 
-      **Echoing family** — `goal-*`, tasks/goal projections, `agent-team`,
-      `subagents`, `file-*`, `speech-*`, `schedule-*`. A non-empty `requestId` on
-      the request is echoed back verbatim on the response frame's
-      `data.requestId` (never on the outer envelope — see below).
+      The echo is implemented once, centrally, in
+      `MobileGatewayWsHandler.sendFrame` — handlers do not copy the id
+      themselves any more (a few still do; the central injection never
+      overwrites a value already present in `data`). The id travels through
+      `AsyncLocalStorage`, not through instance state, because frame dispatch is
+      **concurrent**: `webSocket.on('message')` calls `void
+      this.handleMessage(...)` without awaiting, so several requests can be in
+      flight on one connection. A shared slot would cross-talk; a per-async-chain
+      context cannot.
 
-      **Silent family** — `sessions`, `history`, `workspaces`, `models`,
-      `providers`, `commands`, `command-*`, `permission*`, `agent-presets`,
-      `host`, `settings-*`, `plugin-*`, `question*`, `approval-*`,
-      `session-*` (create/rename/archive/cancel), `message`, `attachment`,
-      `subscribe`, `unsubscribe`, `ping`. These handlers **do not echo
-      `requestId` at all**. A client that waits for an id-matched response on
-      these frames will block until its own timeout.
+      **Correlated (response) frames** — every `kind` that answers a request,
+      including `error` and `sent`:
 
-      > Rationale (as implemented): `ws-handler.ts`'s `sendFrame` signature is
-      > `{ kind, data? }` — the outer envelope has no slot for `requestId`, so
-      > only handlers that explicitly copy it into `data` produce an echo. The
-      > silent family is instead correlated **implicitly by response `kind`**:
-      > `sessions` → `sessions`, `history` → `history`, `workspaces` →
-      > `workspaces`, etc. Each of those response kinds is produced by exactly
-      > one request kind and is never pushed unsolicited.
+      `sessions`, `history`, `workspaces`, `workspace-create`, `attachment`,
+      `message` (answers with `sent`), `models`, `providers`, `commands`,
+      `command-options`, `command-executed`, `command-selected`, `permission`,
+      `permission-options`, `agent-presets`, `host`, `default-model`,
+      `session-created`, `session-renamed`, `session-archived`,
+      `session-cancelled`, `session-stats`, `context-usage`, `tasks`, `goal*`,
+      `agent-team`, `subagents`, `schedule-*`, `speech-*` (except the pushes
+      below), `file-list`, `directory-create`, `file-resolve`,
+      `file-download-open`/`-cancelled`, `file-upload-open`/`-completed`/`-cancelled`,
+      `unsubscribe` (answers with `sent`), and **`error`**.
 
-      Rules that hold for **both** families:
+      **Uncorrelated (unsolicited / streaming) frames** — these are never an
+      answer to a specific request, so they never carry `requestId`. The set is
+      declared in code as `REQUEST_ID_ECHO_EXCLUDED_KINDS`
+      (`src/host/ws-protocol.ts`):
+
+      - handshake & heartbeat: `hello`, `paired`, `pong`
+      - subscription & event stream: `subscribed`, `event`
+      - HITL pushes: `question-requested`, `approval-requested`,
+        `approval-resolved`, `question-resolved`
+      - speech pushes: `speech-state`, `speech-transcript`, `speech-preparing`
+      - projection / queue pushes: `tasks-updated`, `goal-updated`,
+        `session-title-changed`, `queue-item-updated`
+      - chunked transfer pushes: `file-download-chunk`,
+        `file-upload-chunk-accepted`
+
+      > Adding a **push** kind is a two-step change: append it to
+      > `REQUEST_ID_ECHO_EXCLUDED_KINDS`, and add a line here. A push kind that
+      > is missing from the set will start echoing a stale `requestId` from
+      > whatever request happened to be in flight when it fired.
+
+      Rules:
 
       - Absent or empty string ⇒ **no** `requestId` key in the response at all
         (never `null`, never `""`), so a client must not match on falsy values.
+      - A non-object `data` (omitted, `null`, or an array) never gets the key.
       - `file-resolve`, `file-download-open`, `file-upload-open` **require**
-        `requestId` and answer `error` code `bad-request` without it, because
-        those responses are otherwise ambiguous under concurrency.
+        `requestId` and answer `error` code `bad-request` without it.
       - Correlation is per-connection; two connections may reuse the same id.
       - Clients must time out unmatched requests themselves — the server does not
         send a "request expired" frame.
-      - `error` frames do **not** carry `requestId`. They carry
-        `data.requestType` (the offending request's `type`), so an error can only
-        be attributed to a frame type, not to a specific in-flight request of that
-        type. Clients should fail the oldest pending request of that type.
+      - `error` frames carry **both** `data.requestId` and
+        `data.requestType`. `requestId` pins the failure to one in-flight
+        request; `requestType` says which request kind it was. Concurrent
+        requests of the same kind are distinguishable only by `requestId`.
 
       ## Backpressure and close codes
 
@@ -172,21 +195,30 @@ operations:
     action: send
     channel:
       $ref: '#/channels/mobile'
-    summary: "Send a `{type: ...}` request frame (and its `requestId` when a correlated response is expected)."
+    summary: "Send a `{type: ...}` request frame; supply a `requestId` if you need to correlate the response."
     description: |
       The client owns this direction. `subscribe`/`unsubscribe` narrow the pushed
       `event` stream to a session whitelist; `ping` is answered with `pong`;
       everything else maps to a REST-equivalent operation (see `docs/project/API.md`).
+
+      Every answer frame echoes a non-empty `requestId` verbatim on
+      `data.requestId` — see "requestId correlation" on the `mobile` channel.
   receiveMobileServerFrame:
     action: receive
     channel:
       $ref: '#/channels/mobile'
     summary: "Receive `{kind: ...}` response frames plus unsolicited pushes (event, HITL, speech state)."
     description: |
-      Response frames echo the request's `requestId` when one was supplied.
-      Unsolicited frames (`event`, `question-requested`, `approval-requested`,
-      `approval-resolved`, `question-resolved`, `speech-state`, `sent`) may
-      arrive at any time and must not be mistaken for responses.
+      Every response frame echoes the request's `requestId` on
+      `data.requestId` when the request supplied a non-empty one; `error` frames
+      do too, so a failure is always attributable to a single in-flight request.
+      Unsolicited frames (`hello`, `paired`, `pong`, `subscribed`, `event`,
+      `question-requested`, `approval-requested`, `approval-resolved`,
+      `question-resolved`, `speech-state`, `speech-transcript`,
+      `speech-preparing`, `tasks-updated`, `goal-updated`,
+      `session-title-changed`, `queue-item-updated`, `file-download-chunk`,
+      `file-upload-chunk-accepted`) may arrive at any time, never carry
+      `requestId`, and must not be mistaken for responses.
 components:
   messages:
     WorkspaceEvent:
@@ -446,8 +478,10 @@ components:
         「客户端→服务端帧」 for the per-type field table).
 
         `requestId` is optional on most frames and **required** on `file-resolve`,
-        `file-download-open` and `file-upload-open`; when present and non-empty it
-        is echoed verbatim on the response's `data.requestId`.
+        `file-download-open` and `file-upload-open`. When present and non-empty it
+        is echoed verbatim on `data.requestId` of **whatever frame answers this
+        request** — including `error` frames. See "requestId correlation" on the
+        `mobile` channel for the full rule set.
       required: [type]
       properties:
         type:
@@ -549,9 +583,9 @@ components:
           type: string
           minLength: 1
           description: |
-            Opaque client-chosen correlation id. Echoed verbatim on the response's
-            `data.requestId` when non-empty; absent ⇒ the response has no
-            `requestId` key at all.
+            Opaque client-chosen correlation id. Echoed verbatim on the answer
+            frame's `data.requestId` when non-empty; absent (or `""`) ⇒ the answer
+            has no `requestId` key at all.
         sessionId:
           type: string
           description: Target session for session-scoped frames; `subscribe` requires it non-empty.
@@ -562,10 +596,19 @@ components:
       title: Server → client frame
       description: |
         One text frame from the server, JSON encoded. `kind` selects the shape of
-        `data`. Response frames carry `data.requestId` when the request supplied
-        one; unsolicited frames (`event`, `question-requested`,
-        `approval-requested`, `approval-resolved`, `question-resolved`,
-        `speech-state`, `sent`) may arrive at any time.
+        `data`. Every answer to a client request carries `data.requestId` when
+        the request supplied a non-empty one — `error` frames included. Frames
+        that are not an answer to a specific request never carry it: `hello`,
+        `paired`, `pong`, `subscribed`, `event`, the HITL pushes
+        (`question-requested`, `approval-requested`, `approval-resolved`,
+        `question-resolved`), the speech pushes (`speech-state`,
+        `speech-transcript`, `speech-preparing`), the projection/queue pushes
+        (`tasks-updated`, `goal-updated`, `session-title-changed`,
+        `queue-item-updated`) and the chunked-transfer pushes
+        (`file-download-chunk`, `file-upload-chunk-accepted`). They may arrive at
+        any time. The exclusion set lives in `REQUEST_ID_ECHO_EXCLUDED_KINDS`
+        (`src/host/ws-protocol.ts`) — see "requestId correlation" on the `mobile`
+        channel.
 
         Note: `id`/`time` envelope fields are **not** stamped on `/ws/mobile`
         frames (that envelope belongs to `/api/v1/events`); a client must key on
@@ -748,7 +791,11 @@ components:
         requestType:
           type: string
           description: The offending frame's `type` (or `kind` for a rejected response).
-        requestId: { type: string }
+        requestId:
+          type: string
+          description: |
+            The offending request's `requestId`, echoed so the failure can be
+            pinned to one in-flight request. Absent when the request carried none.
         statusCode:
           type: integer
           description: Present when the failure originated from an HTTP-status-shaped upstream error.

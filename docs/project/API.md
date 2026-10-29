@@ -717,6 +717,19 @@ v2.8 新增。独立于现有 `/api/v1/events`（单向广播，保留不动）�
 
 `capabilities` 与 `connection.ready` 的能力位同源（见 `src/host/capabilities.ts`），命名 `<能力>-v<主版本>`，只增不撤。
 
+### requestId 关联（请求/应答配对）
+
+请求帧可选带 `requestId`（非空字符串，opaque）。**所有应答帧统一在 `data.requestId` 原样回显它**，包括 `error` 帧——失败也能钉到具体那一个在途请求上。
+
+- 实现只有一处：`MobileGatewayWsHandler.sendFrame` 在 `encodeFrame` 前调 `withRequestIdEcho(frame, this.frameRequestId.getStore())`。各域处理器不必各自复制（少数仍复制，集中注入**不覆盖** `data` 里已有的值）。
+- id 走 `AsyncLocalStorage`，不是实例字段：帧分发是并发的（`webSocket.on('message')` 里 `void this.handleMessage(...)` 不 await），共享槽位会串号。
+- 不回显的是一次「推送/流式」帧，集合声明在代码里：`REQUEST_ID_ECHO_EXCLUDED_KINDS`（`src/host/ws-protocol.ts`）——`hello` / `paired` / `pong` / `subscribed` / `event` / `question-requested` / `approval-requested` / `approval-resolved` / `question-resolved` / `speech-state` / `speech-transcript` / `speech-preparing` / `tasks-updated` / `goal-updated` / `session-title-changed` / `queue-item-updated` / `file-download-chunk` / `file-upload-chunk-accepted`。**新增推送 kind 必须同步该集合**，否则它会带上当时在途请求的 id。
+- 请求没带 `requestId`（或带 `""`）⇒ 应答帧里**完全没有** `requestId` 键（不是 `null`、不是 `""`）。
+- `data` 不是普通对象（缺省 / `null` / 数组）时不注入。
+- `file-resolve`、`file-download-open`、`file-upload-open` 的 `requestId` 是**必填**，缺它回 `error code:'bad-request'`。
+- 关联是**按连接**的：两条连接可以复用同一个 id。
+- 服务端不发「请求过期」帧，未配对的请求由客户端自己超时。
+
 ### 客户端→服务端帧（{type: …}）
 
 | type | 说明 | 关键字段 |
@@ -728,9 +741,9 @@ v2.8 新增。独立于现有 `/api/v1/events`（单向广播，保留不动）�
 | `sessions` | 列会话（按授权过滤） | `archived?` |
 | `history` | 分页拉历史 | `sessionId`, `beforeSeq?`, `maxMessages?`, `maxBytes?`（默认 4 MiB）, `view:'conversation'` |
 | `attachment` | 取附件/图片 base64 | `attachmentId` 或 `sessionId+name` |
-| `file-download-open/read/cancel` | 分片下载文件 | open 带 `requestId`,`sessionId`,`path`（相对会话根，禁 `..`）；read 带 `transferId`,`offset`（严格顺序）；最大 512 MiB，chunk 512 KiB，最大 4 并发，idle 2 min，末块附 `sha256` |
-| `file-upload-open/chunk/finish/cancel` | 分片上传文件 | open 带 `requestId`,`sessionId`,`name`（叶子名）,`size`,`sha256`；chunk 带 `uploadId`,`offset`,`data`（顺序 base64，块 256 KiB）；finish 校验 SHA-256 后经内核附件通道换 `receiptId`；需 `files.write` scope |
-| `file-resolve` | 文件预览元数据（不取字节） | `requestId`,`sessionId`,`path`（相对会话根，禁 `..`）；回 `file-resolved` 带 `{path,name,mediaType,size,modifiedAt}`；非普通文件 `file-not-regular`，超下载上限 `file-too-large`；需 `files.read` |
+| `file-download-open/read/cancel` | 分片下载文件 | open **必带** `requestId`,另带 `sessionId`,`path`（相对会话根，禁 `..`）；read 带 `transferId`,`offset`（严格顺序）；最大 512 MiB，chunk 512 KiB，最大 4 并发，idle 2 min，末块附 `sha256` |
+| `file-upload-open/chunk/finish/cancel` | 分片上传文件 | open **必带** `requestId`,另带 `sessionId`,`name`（叶子名）,`size`,`sha256`；chunk 带 `uploadId`,`offset`,`data`（顺序 base64，块 256 KiB）；finish 校验 SHA-256 后经内核附件通道换 `receiptId`；需 `files.write` scope |
+| `file-resolve` | 文件预览元数据（不取字节） | **必带** `requestId`,另带 `sessionId`,`path`（相对会话根，禁 `..`）；回 `file-resolved` 带 `{path,name,mediaType,size,modifiedAt}`；非普通文件 `file-not-regular`，超下载上限 `file-too-large`；需 `files.read` |
 | `search` | 搜索会话/消息 | `q`, `sessionId?` | 当前内核无搜索 RPC：回 `NOT_IMPLEMENTED` |
 | `host` | 查主机信息 | — | 回 `{version,dshVersion,cwd,attachedSessions,canOpenPath,defaultProvider?,defaultModel?}`；`cwd` 仅 `os.homedir()`，不回显授权根绝对路径；无 `canOpenWorkspacePath` 通道时 `canOpenPath:false` |
 | `default-model` / `save-default-model` | 读/保存默认模型 | `provider`, `model`, `reasoningEffort?` |
@@ -750,8 +763,8 @@ v2.8 新增。独立于现有 `/api/v1/events`（单向广播，保留不动）�
 | `session-cancel` / `session-archive` / `session-rename` / `fork` | 会话生命周期 | `sessionId` |
 | `queue-update` | 队列编辑（edit/remove/steer） | 当前内核 sessions 面只有 `prompt(mode:queue\|steer)`，无按 `itemId` 编辑/删除队列项的 RPC：回 `NOT_IMPLEMENTED`；插队 steer 可直接发 `message` 帧 `mode:'steer'` |
 | `directories` / `directory-create` / `workspace-create` | 目录/工作区操作 | `directory-create`/`workspace-create`：`rootId?`,`path`（`directory-create` 还可带 `name`），均限授权根内。`directories`（上游列宿主任意绝对路径）与本桥「仅授权根可见」安全模型冲突，回 `NOT_IMPLEMENTED`，授权根内浏览请用 `file-list` |
-| `agent-team` / `subagents` | 智能体团队/子会话目录（只读会话投影） | `sessionId`, `requestId`；回 `projectionState:'ready'|'unavailable'|'migration-required'` |
-| `speech-catalog` / `speech-subscribe` / `speech-unsubscribe` / `speech-configure` / `speech-prepare` / `speech-cancel-preparation` / `speech-transcribe` / `speech-cancel` | 官方语音输入（纯代理内核 speech Remote） | `requestId`，transcribe 带 `audioBase64`（16k PCM16 WAV，≤4 MiB）、`providerId?`、`language?` |
+| `agent-team` / `subagents` | 智能体团队/子会话目录（只读会话投影） | `sessionId`, `requestId?`（应答回显，见上）；回 `projectionState:'ready'|'unavailable'|'migration-required'` |
+| `speech-catalog` / `speech-subscribe` / `speech-unsubscribe` / `speech-configure` / `speech-prepare` / `speech-cancel-preparation` / `speech-transcribe` / `speech-cancel` | 官方语音输入（纯代理内核 speech Remote） | `requestId?`（应答回显；`speech-state` 等推送帧自带的是订阅上下文里那个 id，不跟随本次请求），transcribe 带 `audioBase64`（16k PCM16 WAV，≤4 MiB）、`providerId?`、`language?` |
 | `schedule-catalog` / `schedule-list` / `schedule-history` / `schedule-update` / `schedule-delete` | 定时任务（代理内核 schedule Remote） | catalog 无会话；其余带 `sessionId`；update 带完整 `expected`+`change` |
 
 ### 服务端→客户端帧（{kind: …}）
@@ -761,15 +774,15 @@ v2.8 新增。独立于现有 `/api/v1/events`（单向广播，保留不动）�
 | `hello` | 连接即推（见上）；`port` 为本连接实际接入的本地端口，`clients` 为当前已鉴权连接数 |
 | `pong` | 心跳应答（`{at,time}`，同一毫秒时间戳） |
 | `subscribed` | 订阅确认 |
-| `sent` | 消息已发 |
+| `sent` | 消息已发（应答帧，回显 `requestId`） |
 | `workspaces` / `sessions` / `history` / `search` | 查询响应 |
 | `commands` / `command-options` / `command-executed` / `command-selected` | 命令响应 |
 | `attachment` / `file-list` / `directory-create` / `file-download-opened/chunk/cancelled` | 附件、目录浏览/建目录（需 `files.write`）与文件下载（chunk 末块带 `sha256`） |
 | `file-upload-opened/chunk-accepted/completed/cancelled` | 分片上传（completed 带 `receiptId` 与 `sha256`） |
 | `session-cancelled` / `queue-item-updated` / `session-queues` / `session-queue` | 会话与队列状态 |
 | `session-archived` / `session-renamed` / `session-archives` / `session-title-changed` | 会话生命周期 |
-| `error` | 错误（不回显绝对路径） |
-| `event` | 内部事件透传（与 `/api/v1/events` 同源，受 scope/授权过滤） |
+| `error` | 错误（不回显绝对路径）；**带** `data.requestId` 与 `data.requestType`——前者钉到具体在途请求，后者说明是哪类请求 |
+| `event` | 内部事件透传（与 `/api/v1/events` 同源，受 scope/授权过滤）；推送帧，不带 `requestId` |
 | `tasks` / `goal` / `goal-edit` / `goal-pause` / `goal-resume` / `goal-clear` / `tasks-updated` / `goal-updated` | 任务/目标投影（tasks/goal 读基线，goal-* 为写应答带新 `ref` 或 `cleared:true`；updated 主动推送本期未发，客户端仍可轮询读帧） |
 | `session-stats` / `context-usage` | 会话统计与上下文占用投影响应 |
 | `question-requested` / `question-response` / `question-resolved` | HITL 提问（server→client 主动推送） |

@@ -13,6 +13,7 @@
  * ws-sessions / ws-hitl / ws-models / ws-commands / ws-presets / ws-goals。
  */
 import type { IncomingMessage } from 'node:http'
+import { AsyncLocalStorage } from 'node:async_hooks'
 import { randomUUID } from 'node:crypto'
 import { WebSocket } from 'ws'
 import type { DevicePrincipal, DeviceScope, Principal } from '../shared/contracts.ts'
@@ -33,6 +34,8 @@ import {
   type PairedData,
   encodeFrame,
   decodeFrame,
+  requestIdOf,
+  withRequestIdEcho,
 } from './ws-protocol.ts'
 import { SessionHandler } from './ws-sessions.ts'
 import { HitlHandler } from './ws-hitl.ts'
@@ -142,6 +145,15 @@ const KNOWN_UNSUPPORTED_FRAMES: Readonly<Record<string, string>> = {
 
 export class MobileGatewayWsHandler {
   private readonly sockets = new Map<WebSocket, MobileSocketState>()
+  /**
+   * 当前异步上下文里正在处理的那一帧客户端请求的 `requestId`。
+   *
+   * **为什么必须是 AsyncLocalStorage 而不是实例字段/闭包变量**：`webSocket.on('message')`
+   * 里是 `void this.handleMessage(...)`（不 await），同一条连接可以同时有多个请求在途；
+   * 任何「先存起来、发送时再读」的共享槽位都会把并发请求的 id 串到一起。ALS 把上下文
+   * 绑定在**这条 await 链**上，`await` 穿过它、并发分支各持一份，互不可见。
+   */
+  private readonly frameRequestId = new AsyncLocalStorage<string | undefined>()
   private settingsService: {
     catalog: () => Promise<{ groups: unknown[]; failures: unknown[] }>
     listProviders: () => Promise<unknown>
@@ -491,6 +503,15 @@ export class MobileGatewayWsHandler {
 
   // ───────────────────────── 消息分发（委托域处理器）─────────────────────────
 
+  /**
+   * 收到一条文本帧的入口：解码 → 校验 → **绑定 requestId 上下文** → 分发。
+   *
+   * 这里同时是唯一的异常兜底点。调用方是 `webSocket.on('message')` 里的
+   * `void this.handleMessage(...)`（不 await），任何从这里冒出去的 rejection 都会成为
+   * 进程级 unhandledRejection —— DSH 宿主装了 `installFailLoud`，直接 `proc.exit(1)`。
+   * 而 `handleHistory` 等基础帧是直接 `await this.chat.*`，一次越权的 `sessionId` 就能抛
+   * `ApiError(404, 'SESSION_NOT_FOUND')`。所以分发必须整体包在 try/catch 里。
+   */
   private async handleMessage(webSocket: WebSocket, state: MobileSocketState, text: string): Promise<void> {
     const frame = decodeFrame(text)
     if (frame === null || typeof frame !== 'object' || Array.isArray(frame)) {
@@ -505,6 +526,29 @@ export class MobileGatewayWsHandler {
       return
     }
 
+    // 复用上面已解码的结果取 requestId（不重复 JSON.parse：单帧上限 1 MiB，
+    // attachment / file-upload-chunk 都贴着上限走）。上下文只覆盖分发本身。
+    //
+    // try/catch 必须写在 `run()` **里面**：`catch` 里要发的那条 error 帧同样要回显
+    // requestId，而 sendFrame 是从 `frameRequestId.getStore()` 取的 —— 放到 run() 外面
+    // 就在上下文之外，取到 undefined，error 帧又变成无法归属的那一类。
+    const requestId = requestIdOf(clientFrame)
+    await this.frameRequestId.run(requestId, async () => {
+      try {
+        await this.routeFrame(webSocket, state, clientFrame, type)
+      } catch (error) {
+        this.reportFrameError(webSocket, type, error)
+      }
+    })
+  }
+
+  /** 把一帧已解码、已校验的请求分发给对应的处理器（异常由 {@link handleMessage} 兜底）。 */
+  private async routeFrame(
+    webSocket: WebSocket,
+    state: MobileSocketState,
+    clientFrame: ClientFrame,
+    type: string,
+  ): Promise<void> {
     // 基础帧（不依赖域处理器）。
     switch (type) {
       case 'ping':
@@ -692,10 +736,16 @@ export class MobileGatewayWsHandler {
 
   // ───────────────────────── 发送与背压 ─────────────────────────
 
-  /** 向一条连接发一条帧（带背压队列）。 */
+  /**
+   * 向一条连接发一条帧（带背压队列）。
+   *
+   * 应答帧统一在这里回显 `requestId`：从 {@link frameRequestId} 取**当前异步上下文**的
+   * requestId，交给 {@link withRequestIdEcho} 决定要不要塞进 `data`。处理器无需再各自
+   * 复制一遍（已手写回显的处理器不受影响 —— 注入规则是「`data` 里已有就不覆盖」）。
+   */
   private sendFrame(webSocket: WebSocket, frame: { kind: string; data?: unknown }): void {
     const state = this.stateOf(webSocket)
-    const text = encodeFrame(frame)
+    const text = encodeFrame(withRequestIdEcho(frame, this.frameRequestId.getStore()))
 
     const send = () => {
       if (webSocket.readyState !== WebSocket.OPEN) return
@@ -718,6 +768,24 @@ export class MobileGatewayWsHandler {
 
   private sendError(webSocket: WebSocket, code: string, message: string, statusCode?: number): void {
     this.sendFrame(webSocket, { kind: 'error', data: { code, message, ...(statusCode === undefined ? {} : { statusCode }) } })
+  }
+
+  /**
+   * 把分发过程中冒出来的异常变成一条 `error` 帧（范式与各域处理器的 `reportError` 一致）。
+   *
+   * **这里的 try/catch 不是多余的**：`sendFrame` 第一行就是 `this.stateOf(webSocket)`，而
+   * `teardown` 会在 `close`/`error` 时把连接从 `sockets` 摘掉。连接已断时 `stateOf` 抛
+   * `ApiError(4001, 'NOT_AUTHENTICATED')` —— 在 catch 块里再抛一次，就等于没修。
+   */
+  private reportFrameError(webSocket: WebSocket, type: string, error: unknown): void {
+    const data = error instanceof ApiError
+      ? { code: error.code, message: error.message, statusCode: error.status, requestType: type }
+      : { code: 'INTERNAL_ERROR', message: 'Frame handling failed.', requestType: type }
+    try {
+      this.sendFrame(webSocket, { kind: 'error', data })
+    } catch {
+      // 连接已断开：没有能投递的对象，吞掉即可（不能让 fallback 自己变成 unhandledRejection）。
+    }
   }
 
   /** 把队列里的帧逐条发出去。 */

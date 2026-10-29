@@ -512,3 +512,72 @@ export function makeServerFrame(kind: ServerFrameKind, data: unknown): ServerEnv
 export function makeErrorFrame(code: string, message: string, requestId?: string): ServerEnvelope {
   return makeServerFrame('error', { code, message, requestId })
 }
+
+// ───────────────────────── requestId 回显 ─────────────────────────
+
+/**
+ * **不**回显 `requestId` 的服务端帧 kind：流式分块与服务端主动推送。
+ *
+ * 这些帧不与「某一次请求」一一对应（一次请求可能引发 0..N 条），客户端拿它们去配对
+ * 只会误伤；而 `speech-state` 例外地在处理器里手写了 `requestId`，那属于它自己的
+ * 语义，注入层不覆盖（见 {@link withRequestIdEcho} 的「已有不覆盖」规则）。
+ *
+ * 显式列举而非前缀/启发式判断：新增推送 kind 时**必须**同步本表，否则会误注入。
+ */
+export const REQUEST_ID_ECHO_EXCLUDED_KINDS: ReadonlySet<string> = new Set<string>([
+  // 握手与心跳
+  'hello',
+  'paired',
+  'pong',
+  // 订阅确认与事件透传
+  'subscribed',
+  'event',
+  // HITL 主动推送（对应的回执 approval-response / question-response 才是应答帧）
+  'question-requested',
+  'approval-requested',
+  'approval-resolved',
+  'question-resolved',
+  // 语音跟随时序推送（speech-state 由处理器自己写 requestId，注入层不覆盖）
+  'speech-state',
+  'speech-transcript',
+  'speech-preparing',
+  // 会话/任务投影与队列的推送
+  'tasks-updated',
+  'goal-updated',
+  'session-title-changed',
+  'queue-item-updated',
+  // 文件分块流（分块回执由处理器自己写 requestId）
+  'file-download-chunk',
+  'file-upload-chunk-accepted',
+])
+
+/**
+ * 从客户端帧取 `requestId`：只认非空字符串，其余（缺失 / 空串 / 非字符串）一律
+ * 视为「没带」——契约规定 absent ⇒ 应答里连 `requestId` 键都不出现。
+ */
+export function requestIdOf(frame: ClientFrame): string | undefined {
+  const value = frame.requestId
+  return typeof value === 'string' && value !== '' ? value : undefined
+}
+
+/**
+ * 给应答帧的 `data` 注入 `requestId`（纯函数，不改动入参）。
+ *
+ * 四条「原样返回」规则：
+ * 1. 请求没带 `requestId`（absent / 空串）——不许凭空造出这个键；
+ * 2. kind 属于流式或主动推送（{@link REQUEST_ID_ECHO_EXCLUDED_KINDS}）；
+ * 3. `data` 不是普通对象（省略 / 数组 / `null` / 标量）——没有放的位置，改形状会破坏契约；
+ * 4. `data` 里已经有 `requestId`——处理器手写的回显优先，**绝不覆盖**已验收的行为。
+ */
+export function withRequestIdEcho(
+  frame: { kind: string; data?: unknown },
+  requestId: string | undefined,
+): { kind: string; data?: unknown } {
+  if (requestId === undefined || requestId === '') return frame
+  if (REQUEST_ID_ECHO_EXCLUDED_KINDS.has(frame.kind)) return frame
+  const data = frame.data
+  if (data === null || typeof data !== 'object' || Array.isArray(data)) return frame
+  const record = data as Record<string, unknown>
+  if ('requestId' in record) return frame
+  return { ...frame, data: { ...record, requestId } }
+}
