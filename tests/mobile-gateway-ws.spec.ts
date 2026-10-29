@@ -2167,3 +2167,109 @@ describe('/ws/mobile 的连接上限、心跳与背压告知', () => {
     socket.close()
   })
 })
+
+/**
+ * `session-create` 与 `history` 的「最后一米」：两个参数曾被写死或丢掉，
+ * 于是 App 侧只能让「新建会话」和「首屏历史」整体退回 REST。
+ *
+ * 这两条都是**行为**用例而不是词汇表用例 —— 契约测试只比帧名词汇，
+ * 参数被悄悄丢掉它一句话都不会说。
+ */
+describe('/ws/mobile 与 REST 对齐的两个参数（session-create / history）', () => {
+  it('session-create 把 agentPreset 与 reuseBlank 原样传给内核，并在应答里回传落定的 agentPreset', async () => {
+    let captured: { cwd?: string; agentPreset?: string; sessionId?: string } | undefined
+    const { database, root, url } = await startHarness({
+      apiOverrides: api => ({
+        sessions: {
+          ...api.sessions,
+          create: async (request: { rpcId: string; payload: { cwd?: string; agentPreset?: string; sessionId?: string } }) => {
+            captured = request.payload
+            // 内核可能把预设落成别的值（例如别名改写）—— 桥照实回传，客户端不必再猜。
+            return {
+              rpcId: request.rpcId,
+              result: { ok: true, value: { sessionId: 'sess-new', agentPreset: 'preset-resolved' } },
+            }
+          },
+        },
+      }),
+    })
+    const pairing = database.createPairing([root.id], ['chat.read', 'chat.write'] as never)
+    const credentials = database.exchangePairing(pairing.code, 'Create device')
+    const socket = connect(url, {
+      protocols: 'dsh-mobile-v1',
+      headers: { Authorization: `Bearer ${credentials.token}` },
+    })
+    const { frames } = collect(socket)
+    await new Promise<void>((resolve, reject) => {
+      socket.once('open', resolve)
+      socket.once('error', reject)
+    })
+    await nextKind(frames, 'hello')
+
+    socket.send(JSON.stringify({
+      type: 'session-create',
+      rootId: root.id,
+      cwd: '',
+      agentPreset: 'preset-x',
+      reuseBlank: false,
+    }))
+    await nextKind(frames, 'session-created')
+
+    // ① 参数真的传到了内核 —— 这不是「帧收了就算」。
+    expect(captured?.agentPreset).toBe('preset-x')
+    // ② reuseBlank:false 必须走到内核 create（而不是复用空白会话）：没有 sessionId 就是新建。
+    expect(captured?.sessionId).toBeUndefined()
+    // ③ 应答回传内核落定的预设，客户端不用猜自己选的那个是否生效。
+    const reply = frames.find(frame => frame.kind === 'session-created')?.data as { agentPreset?: string } | undefined
+    expect(reply?.agentPreset).toBe('preset-resolved')
+    socket.close()
+  })
+
+  it('首屏 history 带 projections，翻页不带', async () => {
+    const projections = {
+      values: {
+        todos: [{ id: 'todo-1', text: '整理待办', status: 'pending' }],
+        goal: { goal: { id: 'goal-1', revision: 1, objective: '对齐投影', phase: 'active' } },
+      },
+      asOfSeq: 42,
+    }
+    const { database, root, url } = await startHarness({
+      apiOverrides: api => ({
+        sessions: {
+          ...api.sessions,
+          history: async (request: { rpcId: string }) => ({
+            rpcId: request.rpcId,
+            result: { ok: true, value: { events: [], hasMore: true, projections } },
+          }),
+        },
+      }),
+    })
+    const pairing = database.createPairing([root.id], ['chat.read'] as never)
+    const credentials = database.exchangePairing(pairing.code, 'History device')
+    const socket = connect(url, {
+      protocols: 'dsh-mobile-v1',
+      headers: { Authorization: `Bearer ${credentials.token}` },
+    })
+    const { frames } = collect(socket)
+    await new Promise<void>((resolve, reject) => {
+      socket.once('open', resolve)
+      socket.once('error', reject)
+    })
+    await nextKind(frames, 'hello')
+
+    // 首屏（不带 beforeSeq）：投影必须跟着回来，否则客户端要么空面板、要么再花一次 REST。
+    socket.send(JSON.stringify({ type: 'history', sessionId: 'sess-1' }))
+    const first = await awaitNewFrame(frames, 0, frame => frame.kind === 'history', 'history')
+    const firstData = first.data as { projections?: typeof projections }
+    expect(firstData.projections?.asOfSeq).toBe(42)
+    expect(firstData.projections?.values.goal).toBeDefined()
+
+    // 翻页（带 beforeSeq）：投影刻意不带 —— 一份就够，而这一帧有 1 MiB 上限。
+    const before = frames.length
+    socket.send(JSON.stringify({ type: 'history', sessionId: 'sess-1', beforeSeq: 10 }))
+    const paged = await awaitNewFrame(frames, before, frame => frame.kind === 'history', 'history (paged)')
+    const pagedData = paged.data as { projections?: unknown }
+    expect('projections' in pagedData).toBe(false)
+    socket.close()
+  })
+})

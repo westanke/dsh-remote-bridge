@@ -739,7 +739,7 @@ v2.8 新增。独立于现有 `/api/v1/events`（单向广播，保留不动）�
 | `message` | 发消息（sessionId 可选，省略自动创建新会话） | `sessionId?`, `mode:'queue'|'steer'`, `content` (PromptContentPart[]), `clientTimeZone?`, `workspaceId?`, `cwd?` |
 | `workspaces` | 列工作区 | — |
 | `sessions` | 列会话（按授权过滤） | `archived?` |
-| `history` | 分页拉历史 | `sessionId`, `beforeSeq?`, `maxMessages?`, `maxBytes?`（默认 4 MiB）, `view:'conversation'` |
+| `history` | 分页拉历史 | `sessionId`, `beforeSeq?`, `maxMessages?`, `maxBytes?`（默认 4 MiB）, `view:'conversation'`；**首屏（不带 `beforeSeq`）的响应额外带 `projections`**（与 REST `GET /chat/sessions/{id}/messages` 同源），翻页不带 —— 投影只要一份，而这一帧有 1 MiB 上限 |
 | `attachment` | 取附件/图片 base64 | `attachmentId` 或 `sessionId+name` |
 | `file-download-open/read/cancel` | 分片下载文件 | open **必带** `requestId`,另带 `sessionId`,`path`（相对会话根，禁 `..`）；read 带 `transferId`,`offset`（严格顺序）；最大 512 MiB，chunk 512 KiB，最大 4 并发，idle 2 min，末块附 `sha256` |
 | `file-upload-open/chunk/finish/cancel` | 分片上传文件 | open **必带** `requestId`,另带 `sessionId`,`name`（叶子名）,`size`,`sha256`；chunk 带 `uploadId`,`offset`,`data`（顺序 base64，块 256 KiB）；finish 校验 SHA-256 后经内核附件通道换 `receiptId`；需 `files.write` scope |
@@ -757,9 +757,10 @@ v2.8 新增。独立于现有 `/api/v1/events`（单向广播，保留不动）�
 | `tasks` / `goal` | 任务列表/当前目标基线（只读会话投影） | `sessionId`；回 `asOfSeq` + `todos`/`goal`，未写入过为 `null` |
 | `goal-edit` / `goal-pause` / `goal-resume` / `goal-clear` | 当前目标写操作（compare-and-set） | `sessionId`, `ref:{id,revision}`，edit 另带 `objective?`/`maxGoalRounds?`；代理内核 goals Remote，老内核回 `unsupported` 走 REST |
 | `plugin-catalog` / `plugin-inspect` / `plugin-install` / `plugin-settings` | 插件管理（paired 控制连接） | — |
-| `agent-presets` / `defaults` / `set-default` | Agent 预设 | `agent-presets` 已实现；全局默认 `defaults`/`set-default` 当前内核无写通道，回 `NOT_IMPLEMENTED` |
+| `agent-presets` / `session-agent-preset` / `select-agent-preset` / `defaults` / `set-default` | Agent 预设 | `agent-presets` 列清单；`session-agent-preset`（`sessionId`+`agentPresetId`，锁定后不可改）与 `select-agent-preset`（`sessionId`+`agentPresetId`，为会话选一个预设）**均已实现**，二者应答都是 `kind:'sent'` + `data.type` 为同名帧（配对应看 `data.type`，别只看 kind）；全局默认 `defaults`/`set-default` 当前内核无写通道，回 `NOT_IMPLEMENTED` |
 | `question-answer` / `question-cancel` | HITL 提问回应 | answer：`callId`/`rpcId`,`answers[]`；cancel：`sessionId`+`rpcId`（上游）或 `callId`（本桥），回 `{kind:'question-response',action:'answer'\|'cancel',accepted}`。cancel 只能作废本桥接管、正阻塞 agent 的前台提问；内核无 continued 提问取消通道 |
 | `approval-response` | HITL 审批回应 | `approvalId`, `outcome: 'allowed-once'|'rejected'` |
+| `session-create` | 提前建空会话（不发消息） | 两种寻址，与 REST `POST /chat/sessions` 同语义：① `workspaceId`（只认工作区，推荐 —— 客户端不必知道「哪个根 + 相对路径」）；② `rootId?`（缺省取首个授权根）+ `cwd?`（相对根）。另带 `agentPreset?` 与 `reuseBlank?`：`reuseBlank !== false` 时优先复用同路径的空白会话，`false` 则强制新建。响应 `session-created` 带 `{sessionId, rootId \| workspaceId, agentPreset?}`，`agentPreset` 是内核落定后的值（可能被改写），客户端应据此刷新而不是假定自己选的那个生效 |
 | `session-cancel` / `session-archive` / `session-rename` / `fork` | 会话生命周期 | `sessionId` |
 | `queue-update` | 队列编辑（edit/remove/steer） | 当前内核 sessions 面只有 `prompt(mode:queue\|steer)`，无按 `itemId` 编辑/删除队列项的 RPC：回 `NOT_IMPLEMENTED`；插队 steer 可直接发 `message` 帧 `mode:'steer'` |
 | `directories` / `directory-create` / `workspace-create` | 目录/工作区操作 | `directory-create`/`workspace-create`：`rootId?`,`path`（`directory-create` 还可带 `name`），均限授权根内。`directories`（上游列宿主任意绝对路径）与本桥「仅授权根可见」安全模型冲突，回 `NOT_IMPLEMENTED`，授权根内浏览请用 `file-list` |

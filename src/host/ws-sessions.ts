@@ -50,14 +50,39 @@ export class SessionHandler {
   private async handleSessionCreate(principal: Principal, frame: ClientFrame): Promise<boolean> {
     const rootId = typeof frame.rootId === 'string' ? frame.rootId : undefined
     const cwd = typeof frame.cwd === 'string' ? frame.cwd : undefined
+    // 与 REST `POST /chat/sessions` 对齐的三个可选参数。此前这里写死 `reuseBlank: false`、
+    // 也收不到 agentPreset，于是「走 WS 新建」和「走 REST 新建」是两个不同的结果 ——
+    // App 侧因此只能让新建会话整体走 REST。既然帧上能带，就别让两条通道各说各话。
+    const workspaceId = typeof frame.workspaceId === 'string' && frame.workspaceId !== '' ? frame.workspaceId : undefined
+    const agentPreset = typeof frame.agentPreset === 'string' && frame.agentPreset !== '' ? frame.agentPreset : undefined
+    const reuseBlank = typeof frame.reuseBlank === 'boolean' ? frame.reuseBlank : undefined
 
     // mobile-gateway: session-create 提前创建空会话，不立即发消息。
-    // 复用 chat.createSession，rootId 为空时取首个授权根目录，cwd 作为相对路径。
-    const roots = principal.rootIds
-    const resolvedRootId = rootId ?? (roots === 'all' ? '' : [...roots][0] ?? '')
+    // 两种寻址方式，语义与 REST 一致：
+    // - 带 `workspaceId`：走 `createSessionInWorkspace`（客户端只认工作区，不知道根的相对路径）；
+    // - 否则带 `rootId`+`cwd`：走 `createSession`，rootId 为空时取首个授权根目录。
+    // 让客户端自己从工作区绝对路径反推「哪个根 + 相对路径」是不行的：Android 与宿主对
+    // 符号链接/大小写/短名的规范化口径不同，一旦对不上就是静默「建到了别处」。
     try {
-      const created = await this.chat.createSession(principal, resolvedRootId, cwd ?? '', { reuseBlank: false })
-      this.sendFrame({ kind: 'session-created', data: { sessionId: created.id, rootId: resolvedRootId } })
+      const created = workspaceId !== undefined
+        ? await this.chat.createSessionInWorkspace(principal, workspaceId, {
+          ...(agentPreset === undefined ? {} : { agentPreset }),
+          ...(reuseBlank === undefined ? {} : { reuseBlank }),
+        })
+        : await this.chat.createSession(principal, rootId ?? (principal.rootIds === 'all' ? '' : [...principal.rootIds][0] ?? ''), cwd ?? '', {
+          ...(agentPreset === undefined ? {} : { agentPreset }),
+          ...(reuseBlank === undefined ? {} : { reuseBlank }),
+        })
+      this.sendFrame({
+        kind: 'session-created',
+        data: {
+          sessionId: created.id,
+          ...(workspaceId === undefined ? { rootId } : { workspaceId }),
+          // 内核可能把 agentPreset 落成别的值（例如预设被改写），照实回传，
+          // 客户端不必再猜「我选的那个到底生效了没有」。
+          ...(created.agentPreset === undefined ? {} : { agentPreset: created.agentPreset }),
+        },
+      })
     } catch (error) {
       this.reportError(error, 'Failed to create session.')
     }

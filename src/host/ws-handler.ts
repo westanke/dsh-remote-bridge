@@ -766,10 +766,20 @@ export class MobileGatewayWsHandler {
     const opts: Record<string, unknown> = {}
     if (beforeSeq !== undefined) opts.beforeSeq = beforeSeq
     if (maxMessages !== undefined) opts.maxMessages = maxMessages
-    const { events, hasMore } = await this.chat.history(state.principal, sessionId, opts)
+    const { events, hasMore, projections } = await this.chat.history(state.principal, sessionId, opts)
     this.sendFrame(webSocket, {
       kind: 'history',
-      data: { sessionId, events, hasMore },
+      data: {
+        sessionId,
+        events,
+        hasMore,
+        // 投影（待办 / 目标 / 统计 / 上下文压力 / 智能体团队）此前在这一帧里被丢掉了：
+        // `chat.history()` 明明返回它、REST 路由原样透传，只有这里解构时漏掉 ——
+        // 于是客户端「首屏走 WS」就必然拿到空投影，只能退回 REST 再拉一次。
+        // 只对首屏（没有 beforeSeq）附带：翻历史页要投影没有意义，而这一帧有 1 MiB 上限，
+        // 每页都塞一份纯属浪费额度。
+        ...(beforeSeq !== undefined || projections === undefined ? {} : { projections }),
+      },
     })
   }
 
