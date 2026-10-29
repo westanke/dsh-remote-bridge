@@ -35,18 +35,132 @@ servers:
     description: Default listener; the bind IP and port are configurable from the local DSH WebUI
     protocol: ws
     pathname: /api/v1/events
+  mobile:
+    host: 127.0.0.1:3090
+    description: |
+      Same listener as `local`, different path. `/ws/mobile` is a **bidirectional**
+      channel (request/response frames plus server push), unlike the one-way
+      `/api/v1/events` broadcast. Port default is 3090; the bind IP/port are
+      configurable from the local DSH WebUI.
+    protocol: ws
+    pathname: /ws/mobile
 channels:
   events:
     address: /api/v1/events
     messages:
       workspaceEvent:
         $ref: '#/components/messages/WorkspaceEvent'
+  mobile:
+    address: /ws/mobile
+    title: Mobile gateway (bidirectional frames)
+    description: |
+      Mobile-facing gateway added in v2.8: the client sends `{"type": ...}` frames,
+      the server answers `{"kind": ...}` frames and may push unsolicited frames
+      (`event`, `question-requested`, `approval-requested`, `speech-state`, ...).
+
+      **WS first, REST fallback.** Every business operation here has a REST
+      equivalent under `/api/v1` (same device token, same scope/root/session
+      authorization). A client should fall back to REST when the socket cannot be
+      established, or when a frame answers `error` with code `NOT_IMPLEMENTED`
+      (capability temporarily missing) — not treat it as "the feature does not
+      exist". `UNKNOWN_TYPE` means the client sent a frame this server does not
+      know at all (a client bug, not a capability gap).
+
+      ## Handshake and authentication
+
+      - Path: `ws://HOST:PORT/ws/mobile` (upgrade on the main HTTP server).
+      - The first requested subprotocol **must** be `dsh-mobile-v1`. A connection
+        whose negotiated subprotocol differs is closed with code `4001`.
+      - Three credential carriers, all resolved through the same `principal()`
+        predicate as `/api/v1` (device token / scopes / roots / revocation):
+        1. **First pairing** — subprotocols `dsh-mobile-v1, dsh-pair.<code>` plus
+           header `X-DSH-Device-ID` (required; installation-stable id, validated
+           only, never persisted) and optional `X-DSH-Device-Name`
+           (`Base64(UTF-8)` display name; missing or invalid base64 falls back to
+           the device id). On success the server sends `paired`
+           (`{token, device}`) **before** `hello`; the pairing code is one-shot.
+        2. **Later connections** — subprotocols `dsh-mobile-v1, dsh-auth.<token>`.
+        3. **Later connections (header form)** — `Authorization: Bearer <token>`.
+      - Credentials in the URL query string are **rejected** (`4001`): a token in
+        a URL ends up in access logs.
+      - Connection cap is 32 authenticated sockets (configurable). Authentication
+        happens **before** counting; the 33rd authenticated upgrade is refused at
+        the HTTP Upgrade stage with `429` + `Retry-After: 5`.
+      - Every accepted connection receives `hello` as its first frame (after
+        `paired` on the pairing flow). `protocol` is currently `3`;
+        `capabilities` shares its source with `connection.ready`.
+
+      ## Frame shapes
+
+      Client → server frames carry `type` (the `MobileClientFrame` schema
+      enumerates the full set); server → client frames carry `kind` (the
+      `MobileServerFrame` schema enumerates the full set). Unknown `type` answers
+      `error` with code `UNKNOWN_TYPE`.
+
+      ## requestId correlation (request/response)
+
+      `requestId` is an **opaque client-chosen string**. When a request frame
+      carries a non-empty `requestId`, the server echoes it back verbatim on the
+      response frame's `data.requestId` (same convention as the goal and team
+      handlers). Rules:
+
+      - Absent or empty string ⇒ **no** `requestId` key in the response at all
+        (never `null`, never `""`), so a client must not match on falsy values.
+      - `file-resolve`, `file-download-open`, `file-upload-open` **require**
+        `requestId` and answer `error` code `bad-request` without it, because
+        those responses are otherwise ambiguous under concurrency.
+      - Correlation is per-connection; two connections may reuse the same id.
+      - Clients must time out unmatched requests themselves — the server does not
+        send a "request expired" frame.
+
+      ## Backpressure and close codes
+
+      Identical parameters to `/api/v1/events` (see `MobileConnectionLimits`):
+      a 1 MiB per-frame cap, a 512-frame per-connection send queue that drops the
+      oldest frame when full, and a heartbeat every 30 s (two missed intervals ⇒
+      terminate). Device revocation or an authorization change closes the socket
+      with `4001`. `connection.resyncRequired` (delivered as an `event` frame)
+      tells the client to re-fetch its baseline over REST; dropped frames are
+      never replayed.
+
+      ## Declared but not backed by this kernel build
+
+      `search`, `directories`, `defaults`, `set-default`, `queue-update`,
+      `plugin-catalog`, `plugin-inspect`, `plugin-install`, `plugin-settings`
+      answer `error` with code `NOT_IMPLEMENTED` and a human-readable `message`
+      pointing at the REST fallback (`requestType` echoes the frame type). They
+      are part of the vocabulary precisely so a client can tell "capability
+      missing" from "unknown frame".
+    messages:
+      clientFrame:
+        $ref: '#/components/messages/MobileClientFrame'
+      serverFrame:
+        $ref: '#/components/messages/MobileServerFrame'
 operations:
   receiveEvents:
     action: receive
     channel:
       $ref: '#/channels/events'
     summary: Receive authorized file and chat events after Bearer authentication during upgrade.
+  sendMobileClientFrame:
+    action: send
+    channel:
+      $ref: '#/channels/mobile'
+    summary: "Send a `{type: ...}` request frame (and its `requestId` when a correlated response is expected)."
+    description: |
+      The client owns this direction. `subscribe`/`unsubscribe` narrow the pushed
+      `event` stream to a session whitelist; `ping` is answered with `pong`;
+      everything else maps to a REST-equivalent operation (see `docs/project/API.md`).
+  receiveMobileServerFrame:
+    action: receive
+    channel:
+      $ref: '#/channels/mobile'
+    summary: "Receive `{kind: ...}` response frames plus unsolicited pushes (event, HITL, speech state)."
+    description: |
+      Response frames echo the request's `requestId` when one was supplied.
+      Unsolicited frames (`event`, `question-requested`, `approval-requested`,
+      `approval-resolved`, `question-resolved`, `speech-state`, `sent`) may
+      arrive at any time and must not be mistaken for responses.
 components:
   messages:
     WorkspaceEvent:
@@ -73,6 +187,16 @@ components:
               - $ref: '#/components/schemas/ChatDeliverablesPresented'
               - type: object
                 additionalProperties: true
+    MobileClientFrame:
+      name: MobileClientFrame
+      title: "Client → server frame (`{type: ...}`)"
+      payload:
+        $ref: '#/components/schemas/MobileClientFrame'
+    MobileServerFrame:
+      name: MobileServerFrame
+      title: "Server → client frame (`{kind: ...}`)"
+      payload:
+        $ref: '#/components/schemas/MobileServerFrame'
   schemas:
     ChatMessageDelta:
       type: object
@@ -280,3 +404,382 @@ components:
         reason:
           type: string
           const: backpressure
+
+    # ───────────────────────── /ws/mobile ─────────────────────────
+    #
+    # 帧形状的事实来源：src/host/ws-protocol.ts（ClientFrameType / ServerFrameKind）、
+    # src/host/ws-handler.ts（基础帧 + 域处理器委派）。改一处必须同步另一处，
+    # tests/mobile-frame-contract.spec.ts 会做双向比对（联合成员 ⊆ 本文件 enum）。
+
+    MobileClientFrame:
+      type: object
+      title: Client → server frame
+      description: |
+        One text frame from the client, JSON encoded. `type` selects the handler;
+        every other field is handler-specific (see `docs/project/API.md` §
+        「客户端→服务端帧」 for the per-type field table).
+
+        `requestId` is optional on most frames and **required** on `file-resolve`,
+        `file-download-open` and `file-upload-open`; when present and non-empty it
+        is echoed verbatim on the response's `data.requestId`.
+      required: [type]
+      properties:
+        type:
+          type: string
+          description: |
+            The frame type. The enum is the **complete** vocabulary this server
+            recognises: members that the current kernel cannot back are answered
+            with `error` code `NOT_IMPLEMENTED` (see the channel description),
+            and anything outside the enum answers `error` code `UNKNOWN_TYPE`.
+          enum:
+            # 基础帧（ws-handler.ts 直接处理）
+            - ping
+            - subscribe
+            - unsubscribe
+            - message
+            - workspaces
+            - sessions
+            - history
+            - attachment
+            # 会话生命周期（ws-sessions.ts）
+            - session-create
+            - session-cancel
+            - session-archive
+            - session-rename
+            - session-agent-preset
+            - fork
+            - workspace-create
+            # 文件浏览 / 目录（ws-files.ts）
+            - file-list
+            - directory-create
+            # 分块传输（ws-file-transfer.ts）
+            - file-resolve
+            - file-download-open
+            - file-download-read
+            - file-download-cancel
+            - file-upload-open
+            - file-upload-chunk
+            - file-upload-finish
+            - file-upload-cancel
+            # 模型 / 设置（ws-models.ts, ws-settings.ts）
+            - models
+            - select-model
+            - default-model
+            - save-default-model
+            - providers
+            - permission-options
+            - permission
+            # 命令与二级菜单（ws-commands.ts）
+            - commands
+            - command-execute
+            - command-options
+            - command-select
+            # 预设（ws-presets.ts）
+            - agent-presets
+            - select-agent-preset
+            # 会话投影（ws-goals.ts, ws-team.ts）
+            - context-usage
+            - session-stats
+            - tasks
+            - goal
+            - goal-edit
+            - goal-pause
+            - goal-resume
+            - goal-clear
+            - agent-team
+            - subagents
+            # HITL（ws-hitl.ts）
+            - question-answer
+            - question-cancel
+            - approval-response
+            # 主机快照（ws-host.ts）
+            - host
+            # 语音（ws-speech.ts）
+            - speech-catalog
+            - speech-subscribe
+            - speech-unsubscribe
+            - speech-configure
+            - speech-prepare
+            - speech-cancel-preparation
+            - speech-transcribe
+            - speech-cancel
+            # 定时任务（ws-schedule.ts）
+            - schedule-catalog
+            - schedule-list
+            - schedule-history
+            - schedule-update
+            - schedule-delete
+            # 声明但本内核无对应 RPC → NOT_IMPLEMENTED + REST 兜底
+            - search
+            - directories
+            - defaults
+            - set-default
+            - queue-update
+            - plugin-catalog
+            - plugin-inspect
+            - plugin-install
+            - plugin-settings
+        requestId:
+          type: string
+          minLength: 1
+          description: |
+            Opaque client-chosen correlation id. Echoed verbatim on the response's
+            `data.requestId` when non-empty; absent ⇒ the response has no
+            `requestId` key at all.
+        sessionId:
+          type: string
+          description: Target session for session-scoped frames; `subscribe` requires it non-empty.
+      additionalProperties: true
+
+    MobileServerFrame:
+      type: object
+      title: Server → client frame
+      description: |
+        One text frame from the server, JSON encoded. `kind` selects the shape of
+        `data`. Response frames carry `data.requestId` when the request supplied
+        one; unsolicited frames (`event`, `question-requested`,
+        `approval-requested`, `approval-resolved`, `question-resolved`,
+        `speech-state`, `sent`) may arrive at any time.
+
+        Note: `id`/`time` envelope fields are **not** stamped on `/ws/mobile`
+        frames (that envelope belongs to `/api/v1/events`); a client must key on
+        `kind` plus its own `requestId`.
+      required: [kind]
+      properties:
+        kind:
+          type: string
+          description: |
+            The frame kind. The enum is the complete set this server can emit.
+            `hello` is always the first frame on an authenticated connection
+            (`paired` precedes it on the pairing flow).
+          enum:
+            # 握手
+            - hello
+            - pong
+            - paired
+            # 基础帧应答
+            - subscribed
+            - sent
+            - error
+            - event
+            # 查询应答
+            - workspaces
+            - sessions
+            - history
+            - search
+            - attachment
+            # 文件
+            - file-list
+            - directory-create
+            - file-resolved
+            - file-download-opened
+            - file-download-chunk
+            - file-download-cancelled
+            - file-upload-opened
+            - file-upload-chunk-accepted
+            - file-upload-completed
+            - file-upload-cancelled
+            # 会话生命周期
+            - session-created
+            - session-cancelled
+            - session-archived
+            - session-renamed
+            - session-archives
+            - session-title-changed
+            - fork
+            - workspace-create
+            - queue-item-updated
+            - session-queues
+            - session-queue
+            # 模型 / 设置
+            - models
+            - default-model
+            - providers
+            - permission
+            - permission-options
+            - agent-presets
+            # 命令
+            - commands
+            - command-options
+            - command-executed
+            - command-selected
+            # 投影
+            - tasks
+            - goal
+            - goal-edit
+            - goal-pause
+            - goal-resume
+            - goal-clear
+            - tasks-updated
+            - goal-updated
+            - session-stats
+            - context-usage
+            - agent-team
+            - subagents
+            - host
+            # HITL
+            - question-requested
+            - question-response
+            - question-resolved
+            - approval-requested
+            - approval-response
+            - approval-resolved
+            # 语音
+            - speech-catalog
+            - speech-subscribed
+            - speech-unsubscribed
+            - speech-state
+            - speech-configured
+            - speech-preparing
+            - speech-preparation-cancelled
+            - speech-transcript
+            - speech-cancelled
+            # 定时任务
+            - schedule-catalog
+            - schedule-list
+            - schedule-history
+            - schedule-update
+            - schedule-delete
+        data:
+          description: |
+            Kind-specific payload. `hello` uses `MobileHello`, `paired` uses
+            `MobilePaired`, `error` uses `MobileError`, `event` reuses
+            `WorkspaceEvent`. Other kinds are documented field-by-field in
+            `docs/project/API.md` and typed in the Kotlin SDK.
+      additionalProperties: true
+
+    MobileHello:
+      type: object
+      title: hello (first frame on every authenticated connection)
+      description: |
+        Sent immediately after the upgrade (and after `paired` on the pairing
+        flow). `capabilities` shares its source with `connection.ready`
+        (`src/host/capabilities.ts`), names are `<feature>-v<major>` and are never
+        silently removed — use them for feature detection instead of comparing
+        versions. `port` is the local port this connection arrived on; `clients`
+        is the current authenticated connection count. `device` is omitted for
+        loopback-admin principals (they are not devices).
+      required: [protocol, capabilities, authenticated]
+      properties:
+        protocol:
+          type: integer
+          const: 3
+          description: Mobile gateway protocol revision.
+        capabilities:
+          type: array
+          items: { type: string }
+        authenticated:
+          type: boolean
+          const: true
+        device:
+          type: object
+          required: [id, name, scopes, rootIds]
+          properties:
+            id: { type: string }
+            name: { type: string }
+            scopes:
+              type: array
+              items:
+                type: string
+                enum: [chat.read, chat.write, files.read, files.write, files.delete, settings.read, settings.write]
+            rootIds:
+              type: array
+              items: { type: string }
+        port: { type: integer }
+        clients: { type: integer, minimum: 1 }
+
+    MobilePaired:
+      type: object
+      title: paired (pairing flow only, before hello)
+      description: |
+        Carries the freshly minted device token. It is shown **once** — the
+        pairing code itself is one-shot, and reusing it closes the next
+        connection with `4001`.
+      required: [token, device]
+      properties:
+        token: { type: string }
+        device:
+          type: object
+          required: [id, name]
+          properties:
+            id: { type: string }
+            name: { type: string }
+
+    MobileError:
+      type: object
+      title: error
+      description: |
+        `code` distinguishes three very different situations: `NOT_IMPLEMENTED`
+        (this kernel build cannot back the frame — fall back to REST),
+        `UNKNOWN_TYPE` (the client sent a frame outside the vocabulary — a client
+        bug), and everything else (`MISSING_PARAMS`, `FORBIDDEN_SCOPE`,
+        `bad-request`, `PATH_OUTSIDE_ROOTS`, `INTERNAL_ERROR`, upstream codes…).
+        `message` never contains absolute host paths.
+      required: [code, message]
+      properties:
+        code: { type: string }
+        message: { type: string }
+        requestType:
+          type: string
+          description: The offending frame's `type` (or `kind` for a rejected response).
+        requestId: { type: string }
+        statusCode:
+          type: integer
+          description: Present when the failure originated from an HTTP-status-shaped upstream error.
+
+    MobileConnectionLimits:
+      type: object
+      title: Backpressure and connection limits
+      description: |
+        Constants shared with `/api/v1/events` (source of truth
+        `src/host/ws-protocol.ts` / `src/host/server.ts`). Clients should treat
+        these as documented defaults, not hard-coded contracts: they are
+        server-configurable, and the observable behaviour (`1013` close,
+        `resyncRequired`) is the real contract.
+      properties:
+        maxFrameBytes:
+          type: integer
+          const: 1048576
+          description: 1 MiB per frame; larger frames are refused with close `1009`.
+        maxWebSocketPayloadBytes:
+          type: integer
+          const: 150994944
+          description: 144 MiB total buffered payload per connection (`DEFAULT_MAX_WS_PAYLOAD_BYTES`).
+        sendQueueFrames:
+          type: integer
+          const: 512
+          description: Per-connection send queue; on overflow the oldest frame is dropped and a `resyncRequired` is queued.
+        heartbeatIntervalMs:
+          type: integer
+          const: 30000
+          description: Server ping cadence; two missed pongs terminate the connection.
+        maxConnections:
+          type: integer
+          const: 32
+          description: "Authenticated connections; the next upgrade gets HTTP 429 + `Retry-After: 5`."
+        pairingTtlMs:
+          type: integer
+          const: 600000
+          description: Pairing code lifetime (10 minutes, one-shot).
+        closeDeviceRevoked:
+          type: integer
+          const: 4001
+          description: Close code for revoked devices, failed authentication, or a wrong subprotocol.
+        fileDownload:
+          type: object
+          properties:
+            maxBytes: { type: integer, const: 536870912 }
+            chunkBytes: { type: integer, const: 524288 }
+            idleMs: { type: integer, const: 120000 }
+            maxTransfers: { type: integer, const: 4 }
+        fileUpload:
+          type: object
+          properties:
+            maxBytes: { type: integer, const: 536870912 }
+            chunkBytes: { type: integer, const: 262144 }
+            idleMs: { type: integer, const: 120000 }
+            maxTransfers: { type: integer, const: 4 }
+        interactionProtocolRevision:
+          type: string
+          const: question-approval-v2
+          description: HITL (question/approval) frame revision.

@@ -1,5 +1,51 @@
 # 开发日志
 
+## 未发版 · `/ws/mobile` 进入对外契约：asyncapi + Kotlin SDK + 合约测试（2026-10-29）
+
+**状态：代码与文档已齐，版本号未动（仍 2.8.0）、未打 tag、未推送。** 这一条不是新功能，
+而是把**已经存在并已真机跑通**的 `/ws/mobile` 网关补进对外契约 —— 依据 `dsh-companion`
+的 `docs/project/API.md:920` 对等门槛：一项能力要「在插件里定义稳定 REST/事件 schema、
+对应设备 scope/root/session 授权、脱敏规则、OpenAPI/AsyncAPI、Kotlin SDK 和合约测试后
+才能标记为对等」。此前 `/ws/mobile` **能跑但不在契约里**，Android 侧接它属于私用通道，
+不满足门槛。
+
+### 新增
+
+- **asyncapi 的 `mobile` 通道**（`docs/api/asyncapi.yaml`，+503 行）：地址 `/ws/mobile`，
+  双向 `send`/`receive` 两个 operation；`MobileClientFrame.type` 与 `MobileServerFrame.kind`
+  两个 enum 覆盖 handler 实际处理的全部帧；`hello`（protocol 3、capabilities、authenticated、
+  device、port、clients）、`paired`、`error`（区分 `NOT_IMPLEMENTED` 与 `UNKNOWN_TYPE`）三个
+  关键 schema 定型；三个子协议前缀（`dsh-mobile-v1` / `dsh-pair.<code>` / `dsh-auth.<token>`）
+  与背压传输参数（单帧 1 MiB、下载 512 KiB/块、上传 256 KiB/块、连接上限、吊销 close code）
+  一并写进契约。**既有 `events` 通道一字未动**（有测试盯着）。
+- **Kotlin SDK 客户端** `kotlin-sdk/src/main/kotlin/ai/deepseek/dsh/workspace/MobileGatewayClient.kt`（437 行）：
+  子协议鉴权、`MobileHello`/`MobilePaired`/`MobileFrame` 模型、`request()`（requestId 关联 +
+  超时）、`send()`/`ping()`/`subscribe()`/`unsubscribe()`/`awaitHello()`、监听器接口
+  （`onFrame`/`onEvent`/`onHello`/`onPaired`/`onPong`/`onConnectionChanged`/`onPermanentFailure`）。
+  与 `DshWorkspaceClient` 同包同风格，Android 侧可直接复用其协议理解。
+- **合约测试** `tests/mobile-frame-contract.spec.ts`（静态对账，不连网、毫秒级）：帧词汇表双向一致、
+  通道与握手形状、背压参数与 `ws-protocol.ts` 常量一致、既有 events 契约未被破坏、版本号未被动。
+- **docs:check 新断言**（`scripts/check-project-docs.ts`，+84 行）：`mobile` 通道必须存在且地址正确；
+  两个 enum 与 `ws-protocol.ts` 联合类型双向对账，**双向都抓**（多一个帧是静默的、少一个也是静默的）；
+  带下限断言（各 60+ 成员），防「解析失效 → 两个空集合 → 假绿」。
+
+### 已知债务
+
+- **DEBT-005 新入台账**：`ws-protocol.ts` 的 `ClientFrameType` / `ServerFrameKind` 两个联合类型
+  未收录 handler 实际处理的全部帧（契约按行为写、联合类型按域分批加）。差集以**白名单**形式
+  同时登记在 `scripts/check-project-docs.ts` 与 `tests/mobile-frame-contract.spec.ts` 两处，
+  两边都断言「白名单与联合类型不相交」→ 谁补齐联合类型却忘了删白名单，测试直接红。
+  白名单只许变短。
+
+### 测了什么
+
+- `npm run check` **exit 0**：tsc 0 错；**79 个测试文件 / 801 个用例全过**；`docs:check` 三段全绿
+  （12 project docs / 39 tasks / 9 ADRs / API-SDK 版本一致；STRUCTURE 72 锚点 / INTERFACES 87 锚点双向；
+  根 README 双站 10 项 + CHANGELOG）；双产物 build 成功（host `lib/index.js` 610.49 kB、
+  client `lib/client.cjs` 757.03 kB）。
+- 未做：真实内核环境下的 `/ws/mobile` 互通只有既有 `tests/mobile-gateway-ws.spec.ts`（62 例）覆盖，
+  本轮新增的是**静态契约对账**，不重复行为测试。
+
 ## v2.8.0 · REST BFF：分块上传 / 定时任务 / 官方语音（2026-10-28）
 
 **状态：代码与文档已齐，版本号已升到 2.8.0、未打 tag、未推送。** 依据

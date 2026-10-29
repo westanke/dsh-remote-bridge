@@ -385,6 +385,90 @@ if (asyncapiDoc.info?.version !== packageJson.version) failures.push('AsyncAPI v
 }
 if (asyncapiDoc.channels?.events?.address !== '/api/v1/events') failures.push('AsyncAPI is missing /api/v1/events')
 
+// ── /ws/mobile：帧词汇表必须与代码里的联合类型对齐 ──────────────────────────
+//
+// 为什么这条值得一个门禁：`/ws/mobile` 的帧类型集合写在 `src/host/ws-protocol.ts`
+// 的两个联合类型里，而对外契约写在 asyncapi 的 enum 里。两处各自演进时，
+// **多一个帧**是静默的（服务端照收，SDK 不认识），**少一个帧**也是静默的
+// （客户端发了，服务端回 UNKNOWN_TYPE，看着像客户端 bug）。两个方向都要抓。
+//
+// 解析失败（联合类型被改名/挪走、enum 不是数组）会得到两个空集合，
+// 那样「双向一致」是假绿，所以先做下限断言再比内容 —— 与 STRUCTURE/INTERFACES
+// 那两段的处置一致。
+if (asyncapiDoc.channels?.mobile?.address !== '/ws/mobile') failures.push('AsyncAPI is missing /ws/mobile')
+
+/** 从 `export type X = 'a' | 'b' | ...` 里抽成员；找不到返回空数组（由调用方报红）。 */
+function unionMembers(source: string, typeName: string, endMarker: string): string[] {
+  const start = source.indexOf(`export type ${typeName} =`)
+  if (start === -1) return []
+  const rest = source.slice(start)
+  const end = rest.indexOf(endMarker)
+  const block = end === -1 ? rest : rest.slice(0, end)
+  return [...block.matchAll(/'([a-z0-9-]+)'/g)].map(match => match[1] as string)
+}
+
+/**
+ * 契约 enum 里允许出现的「代码联合类型尚未收录」的成员。
+ *
+ * 这些不是遗漏，是**已核实的实现细节帧**：handler 会处理/发送它们，但
+ * `ClientFrameType` / `ServerFrameKind` 两个联合类型还没收录（见
+ * `docs/project/TECH-DEBT.md` 的 DEBT-005）。白名单是台账不是豁免：谁把联合类型
+ * 补齐，就必须把这里对应的项删掉，否则「白名单里有、联合类型里也有」不会报错
+ * —— 所以下面同时断言白名单与联合类型**不相交**，保证它只会自动变短。
+ */
+const MOBILE_CLIENT_ONLY_IN_CONTRACT = ['fork', 'workspace-create', 'file-list', 'directory-create', 'directories']
+const MOBILE_SERVER_ONLY_IN_CONTRACT = [
+  'paired', 'fork', 'workspace-create',
+  'host', 'models', 'default-model', 'providers', 'permission', 'permission-options',
+  'agent-presets', 'session-stats', 'context-usage',
+]
+{
+  const protocolSource = await readFile(path.join(root, 'src', 'host', 'ws-protocol.ts'), 'utf8')
+  const clientUnion = unionMembers(protocolSource, 'ClientFrameType', '/** 服务端')
+  const serverUnion = unionMembers(protocolSource, 'ServerFrameKind', '// ─')
+  const clientEnum = asyncapiDoc.components?.schemas?.MobileClientFrame?.properties?.type?.enum
+  const serverEnum = asyncapiDoc.components?.schemas?.MobileServerFrame?.properties?.kind?.enum
+
+  // 下限断言：联合类型各自 60+ 成员、enum 各自 60+ 项。低于阈值说明解析失效，不是「一致」。
+  if (clientUnion.length < 60) failures.push(`ws-protocol.ts 的 ClientFrameType 只解析出 ${clientUnion.length} 个成员（格式可能变了）`)
+  if (serverUnion.length < 60) failures.push(`ws-protocol.ts 的 ServerFrameKind 只解析出 ${serverUnion.length} 个成员（格式可能变了）`)
+  if (!Array.isArray(clientEnum) || clientEnum.length < 60) failures.push('AsyncAPI MobileClientFrame.type.enum 缺失或条目过少（格式可能变了）')
+  if (!Array.isArray(serverEnum) || serverEnum.length < 60) failures.push('AsyncAPI MobileServerFrame.kind.enum 缺失或条目过少（格式可能变了）')
+
+  if (clientUnion.length >= 60 && Array.isArray(clientEnum)) {
+    const declared = new Set(clientUnion)
+    const documented = new Set(clientEnum as string[])
+    const missing = clientUnion.filter(type => !documented.has(type))
+    if (missing.length > 0) failures.push(`AsyncAPI MobileClientFrame 缺少客户端帧类型：${missing.join(', ')}（ws-protocol.ts 声明了它）`)
+    const undocumented = (clientEnum as string[]).filter(type => !declared.has(type) && !MOBILE_CLIENT_ONLY_IN_CONTRACT.includes(type))
+    if (undocumented.length > 0) failures.push(`AsyncAPI MobileClientFrame 出现了代码里不存在的帧类型：${undocumented.join(', ')}（契约比实现更宽）`)
+    const stale = MOBILE_CLIENT_ONLY_IN_CONTRACT.filter(type => declared.has(type))
+    if (stale.length > 0) failures.push(`ClientFrameType 已收录 ${stale.join(', ')}，请从 MOBILE_CLIENT_ONLY_IN_CONTRACT 白名单里删掉（白名单只许变短）`)
+  }
+  if (serverUnion.length >= 60 && Array.isArray(serverEnum)) {
+    const declared = new Set(serverUnion)
+    const documented = new Set(serverEnum as string[])
+    const missing = serverUnion.filter(kind => !documented.has(kind))
+    if (missing.length > 0) failures.push(`AsyncAPI MobileServerFrame 缺少服务端帧 kind：${missing.join(', ')}（ws-protocol.ts 声明了它）`)
+    const undocumented = (serverEnum as string[]).filter(kind => !declared.has(kind) && !MOBILE_SERVER_ONLY_IN_CONTRACT.includes(kind))
+    if (undocumented.length > 0) failures.push(`AsyncAPI MobileServerFrame 出现了代码里不存在的帧 kind：${undocumented.join(', ')}（契约比实现更宽）`)
+    const stale = MOBILE_SERVER_ONLY_IN_CONTRACT.filter(kind => declared.has(kind))
+    if (stale.length > 0) failures.push(`ServerFrameKind 已收录 ${stale.join(', ')}，请从 MOBILE_SERVER_ONLY_IN_CONTRACT 白名单里删掉（白名单只许变短）`)
+  }
+
+  // 握手与关联约定的结构必须在（形状细节由 tests/mobile-frame-contract.spec.ts 钉）。
+  for (const schema of ['MobileHello', 'MobilePaired', 'MobileError', 'MobileConnectionLimits']) {
+    if (asyncapiDoc.components?.schemas?.[schema] === undefined) failures.push(`AsyncAPI is missing components.schemas.${schema}`)
+  }
+  if (asyncapiDoc.components?.schemas?.MobileHello?.properties?.protocol?.const !== 3) {
+    failures.push('AsyncAPI MobileHello.protocol must be const 3')
+  }
+  // 三个子协议前缀 + 禁 query 带 token，是鉴权面的硬约定，写死在契约里才不会被悄悄改。
+  for (const literal of ['dsh-mobile-v1', 'dsh-pair.', 'dsh-auth.', 'X-DSH-Device-ID', 'X-DSH-Device-Name']) {
+    if (!asyncapi.includes(literal)) failures.push(`AsyncAPI 的 /ws/mobile 契约缺少握手约定 ${literal}`)
+  }
+}
+
 const kotlin = await readFile(
   path.join(root, 'kotlin-sdk', 'src', 'main', 'kotlin', 'ai', 'deepseek', 'dsh', 'workspace', 'DshWorkspaceClient.kt'),
   'utf8',

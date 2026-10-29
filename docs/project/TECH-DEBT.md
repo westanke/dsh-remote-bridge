@@ -71,6 +71,14 @@
 | DEBT-002 | README 双站无自动对账 | `README.md` / `README.en.md` | `docs:check` 不覆盖 README；TS 侧无 README 解析器 | `docs:check` 扩展：校验版本号/插件基线/测试数双站一致 |
 | DEBT-003 | `@patch` 四要素无脚本校验 | 全仓 | 制度已立（`AGENTS.md` §3.3），尚无扫描器 | `docs:check` 或独立脚本：扫 `// @patch` 块验四要素齐全 + `test` 指向的测试真实存在 |
 | DEBT-004 | 历史兼容补丁未全部自报 | `src/host/dsh-0.2-bridge.ts` 等 | 存量补丁一次清完会动到刚真机验收过的逻辑 | 按代际分批收编；**可以不再无声增长** |
+| DEBT-005 | `/ws/mobile` 的帧联合类型未收录 handler 实际处理的全部帧 | `src/host/ws-protocol.ts` 的 `ClientFrameType` / `ServerFrameKind` | `asyncapi.yaml` 是按**实际行为**写的契约（handler 认哪些帧、发哪些帧），两个联合类型是早期按域分批加的，缺了后来补的帧。补齐要逐个核对 handler 分支，且补完必须同步删掉契约白名单（`scripts/check-project-docs.ts` 与 `tests/mobile-frame-contract.spec.ts` 两处），一次做不完容易两处不同步 | 把 `ws-protocol.ts` 两个联合类型补到与 handler 实际行为一致；同一提交删掉 `MOBILE_CLIENT_ONLY_IN_CONTRACT` / `MOBILE_SERVER_ONLY_IN_CONTRACT` 两个白名单里的对应项（白名单只许变短，测试会盯） |
+
+> **DEBT-005 的白名单是台账不是豁免**：`scripts/check-project-docs.ts` 与
+> `tests/mobile-frame-contract.spec.ts` 各有一份「契约里有、联合类型里还没有」的白名单，
+> 两处必须同步；两边都断言白名单与联合类型**不相交**，所以谁把联合类型补齐却忘了删白名单，
+> 测试会直接红。当前白名单：客户端 `fork`/`workspace-create`/`file-list`/`directory-create`/`directories`；
+> 服务端 `paired`/`fork`/`workspace-create`/`host`/`models`/`default-model`/`providers`/`permission`/
+> `permission-options`/`agent-presets`/`session-stats`/`context-usage`。
 
 ## 账怎么记
 
