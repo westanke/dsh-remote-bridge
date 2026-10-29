@@ -22,7 +22,7 @@ import type { DshChatAdapter } from './chat-adapter.ts'
 import type { AuthService } from './auth.ts'
 import type { WorkspaceEventBus } from './event-bus.ts'
 import { ApiError } from './errors.ts'
-import { availableCapabilities } from './capabilities.ts'
+import { availableCapabilities, type CapabilityFlags } from './capabilities.ts'
 import {
   WS_PATH,
   WS_PROTOCOL,
@@ -197,7 +197,7 @@ export class MobileGatewayWsHandler {
     private readonly chat: DshChatAdapter,
     private readonly auth: AuthService,
     events: WorkspaceEventBus,
-    private readonly capabilitiesFlags: { jobs?: boolean },
+    private readonly capabilitiesFlags: CapabilityFlags,
   ) {
     // 事件桥：授权过滤后把 bridge 事件以 {kind:'event', data:event} 主动推给每条连接。
     this.eventBridge = new MobileEventBridge<WebSocket>(

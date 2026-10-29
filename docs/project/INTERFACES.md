@@ -136,6 +136,19 @@
 | PUT | `/api/v1/chat/sessions/{sessionId}/model` | `scope:chat.write` | 选择模型 `{provider, model, reasoningEffort?}` | 同上 |
 | PUT | `/api/v1/chat/sessions/{sessionId}/agent-preset` | `scope:chat.write` | 选择智能体预设（仅空白会话可改） | `router.ts` sessionAgentPresetRoute 块 |
 | POST | `/api/v1/chat/runs/{id}/cancel` | `scope:chat.write` | 取消当前轮（路径段语义为 sessionId） | `router.ts` cancelRoute 块 |
+| POST | `/api/v1/chat/sessions/{sessionId}/attachments/uploads` | `scope:chat.write` | 开/续分块上传票据：`{name,size,contentType?}` → `{uploadId,chunkSize,expiresAt,alreadyReceived}`；同 name+size 未过期即复用（断点续传）；size >256 MiB → 413 | `router.ts` bff uploads 分支 → `bff-rest.ts` |
+| GET | `/api/v1/chat/sessions/{sessionId}/attachments/uploads` | `scope:chat.read` | 本会话未完成票据列表 `{items:[…]}`（过期即隐去） | 同上 |
+| GET | `/api/v1/chat/sessions/{sessionId}/attachments/uploads/{uploadId}` | `scope:chat.read` | 上传进度 `{receivedCount,count,missing[]}`；未知/过期/跨会话一律 404 | 同上 |
+| PUT | `/api/v1/chat/sessions/{sessionId}/attachments/uploads/{uploadId}/chunks/{index}` | `scope:chat.write` | 写一块（`application/octet-stream`，≤`chunkSize`；重复 PUT 幂等；长度不符 400、超块 413、index 越界 400） | 同上 |
+| POST | `/api/v1/chat/sessions/{sessionId}/attachments/uploads/{uploadId}/complete` | `scope:chat.write` | 合并落库成附件 → 201（缺块 409 + `details.missing`；成功后票据作废） | 同上 |
+| DELETE | `/api/v1/chat/sessions/{sessionId}/attachments/uploads/{uploadId}` | `scope:chat.write` | 丢弃票据与 spool → 204 | 同上 |
+| GET | `/api/v1/chat/schedules?sessionId=` | `scope:chat.read` | 定时任务列表（cron 视图，`createdAt` 恒 null；内核无 schedule 服务 → 503） | `router.ts` bff schedules 分支 → `bff-rest.ts` |
+| POST | `/api/v1/chat/schedules` | `scope:chat.write` | 新建 cron 定时任务（五段 Vixie + IANA 时区；走宿主 `ctx.schedule.create`，取不到 503） | 同上 |
+| PATCH | `/api/v1/chat/schedules/{id}` | `scope:chat.write` | 只改传入字段；`enabled:false` 不支持（400 `ENABLED_UNSUPPORTED`） | 同上 |
+| DELETE | `/api/v1/chat/schedules/{id}` | `scope:chat.write` | 删除 → 204（未知 id 404） | 同上 |
+| GET | `/api/v1/chat/speech/catalog` | `scope:chat.read` | 官方语音目录；内核无 speech 服务 → **200** `{available:false,providers:[],reason}`（不是 404） | `router.ts` bff speech 分支 → `bff-rest.ts` |
+| POST | `/api/v1/chat/speech/transcriptions` | `scope:chat.write` | 转写 `{audio:base64,language?,providerId?}`：解码 ≤4 MiB（超限 413）、180 s 超时、空识别 200 `{text:''}` | 同上 |
+| PUT | `/api/v1/chat/speech/config` | `scope:chat.write` | 改选中 `{providerId?,language?}`（至少一项）→ 回目录视图 | 同上 |
 | GET | `/api/v1/settings/providers` | `scope:settings.read` | 提供商配置 | `router.ts` dispatch providers 分支 |
 | POST | `/api/v1/settings/providers` | `scope:settings.write` | 新建自定义提供商 | 同上 |
 | PATCH | `/api/v1/settings/providers/{providerId}` | `scope:settings.write` | 改提供商 | `router.ts` providerRoute 块 |
@@ -387,6 +400,10 @@ export class FileService {  // 构造 (database, emit)
 | `classifyHost` / `detectEndpoints` / `normalizeBaseUrl` / `encodeConfigText` / `defaultDisplayName` / `DEFAULT_PORT` / `KIND_LABEL` | `config-text.ts` | 配置文本 |
 | `normalizeListenerHost` / `normalizeListenerPort` / `loopbackFor` / `DEFAULT_REMOTE_HOST` | `listener-config.ts` | 监听配置 |
 | `probeHostServices` / `INJECTED_SERVICE_NAMES` / `OPTIONAL_SERVICE_NAMES` / `HostServiceReport` | `host-service-probe.ts` | 注入面探针 |
+| `BffRest` / `createBffRest` / `BffRoute` / `BffRestOptions` / `RestIo` / `ScheduleCreatePort` | `bff-rest.ts` | App 侧 REST BFF 的薄分发层（九条路由 → 三个域模块；JSON 体 32 KiB、chunk 体 1 MiB+4 KiB、speech 体 8 MiB） |
+| `ChunkedUploadStore`（`open` / `writeChunk` / `complete` / `status` / `list` / `cancel` / `dispose`）/ `UPLOAD_CHUNK_BYTES` / `MAX_CHUNKED_UPLOAD_BYTES` / `CHUNKED_UPLOAD_TTL_MS` | `bff-upload.ts` | 分块上传票据与 spool 落盘（1 MiB 切片、1 小时、alreadyReceived 续传、缺块 409） |
+| `BffSchedule`（`list` / `create` / `patch` / `remove`）/ `validateCron` / `validateTimeZone` / `SCHEDULE_TEXT_MAX` / `SCHEDULE_TITLE_MAX` | `bff-schedule.ts` | cron 与时区校验、内核 ScheduleRecord ↔ REST cron 视图映射 |
+| `BffSpeech`（`catalog` / `transcribe` / `configure`）/ `unavailableView` / `SPEECH_UNAVAILABLE_REASON` / `SPEECH_REQUEST_MAX_BYTES` | `bff-speech.ts` | REST 官方语音：复用 ws-speech 的上限归一，缺服务回 200 available:false |
 
 ### 4.9 共享层 `src/shared/`
 
@@ -489,6 +506,19 @@ export const PLUGIN_VERSION: string          // shared/version.ts，与 package.
 | `FilesHandler.handleDirectoryCreate` | `src/host/ws-files.ts` | method |
 | `export class FileTransferHandler` | `src/host/ws-file-transfer.ts` | class（分块下载/上传，连接隔离 + 并发上限 + SHA-256） |
 | `closeConnection` | `src/host/ws-file-transfer.ts` | method（连接关闭清理该连接全部传输） |
+| `mediaTypeOf` | `src/host/ws-file-transfer.ts` | function |
+| `speechAudioLimit` | `src/host/ws-speech.ts` | function |
+| `normalizeSpeechCatalog` | `src/host/ws-speech.ts` | function |
+| `normalizeSpeechTranscript` | `src/host/ws-speech.ts` | function |
+| `MAX_AUDIO_BYTES` | `src/host/ws-speech.ts` | const |
+| `TRANSCRIPTION_TIMEOUT_MS` | `src/host/ws-speech.ts` | const |
+| `class ChunkedUploadStore` | `src/host/bff-upload.ts` | class |
+| `class BffSchedule` | `src/host/bff-schedule.ts` | class |
+| `validateCron` | `src/host/bff-schedule.ts` | function |
+| `validateTimeZone` | `src/host/bff-schedule.ts` | function |
+| `class BffSpeech` | `src/host/bff-speech.ts` | class |
+| `class BffRest` | `src/host/bff-rest.ts` | class |
+| `createBffRest` | `src/host/bff-rest.ts` | function |
 | `expire` | `src/host/ws-file-transfer.ts` | method（空闲传输回收） |
 | `dispose` | `src/host/ws-file-transfer.ts` | method（停机清理全部传输） |
 | `export class SettingsHandler` | `src/host/ws-settings.ts` | class |

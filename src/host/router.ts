@@ -42,6 +42,8 @@ import {
 } from './settings-namespace.ts'
 import { PLUGIN_VERSION } from '../shared/version.ts'
 import { stringifyWire } from './wire-json.ts'
+import { createBffRest, type BffRest, type ScheduleCreatePort } from './bff-rest.ts'
+import type { HostRemoteHandle } from './ws-host-services.ts'
 
 export interface RemoteOperationView {
   id: string
@@ -105,6 +107,19 @@ interface RouterOptions {
    * 可选：不注入则这些端点返回 404，测试不必每条都补一个字段。
    */
   jobs?: JobAdapter
+  /**
+   * 内核 typert Gateway 句柄：REST 的语音与定时任务读面（`bff-*.ts`）。
+   *
+   * 可选，且**缺席不是错误**：老内核上它本来就不存在，此时语音回
+   * `200 {available:false}`、定时任务读面回 503 —— 与 `/ws/mobile` 帧的
+   * `speech/unavailable`、`schedule/unavailable` 是**同一个**判据。
+   */
+  hostRemote?: HostRemoteHandle
+  /**
+   * 宿主 `ctx.schedule` 服务：只有它有 `create`（远程面没注册，见
+   * `bff-schedule.ts` 文件头）。可选，缺席时 `POST /chat/schedules` 回 503。
+   */
+  schedule?: ScheduleCreatePort
 }
 
 /**
@@ -179,7 +194,33 @@ const TUNNEL_MODE_EXEMPT_PATHS = new Set([
 
 
 export class ApiRouter {
-  constructor(private readonly options: RouterOptions) {}
+  /**
+   * REST 对等面（分块上传 / 定时任务 / 语音）的分发体。
+   *
+   * 构造在这里而不是 `index.ts`：它只依赖 `RouterOptions` 已有的东西
+   * （`database.dataDir`、`chat`、`hostRemote`、`schedule`），多一个外部装配点
+   * 只会多一条会漂的接线。
+   */
+  private readonly bff: BffRest
+
+  constructor(private readonly options: RouterOptions) {
+    this.bff = createBffRest({
+      dataDir: options.database.dataDir,
+      chat: {
+        uploadAttachment: (principal, sessionId, data, name) =>
+          options.chat.uploadAttachment(principal, sessionId, data, name),
+        isSessionAuthorized: (principal, sessionId) => options.chat.isSessionAuthorized(principal, sessionId),
+      },
+      hostRemote: options.hostRemote,
+      schedule: options.schedule,
+      io: { readJson, readBytes, sendJson },
+    })
+  }
+
+  /** 停机清理（分块 spool）。由 `index.ts` 的生命周期钩子调用。 */
+  async dispose(): Promise<void> {
+    await this.bff.dispose()
+  }
 
   async handle(req: IncomingMessage, res: ServerResponse, stripPrefix = ''): Promise<void> {
     const requestId = header(req, 'x-request-id') || randomUUID()
@@ -985,6 +1026,93 @@ export class ApiRouter {
       await this.options.chat.cancel(principal, sessionId)
       this.audit(principal, 'chat.run.cancel', undefined, undefined, requestId, { sessionId })
       sendJson(res, 202, { accepted: true })
+      return
+    }
+
+    //
+    // ── REST 对等面：分块上传 / 定时任务 / 官方语音 ──────────────────────
+    // 契约：`docs/project/BFF-REST-CONTRACT.md`（§1 §2 §3）。
+    //
+    // 这一层刻意只做两件事：**正则 → 路由对象** 与 **scope 闸门**。
+    // 语义（块长/幂等/缺块、cron 校验、4 MiB 音频上限）全在 `bff-*.ts` 里 ——
+    // `router.ts` 已经是登记在册的行数债务，不再往里堆业务。
+    // scope 口径照契约 §0：读取侧 chat.read、动作侧 chat.write。
+    const uploadsRoute = pathname.match(/^\/api\/v1\/chat\/sessions\/([^/]+)\/attachments\/uploads$/)
+    if (uploadsRoute !== null && (method === 'GET' || method === 'POST')) {
+      this.options.auth.requireScope(principal, method === 'GET' ? 'chat.read' : 'chat.write')
+      const sessionId = decodePathSegment(uploadsRoute[1] as string)
+      await this.bff.dispatch(req, res, principal, { kind: 'uploads', sessionId }, url)
+      return
+    }
+
+    const uploadChunkRoute = pathname.match(/^\/api\/v1\/chat\/sessions\/([^/]+)\/attachments\/uploads\/([^/]+)\/chunks\/([^/]+)$/)
+    if (uploadChunkRoute !== null && method === 'PUT') {
+      this.options.auth.requireScope(principal, 'chat.write')
+      await this.bff.dispatch(req, res, principal, {
+        kind: 'chunk',
+        sessionId: decodePathSegment(uploadChunkRoute[1] as string),
+        uploadId: decodePathSegment(uploadChunkRoute[2] as string),
+        index: decodePathSegment(uploadChunkRoute[3] as string),
+      }, url)
+      return
+    }
+
+    const uploadCompleteRoute = pathname.match(/^\/api\/v1\/chat\/sessions\/([^/]+)\/attachments\/uploads\/([^/]+)\/complete$/)
+    if (uploadCompleteRoute !== null && method === 'POST') {
+      this.options.auth.requireScope(principal, 'chat.write')
+      await this.bff.dispatch(req, res, principal, {
+        kind: 'complete',
+        sessionId: decodePathSegment(uploadCompleteRoute[1] as string),
+        uploadId: decodePathSegment(uploadCompleteRoute[2] as string),
+      }, url)
+      return
+    }
+
+    // 单张票据的 GET/DELETE 必须排在 chunks/complete 之后：前两条已经 return，
+    // 但如果正则写成 `[^/]+$` 且顺序相反，`…/uploads/x/complete` 会被吞成 uploadId。
+    const uploadRoute = pathname.match(/^\/api\/v1\/chat\/sessions\/([^/]+)\/attachments\/uploads\/([^/]+)$/)
+    if (uploadRoute !== null && (method === 'GET' || method === 'DELETE')) {
+      this.options.auth.requireScope(principal, method === 'GET' ? 'chat.read' : 'chat.write')
+      await this.bff.dispatch(req, res, principal, {
+        kind: 'upload',
+        sessionId: decodePathSegment(uploadRoute[1] as string),
+        uploadId: decodePathSegment(uploadRoute[2] as string),
+      }, url)
+      return
+    }
+
+    // 定时任务集合用**等值**匹配（无捕获组），单条才用正则。
+    if (pathname === '/api/v1/chat/schedules' && (method === 'GET' || method === 'POST')) {
+      this.options.auth.requireScope(principal, method === 'GET' ? 'chat.read' : 'chat.write')
+      await this.bff.dispatch(req, res, principal, { kind: 'schedules' }, url)
+      return
+    }
+
+    const scheduleRoute = pathname.match(/^\/api\/v1\/chat\/schedules\/([^/]+)$/)
+    if (scheduleRoute !== null && (method === 'PATCH' || method === 'DELETE')) {
+      this.options.auth.requireScope(principal, 'chat.write')
+      await this.bff.dispatch(req, res, principal, {
+        kind: 'schedule',
+        id: decodePathSegment(scheduleRoute[1] as string),
+      }, url)
+      return
+    }
+
+    if (pathname === '/api/v1/chat/speech/catalog' && method === 'GET') {
+      this.options.auth.requireScope(principal, 'chat.read')
+      await this.bff.dispatch(req, res, principal, { kind: 'speech-catalog' }, url)
+      return
+    }
+
+    if (pathname === '/api/v1/chat/speech/transcriptions' && method === 'POST') {
+      this.options.auth.requireScope(principal, 'chat.write')
+      await this.bff.dispatch(req, res, principal, { kind: 'speech-transcriptions' }, url)
+      return
+    }
+
+    if (pathname === '/api/v1/chat/speech/config' && method === 'PUT') {
+      this.options.auth.requireScope(principal, 'chat.write')
+      await this.bff.dispatch(req, res, principal, { kind: 'speech-config' }, url)
       return
     }
 

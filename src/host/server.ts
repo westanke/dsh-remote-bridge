@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url'
 import { WebSocket, WebSocketServer } from 'ws'
 import type { DevicePrincipal, DeviceScope, Principal, WorkspaceEvent } from '../shared/contracts.ts'
 import type { AuthService } from './auth.ts'
-import { connectionReadyData } from './capabilities.ts'
+import { connectionReadyData, type CapabilityFlags } from './capabilities.ts'
 import type { DshChatAdapter } from './chat-adapter.ts'
 import type { WorkspaceDatabase } from './database.ts'
 import { ApiError } from './errors.ts'
@@ -55,7 +55,7 @@ interface RemoteApiServerOptions {
    * 为什么在构造参数里而不是全局变量：能力位是**这台服务端此刻**能做什么，
    * 同一进程里可能有多个实例（测试、重绑），用实例参数才不会被互相污染。
    */
-  capabilities?: { jobs?: boolean }
+  capabilities?: CapabilityFlags
 }
 
 interface OperationState extends RemoteOperationView {

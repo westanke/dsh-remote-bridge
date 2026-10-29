@@ -96,6 +96,12 @@ export const BRIDGE_CAPABILITIES: readonly string[] = [
   'job-list-v1', // GET /chat/sessions/{sessionId}/jobs
   'job-output-v1', // GET /chat/sessions/{sessionId}/jobs/{jobId}/output
   'job-kill-v1', // POST /chat/sessions/{sessionId}/jobs/{jobId}/kill
+  // —— App 侧的 REST 对等面（2026-10-28，契约 docs/project/BFF-REST-CONTRACT.md）——
+  // 三条都是**只增不改**的端点；老 App 不认这些位也不会坏，新 App 靠它们决定
+  // 「这个入口该不该出现」。依据一律是路径本身（`tests/capabilities.spec.ts` 逐条核对）。
+  'attachment-chunked-upload-v1', // POST /chat/sessions/{sessionId}/attachments/uploads
+  'chat-schedules-v1', // GET /chat/schedules、POST /chat/schedules
+  'speech-transcription-v1', // POST /chat/speech/transcriptions
 ]
 
 /**
@@ -132,10 +138,30 @@ export const HISTORY_FORMAT_VERSION = 1
  * 声明与端点必须**同源**。把「哪个位依赖哪个可选服务」写在一处，将来再加一个
  * 可选服务只需要在这里补一行；散在调用点就会漂。
  */
-const CAPABILITY_REQUIREMENTS: Readonly<Record<string, 'jobs'>> = {
+/** 运行时能力开关。缺省（不传键）一律当作可用，见 {@link availableCapabilities}。 */
+export interface CapabilityFlags {
+  jobs?: boolean
+  /** 宿主 cordis 服务 `ctx.schedule` 在不在（`dsh-schedule` 插件未装时为 false）。 */
+  schedule?: boolean
+  /** 内核 typert Gateway 在不在（`speech` 目录与转写都要经它）。 */
+  speech?: boolean
+}
+
+const CAPABILITY_REQUIREMENTS: Readonly<Partial<Record<string, keyof CapabilityFlags>>> = {
   'job-list-v1': 'jobs',
   'job-output-v1': 'jobs',
   'job-kill-v1': 'jobs',
+  // 定时任务：**列表与新建同生死**。`dsh-schedule` 未装时既没有 Remote 命名空间
+  // 也没有 `ctx.schedule.create`，两个端点只会回 503 —— 那种情况下发位等于让客户端
+  // 打开一个必然失败的入口，所以按宿主服务是否存在剔除。
+  'chat-schedules-v1': 'schedule',
+  // 语音：**故意只在「网关整体缺失」时剔除，不因「内核没装语音包」而剔除**。
+  // 判据的差别在于端点还能不能给出有意义的答复：没有语音包时 `GET …/catalog`
+  // 仍然 200 `{available:false, reason}`（见 bff-speech.ts），这是一句**真话**，
+  // 客户端据此区分「桥支持语音、但本机没配」与「桥不支持语音」——两者的 UI
+  // 已经分别做了（前者引导去插件管理装语音包，后者直接隐藏入口）。
+  // 只有连 typert Gateway 都没有（极老内核）时端点才只能 503，那才不发位。
+  'speech-transcription-v1': 'speech',
 }
 
 /**
@@ -145,7 +171,7 @@ const CAPABILITY_REQUIREMENTS: Readonly<Record<string, 'jobs'>> = {
  *   缺省必须保守地全给：测试替身与老调用点（不传参）拿到的仍是完整清单，
  *   行为与加参数之前一字不差 —— 否则这个改动会悄悄改掉所有既有测试的期望。
  */
-export function availableCapabilities(flags: { jobs?: boolean } = {}): string[] {
+export function availableCapabilities(flags: CapabilityFlags = {}): string[] {
   return BRIDGE_CAPABILITIES.filter((capability) => {
     const requirement = CAPABILITY_REQUIREMENTS[capability]
     if (requirement === undefined) return true
@@ -160,6 +186,6 @@ export function availableCapabilities(flags: { jobs?: boolean } = {}): string[] 
  * 每次调用返回**新的副本**：调用方（或测试）改它不该影响常量，
  * 否则一处手滑就会让整个进程后续所有连接都收到被改过的能力清单。
  */
-export function connectionReadyData(flags: { jobs?: boolean } = {}): { bridgeVersion: string; capabilities: string[] } {
+export function connectionReadyData(flags: CapabilityFlags = {}): { bridgeVersion: string; capabilities: string[] } {
   return { bridgeVersion: PLUGIN_VERSION, capabilities: availableCapabilities(flags) }
 }

@@ -1,6 +1,24 @@
 # 当前状态
 
-- 日期：2026-10-27
+- 日期：2026-10-28（HEAD 已含 2.7.2；本节记录**未发版**的在途工作）
+- **未发版（工作区，待复核）**：**REST 对等面 —— 分块上传 / 定时任务 / 官方语音**。
+  - 依据 `docs/project/BFF-REST-CONTRACT.md` 新增九条只增不改的 `/api/v1` 端点
+    （六个分块上传、四个定时任务、三个语音操作，共 13 个 operation），全部按
+    「读取 `chat.read` / 动作 `chat.write`」过 `requireScope`，不新增 scope。
+  - 逻辑拆在 `src/host/bff-rest.ts`（薄分发）、`bff-upload.ts`（1 MiB 切片 / 1 小时票据 /
+    `alreadyReceived` 续传 / 缺块 409）、`bff-schedule.ts`（五段 Vixie + IANA 时区自校验、
+    内核记录 ↔ cron 视图）、`bff-speech.ts`（复用 `ws-speech.ts` 的 4 MiB / 180 s / 目录归一，
+    缺服务回 200 `available:false`）；`router.ts` 只留 9 段瘦分发。
+  - 三条契约要求无法照字面落地，已显式降级并在 `CHANGELOG-DEV.md` 与 `API.md` 写明：
+    ① `POST /chat/schedules` 内核 Remote 无 create → 走宿主 `ctx.schedule.create`，取不到 503；
+    ② `Schedule.createdAt` 内核无此字段 → 恒 `null`；③ `PATCH {enabled:false}` 内核无暂停 →
+    400 `ENABLED_UNSUPPORTED`（删除才是停）。
+  - 能力位：新增 `attachment-chunked-upload-v1` / `chat-schedules-v1` / `speech-transcription-v1`，
+    均在 `tests/capabilities.spec.ts` 有 OpenAPI 依据；`chat-schedules-v1` 随宿主 `ctx.schedule`
+    缺席而剔除，`speech-transcription-v1` 只在 typert Gateway 缺席时剔除（没装语音包仍发位，
+    目录回 `200 available:false`，「支持但没配」与「不支持」必须可区分）。
+  - 门禁：`tsc` 0 / `vitest` 含新增合约测试 / `docs:check`（72 + 87 锚点）/ `build`。
+  - **未提交、未升版本、未推送**：等 Lead 复核 diff 后统一处理。
 - **已发版 v2.7.1（2026-10-27）**：**修「发文件永远失败」—— 解包内核的 `{agent}` / `{error}` 包装对象**。
   - 根因：`host.sessionController.resolveAgent()` 返回的是包装对象而非 Agent 本体
     （`dsh-api-session-controller/lib/index.js:365-368` 的 `liveAgent()` 与 `:221-246` 的

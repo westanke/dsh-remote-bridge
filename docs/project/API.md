@@ -626,6 +626,18 @@ DSH 的 `assistant/chunk` 不直接泄漏为私有 wire。插件将文本和思�
 完整清单与每项的契约依据见 `src/host/capabilities.ts` 与 `tests/capabilities.spec.ts` ——
 后者会拿依据去 OpenAPI/AsyncAPI 里逐条核对，防止「文档说支持、契约里没有」。
 
+**2026-10-28 新增的三个位**（都在 `docs/project/BFF-REST-CONTRACT.md` 里有对应端点）：
+
+| 能力位 | 契约依据 | 运行时降级 |
+| --- | --- | --- |
+| `attachment-chunked-upload-v1` | `POST /chat/sessions/{sessionId}/attachments/uploads` | 不降级（只依赖本进程的会话与 spool） |
+| `chat-schedules-v1` | `GET /chat/schedules`、`POST /chat/schedules` | 宿主 `ctx.schedule` 缺席时**不发位**（端点只会 503，发位等于挂一个必然失败的入口） |
+| `speech-transcription-v1` | `POST /chat/speech/transcriptions` | **只在 typert Gateway 整体缺席时不发位**；内核没装语音包时仍发位，`GET /chat/speech/catalog` 回 `200 {available:false,reason}` |
+
+最后一行是有意为之：客户端必须能区分「桥支持语音、但本机没配」（位在、目录
+`available:false` → 引导去插件管理装语音包）与「桥不支持语音」（位不在 → 隐藏入口）。
+把「没装语音包」也当成不发位，这两种状态就糊成一个了。
+
 ### 历史格式版本（`historyFormatVersion`）
 
 `GET /chat/sessions/{id}/messages` 的响应**总是**带 `historyFormatVersion`（当前 `1`）：
@@ -788,8 +800,121 @@ v2.8 新增。独立于现有 `/api/v1/events`（单向广播，保留不动）�
 
 客户端据此走等价 REST `/api/v1/*` 兜底，不把「服务端较旧」误判成「本来没有数据」。
 
+## REST 对等面（语音 / 定时任务 / 分块上传）
+
+`/ws/mobile` 里的 `speech-*`、`schedule-*` 与 `file-upload-*` 三域在 REST 侧有一套**同语义**的
+对等端点（契约：[BFF-REST-CONTRACT.md](BFF-REST-CONTRACT.md)）。App 可以先连 WS：连不上、
+或该内核没注入对应服务时，退回这里而不是报「功能不存在」。
+
+通用约定：读取侧要 `chat.read`，动作侧要 `chat.write`；错误体与其它 `/api/v1` 端点一致
+（`{error:{code,message,requestId,details?}}`）；时间一律 **epoch 毫秒整数**；单条 JSON 体
+≤ 32 KiB。错误码复用既有词汇：`BODY_INVALID`(400)、`NOT_FOUND`(404)、`CONFLICT`(409)、
+`PAYLOAD_TOO_LARGE`(413)、`SCOPE_REQUIRED`(403)、`UPSTREAM_UNAVAILABLE`(503)。
+
+### 分块上传（大附件）
+
+单条 `POST /chat/sessions/{sessionId}/attachments` 用 base64 一次传完，适合小图；大文件走分块：
+
+| 方法 | 路径 | scope | 说明 |
+| --- | --- | --- | --- |
+| POST | `/chat/sessions/{sessionId}/attachments/uploads` | `chat.write` | 开票 `{name,size,contentType?}` → `{uploadId,chunkSize,expiresAt,alreadyReceived}` |
+| GET | `/chat/sessions/{sessionId}/attachments/uploads` | `chat.read` | 本会话未完成票据 `{items:[…]}`，冷启动续传用 |
+| GET | `/chat/sessions/{sessionId}/attachments/uploads/{uploadId}` | `chat.read` | 进度 `{receivedCount,count,missing[]}` |
+| PUT | `/chat/sessions/{sessionId}/attachments/uploads/{uploadId}/chunks/{index}` | `chat.write` | 写一块（`application/octet-stream`） |
+| POST | `/chat/sessions/{sessionId}/attachments/uploads/{uploadId}/complete` | `chat.write` | 合并落库 → 201 附件视图 |
+| DELETE | `/chat/sessions/{sessionId}/attachments/uploads/{uploadId}` | `chat.write` | 丢弃 → 204 |
+
+要点：
+
+- `chunkSize` **由服务端定**（当前 1048576），客户端必须按它切；`index` 从 0 开始。
+- 断点续传：同 `name` + 同 `size` 且票据未过期（1 小时）时 `POST` 复用同一 `uploadId`，
+  响应里的 `alreadyReceived` 是服务端已收块号——只补发其余块。
+- 重复 `PUT` 同一 `index` 幂等（覆盖），所以网络重试安全；块长度必须**精确**（末块可短），
+  长度不符 400、超过 `chunkSize` 413、`index` 越界 400、票据不存在/过期/跨会话一律 404。
+- `complete` 缺块 → **409** + `details.missing`（块号数组）。补齐后重试即可。成功后票据作废
+  （再 `complete` 是 404）。
+- `size` 上限 256 MiB，超出 413。
+
+```sh
+# 1) 开票
+curl -X POST http://192.168.1.20:3090/api/v1/chat/sessions/S1/attachments/uploads \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"name":"clip.mp4","size":3145728,"contentType":"video/mp4"}'
+# → {"uploadId":"up_9f3a","chunkSize":1048576,"expiresAt":1761000000000,"alreadyReceived":[]}
+
+# 2) 逐块 PUT（这里是第 0 块）
+curl -X PUT http://192.168.1.20:3090/api/v1/chat/sessions/S1/attachments/uploads/up_9f3a/chunks/0 \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/octet-stream" \
+  --data-binary @chunk-0.bin
+
+# 3) 合并
+curl -X POST http://192.168.1.20:3090/api/v1/chat/sessions/S1/attachments/uploads/up_9f3a/complete \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+### 定时任务
+
+| 方法 | 路径 | scope | 说明 |
+| --- | --- | --- | --- |
+| GET | `/chat/schedules?sessionId=` | `chat.read` | 列表 `{items:[Schedule]}`；不带 `sessionId` 列全部 |
+| POST | `/chat/schedules` | `chat.write` | 新建 `{sessionId,text,cron,timezone}` → 201 |
+| PATCH | `/chat/schedules/{id}` | `chat.write` | 只改传入字段（`enabled`/`text`/`cron`/`timezone`） |
+| DELETE | `/chat/schedules/{id}` | `chat.write` | 删除 → 204 |
+
+`Schedule` = `{id,sessionId,text,cron,timezone,enabled,createdAt,lastRunAt,nextRunAt}`。
+`cron` 是**五段 Vixie**（`minute hour day-of-month month day-of-week`，不支持秒与 `@daily`
+之类别名），`timezone` 是 `UTC` 或真实 IANA `Area/Location`；两者不合法都是 **400**
+`BODY_INVALID`。会话不存在 404。
+
+与内核的差异（**必须知道**，否则 UI 会撒谎）：
+
+- `createdAt` 恒为 `null`——内核提醒记录没有创建时间，客户端不要按它排序。
+- 列表是「cron 投影」：内核的 `daily`/`weekly` 提醒会折算成等价 cron；**一次性（`at`）与
+  固定间隔（`every`）提醒无法用 cron 表达，因此不在此列表出现**，它们是 `schedule_create`
+  工具/WS 的产物，不是本 REST 面创建的。
+- 内核没有「暂停」操作：`PATCH {enabled:false}` 回 **400** + `details.reason:'ENABLED_UNSUPPORTED'`，
+  要停就删。对已结束的提醒发 `enabled:true` 回 **409** + `SCHEDULE_ENDED`。
+- 新建走宿主服务而**不是**内核 Remote（Remote 面没有 create 方法）：内核没提供该服务时回
+  **503** `UPSTREAM_UNAVAILABLE`，`details.reason` 说明缺的是 `gateway/invocation-unavailable`
+  还是 `schedule/create-unavailable`。客户端应隐藏新建入口，不要重试。
+
+### 官方语音
+
+| 方法 | 路径 | scope | 说明 |
+| --- | --- | --- | --- |
+| GET | `/chat/speech/catalog` | `chat.read` | 目录视图，含 `available` 与 `reason` |
+| POST | `/chat/speech/transcriptions` | `chat.write` | 转写 `{audio:base64,providerId?,language?}` |
+| PUT | `/chat/speech/config` | `chat.write` | 改选中 `{providerId?,language?}`（至少一项）→ 目录视图 |
+
+目录视图：`{available,providers:[{id,name,languages,location}],selected:{providerId,language}|null,
+reason,maxAudioBytes,maxDurationSeconds}`。
+
+- **内核没有语音服务时是 200** `{available:false,providers:[],reason:'当前内核未注入语音服务'}`，
+  **不是 404**。App 据此隐藏入口即可，别当故障。
+- 转写：`audio` 是 base64 WAV（推荐 16 kHz PCM16），**解码后 ≤ 4 MiB**——与 `/ws/mobile`
+  同一条硬线，走 REST 不会放宽；超出 **413**。超过 180 s 放弃，上游失败回 **503**
+  `UPSTREAM_UNAVAILABLE` + `details.reason`（不回显内核原始消息，它可能含主机路径）。
+- 识别到空白是**成功**：`200 {text:""}`，不是错误。`durationMs` 是音频时长，不是推理耗时。
+
+### 与 WS 的关系
+
+两条通道共享同一批纯逻辑（`ws-speech.ts` 的上限与归一、`ws-file-transfer.ts` 的 MIME 推断），
+所以上限、`available:false` 的判据、空识别语义三处完全一致。老 App 连新插件不受影响
+（全是新增端点）；新 App 连老插件会在这些路径上拿到 **404** `ROUTE_NOT_FOUND`，
+此时应隐藏入口而不是重试。
+
 ## Android 功能对等矩阵
 
-当前 `v1` 已覆盖设备配对、授权根、文件管理、回收站、工作区发现/创建/重命名/移除、会话列表/创建/重命名/分叉/归档、历史、发消息（含图片与文件附件）、steer、取消、实时事件、Agent Preset、TODO/权限投影、当前会话 host 斜杠命令、待审批查询与允许一次/拒绝、供应商有效配置/凭据状态、自定义供应商、模型发现以及会话模型/推理等级选择。以下 DSH WebUI 能力尚未进入稳定外部契约：会话搜索、消息队列、通用问题回答、工作区自定义排序、归档恢复、目标、子代理、技能和后台任务。
+当前 `v1` 已覆盖设备配对、授权根、文件管理、回收站、工作区发现/创建/重命名/移除、会话列表/创建/重命名/分叉/归档、历史、发消息（含图片与文件附件）、steer、取消、实时事件、Agent Preset、TODO/权限投影、当前会话 host 斜杠命令、待审批查询与允许一次/拒绝、供应商有效配置/凭据状态、自定义供应商、模型发现以及会话模型/推理等级选择。
+
+2026-10 起，原本只走 `/ws/mobile` 的三项也有了 REST 对等面（见上一节）：
+
+| 能力 | REST 状态 | 说明 |
+| --- | --- | --- |
+| 分块上传（大附件） | **已对等** | `…/attachments/uploads` 六条端点；1 MiB 切片、断点续传 `alreadyReceived`、缺块 409 |
+| 定时任务（cron） | **已对等（限 cron 形态）** | 创建/列表/局部改/删除；一次性与固定间隔提醒不可表达，不在列表出现 |
+| 官方语音输入 | **已对等** | 目录/转写/配置；内核无服务时为 200 `available:false` 而非 404 |
+
+以下 DSH WebUI 能力尚未进入稳定外部契约：会话搜索、消息队列、通用问题回答、工作区自定义排序、归档恢复、目标、子代理、技能和后台任务。
 
 App 不得直接调用 DSH 私有 `/api` 或通用 RPC 透传。每项缺失能力必须在插件中定义稳定 REST/事件 schema、对应设备 scope/root/session 授权、脱敏规则、OpenAPI/AsyncAPI、Kotlin SDK 和合约测试后才能标记为对等。

@@ -79,6 +79,13 @@ const EVIDENCE: Record<string, { openapi?: string[]; asyncapi?: string[] }> = {
   'job-list-v1': { openapi: ['/chat/sessions/{sessionId}/jobs'] },
   'job-output-v1': { openapi: ['/chat/sessions/{sessionId}/jobs/{jobId}/output'] },
   'job-kill-v1': { openapi: ['/chat/sessions/{sessionId}/jobs/{jobId}/kill'] },
+  // App 侧 REST 对等面（docs/project/BFF-REST-CONTRACT.md）：依据是各自端点路径。
+  // 三条位的取舍见 capabilities.ts 的 CAPABILITY_REQUIREMENTS 注释（语音只在网关缺失时剔除）。
+  'attachment-chunked-upload-v1': {
+    openapi: ['/chat/sessions/{sessionId}/attachments/uploads', '/chat/sessions/{sessionId}/attachments/uploads/{uploadId}/complete'],
+  },
+  'chat-schedules-v1': { openapi: ['/chat/schedules', '/chat/schedules/{id}'] },
+  'speech-transcription-v1': { openapi: ['/chat/speech/transcriptions', '/chat/speech/catalog'] },
 }
 
 describe('bridge capability declaration', () => {
@@ -133,6 +140,23 @@ describe('bridge capability declaration', () => {
   it('keeps the two capabilities the Android app treats as required', () => {
     expect(BRIDGE_CAPABILITIES).toContain('approvals-v1')
     expect(BRIDGE_CAPABILITIES).toContain('questions-v1')
+  })
+
+  /**
+   * App 侧三项 REST BFF 的位（2026-10-28）。Lead 定的名字**不许加别名**：
+   * `dsh-companion` 已按这三个字符串分支，改名等于让入口静默消失。
+   * 依据用 `operationId` 再钉一道 —— 路径名可能撞车，operation 不会。
+   */
+  it('declares the three REST BFF capabilities with their contract operations', () => {
+    expect(BRIDGE_CAPABILITIES).toContain('attachment-chunked-upload-v1')
+    expect(BRIDGE_CAPABILITIES).toContain('chat-schedules-v1')
+    expect(BRIDGE_CAPABILITIES).toContain('speech-transcription-v1')
+    expect(openapi).toContain('operationId: openChunkedAttachmentUpload')
+    expect(openapi).toContain('operationId: completeChunkedAttachmentUpload')
+    expect(openapi).toContain('operationId: listSchedules')
+    expect(openapi).toContain('operationId: createSchedule')
+    expect(openapi).toContain('operationId: createSpeechTranscription')
+    expect(openapi).toContain('operationId: getSpeechCatalog')
   })
 
   it('declares a positive integer history format version', () => {

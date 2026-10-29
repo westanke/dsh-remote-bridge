@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: DeepSeek Harness Mobile API
-  version: 2.7.2
+  version: 2.8.0
   description: Versioned file and chat BFF for mobile and third-party DSH clients. HTTP and HTTPS are both supported.
 servers:
   - url: http://127.0.0.1:3090/api/v1
@@ -24,7 +24,7 @@ paths:
                 properties:
                   ok: { type: boolean, const: true }
                   version: { type: string, const: v1 }
-                  pluginVersion: { type: string, const: 2.7.1 }
+                  pluginVersion: { type: string, const: 2.8.0 }
   /debug/host-services:
     get:
       operationId: hostServices
@@ -1319,6 +1319,332 @@ paths:
           schema: { type: string }
       responses:
         '202': { description: Cancellation accepted. }
+  /chat/sessions/{sessionId}/attachments/uploads:
+    post:
+      operationId: openChunkedAttachmentUpload
+      description: |
+        Opens — or resumes — a chunked attachment upload for one DSH session
+        (`docs/project/BFF-REST-CONTRACT.md` §1).
+
+        `chunkSize` is chosen by the server and must be obeyed by the client.
+        Re-posting the same `name` + `size` while an upload is still alive returns the
+        **same** `uploadId` plus `alreadyReceived` (the chunk indexes the server already
+        holds), which is how a dropped connection resumes without re-sending bytes.
+        Tickets expire one hour after opening; an expired or unknown id answers 404.
+
+        Errors: `400 BODY_INVALID` (bad name/size/contentType), `404 NOT_FOUND` (unknown
+        session), `413 PAYLOAD_TOO_LARGE` (`size` above the 256 MiB ceiling).
+      parameters:
+        - name: sessionId
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ChunkedUploadOpenRequest' }
+      responses:
+        '201':
+          description: Upload ticket opened (or reused).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ChunkedUploadTicket' }
+        '400': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+        '413': { $ref: '#/components/responses/Error' }
+    get:
+      operationId: listChunkedAttachmentUploads
+      description: |
+        Lists the session's unfinished upload tickets so a cold-started client can
+        resume without re-opening. Expired tickets are omitted; `missing` on each item
+        is the same chunk-index list `complete` would report.
+      parameters:
+        - name: sessionId
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Unfinished uploads for this session, soonest expiry first.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/ChunkedUploadStatus' }
+        '404': { $ref: '#/components/responses/Error' }
+  /chat/sessions/{sessionId}/attachments/uploads/{uploadId}:
+    get:
+      operationId: getChunkedAttachmentUpload
+      description: |
+        Upload progress. `missing` is the authoritative retry list — the same array
+        `POST …/complete` returns in `details.missing` when chunks are absent.
+        Unknown, expired, or other-session ids all answer `404 NOT_FOUND`
+        (indistinguishable on purpose).
+      parameters:
+        - name: sessionId
+          in: path
+          required: true
+          schema: { type: string }
+        - name: uploadId
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Current ticket state.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ChunkedUploadStatus' }
+        '404': { $ref: '#/components/responses/Error' }
+    delete:
+      operationId: cancelChunkedAttachmentUpload
+      description: Discards the ticket and its spooled chunks. The id is dead afterwards (404).
+      parameters:
+        - name: sessionId
+          in: path
+          required: true
+          schema: { type: string }
+        - name: uploadId
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '204': { description: 'Ticket discarded; no body.' }
+        '404': { $ref: '#/components/responses/Error' }
+  /chat/sessions/{sessionId}/attachments/uploads/{uploadId}/chunks/{index}:
+    put:
+      operationId: putChunkedAttachmentChunk
+      description: |
+        Stores one chunk. `index` is zero-based; repeating a `PUT` on the same index is
+        idempotent (the chunk is overwritten), which makes retries safe.
+
+        Byte length must be **exact**: `chunkSize` for every chunk but the last, and
+        `size - index * chunkSize` for the last one. A body longer than `chunkSize`
+        answers `413 PAYLOAD_TOO_LARGE`; a wrong-but-not-oversized length answers
+        `400 BODY_INVALID`; an index outside `[0, count)` answers `400 BODY_INVALID`.
+        The body is `application/octet-stream`, not JSON and not base64.
+      parameters:
+        - name: sessionId
+          in: path
+          required: true
+          schema: { type: string }
+        - name: uploadId
+          in: path
+          required: true
+          schema: { type: string }
+        - name: index
+          in: path
+          required: true
+          schema: { type: integer, minimum: 0 }
+      requestBody:
+        required: true
+        content:
+          application/octet-stream:
+            schema: { type: string, format: binary }
+      responses:
+        '200':
+          description: Chunk stored.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ChunkedUploadChunkResult' }
+        '400': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+        '413': { $ref: '#/components/responses/Error' }
+  /chat/sessions/{sessionId}/attachments/uploads/{uploadId}/complete:
+    post:
+      operationId: completeChunkedAttachmentUpload
+      description: |
+        Assembles the chunks and hands the bytes to the same kernel attachment path the
+        single-shot `POST /chat/sessions/{sessionId}/attachments` uses, so the resulting
+        receipt has the same meaning. On success the ticket is void (a second `complete`
+        answers 404).
+
+        Missing chunks answer `409 CONFLICT` with `details.missing` = the chunk indexes
+        still owed, so the client can send exactly those and retry.
+      parameters:
+        - name: sessionId
+          in: path
+          required: true
+          schema: { type: string }
+        - name: uploadId
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '201':
+          description: Attachment stored in the session.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ChunkedUploadReceipt' }
+        '404': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
+  /chat/schedules:
+    get:
+      operationId: listSchedules
+      description: |
+        Lists cron-shaped schedules (`docs/project/BFF-REST-CONTRACT.md` §2).
+
+        Every item is a **cron projection** of the kernel record: `daily`/`weekly`
+        records are converted to their equivalent five-field cron; one-shot (`at`) and
+        fixed-interval (`every`) records cannot be expressed that way and are therefore
+        omitted rather than faked. `createdAt` is always `null` because the kernel record
+        carries no creation timestamp.
+      parameters:
+        - name: sessionId
+          in: query
+          required: false
+          schema: { type: string }
+      responses:
+        '200':
+          description: Schedules, optionally filtered to one session.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/Schedule' }
+        '404': { $ref: '#/components/responses/Error' }
+        '503': { $ref: '#/components/responses/Error' }
+    post:
+      operationId: createSchedule
+      description: |
+        Creates a cron schedule for one DSH session.
+
+        `cron` must be a five-field Vixie expression; `timezone` must be `UTC` or a real
+        IANA `Area/Location` name — anything else is `400 BODY_INVALID` before the kernel
+        is involved. An unknown session is `404 NOT_FOUND`.
+
+        `503 UPSTREAM_UNAVAILABLE` (with `details.reason`) means the kernel does not
+        expose schedule creation to the bridge at all — the client must hide the entry
+        point then, not retry.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ScheduleCreateRequest' }
+      responses:
+        '201':
+          description: Schedule created.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Schedule' }
+        '400': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+        '503': { $ref: '#/components/responses/Error' }
+  /chat/schedules/{id}:
+    patch:
+      operationId: updateSchedule
+      description: |
+        Updates only the fields present in the body.
+
+        `enabled: false` (pause) answers `400 BODY_INVALID` with
+        `details.reason: ENABLED_UNSUPPORTED` — this kernel has no pause operation, and a
+        silent success would show a paused reminder that keeps firing. Deleting is the
+        supported way to stop one. `enabled: true` on an already-ended schedule answers
+        `409 CONFLICT` (`details.reason: SCHEDULE_ENDED`).
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SchedulePatch' }
+      responses:
+        '200':
+          description: Updated schedule.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Schedule' }
+        '400': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
+        '503': { $ref: '#/components/responses/Error' }
+    delete:
+      operationId: deleteSchedule
+      description: Removes the schedule. Unknown id answers 404.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '204': { description: 'Deleted; no body.' }
+        '404': { $ref: '#/components/responses/Error' }
+        '503': { $ref: '#/components/responses/Error' }
+  /chat/speech/catalog:
+    get:
+      operationId: getSpeechCatalog
+      description: |
+        Official speech input catalog (`docs/project/BFF-REST-CONTRACT.md` §3).
+
+        When the kernel has no speech service this is **not** a 404: it answers `200`
+        with `available: false`, an empty `providers` and a `reason`. That is the same
+        judgement the `/ws/mobile` `speech-catalog` frame makes, and it lets an old
+        client hide the entry point without treating a missing feature as a failure.
+      responses:
+        '200':
+          description: Catalog, or the unavailable view.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SpeechCatalog' }
+  /chat/speech/transcriptions:
+    post:
+      operationId: createSpeechTranscription
+      description: |
+        Transcribes one base64 WAV clip.
+
+        Decoded audio must be ≤ 4 MiB — the same ceiling `/ws/mobile` enforces, so a clip
+        does not become acceptable merely by taking the REST path; over the limit answers
+        `413 PAYLOAD_TOO_LARGE`. Transcription gives up after 180 s. An empty transcript
+        is a **success** (`text: ""`), not an error: silence is a legal answer.
+
+        Upstream failures answer `503 UPSTREAM_UNAVAILABLE` with `details.reason`; the
+        kernel's raw message is never echoed (it can contain host paths).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SpeechTranscriptionRequest' }
+      responses:
+        '200':
+          description: Transcript (possibly empty).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SpeechTranscription' }
+        '400': { $ref: '#/components/responses/Error' }
+        '413': { $ref: '#/components/responses/Error' }
+        '503': { $ref: '#/components/responses/Error' }
+  /chat/speech/config:
+    put:
+      operationId: configureSpeech
+      description: |
+        Changes the selected provider and/or language and returns the catalog view
+        afterwards. At least one of `providerId`/`language` is required
+        (`400 BODY_INVALID` otherwise).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SpeechConfigPatch' }
+      responses:
+        '200':
+          description: Catalog after the change.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SpeechCatalog' }
+        '400': { $ref: '#/components/responses/Error' }
+        '503': { $ref: '#/components/responses/Error' }
 components:
   securitySchemes:
     bearerAuth:
@@ -1889,3 +2215,159 @@ components:
         detail: { type: string, description: 'Terminal reason (`exit code: 3`); a recorded kill reason is merged in.' }
         startedAt: { type: integer, format: epoch-ms }
         finishedAt: { type: integer, format: epoch-ms, description: Absent while live. }
+    ChunkedUploadOpenRequest:
+      type: object
+      description: Opens or resumes a chunked upload. `size` is the exact byte count the client intends to send.
+      required: [name, size]
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 255
+          description: 'Leaf file name only — path separators and control characters are refused.'
+        size:
+          type: integer
+          minimum: 1
+          maximum: 268435456
+          description: 'Declared byte count, 1..256 MiB; above the ceiling answers 413.'
+        contentType:
+          type: [string, 'null']
+          description: 'Optional MIME hint. Omitted → derived from the file extension at `complete`.'
+    ChunkedUploadTicket:
+      type: object
+      description: Server-decided ticket for one chunked upload.
+      required: [uploadId, chunkSize, expiresAt, alreadyReceived]
+      properties:
+        uploadId: { type: string, description: 'Opaque id, e.g. `up_9f3a…`; valid for one hour.' }
+        chunkSize: { type: integer, description: 'Fixed server-side slice size (1048576 today); clients must obey it.' }
+        expiresAt: { type: integer, format: epoch-ms }
+        alreadyReceived:
+          type: array
+          description: 'Chunks the server already holds — empty on a fresh open, populated when a resume matched.'
+          items: { type: integer, minimum: 0 }
+    ChunkedUploadStatus:
+      type: object
+      required: [uploadId, name, size, chunkSize, receivedCount, count, expiresAt, missing]
+      properties:
+        uploadId: { type: string }
+        name: { type: string }
+        size: { type: integer }
+        chunkSize: { type: integer }
+        receivedCount: { type: integer, description: 'Distinct chunks held so far.' }
+        count: { type: integer, description: 'Total chunks the declared size needs.' }
+        expiresAt: { type: integer, format: epoch-ms }
+        missing:
+          type: array
+          description: 'Chunk indexes still owed, ascending. Same list `complete` reports in `details.missing`.'
+          items: { type: integer, minimum: 0 }
+    ChunkedUploadChunkResult:
+      type: object
+      required: [uploadId, received, count]
+      properties:
+        uploadId: { type: string }
+        received: { type: integer, description: 'Distinct chunks held after this write.' }
+        count: { type: integer, description: 'Total chunks the declared size needs.' }
+    ChunkedUploadReceipt:
+      type: object
+      description: 'Stored attachment. Same meaning as the single-shot upload receipt; `name`/`contentType` may be server-derived.'
+      required: [id, receiptId, name, size, contentType, uploadedAt]
+      properties:
+        id: { type: string }
+        receiptId: { type: string }
+        name: { type: string }
+        size: { type: integer }
+        contentType: { type: string }
+        uploadedAt: { type: integer, format: epoch-ms }
+    Schedule:
+      type: object
+      description: |
+        Cron projection of one DSH reminder. `createdAt` is always null — the kernel
+        record has no creation timestamp; clients must not sort on it.
+      required: [id, sessionId, text, cron, timezone, enabled, createdAt, lastRunAt, nextRunAt]
+      properties:
+        id: { type: string, description: 'Opaque id, e.g. `sch_…`.' }
+        sessionId: { type: string }
+        text: { type: string, maxLength: 8000, description: 'The reminder body (kernel `prompt`).' }
+        cron: { type: string, description: 'Five-field Vixie expression, `minute hour day-of-month month day-of-week`.' }
+        timezone: { type: string, description: 'IANA zone the expression is evaluated in.' }
+        enabled: { type: boolean, description: 'True while the kernel still schedules it.' }
+        createdAt: { type: [integer, 'null'], format: epoch-ms, description: 'Always null in this kernel generation.' }
+        lastRunAt: { type: [integer, 'null'], format: epoch-ms, description: 'Last delivered occurrence, when the kernel reports one.' }
+        nextRunAt: { type: [integer, 'null'], format: epoch-ms, description: 'Next planned occurrence.' }
+    ScheduleCreateRequest:
+      type: object
+      required: [sessionId, text, cron, timezone]
+      properties:
+        sessionId: { type: string }
+        text: { type: string, minLength: 1, maxLength: 8000 }
+        cron: { type: string, description: 'Five-field Vixie expression; seconds and `@daily`-style macros are refused.' }
+        timezone: { type: string, description: '`UTC` or a real IANA `Area/Location` name.' }
+    SchedulePatch:
+      type: object
+      description: Send only the fields to change; omitted fields keep their stored value.
+      minProperties: 1
+      properties:
+        enabled:
+          type: boolean
+          description: '`false` is refused (400, `details.reason: ENABLED_UNSUPPORTED`) — this kernel cannot pause; delete instead.'
+        text: { type: string, minLength: 1, maxLength: 8000 }
+        cron: { type: string }
+        timezone: { type: string }
+    SpeechCatalog:
+      type: object
+      description: 'Official speech input state. `available: false` is a 200 answer, never a 404 — hide the entry point, do not error.'
+      required: [available, providers, selected, reason, maxAudioBytes, maxDurationSeconds]
+      properties:
+        available: { type: boolean }
+        providers:
+          type: array
+          items: { $ref: '#/components/schemas/SpeechProvider' }
+        selected:
+          oneOf:
+            - $ref: '#/components/schemas/SpeechSelection'
+            - type: 'null'
+        reason: { type: [string, 'null'], description: 'Why the feature is unavailable; null when it is available.' }
+        maxAudioBytes: { type: integer, description: 'Hard ceiling for one clip on this device (4 MiB today).' }
+        maxDurationSeconds: { type: [integer, 'null'], description: 'Kernel-declared clip length ceiling, when it reports one.' }
+    SpeechProvider:
+      type: object
+      required: [id, name, languages, location]
+      properties:
+        id: { type: string, examples: [builtin] }
+        name: { type: string, examples: [内置语音] }
+        languages:
+          type: array
+          items: { type: string }
+          examples: [[zh-CN, en-US]]
+        location: { type: string, enum: [host-local, cloud], description: 'Whether inference runs on the host or in a provider cloud.' }
+    SpeechSelection:
+      type: object
+      required: [providerId, language]
+      properties:
+        providerId: { type: string }
+        language: { type: string }
+    SpeechTranscriptionRequest:
+      type: object
+      required: [audio]
+      properties:
+        audio:
+          type: string
+          format: byte
+          description: 'Base64 WAV (16 kHz PCM16 recommended). Decoded bytes must be ≤ 4 MiB; non-canonical base64 is refused.'
+        providerId: { type: string, description: 'Defaults to the configured provider.' }
+        language: { type: string, description: 'Defaults to the configured language.' }
+    SpeechTranscription:
+      type: object
+      required: [text, providerId, language, durationMs]
+      properties:
+        text: { type: string, description: 'Empty string means "no speech recognised" — a success, not an error.' }
+        providerId: { type: string }
+        language: { type: string }
+        durationMs: { type: integer, description: 'Audio duration reported by the kernel, in milliseconds.' }
+    SpeechConfigPatch:
+      type: object
+      description: At least one field is required.
+      minProperties: 1
+      properties:
+        providerId: { type: string }
+        language: { type: string }

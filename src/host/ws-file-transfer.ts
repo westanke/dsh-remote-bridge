@@ -79,7 +79,7 @@ interface ChatAdapterLike {
 }
 
 const HEX_SHA256 = /^[a-fA-F0-9]{64}$/
-const LEAF_NAME = /^[^\x00-\x1f\x7f/\\]+$/
+export const LEAF_NAME = /^[^\x00-\x1f\x7f/\\]+$/
 const MEDIA_TYPES: Record<string, string> = {
   '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
   '.gif': 'image/gif', '.webp': 'image/webp', '.pdf': 'application/pdf',
@@ -87,7 +87,7 @@ const MEDIA_TYPES: Record<string, string> = {
   '.zip': 'application/zip',
 }
 
-function mediaTypeOf(name: string): string {
+export function mediaTypeOf(name: string): string {
   const ext = name.slice(name.lastIndexOf('.')).toLowerCase()
   return MEDIA_TYPES[ext] ?? 'application/octet-stream'
 }

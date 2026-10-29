@@ -45,6 +45,28 @@ describe('capability filtering at connection time', () => {
     expect(caps).toContain('session-archive-list-v1')
   })
 
+  /**
+   * 新三位的运行时过滤：`schedule` 与宿主 `ctx.schedule` 同生死（没有它，
+   * 列表与新建都只会 503）；`speech` 只在网关整体缺失时剔除（内核没装语音包时
+   * 目录仍回 200 `available:false`，客户端要能区分「支持但没配」与「不支持」）。
+   */
+  it('drops only the schedule capability when the host schedule service is absent', () => {
+    const caps = availableCapabilities({ schedule: false })
+    expect(caps).not.toContain('chat-schedules-v1')
+    // 差集精确等于 1：不能顺手删掉语音或分块上传。
+    expect(BRIDGE_CAPABILITIES.length - caps.length).toBe(1)
+    expect(caps).toContain('speech-transcription-v1')
+    expect(caps).toContain('attachment-chunked-upload-v1')
+  })
+
+  it('drops only the speech capability when the kernel gateway is absent', () => {
+    const caps = availableCapabilities({ speech: false })
+    expect(caps).not.toContain('speech-transcription-v1')
+    expect(BRIDGE_CAPABILITIES.length - caps.length).toBe(1)
+    expect(caps).toContain('attachment-chunked-upload-v1')
+    expect(caps).toContain('chat-schedules-v1')
+  })
+
   it('declares all capabilities when jobs are available', () => {
     expect(availableCapabilities({ jobs: true })).toEqual([...BRIDGE_CAPABILITIES])
   })

@@ -268,6 +268,10 @@ host services 之上重建 0.1.x 的 `apiProxy` 面容，让 `chat-adapter` / `s
 | `src/host/` | dir | 宿主侧实现（HTTP、路由、adapter、持久层） |
 | `src/host/auth.ts` | file | 设备 token / loopback admin 鉴权与限流 |
 | `src/host/capabilities.ts` | file | 能力位清单与 connection.ready 载荷 |
+| `src/host/bff-rest.ts` | file | App 侧 REST BFF 分发（分块上传/定时任务/官方语音九条路由的薄路由层，逻辑在 bff-*.ts） |
+| `src/host/bff-schedule.ts` | file | REST 定时任务（五段 Vixie cron 与 IANA 时区校验、内核记录↔REST cron 视图映射、PATCH 局部更新） |
+| `src/host/bff-speech.ts` | file | REST 官方语音（catalog/transcriptions/config，复用 ws-speech 的上限与归一，缺服务回 200 available:false） |
+| `src/host/bff-upload.ts` | file | REST 分块上传票据与 spool（1 MiB 切片、1 小时票据、断点续传 alreadyReceived、缺块 409 details.missing） |
 | `src/host/chat-adapter.ts` | file | 会话/历史/审批/提问/命令 adapter |
 | `src/host/cloudflared.ts` | file | Cloudflare 隧道与二进制管理 |
 | `src/host/config-text.ts` | file | DSH1 配置文本编解码 |

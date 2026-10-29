@@ -1,5 +1,61 @@
 # 开发日志
 
+## v2.8.0 · REST BFF：分块上传 / 定时任务 / 官方语音（2026-10-28）
+
+**状态：代码与文档已齐，版本号已升到 2.8.0、未打 tag、未推送。** 依据
+[BFF-REST-CONTRACT.md](BFF-REST-CONTRACT.md) 新增九条只增不改的 REST 端点，让 App 在没有
+`/ws/mobile` 或内核未注入对应服务时仍有同语义退路。
+
+### 新增
+
+- **分块上传**（`chat.write` / `chat.read`）：`…/attachments/uploads` 的
+  `POST`/`GET`/`GET {uploadId}`/`PUT chunks/{i}`/`POST complete`/`DELETE {uploadId}`。
+  1 MiB 服务端切片、1 小时票据、`alreadyReceived` 断点续传、重复 PUT 幂等、缺块
+  `409` + `details.missing`、超限 `413`、票据未知/过期/跨会话 `404`。
+- **定时任务**（`chat.write` / `chat.read`）：`GET`/`POST /chat/schedules`、
+  `PATCH`/`DELETE /chat/schedules/{id}`。五段 Vixie cron + IANA 时区自校验（与内核同判据，
+  不 import 内核包）；`PATCH` 只改传入字段。
+- **官方语音**（`chat.write` / `chat.read`）：`GET /chat/speech/catalog`、
+  `POST /chat/speech/transcriptions`、`PUT /chat/speech/config`。复用 `ws-speech.ts` 的
+  4 MiB 上限、180 s 超时与目录归一；内核无服务时 **200 `{available:false,reason}`**，
+  不是 404。
+
+### 能力位
+
+新增三个位（App 侧已按这三个字符串分支，**不得改名或加别名**），各自都能在
+`docs/api/openapi.yaml` 里指到依据路径，`tests/capabilities.spec.ts` 逐条核对：
+
+- `attachment-chunked-upload-v1` → `POST /chat/sessions/{sessionId}/attachments/uploads`，不降级。
+- `chat-schedules-v1` → `GET`/`POST /chat/schedules`；宿主 `ctx.schedule` 缺席时不发位
+  （此时列表与新建都只会 503，发位等于挂一个必然失败的入口）。
+- `speech-transcription-v1` → `POST /chat/speech/transcriptions`；**只在 typert Gateway
+  整体缺席时剔除**，内核没装语音包时仍发位 —— 因为目录端点回的是 `200 {available:false,reason}`，
+  客户端要据此区分「桥支持、本机没配」与「桥不支持」，两种状态的 UI 不同。
+
+### 与契约的三处显式偏差
+
+契约 `docs/project/BFF-REST-CONTRACT.md` 有三条要求在现行内核上**无法照字面实现**，
+本轮按「尽力实现 + 明确退化」处理，契约文件本身未改（由 Lead 定稿）：
+
+1. **`POST /chat/schedules` 的新建入口**：内核 `schedule` Remote 只发布
+   `catalog|changed|delete|history|list|update`，**没有 create**。实现改走宿主 cordis 服务
+   `ctx.schedule.create(sessionId, request)`；取不到该服务时回 `503 UPSTREAM_UNAVAILABLE`
+   + `details.reason`（`gateway/invocation-unavailable` / `schedule/create-unavailable`）。
+2. **`Schedule.createdAt`**：内核 `ScheduleRecord` 没有创建时间字段，视图恒为 `null`（字段保留，
+   客户端不得据此排序）。
+3. **`PATCH {enabled:false}`**：内核没有「暂停」操作，静默成功会让 UI 显示已暂停而提醒继续触发，
+   因此回 `400 BODY_INVALID` + `details.reason:'ENABLED_UNSUPPORTED'`；要停请 `DELETE`。
+   另：列表只投影 cron 形态，`at`/`every` 提醒不在 REST 列表中出现。
+
+### 门禁
+
+- `npm run typecheck` 0 错；`npm run test` 全绿（含新增 `tests/bff-rest.spec.ts`）；
+  `npm run docs:check`（12 docs / STRUCTURE 72 锚点 / INTERFACES 87 锚点）；
+  `npm run build` 通过。
+- 文档同步：`docs/api/openapi.yaml`（+9 路径 / +13 schema）、`docs/project/API.md`
+  （新增「REST 对等面」节 + 对等矩阵三项状态）、`INTERFACES.md`、`STRUCTURE.md`、
+  `SECURITY.md`。
+
 ## 2.7.2 · 版本升级与测试同步（2026-10-28）
 
 **基于**：v2.7.1。主要完成版本号从 2.7.1 升级至 2.7.2，同步测试预期值、文档版本坏ges与产物校验值。

@@ -19,19 +19,115 @@ import type { HostRemoteHandle } from './ws-host-services.ts'
 /** 单条连接的发送回调签名。 */
 export type SendFrame = (frame: { kind: string; data?: unknown }) => void
 
-const MAX_AUDIO_BYTES = 4 * 1024 * 1024
-const TRANSCRIPTION_TIMEOUT_MS = 180_000
+/** 本模块的错误形状：带稳定 `code` 的 `Error`（`{code}` 是内核/WS 层共用判据）。 */
+interface SpeechFailure extends Error {
+  code: string
+}
+
+/**
+ * 音频上限（**REST 对等面同一常量**，见 `bff-speech.ts`）。
+ *
+ * 4 MiB 是官方网关的口径：16 kHz PCM16 单声道约 2 分钟，够一句口述指令而不至于
+ * 让一帧 WS 消息撑爆 64 MiB 预算。REST 的 `POST /chat/speech/transcriptions`
+ * 复用同一个值，两边不一致会让「App 能传的语音」随通道变化 —— 那是 bug，不是特性。
+ */
+export const MAX_AUDIO_BYTES = 4 * 1024 * 1024
+/** 转写超时：官方网关口径 180s（REST 共用）。 */
+export const TRANSCRIPTION_TIMEOUT_MS = 180_000
 const GLOBAL_MAX_TRANSCRIPTIONS = 4
 const MAX_OPERATIONS_PER_CLIENT = 8
 
-const UNAVAILABLE_CODES = new Set([
+/** 内核「这个服务根本不存在」的判据码；REST 对等面复用同一判据。 */
+export const SPEECH_UNAVAILABLE_CODES = new Set([
   'gateway/invocation-unavailable',
   'gateway/definition-unavailable',
   'gateway/service-unavailable',
 ])
 
-interface SpeechFailure extends Error {
-  code?: string
+/** 内核无语音服务时给用户/客户端的固定引导语（REST 的 `reason` 也用它）。 */
+export const SPEECH_ENABLE_MESSAGE = 'Enable the official voice input bundle in DSH plugin management'
+
+/**
+ * 由传输层载荷预算推出音频上限：为 JSON 信封留 4 KiB，base64 膨胀 4/3。
+ *
+ * 抽成导出函数是为了让 REST 对等面用**同一份**算式 —— 复制一遍的话，
+ * 哪天这里调了信封开销，REST 那边就会悄悄多放行几十 KB。
+ */
+export function speechAudioLimit(maxPayloadBytes: number): number {
+  return Math.min(MAX_AUDIO_BYTES, Math.max(0, Math.floor((maxPayloadBytes - 4096) / 4) * 3))
+}
+
+/** 内核是否「根本没这个服务」（而不是这次调用失败）。 */
+export function isSpeechUnavailable(error: unknown): boolean {
+  const code = typeof error === 'object' && error !== null ? (error as { code?: unknown }).code : undefined
+  return typeof code === 'string' && SPEECH_UNAVAILABLE_CODES.has(code)
+}
+
+/** 官方语音目录（已归一）：`maxAudioBytes` 已按本通道预算夹过。 */
+export interface SpeechCatalogRecord {
+  providers: unknown
+  selection: unknown
+  maxAudioBytes: number
+  maxDurationSeconds: number
+}
+
+/**
+ * 归一内核 speech catalog。
+ *
+ * 判据与官方网关一致：`providers` 必须是数组、`selection` 必须已定义、
+ * `maxAudioBytes`/`maxDurationSeconds` 必须是合理的数字。任何一条不满足都说明
+ * 内核回的**不是**目录快照 —— 与其往下传一个形状不明的对象，不如明确失败。
+ * 失败用 `speech/invalid-response`（与 WS 帧同一个码）。
+ */
+export function normalizeSpeechCatalog(value: unknown, audioLimit: number): SpeechCatalogRecord {
+  if (
+    typeof value !== 'object' || value === null
+    || !Array.isArray((value as { providers?: unknown }).providers)
+    || (value as { selection?: unknown }).selection === undefined
+    || !Number.isSafeInteger((value as { maxAudioBytes?: number }).maxAudioBytes)
+    || (value as { maxAudioBytes: number }).maxAudioBytes < 46
+    || !Number.isFinite((value as { maxDurationSeconds?: number }).maxDurationSeconds)
+    || (value as { maxDurationSeconds: number }).maxDurationSeconds < 1
+  ) {
+    throw failure('speech/invalid-response', 'Official speech catalog is invalid')
+  }
+  const record = value as {
+    providers: unknown
+    selection: unknown
+    maxAudioBytes: number
+    maxDurationSeconds: number
+  }
+  return {
+    ...record,
+    maxAudioBytes: Math.min(audioLimit, record.maxAudioBytes),
+  }
+}
+
+/** 官方语音转写结果（已归一）。`text` 允许是空串 —— 那是「没识别到语音」，不是错误。 */
+export interface SpeechTranscriptRecord {
+  text: string
+  audioSeconds: number
+  inferenceSeconds: number
+}
+
+/** 归一内核转写结果；形状不对抛 `speech/invalid-response`。 */
+export function normalizeSpeechTranscript(value: unknown): SpeechTranscriptRecord {
+  const result = value as { text?: unknown; audioSeconds?: unknown; inferenceSeconds?: unknown } | null
+  if (
+    result === null || typeof result !== 'object'
+    || typeof result.text !== 'string'
+    || !Number.isFinite(result.audioSeconds)
+    || (result.audioSeconds as number) < 0
+    || !Number.isFinite(result.inferenceSeconds)
+    || (result.inferenceSeconds as number) < 0
+  ) {
+    throw failure('speech/invalid-response', 'Official speech transcript is invalid')
+  }
+  return {
+    text: result.text,
+    audioSeconds: result.audioSeconds as number,
+    inferenceSeconds: result.inferenceSeconds as number,
+  }
 }
 
 function failure(code: string, message: string): SpeechFailure {
@@ -67,7 +163,7 @@ export class SpeechHandler {
     private readonly sendFrameFor: (key: unknown) => SendFrame,
     private readonly maxPayloadBytes: number = 64 * 1024 * 1024,
   ) {
-    this.audioLimit = Math.min(MAX_AUDIO_BYTES, Math.max(0, Math.floor((this.maxPayloadBytes - 4096) / 4) * 3))
+    this.audioLimit = speechAudioLimit(this.maxPayloadBytes)
   }
 
   /**
@@ -197,20 +293,9 @@ export class SpeechHandler {
         abort.signal.throwIfAborted()
         if (audio.length > limits.maxAudioBytes) throw failure('speech/invalid-audio', 'Audio exceeds the official plugin byte limit')
 
-        const result = await this.remote.invoke('speech', 'transcribe', { request }, abort.signal) as
-          | { text?: unknown; audioSeconds?: unknown; inferenceSeconds?: unknown }
-          | null
+        const raw = await this.remote.invoke('speech', 'transcribe', { request }, abort.signal)
         abort.signal.throwIfAborted()
-        if (
-          result === null
-          || typeof result.text !== 'string'
-          || !Number.isFinite(result.audioSeconds)
-          || (result.audioSeconds as number) < 0
-          || !Number.isFinite(result.inferenceSeconds)
-          || (result.inferenceSeconds as number) < 0
-        ) {
-          throw failure('speech/invalid-response', 'Official speech transcript is invalid')
-        }
+        const result = normalizeSpeechTranscript(raw)
         return {
           kind: 'speech-transcript',
           data: {
@@ -272,7 +357,7 @@ export class SpeechHandler {
       const stream = await this.remote.stream('speech', 'follow', {}, follow.abort.signal)
       for await (const snapshot of stream) {
         if (state.closed || state.follow !== follow || follow.abort.signal.aborted) break
-        send({ kind: 'speech-state', data: { requestId: follow.requestId, ...this.normalizeCatalog(snapshot) } })
+        send({ kind: 'speech-state', data: { requestId: follow.requestId, ...normalizeSpeechCatalog(snapshot, this.audioLimit) } })
       }
       if (!follow.abort.signal.aborted) throw failure('speech/stream-ended', 'Speech readiness stream ended; subscribe again')
     } catch (error) {
@@ -285,46 +370,9 @@ export class SpeechHandler {
     }
   }
 
-  private async catalog(signal: AbortSignal): Promise<{
-    providers: unknown
-    selection: unknown
-    maxAudioBytes: number
-    maxDurationSeconds: number
-    available: true
-  }> {
+  private async catalog(signal: AbortSignal): Promise<SpeechCatalogRecord & { available: true }> {
     const value = await this.remote!.invoke('speech', 'catalog', {}, signal)
-    return this.normalizeCatalog(value)
-  }
-
-  private normalizeCatalog(value: unknown): {
-    providers: unknown
-    selection: unknown
-    maxAudioBytes: number
-    maxDurationSeconds: number
-    available: true
-  } {
-    if (
-      typeof value !== 'object' || value === null
-      || !Array.isArray((value as { providers?: unknown }).providers)
-      || (value as { selection?: unknown }).selection === undefined
-      || !Number.isSafeInteger((value as { maxAudioBytes?: number }).maxAudioBytes)
-      || (value as { maxAudioBytes: number }).maxAudioBytes < 46
-      || !Number.isFinite((value as { maxDurationSeconds?: number }).maxDurationSeconds)
-      || (value as { maxDurationSeconds: number }).maxDurationSeconds < 1
-    ) {
-      throw failure('speech/invalid-response', 'Official speech catalog is invalid')
-    }
-    const record = value as {
-      providers: unknown
-      selection: unknown
-      maxAudioBytes: number
-      maxDurationSeconds: number
-    }
-    return {
-      ...record,
-      maxAudioBytes: Math.min(this.audioLimit, record.maxAudioBytes),
-      available: true,
-    }
+    return { ...normalizeSpeechCatalog(value, this.audioLimit), available: true }
   }
 
   private stopFollow(state: ClientState): void {
@@ -340,12 +388,11 @@ export class SpeechHandler {
   }
 
   private isUnavailable(error: unknown): boolean {
-    const code = typeof error === 'object' && error !== null ? (error as { code?: unknown }).code : undefined
-    return typeof code === 'string' && UNAVAILABLE_CODES.has(code)
+    return isSpeechUnavailable(error)
   }
 
   private enableMessage(): string {
-    return 'Enable the official voice input bundle in DSH plugin management'
+    return SPEECH_ENABLE_MESSAGE
   }
 
   private errorBody(frame: ClientFrame, error: unknown, requestId?: string): Record<string, unknown> {

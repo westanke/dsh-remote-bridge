@@ -22,6 +22,7 @@ import { ApiRouter } from './host/router.ts'
 import { attachEmbeddedRoutes, RemoteApiServer } from './host/server.ts'
 import { DshSettingsAdapter } from './host/settings-adapter.ts'
 import { createHostRemoteServices } from './host/ws-host-services.ts'
+import type { ScheduleCreatePort } from './host/bff-rest.ts'
 import { PLUGIN_VERSION } from './shared/version.ts'
 
 /**
@@ -214,6 +215,26 @@ export async function apply(ctx: HostContext, config: Config = {}): Promise<void
   if (!jobControllerAvailable) {
     ctx.logger.warn(new Error('dsh-remote-bridge: jobController not provided by this kernel, background-job endpoints disabled'))
   }
+  // 定时任务 / 官方语音走内核 typertGateway Remote（DSH 0.2.1-rc.2+ 才有）。
+  // 同样是可选服务：reflect.get 取不到就不启用，WS 帧回结构化 unavailable 引导 REST。
+  // 提到 RemoteApiServer 之前构造，是因为能力位要在构造时就能如实声明（见下）。
+  const hostRemote = createHostRemoteServices(reflect)
+  // 定时任务的**新建**没有远程方法：`dsh-schedule` 只注册了
+  // catalog / changed / delete / history / list / update（见 `bff-schedule.ts` 文件头），
+  // `create` 只在宿主 cordis 服务 `ctx.schedule` 上。同样是可选服务 ——
+  // 取不到时 REST 的 POST 回 503 `schedule/create-unavailable`，而不是假的 201。
+  const schedule = reflect?.get === undefined
+    ? undefined
+    : reflect.get('schedule', false) as ScheduleCreatePort | undefined
+  const capabilities = {
+    jobs: jobControllerAvailable,
+    // `chat-schedules-v1` 与宿主 `ctx.schedule` 同生死：没有它，列表与新建都只会回 503。
+    schedule: schedule !== undefined,
+    // `speech-transcription-v1` 只在网关整体缺失时剔除 —— 内核没装语音包时
+    // `GET …/catalog` 仍回 200 `{available:false,reason}`，客户端要能区分
+    // 「支持但本机没配」与「不支持」。理由写在 `capabilities.ts`。
+    speech: hostRemote.services !== undefined,
+  }
   const remote = new RemoteApiServer({
     port,
     remoteHost,
@@ -227,14 +248,11 @@ export async function apply(ctx: HostContext, config: Config = {}): Promise<void
     // 等于让它去打一个必然失败的端点 —— 而这正是能力位要消灭的那种
     // 「静默少一个功能」。过滤规则与理由见 `capabilities.ts` 的
     // `CAPABILITY_REQUIREMENTS`。
-    capabilities: { jobs: jobControllerAvailable },
+    capabilities,
   })
   // /ws/mobile 的全局模型目录 / providers / 文件浏览需要 settings 与 files 适配器，
   // 它们在此刻才构造完成（晚于 RemoteApiServer），通过 setter 注入避免构造顺序环。
   remote.attachMobileHostServices({ settings, files })
-  // 定时任务 / 官方语音走内核 typertGateway Remote（DSH 0.2.1-rc.2+ 才有）。
-  // 同样是可选服务：reflect.get 取不到就不启用，WS 帧回结构化 unavailable 引导 REST。
-  const hostRemote = createHostRemoteServices(reflect)
   remote.attachMobileRemoteServices(hostRemote.services)
   router = new ApiRouter({
     database,
@@ -247,6 +265,8 @@ export async function apply(ctx: HostContext, config: Config = {}): Promise<void
     cloudflaredBinDir: path.join(dataDir, 'cloudflared-bin'),
     maxUploadBytes,
     imageFallbackDir: imageHandoffDir,
+    ...(hostRemote.services === undefined ? {} : { hostRemote: hostRemote.services }),
+    ...(schedule === undefined ? {} : { schedule }),
     ...(hostServiceReport === undefined ? {} : { hostServiceReport }),
     ...(jobControllerAvailable && reflect?.get
       ? { jobs: new JobAdapter({ jobController: reflect.get('jobController', false) as never }) }
@@ -318,6 +338,7 @@ export async function apply(ctx: HostContext, config: Config = {}): Promise<void
   ctx.effect(() => async () => {
     disposeEmbedded()
     await remote.stop()
+    await router.dispose()
     await hostRemote.dispose()
     database.close()
   }, 'dsh-remote-bridge lifecycle')

@@ -136,6 +136,12 @@ const PARAM_NAMES_BY_SOURCE: Readonly<Record<string, readonly string[]>> = {
   '^/api/v1/chat/sessions/([^/]+)/questions/([^/]+)/answer$': ['sessionId', 'callId'],
   '^/api/v1/chat/sessions/([^/]+)/agent-preset$': ['sessionId'],
   '^/api/v1/chat/runs/([^/]+)/cancel$': ['id'],
+  // REST 对等面（BFF-REST-CONTRACT §1 §2）：分块上传与定时任务单条。
+  '^/api/v1/chat/sessions/([^/]+)/attachments/uploads$': ['sessionId'],
+  '^/api/v1/chat/sessions/([^/]+)/attachments/uploads/([^/]+)$': ['sessionId', 'uploadId'],
+  '^/api/v1/chat/sessions/([^/]+)/attachments/uploads/([^/]+)/chunks/([^/]+)$': ['sessionId', 'uploadId', 'index'],
+  '^/api/v1/chat/sessions/([^/]+)/attachments/uploads/([^/]+)/complete$': ['sessionId', 'uploadId'],
+  '^/api/v1/chat/schedules/([^/]+)$': ['id'],
 }
 
 // 正则体允许跨行（approvalDecisionRoute / questionAnswerRoute 的写法是 `(` 后换行再写字面量）。
