@@ -1,5 +1,6 @@
 import { mkdtemp, mkdir, realpath, writeFile, stat } from 'node:fs/promises'
 import { createHash } from 'node:crypto'
+import type { IncomingMessage } from 'node:http'
 import { TestCleanup } from './test-cleanup.ts'
 import os from 'node:os'
 import path from 'node:path'
@@ -37,6 +38,12 @@ async function startHarness(options: {
   // 故意放宽：override 只替换个别方法，各方法签名与 fakeApi 不必逐字段一致（测试夹具）。
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   apiOverrides?: (api: ReturnType<typeof fakeApi>) => Record<string, any>
+  /**
+   * 传给 RemoteApiServer 的传输参数。默认值（32 连接 / 30 s 心跳 / 512 队列）在单测里
+   * 既等不起（30 s 一个周期）也压不满（512 深度要发五百多帧），必须能调小才验得动
+   * 「文档承诺的那三条行为」。
+   */
+  serverOptions?: { maxConnections?: number; heartbeatIntervalMs?: number; socketQueueLimit?: number }
 } = {}) {
   const base = await mkdtemp(path.join(os.tmpdir(), 'daw-mgw-'))
   cleanup.dir(base)
@@ -62,6 +69,7 @@ async function startHarness(options: {
     chat,
     events,
     handle: (req, res) => router.handle(req, res),
+    ...(options.serverOptions ?? {}),
   })
   router = new ApiRouter({ database, auth, files, chat, settings, remote, maxUploadBytes: 1024 })
   // 与 src/index.ts 装配一致：注入全局模型目录与文件浏览依赖。
@@ -2064,5 +2072,98 @@ describe('mobile gateway WebSocket (/ws/mobile) — requestId echo', () => {
     }
     // 连接确实已经断开，且没有帧发出去。
     expect(frames.some(frame => frame.kind === 'sessions')).toBe(false)
+  })
+})
+
+describe('/ws/mobile 的连接上限、心跳与背压告知', () => {
+  /** 起一条已鉴权的连接并等 hello。 */
+  async function openAuthed(
+    url: string,
+    database: WorkspaceDatabase,
+    rootId: string,
+    name: string,
+    options: { autoPong?: boolean; beforeOpen?: (socket: WebSocket) => void } = {},
+  ): Promise<WebSocket> {
+    const credentials = database.exchangePairing(database.createPairing([rootId], ['chat.read']).code, name)
+    const socket = new WebSocket(url, 'dsh-mobile-v1', {
+      autoPong: options.autoPong ?? true,
+      headers: { Authorization: `Bearer ${credentials.token}` },
+    })
+    // 收帧监听必须在 open 之前挂上：`hello` 紧跟 upgrade 到达，等 open 再挂就漏了。
+    options.beforeOpen?.(socket)
+    await new Promise<void>((resolve, reject) => {
+      socket.once('open', resolve)
+      socket.once('error', reject)
+    })
+    return socket
+  }
+
+  it('第 maxConnections+1 条连接在升级之前收到 HTTP 429 与 Retry-After', async () => {
+    const { database, root, url } = await startHarness({ serverOptions: { maxConnections: 2 } })
+    const first = await openAuthed(url, database, root.id, 'Limit device 1')
+    const second = await openAuthed(url, database, root.id, 'Limit device 2')
+
+    const credentials = database.exchangePairing(database.createPairing([root.id], ['chat.read']).code, 'Limit device 3')
+    const rejected = new WebSocket(url, 'dsh-mobile-v1', {
+      headers: { Authorization: `Bearer ${credentials.token}` },
+    })
+    const response = await new Promise<IncomingMessage>((resolve, reject) => {
+      rejected.once('unexpected-response', (_request, res) => { resolve(res) })
+      rejected.once('open', () => { reject(new Error('超出上限的连接不该升级成功')) })
+      rejected.once('error', reject)
+    })
+    // 429 是「稍后再试」，不是「这个资源不存在」—— 客户端重连逻辑不必改。
+    expect(response.statusCode).toBe(429)
+    expect(response.headers?.['retry-after']).toBe('5')
+
+    first.close()
+    second.close()
+  })
+
+  it('连续错过两个心跳周期后服务端 terminate 这条连接', async () => {
+    const { database, root, url } = await startHarness({ serverOptions: { heartbeatIntervalMs: 40 } })
+    // autoPong:false 模拟「手机切网 / 熄屏后 NAT 表项过期」留下的半开连接：
+    // TCP 还在，对端其实已经不在了，唯一的判据就是它不回控制帧 pong。
+    const socket = await openAuthed(url, database, root.id, 'Half-open device', { autoPong: false })
+    const code = await new Promise<number>((resolve, reject) => {
+      socket.once('close', code => { resolve(code) })
+      socket.once('error', reject)
+      setTimeout(() => { reject(new Error('两个心跳周期过去了，连接还活着')) }, 3000)
+    })
+    // terminate() 不发关闭帧，客户端看到的是异常断开（1006）。
+    expect(code).toBe(1006)
+  })
+
+  it('队列溢出时优先丢可重建的 event 帧，并补一条 connection-resync-required', async () => {
+    // 队列深度压到 8：正常握手帧早已发完，之后只有 event 流量，溢出行为可复现。
+    const { database, root, url, events } = await startHarness({ serverOptions: { socketQueueLimit: 8 } })
+    let frames: Array<{ kind?: string; data?: unknown }> = []
+    const socket = await openAuthed(url, database, root.id, 'Backpressure device', {
+      beforeOpen: (pending) => { frames = collect(pending).frames },
+    })
+    await nextKind(frames, 'hello')
+    socket.send(JSON.stringify({ type: 'subscribe', sessionId: 'sess-1' }))
+    await nextKind(frames, 'subscribed')
+
+    // 一口气灌 200 条 delta：授权是异步的，它们会在同一批微任务里全部落到 sendFrame，
+    // 队列必然溢出。event 是可重建帧 —— 丢它，绝不丢应答帧。
+    for (let index = 0; index < 200; index += 1) {
+      events.emit({
+        id: `ev-flood-${index}`,
+        type: 'chat.delta',
+        time: Date.now(),
+        data: { rootId: root.id, sessionId: 'sess-1' },
+      })
+    }
+
+    const resync = await awaitNewFrame(frames, 0, frame => frame.kind === 'connection-resync-required', 'connection-resync-required')
+    const payload = resync.data as { dropped?: number; reason?: string }
+    expect(payload.reason).toBe('backpressure')
+    expect(payload.dropped ?? 0).toBeGreaterThan(0)
+
+    // 丢的是 event，不是握手帧：hello 与 subscribed 必须还在（证明「优先丢可重建帧」生效）。
+    expect(frames.some(frame => frame.kind === 'hello')).toBe(true)
+    expect(frames.some(frame => frame.kind === 'subscribed')).toBe(true)
+    socket.close()
   })
 })

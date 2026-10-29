@@ -175,12 +175,20 @@ export class RemoteApiServer implements RemoteControl {
     })
     // 移动端网关 WS（/ws/mobile）：与 /api/v1/events 共享同一 HTTP server upgrade，
     // 各自按 pathname 分流。
+    // 三个可调参数与 /api/v1/events 同源（同一份 RemoteApiServerOptions），
+    // 这样「连接上限 32 / 心跳 30 s / 队列 512」在两个通道上是同一组数字，
+    // 不会出现「文档写 32、一个通道 32 另一个没上限」这种自相矛盾。
     this.wsMobile = new MobileGatewayWsHandler(
       options.database,
       options.chat,
       options.auth,
       options.events,
       { jobs: options.capabilities?.jobs === true },
+      {
+        maxConnections: this.maxConnections,
+        heartbeatIntervalMs: this.heartbeatIntervalMs,
+        queueLimit: this.socketQueueLimit,
+      },
     )
   }
 
@@ -459,6 +467,19 @@ export class RemoteApiServer implements RemoteControl {
       // 移动端网关 WS（/ws/mobile）优先分流：子协议 dsh-pair / dsh-auth，配对 + 令牌认证。
       // 复用同一 WebSocketServer 实例做 HTTP upgrade，升级完成后交给 wsMobile 鉴权与分发。
       if (this.wsMobile.ownsPath(req)) {
+        // 与下面 /api/v1/events 分支同一条规矩：**判定放在升级之前**，这样还能回标准
+        // HTTP 429（带 Retry-After），而不是升级后再用一个 WS 关闭码隐晦地表示「太挤了」。
+        // 计数只看已通过鉴权并登记进 sockets 的连接（未鉴权的连不上来，也就占不到额度）。
+        if (this.wsMobile.connectionCount() >= this.wsMobile.connectionLimit()) {
+          recordWsRejected()
+          socket.end(
+            'HTTP/1.1 429 Too Many Requests\r\n'
+            + 'Connection: close\r\n'
+            + 'Retry-After: 5\r\n'
+            + 'Content-Length: 0\r\n\r\n',
+          )
+          return
+        }
         this.webSockets.handleUpgrade(req, socket, head, (webSocket) => {
           this.wsMobile.onConnection(webSocket, req)
         })

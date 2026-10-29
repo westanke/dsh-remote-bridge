@@ -1,5 +1,63 @@
 # 开发日志
 
+## 未发版 · `/ws/mobile` 兑现三条传输承诺：心跳、连接上限、背压告知（2026-10-29）
+
+**状态：代码与文档已齐，版本号未动（仍 2.8.0）、未打 tag、未推送。** 这一条不是新功能，是
+**把文档早就写下的三条保证补进实现**。此前 `docs/api/asyncapi.yaml` 的传输保证段、
+`docs/project/API.md:680/708/790` 都承诺了「连接上限 32」「连续错过两个心跳周期 terminate」
+「队列溢出优先丢可重建帧并告知」，但这三条**全部只服务于 `/api/v1/events`**：`/ws/mobile`
+在 `handleUpgrade` 里排在所有判定之前所以没有上限、`isAlive` 只写不读所以没有心跳、
+`sendFrame` 溢出无脑丢最旧且不告知。文档比实现诚实，这次把差值补平。
+
+### 新增
+
+- **可重建帧判据**（`src/host/ws-protocol.ts`）：`isRebuildableServerFrame(kind)`，白名单只有
+  `event` / `tasks-updated` / `goal-updated` / `session-title-changed` / `queue-item-updated`。
+  判据是「这帧的信息是否只存在于这一帧里」：`event` 丢了下一个 delta 会断句但正文在 history 里；
+  四个 `*-updated` 只是「某某变了」的通知，真状态可以从 `tasks` / `goal` 重取。**应答帧一律
+  不可重建**（丢了客户端就等不到），大载荷（`history` / `file-*` / `speech-*`）也不可重建
+  （重发代价远大于丢别的）。新增 `RESYNC_REQUIRED_KIND = 'connection-resync-required'`。
+- **`connection-resync-required` 帧**（`src/host/ws-handler.ts`）：队列溢出后被丢弃的帧数
+  累加到 `state.dropped`，队列**排空之后**补发一条 `{dropped, reason: 'backpressure'}` 再清零。
+  选在排空后补发有两个理由：排空后发不会再触发溢出；一次拥塞期内的多次溢出合并成一条。
+  它是 `/api/v1/events` 的 `connection.resyncRequired` 在 `/ws/mobile` 上的拼写（那个通道的
+  帧类型带点），载荷同构。
+- **背压挑选策略**：`enqueue` 溢出时先 `findIndex(entry => entry.rebuildable)` 丢**最旧的可重建帧**，
+  一个可重建帧都没有时才 `shift()` 丢最旧。即「能重取的信息优先牺牲，不能让一次拥塞把
+  不可重取的应答挤掉」。
+- **心跳**（`src/host/ws-handler.ts` 的 `startHeartbeat` / `clearHeartbeat`）：`setInterval`
+  遍历本通道连接表，`isAlive` 为假就 `terminate()`，否则置假并 `ping()`。用 `terminate()`
+  而不是 `close()` —— 对端已经不在了，优雅挥手的关闭帧没人收，只会拖到超时。`unref()` 防止
+  定时器把进程钉住；`acceptSocket` 里惰性启动，`stop()` 首行清掉。
+- **连接上限**（`connectionLimit()` + `server.ts` 的 `handleUpgrade`）：判定放在
+  `wsMobile.ownsPath(req)` 分支的 `handleUpgrade` **之前** —— 必须在 Upgrade 之前判，否则只能
+  发 WebSocket 关闭码，`Retry-After` 无从表达。超出时 `recordWsRejected()` + 直接
+  `HTTP/1.1 429 Too Many Requests` + `Retry-After: 5`，与 events 通道同形。
+- **`MobileGatewayOptions`**：`maxConnections` / `heartbeatIntervalMs` / `queueLimit` 三个可注入
+  参数（默认 32 / 30 s / 512）。不是为配置而是为测试 —— 30 s 心跳和 512 深队列在单测里既等不起
+  也压不满，不可注入的话这三条承诺只能靠读代码相信。`server.ts` 构造时传的是自己那三个值，
+  与 events 通道同源，杜绝「文档写 32、一个通道 32 另一个没上限」。
+
+### 已知债务
+
+- `src/host/ws-handler.ts` 837 → **974 行**（预算 600），`TECH-DEBT.md` 已按实测行数更新债由与
+  清账阶段（下一步可把心跳与连接上限抽成 `ws-connection-policy.ts`）。+137 行里没有新功能，
+  全是兑现承诺与解释判据的 KDoc。
+
+### 测了什么
+
+- **三条新行为用例**（`tests/mobile-gateway-ws.spec.ts`，新增 describe `/ws/mobile 的连接上限、
+  心跳与背压告知`）：第 `maxConnections+1` 条连接在升级阶段收到 429 + `Retry-After: 5`；
+  `autoPong: false` 模拟半开连接后错过两个心跳周期被 terminate（客户端看到 1006）；
+  `socketQueueLimit: 8` 下灌 200 条 `chat.delta` 溢出后收到 `connection-resync-required`
+  （`reason='backpressure'`、`dropped > 0`），且 `hello` / `subscribed` 仍在 —— 证明丢的确实是
+  可重建的 event 而非应答。
+- **合约测试同步**（`tests/mobile-frame-contract.spec.ts`）：常量断言从 `SOCKET_QUEUE_LIMIT`
+  改为 `DEFAULT_MOBILE_QUEUE_LIMIT` / `DEFAULT_MOBILE_MAX_CONNECTIONS` /
+  `DEFAULT_MOBILE_HEARTBEAT_INTERVAL_MS` 三个；`ServerFrameKind` 枚举必须含
+  `connection-resync-required`（漏了会直接红）。
+- `npm run check` **exit 0**：tsc 0 错；**79 个测试文件 / 826 个用例全过**；`docs:check` 三段全绿。
+
 ## 未发版 · `/ws/mobile` 进入对外契约：asyncapi + Kotlin SDK + 合约测试（2026-10-29）
 
 **状态：代码与文档已齐，版本号未动（仍 2.8.0）、未打 tag、未推送。** 这一条不是新功能，

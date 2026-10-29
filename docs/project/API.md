@@ -676,12 +676,12 @@ data 字段与实时路径**一致**（只多 `replayed`）；数据来自适配
 
 | 行为 | 规则 | 客户端感知 |
 |---|---|---|
-| 心跳 | 服务端每 30s ping；连续 2 个周期缺 pong 即 terminate | 正常实现自动回 pong 即可 |
-| 连接数 | 默认上限 32（可配置）；**鉴权先于计数**，第 33 条鉴权通过后在 Upgrade 阶段收到 HTTP `429`（`Retry-After: 5`） | 未鉴权请求不消耗名额；429 后退避重连 |
+| 心跳 | 服务端每 30s ping；连续 2 个周期缺 pong 即 terminate（`ws-handler.ts` 的 `startHeartbeat`，与 `/api/v1/events` 的 `startHeartbeat` 各管自己那张连接表） | 正常实现自动回 pong 即可 |
+| 连接数 | 默认上限 32（可配置）；**鉴权先于计数**，第 33 条鉴权通过后在 Upgrade 阶段收到 HTTP `429`（`Retry-After: 5`）。`/ws/mobile` 与 `/api/v1/events` **各自计数**（各自 32，互不占用），判定都在 Upgrade 之前做（`server.ts` 的 `handleUpgrade` 两个分支） | 未鉴权请求不消耗名额；429 后退避重连 |
 | 帧大小 | 单帧上限 1 MiB，超限 WebSocket close `1009` | 大附件走 REST 上传，不要塞进 WS |
-| 发送队列 | 每连接 512 帧；溢出时优先丢可重建的 `chat.message.delta`，状态帧（`chat.turn.*` / `chat.approval.*` / `chat.turn.failed` / `connection.ready`）优先保留 | — |
+| 发送队列 | 每连接 512 帧；溢出时优先丢可重建的 `chat.message.delta`，状态帧（`chat.turn.*` / `chat.approval.*` / `chat.turn.failed` / `connection.ready`）优先保留。`/ws/mobile` 侧按 kind 判据（`isRebuildableServerFrame`：`event` / `tasks-updated` / `goal-updated` / `session-title-changed` / `queue-item-updated` 可丢，**应答帧一律不丢**） | — |
 
-队列溢出丢帧后，服务端会尽力补发一帧连接级通知（状态帧也塞不进、要 close `1013 Backpressure` 之前也会再发一次）：
+队列溢出丢帧后，服务端会尽力补发一帧连接级通知（状态帧也塞不进、要 close `1013 Backpressure` 之前也会再发一次）。两个通道拼写不同、载荷相同：`/api/v1/events` 是 `type: 'connection.resyncRequired'`，`/ws/mobile` 是 `kind: 'connection-resync-required'`（后者在队列排空后补发，多次溢出合并成一条，`dropped` 累加）：
 
 ```json
 { "id": "<uuid>", "type": "connection.resyncRequired", "time": 1761100000000,
@@ -705,7 +705,7 @@ v2.8 新增。独立于现有 `/api/v1/events`（单向广播，保留不动）�
   - 后续连接：`dsh-mobile-v1, dsh-auth.<token>`，或 HTTP 头 `Authorization: Bearer <token>`。
   - 不允许 URL query 带 token，避免令牌进入 URL 日志。
 - 配对码：一次性，10 分钟有效期（复用 `/api/v1/pairings/exchange` 产出的 code），256-bit，Base64URL 载荷；设备令牌不过期，撤销即时生效。
-- 鉴权：`dsh-pair`/`dsh-auth`/`bearer.<token>` 均复用 `principal()`，与 `/api/v1` 同一套判据；`allowAdmin: true` 允许 loopback admin；连接上限 32（鉴权后计数）。
+- 鉴权：`dsh-pair`/`dsh-auth`/`bearer.<token>` 均复用 `principal()`，与 `/api/v1` 同一套判据；`allowAdmin: true` 允许 loopback admin；连接上限 32（鉴权后计数，Upgrade 前判定，超出回 HTTP `429` + `Retry-After: 5`）。
 
 ### 连接即推 hello
 

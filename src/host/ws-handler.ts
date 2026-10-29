@@ -36,6 +36,8 @@ import {
   decodeFrame,
   requestIdOf,
   withRequestIdEcho,
+  isRebuildableServerFrame,
+  RESYNC_REQUIRED_KIND,
 } from './ws-protocol.ts'
 import { SessionHandler } from './ws-sessions.ts'
 import { HitlHandler } from './ws-hitl.ts'
@@ -55,6 +57,22 @@ import { MobileEventBridge, makeEventAuthorizer, makeSessionFilter } from './ws-
 
 // ───────────────────────── 状态机 ─────────────────────────
 
+/**
+ * `/ws/mobile` 的可调参数。
+ *
+ * 三个都有默认值，且**必须可注入**：默认值（32 / 30 s / 512）在单测里既等不起
+ * （30 s 的心跳周期）也压不满（512 深度要发五百多帧）。可注入才能把「第 33 条 429」
+ * 「两个周期踢人」「溢出补 resync」这三条**文档承诺的行为**变成可断言的用例。
+ */
+export interface MobileGatewayOptions {
+  /** 同时允许的连接数上限，默认 {@link DEFAULT_MOBILE_MAX_CONNECTIONS}。 */
+  maxConnections?: number
+  /** 心跳周期（毫秒），默认 {@link DEFAULT_MOBILE_HEARTBEAT_INTERVAL_MS}。 */
+  heartbeatIntervalMs?: number
+  /** 单连接发送队列深度，默认 {@link DEFAULT_MOBILE_QUEUE_LIMIT}。 */
+  queueLimit?: number
+}
+
 interface MobileSocketState {
   /** 经过鉴权的主体（配对成功后合成，或 token 认证后直接得）。 */
   principal: Principal
@@ -68,10 +86,15 @@ interface MobileSocketState {
   connectionKey: string
   /** 本条连接接入的监听端口（hello.port，取 socket 本地端口；LAN/隧道场景随实际监听）。 */
   listenerPort: number | undefined
-  /** 发送队列（背压）。 */
-  queue: Array<() => void>
+  /** 发送队列（背压）。元素带「是否可重建」标记，溢出时据此选牺牲者。 */
+  queue: QueuedFrame[]
   draining: boolean
   isAlive: boolean
+  /**
+   * 自上次补发 `connection-resync-required` 以来，因队列溢出被丢掉的帧数。
+   * 队列排空后若 > 0，就补一帧告知客户端「你漏了 N 条，重拉一次」并归零。
+   */
+  dropped: number
   /**
    * 当前订阅的会话白名单（subscribe 帧）。
    * - undefined = 未订阅（接收所有已授权会话，上游缺省语义）；
@@ -96,7 +119,19 @@ interface MobileSocketState {
 }
 
 /** 单条连接的最大发送队列深度（与 /api/v1/events 保持一致）。 */
-const SOCKET_QUEUE_LIMIT = 512
+const DEFAULT_MOBILE_QUEUE_LIMIT = 512
+
+/** 同时允许的 `/ws/mobile` 连接数上限（与 PROTOCOL/API 文档承诺的 32 一致）。 */
+const DEFAULT_MOBILE_MAX_CONNECTIONS = 32
+
+/** 心跳周期。连续错过 **两个** 周期才 terminate（偶发丢包不误杀）。 */
+const DEFAULT_MOBILE_HEARTBEAT_INTERVAL_MS = 30_000
+
+/** 发送队列里的一项：闭包 + 「丢了能不能重拉补齐」的标记（反压时据此选择牺牲者）。 */
+interface QueuedFrame {
+  send: () => void
+  rebuildable: boolean
+}
 
 /** 从 IncomingMessage 取单个请求头（Node 里同名头可能是数组，取第一个）。 */
 function headerValue(req: IncomingMessage, name: string): string | undefined {
@@ -204,13 +239,26 @@ export class MobileGatewayWsHandler {
     }
   }
 
+  /** 同时允许的连接数上限（鉴权后计数；server.ts 在 Upgrade 前据此回 429）。 */
+  private readonly maxConnections: number
+  /** 心跳周期：每周期 ping 一次，连续两个周期没回 pong 就 terminate。 */
+  private readonly heartbeatIntervalMs: number
+  /** 单连接发送队列深度（溢出时先丢可重建帧）。 */
+  private readonly queueLimit: number
+  /** 心跳定时器（首个连接接入时惰性启动，{@link stop} 时清掉）。 */
+  private heartbeatTimer: ReturnType<typeof setInterval> | undefined
+
   constructor(
     private readonly database: WorkspaceDatabase,
     private readonly chat: DshChatAdapter,
     private readonly auth: AuthService,
     events: WorkspaceEventBus,
     private readonly capabilitiesFlags: CapabilityFlags,
+    options: MobileGatewayOptions = {},
   ) {
+    this.maxConnections = Math.max(1, options.maxConnections ?? DEFAULT_MOBILE_MAX_CONNECTIONS)
+    this.heartbeatIntervalMs = Math.max(1, options.heartbeatIntervalMs ?? DEFAULT_MOBILE_HEARTBEAT_INTERVAL_MS)
+    this.queueLimit = Math.max(1, options.queueLimit ?? DEFAULT_MOBILE_QUEUE_LIMIT)
     // 事件桥：授权过滤后把 bridge 事件以 {kind:'event', data:event} 主动推给每条连接。
     this.eventBridge = new MobileEventBridge<WebSocket>(
       events,
@@ -390,6 +438,7 @@ export class MobileGatewayWsHandler {
       queue: [],
       draining: false,
       isAlive: true,
+      dropped: 0,
       subscribed: undefined,
       handlers: {
         sessions: new SessionHandler(this.chat, (frame) => this.sendFrame(webSocket, frame), this.database),
@@ -418,6 +467,8 @@ export class MobileGatewayWsHandler {
 
     this.sockets.set(webSocket, state)
     this.eventBridge.attach(webSocket, state.principal)
+    // 心跳惰性启动：没有连接时不留定时器（`unref()` 之外的第二道保险）。
+    this.startHeartbeat()
 
     webSocket.on('pong', () => { state.isAlive = true })
     webSocket.on('message', (data: Buffer | string) => {
@@ -746,6 +797,7 @@ export class MobileGatewayWsHandler {
   private sendFrame(webSocket: WebSocket, frame: { kind: string; data?: unknown }): void {
     const state = this.stateOf(webSocket)
     const text = encodeFrame(withRequestIdEcho(frame, this.frameRequestId.getStore()))
+    const rebuildable = isRebuildableServerFrame(frame.kind)
 
     const send = () => {
       if (webSocket.readyState !== WebSocket.OPEN) return
@@ -756,10 +808,28 @@ export class MobileGatewayWsHandler {
       }
     }
 
-    if (state.queue.length >= SOCKET_QUEUE_LIMIT) {
-      state.queue.shift()
+    this.enqueue(webSocket, state, { send, rebuildable })
+  }
+
+  /**
+   * 压入发送队列，队列满时**先牺牲可重建的帧**。
+   *
+   * 与 `/api/v1/events`（server.ts 的 `enqueue`）同一套取舍，只是这里没有「可重建事件
+   * 标记表」可用，改用 kind 判据。为什么不能无脑 `shift()` 丢最旧：最旧的那条可能正是
+   * 某次请求的**应答**，丢掉它客户端就会一直等到超时（而它等的那个东西其实早成功了），
+   * 反过来一条 `chat.message.delta` 丢了只影响一句的流式观感，history 一拉就齐。
+   *
+   * 被丢的帧数累加到 `state.dropped`，由 {@link drain} 在排空后补一条
+   * `connection-resync-required` 告知客户端 —— **静默丢帧比丢帧本身更糟**。
+   */
+  private enqueue(webSocket: WebSocket, state: MobileSocketState, item: QueuedFrame): void {
+    if (state.queue.length >= this.queueLimit) {
+      const victim = state.queue.findIndex(entry => entry.rebuildable)
+      if (victim >= 0) state.queue.splice(victim, 1)
+      else state.queue.shift()
+      state.dropped += 1
     }
-    state.queue.push(send)
+    state.queue.push(item)
     if (!state.draining) {
       state.draining = true
       void this.drain(webSocket, state)
@@ -788,15 +858,29 @@ export class MobileGatewayWsHandler {
     }
   }
 
-  /** 把队列里的帧逐条发出去。 */
+  /**
+   * 把队列里的帧逐条发出去，排空后按需补一条「你漏了 N 帧」的告知帧。
+   *
+   * 补发放在**排空之后**而不是溢出当场：溢出那一刻队列正满，插一条进去还得再挤掉别人；
+   * 等排空再补，既不会二次溢出，也能把同一段时间内多次溢出合并成一条（`dropped` 累加）。
+   */
   private async drain(webSocket: WebSocket, state: MobileSocketState): Promise<void> {
     while (state.queue.length > 0) {
-      const send = state.queue.shift()
-      if (send === undefined) break
-      send()
+      const item = state.queue.shift()
+      if (item === undefined) break
+      item.send()
       await new Promise(resolve => setImmediate(resolve))
     }
     state.draining = false
+    if (state.dropped > 0) {
+      const dropped = state.dropped
+      state.dropped = 0
+      try {
+        this.sendFrame(webSocket, { kind: RESYNC_REQUIRED_KIND, data: { dropped, reason: 'backpressure' } })
+      } catch {
+        // 连接已断（`stateOf` 抛 4001）：没有能告知的对象，丢弃提示即可。
+      }
+    }
   }
 
   /** 拒绝未鉴权连接（401 close code）。 */
@@ -817,6 +901,7 @@ export class MobileGatewayWsHandler {
 
   /** 关闭所有连接（server.stop 时调用）。 */
   async stop(timeoutMs = 1000): Promise<void> {
+    this.clearHeartbeat()
     this.eventBridge.dispose()
     const closures: Array<Promise<void>> = []
     for (const webSocket of [...this.sockets.keys()]) {
@@ -828,6 +913,58 @@ export class MobileGatewayWsHandler {
     }
     await Promise.all(closures)
     this.sockets.clear()
+  }
+
+  // ───────────────────────── 心跳与连接上限 ─────────────────────────
+
+  /**
+   * 心跳循环：每 `heartbeatIntervalMs` ping 一次，**连续错过两个周期**才 terminate。
+   *
+   * 为什么必须有这一步：`/ws/mobile` 是手机上的长连接，切网、熄屏、NAT 表项过期都会留下
+   * **半开连接** —— 内核这边没有任何事件，TCP 要等自己超时才报错（默认以分钟计），期间
+   * 这条连接一直占着 `sockets` 里的额度、每次广播还白查一遍库。API 文档承诺「连续错过
+   * 2 个心跳周期 terminate」，这里就是把它兑现。
+   *
+   * 两个刻意的取舍：
+   * - `terminate()` 而不是 `close()`：对端已经不在，优雅挥手没人收，只会多等一个超时；
+   *   `close`/`error` 里注册的 `teardown` 会照常摘表、摘事件桥、中止语音与文件传输；
+   * - 存活标记用底层 `pong` 控制帧：客户端库自动回，不需要业务代码配合（业务层的
+   *   `ping` 帧是另一回事，用于测 RTT）。
+   */
+  private startHeartbeat(): void {
+    if (this.heartbeatTimer !== undefined) return
+    this.heartbeatTimer = setInterval(() => {
+      for (const [socket, state] of this.sockets) {
+        if (!state.isAlive) {
+          socket.terminate()
+          continue
+        }
+        state.isAlive = false
+        try {
+          socket.ping()
+        } catch {
+          // 控制帧都发不出去 = 这条连接已经不可写；下一轮按 isAlive 逻辑清掉。
+        }
+      }
+    }, this.heartbeatIntervalMs)
+    // `unref()` 必需：这个定时器永不自然结束，不 unref 会让进程退不掉。
+    this.heartbeatTimer.unref?.()
+  }
+
+  private clearHeartbeat(): void {
+    if (this.heartbeatTimer === undefined) return
+    clearInterval(this.heartbeatTimer)
+    this.heartbeatTimer = undefined
+  }
+
+  /**
+   * 连接数上限（供 server.ts 在 **Upgrade 之前**判定是否回 429）。
+   *
+   * 为什么要在 upgrade 前判：升级之后就只能发 WS 关闭码，`Retry-After` 根本无法表达，
+   * 客户端也拿不到「稍后再试」这个语义（只会看到一次莫名其妙的断连）。
+   */
+  connectionLimit(): number {
+    return this.maxConnections
   }
 
   /** 当前连接数（供 metrics / 观测）。 */

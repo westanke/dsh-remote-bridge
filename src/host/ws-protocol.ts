@@ -202,6 +202,7 @@ export type ServerFrameKind =
   | 'approval-requested'
   | 'approval-response'
   | 'approval-resolved'
+  | 'connection-resync-required'
 
 // ───────────────────────── 帧载荷类型 ─────────────────────────
 
@@ -546,10 +547,48 @@ export const REQUEST_ID_ECHO_EXCLUDED_KINDS: ReadonlySet<string> = new Set<strin
   'goal-updated',
   'session-title-changed',
   'queue-item-updated',
+  // 反压溢出后的全量重同步提示：主动推送，没有对应请求
+  'connection-resync-required',
   // 文件分块流（分块回执由处理器自己写 requestId）
   'file-download-chunk',
   'file-upload-chunk-accepted',
 ])
+
+/**
+ * 反压溢出后的「你漏了 N 帧，重拉一次」提示帧 kind。
+ *
+ * 为什么必须有一条这样的帧：`sendFrame` 的发送队列是有界的（[SOCKET_QUEUE_LIMIT] 同量级），
+ * 溢出时只能丢帧。**丢帧本身不可怕，静默丢帧才可怕** —— 客户端会以为自己看到的是完整
+ * 事件流，于是本地状态与内核悄悄分叉（少了一条审批、少了一个 goal 变更），而且没有任何
+ * 判据能让它发现。所以溢出时优先丢可重建的帧，并在队列排空后补一条本帧，把「静默」
+ * 变成「告知」。
+ */
+export const RESYNC_REQUIRED_KIND = 'connection-resync-required'
+
+/**
+ * 可重建的服务端帧：丢掉之后客户端重拉一次（history / tasks / goal）就能补齐。
+ *
+ * 判据是「这帧的信息是否只存在于这一帧里」：
+ * - `event`（含 `chat.message.delta`）——增量文本，丢了下一个 delta 就断句，但正文在
+ *   history 里，客户端按 `asOfSeq` 重拉即补齐；
+ * - `tasks-updated` / `goal-updated` / `session-title-changed` / `queue-item-updated` ——
+ *   都是「某某变了」的通知，真正的状态在 REST/`tasks`/`goal` 帧里可重取。
+ *
+ * 反过来，**应答帧一律不可重建**（丢了这次请求就永远等不到回音）、大载荷帧
+ * （`history` / `file-*` / `speech-*`）也不可 —— 重发成本远高于丢弃一条 delta。
+ */
+const REBUILDABLE_SERVER_KINDS: ReadonlySet<string> = new Set<string>([
+  'event',
+  'tasks-updated',
+  'goal-updated',
+  'session-title-changed',
+  'queue-item-updated',
+])
+
+/** 该服务端帧是否属于「丢了可以重拉补齐」的类型（反压溢出时优先丢它）。 */
+export function isRebuildableServerFrame(kind: string): boolean {
+  return REBUILDABLE_SERVER_KINDS.has(kind)
+}
 
 /**
  * 从客户端帧取 `requestId`：只认非空字符串，其余（缺失 / 空串 / 非字符串）一律

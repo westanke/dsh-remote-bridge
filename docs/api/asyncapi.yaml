@@ -21,6 +21,13 @@ info:
       (message too big).
     - A server ping is sent every 30 seconds; a connection that misses the
       pong for two consecutive intervals is terminated.
+    - `/ws/mobile` gives the same three guarantees with its own counters: a
+      32-connection limit (checked **before** the upgrade, so the 33rd gets
+      HTTP `429` with `Retry-After: 5` rather than a WebSocket close code), a
+      30-second ping with two-interval tolerance, and a 512-frame send queue
+      whose overflow is reported as `connection-resync-required` (the
+      `/ws/mobile` spelling of the `connection.resyncRequired` signal; same
+      payload, see `ConnectionResyncRequired`).
     - Each connection has a 512-frame send queue. Under backpressure the
       server first drops rebuildable `chat.message.delta` frames, then other
       rebuildable frames queued ahead, and as a last resort the oldest state
@@ -217,8 +224,8 @@ operations:
       `question-resolved`, `speech-state`, `speech-transcript`,
       `speech-preparing`, `tasks-updated`, `goal-updated`,
       `session-title-changed`, `queue-item-updated`, `file-download-chunk`,
-      `file-upload-chunk-accepted`) may arrive at any time, never carry
-      `requestId`, and must not be mistaken for responses.
+      `file-upload-chunk-accepted`, `connection-resync-required`) may arrive at
+      any time, never carry `requestId`, and must not be mistaken for responses.
 components:
   messages:
     WorkspaceEvent:
@@ -453,6 +460,11 @@ components:
         do not recognize this event type ignore it safely. Example:
         `{"id":"<uuid>","type":"connection.resyncRequired","time":1761100000000,
         "data":{"dropped":12,"reason":"backpressure"}}`.
+        This payload is shared by both channels: `/api/v1/events` spells the
+        frame type `connection.resyncRequired` (dotted, matching its other event
+        types), while `/ws/mobile` spells the kind `connection-resync-required`
+        (kebab, matching every other kind there). Both are unsolicited and never
+        carry `requestId`.
       required: [dropped, reason]
       properties:
         dropped:
@@ -709,6 +721,8 @@ components:
             - schedule-history
             - schedule-update
             - schedule-delete
+            # 连接与反压
+            - connection-resync-required
         data:
           description: |
             Kind-specific payload. `hello` uses `MobileHello`, `paired` uses

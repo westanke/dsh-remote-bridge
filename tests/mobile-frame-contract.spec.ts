@@ -246,12 +246,15 @@ describe('/ws/mobile 的背压与传输参数与常量一致', () => {
   })
 
   it('发送队列与连接上限等于实现里的常量', () => {
-    // 队列上限在 ws-handler.ts 里是私有常量 SOCKET_QUEUE_LIMIT，server.ts 里另有一份
-    // DEFAULT_SOCKET_QUEUE_LIMIT。两处都必须还是 512，否则 asyncapi 的 const 就骗人了。
+    // 两条通道各有自己的一份常量：/api/v1/events 的在 server.ts，/ws/mobile 的在
+    // ws-handler.ts。**四份都必须还是 512 / 32 / 30 s**，否则 asyncapi 的 const 就骗人了
+    // —— 「文档承诺 32、实现没有上限」正是这条用例要拦的那类事。
     expect(protocolSource.length).toBeGreaterThan(0)
     const handlerSource = readFileSync(new URL('../src/host/ws-handler.ts', import.meta.url), 'utf8')
     const serverSource = readFileSync(new URL('../src/host/server.ts', import.meta.url), 'utf8')
-    expect(handlerSource).toContain('const SOCKET_QUEUE_LIMIT = 512')
+    expect(handlerSource).toContain('const DEFAULT_MOBILE_QUEUE_LIMIT = 512')
+    expect(handlerSource).toContain('const DEFAULT_MOBILE_MAX_CONNECTIONS = 32')
+    expect(handlerSource).toContain('const DEFAULT_MOBILE_HEARTBEAT_INTERVAL_MS = 30_000')
     expect(serverSource).toContain('const DEFAULT_SOCKET_QUEUE_LIMIT = 512')
     expect(limits.properties?.sendQueueFrames?.const).toBe(512)
     expect(serverSource).toContain('const DEFAULT_MAX_CONNECTIONS = 32')
