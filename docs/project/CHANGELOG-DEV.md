@@ -1,8 +1,15 @@
 # 开发日志
 
-## 未发版 · `/ws/mobile` 兑现三条传输承诺：心跳、连接上限、背压告知（2026-10-29）
+## v2.8.1 · `/ws/mobile`：进对外契约 + 兑现三条传输承诺 + 补齐两处最后一米（2026-10-29）
 
-**状态：代码与文档已齐，版本号未动（仍 2.8.0）、未打 tag、未推送。** 这一条不是新功能，是
+**依据**：`dsh-companion` 选了「C 档：全量 WS 优先 + REST 兜底」，`/ws/mobile` 从「能跑的内部通道」
+变成 Android 端的主通道。这一版把三件此前不一致的事拉齐：**契约**（能力进了 asyncapi/SDK/合约测试）、
+**承诺**（文档早就写下的心跳/连接上限/背压告知真正实现）、**语义**（两条此前只能退回 REST 的路
+在 WS 上补齐了参数）。全部只增不改，既有 REST 端点与既有 WS 帧语义一条没动。
+
+### 一、`/ws/mobile` 兑现三条传输承诺：心跳、连接上限、背压告知
+
+**状态：代码与文档已齐，版本号已升到 2.8.1，本轮发版前打 tag 并双推。** 这一条不是新功能，是
 **把文档早就写下的三条保证补进实现**。此前 `docs/api/asyncapi.yaml` 的传输保证段、
 `docs/project/API.md:680/708/790` 都承诺了「连接上限 32」「连续错过两个心跳周期 terminate」
 「队列溢出优先丢可重建帧并告知」，但这三条**全部只服务于 `/api/v1/events`**：`/ws/mobile`
@@ -58,9 +65,9 @@
   `connection-resync-required`（漏了会直接红）。
 - `npm run check` **exit 0**：tsc 0 错；**79 个测试文件 / 826 个用例全过**；`docs:check` 三段全绿。
 
-## 未发版 · `/ws/mobile` 进入对外契约：asyncapi + Kotlin SDK + 合约测试（2026-10-29）
+### 二、`/ws/mobile` 进入对外契约：asyncapi + Kotlin SDK + 合约测试
 
-**状态：代码与文档已齐，版本号未动（仍 2.8.0）、未打 tag、未推送。** 这一条不是新功能，
+**状态：代码与文档已齐，版本号已升到 2.8.1，本轮发版前打 tag 并双推。** 这一条不是新功能，
 而是把**已经存在并已真机跑通**的 `/ws/mobile` 网关补进对外契约 —— 依据 `dsh-companion`
 的 `docs/project/API.md:920` 对等门槛：一项能力要「在插件里定义稳定 REST/事件 schema、
 对应设备 scope/root/session 授权、脱敏规则、OpenAPI/AsyncAPI、Kotlin SDK 和合约测试后
@@ -103,6 +110,31 @@
   client `lib/client.cjs` 757.03 kB）。
 - 未做：真实内核环境下的 `/ws/mobile` 互通只有既有 `tests/mobile-gateway-ws.spec.ts`（62 例）覆盖，
   本轮新增的是**静态契约对账**，不重复行为测试。
+
+### 三、`session-create` 的 workspaceId 寻址与首屏 `history` 的 projections
+
+**状态：同上（随 2.8.1 发布）。** 两条都是「桥侧只差最后一点，客户端只好整条路退回 REST」。
+
+- **`session-create` 新增 `workspaceId` / `agentPreset` / `reuseBlank`**：此前只认 `rootId` + `cwd`
+  且内部写死 `reuseBlank: false`，与 REST `POST /chat/sessions` 不可互换，App 只能让新建会话整体
+  留在 REST。现在带 `workspaceId` 走 `createSessionInWorkspace`，否则仍走 `rootId` + `cwd`
+  （`rootId` 缺省取首个授权根）；应答回传内核**落定后**的 `agentPreset`。
+  不让客户端自算「哪个根 + 相对路径」的理由：Android 与宿主对符号链接 / 大小写 / 8.3 短名的
+  规范化口径不同，对不上不是报错，是静默「建到了别处」。
+- **首屏 `history` 附带 `projections`**：此前只解构 `{events, hasMore}`，把 `chat-adapter` 明明
+  返回的投影丢了 —— 投影是待办清单、会话统计、WebView 三块面板的数据源，所以 App 侧只能让首屏
+  历史恒走 REST，也就是「打开会话」这条最热的路从未真正用上 WS。现在首屏（不带 `beforeSeq`）附带，
+  翻页刻意不带（分页要投影没意义，而这一帧有 1 MiB 上限）。
+- 新增 2 条**行为**用例（参数被悄悄丢掉时帧名一直是对的，词汇表对账一句话都不会说）：
+  `session-create 把 agentPreset 与 reuseBlank 原样传给内核…`、`首屏 history 带 projections，翻页不带`。
+
+### 测了什么
+
+- `npm run check` **exit 0**：tsc 0 错；**79 个测试文件 / 828 个用例全过**；`docs:check` 三段全绿
+  （12 project docs / 39 tasks / 9 ADRs；STRUCTURE 72 锚点 / INTERFACES 87 锚点；root README bilingual
+  10 checks）；双产物 build 成功（`lib/index.js` 623.11 kB、`lib/index.d.ts` 134.61 kB、
+  `lib/client.cjs` 757.03 kB）。
+- 与 `dsh-companion` v2.2.58 的 WS 双通道改造同源：桥侧每一处改动都在 App 侧有对应接线与回归用例。
 
 ## v2.8.0 · REST BFF：分块上传 / 定时任务 / 官方语音（2026-10-28）
 

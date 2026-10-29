@@ -9,7 +9,7 @@
 </p>
 
 <p align="center">
-  <img alt="Version" src="https://img.shields.io/badge/version-v2.8.0-087f8c">
+  <img alt="Version" src="https://img.shields.io/badge/version-v2.8.1-087f8c">
   <img alt="DSH plugin" src="https://img.shields.io/badge/DeepSeek_Harness-plugin-1f2328">
   <img alt="Platforms" src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-586069">
   <img alt="License" src="https://img.shields.io/badge/license-AGPL--3.0-2da44e">
@@ -433,7 +433,7 @@ DSH **0.2.1-rc.3** 隔离实例上**实跑验过**，不是静态推断：插件
 
 ## 项目信息
 
-- 当前版本：`v2.8.0`
+- 当前版本：`v2.8.1`
 - **v2.7.1 是缺陷修复版**：内核 `sessionController.resolveAgent()` 返回的是 `{ agent }` / `{ error }`
   **包装对象**而非 Agent 本体（`dsh-api-session-controller/lib/index.js:365-368` 的 `liveAgent()` 与
   `:221-246` 的 `resolve()` 都是这个形状），桥此前把包装对象直接当 Agent 传给 `fileUploads.upload()`，
