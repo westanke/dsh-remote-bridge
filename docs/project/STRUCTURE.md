@@ -198,6 +198,7 @@ host services 之上重建 0.1.x 的 `apiProxy` 面容，让 `chat-adapter` / `s
 | `generate-screenshots.ts` | 生成 `assets/screenshots/` |
 | `validate-entry.ts` / `smoke-profile-install.ts` | 入口与 profile 安装冒烟 |
 | `e2e-stream-probe.mjs` | e2e 流探针 |
+| `ws-frame-probe.mjs` | `/ws/mobile` 帧探针：连真桥逐帧打印请求→响应的 requestId 落点（发现「契约说回显、实现不回显」那类问题；MockWebServer 测不出） |
 | `manual-cloudflare-check.ts` | 隧道手工核验 |
 | `ci/` | 镜像推送与 Release 同步的 CI 辅助脚本 |
 

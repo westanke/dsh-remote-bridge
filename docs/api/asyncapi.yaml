@@ -99,10 +99,32 @@ channels:
 
       ## requestId correlation (request/response)
 
-      `requestId` is an **opaque client-chosen string**. When a request frame
-      carries a non-empty `requestId`, the server echoes it back verbatim on the
-      response frame's `data.requestId` (same convention as the goal and team
-      handlers). Rules:
+      `requestId` is an **opaque client-chosen string**. Correlation is **not
+      uniform across frame types** — this is a known asymmetry, not an oversight
+      in the docs. Two families:
+
+      **Echoing family** — `goal-*`, tasks/goal projections, `agent-team`,
+      `subagents`, `file-*`, `speech-*`, `schedule-*`. A non-empty `requestId` on
+      the request is echoed back verbatim on the response frame's
+      `data.requestId` (never on the outer envelope — see below).
+
+      **Silent family** — `sessions`, `history`, `workspaces`, `models`,
+      `providers`, `commands`, `command-*`, `permission*`, `agent-presets`,
+      `host`, `settings-*`, `plugin-*`, `question*`, `approval-*`,
+      `session-*` (create/rename/archive/cancel), `message`, `attachment`,
+      `subscribe`, `unsubscribe`, `ping`. These handlers **do not echo
+      `requestId` at all**. A client that waits for an id-matched response on
+      these frames will block until its own timeout.
+
+      > Rationale (as implemented): `ws-handler.ts`'s `sendFrame` signature is
+      > `{ kind, data? }` — the outer envelope has no slot for `requestId`, so
+      > only handlers that explicitly copy it into `data` produce an echo. The
+      > silent family is instead correlated **implicitly by response `kind`**:
+      > `sessions` → `sessions`, `history` → `history`, `workspaces` →
+      > `workspaces`, etc. Each of those response kinds is produced by exactly
+      > one request kind and is never pushed unsolicited.
+
+      Rules that hold for **both** families:
 
       - Absent or empty string ⇒ **no** `requestId` key in the response at all
         (never `null`, never `""`), so a client must not match on falsy values.
@@ -112,6 +134,10 @@ channels:
       - Correlation is per-connection; two connections may reuse the same id.
       - Clients must time out unmatched requests themselves — the server does not
         send a "request expired" frame.
+      - `error` frames do **not** carry `requestId`. They carry
+        `data.requestType` (the offending request's `type`), so an error can only
+        be attributed to a frame type, not to a specific in-flight request of that
+        type. Clients should fail the oldest pending request of that type.
 
       ## Backpressure and close codes
 
