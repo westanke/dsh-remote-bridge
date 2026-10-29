@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, writeFile, stat } from 'node:fs/promises'
+import { mkdtemp, mkdir, realpath, writeFile, stat } from 'node:fs/promises'
 import { createHash } from 'node:crypto'
 import { TestCleanup } from './test-cleanup.ts'
 import os from 'node:os'
@@ -42,7 +42,9 @@ async function startHarness(options: {
   cleanup.dir(base)
   const project = path.join(base, 'project')
   await mkdir(project)
-  activeProject = project
+  // fakeApi 里的会话 cwd 必须与 addRoot 内部 canonicalRoot() 的 realpath 口径一致；
+  // macOS 的 /var/folders 与 Windows 的 8.3 短名都是符号链接，不规范化会让 matchRoot 判失败。
+  activeProject = await realpath(project)
   const database = cleanup.db(new WorkspaceDatabase(path.join(base, 'state')))
   const root = await database.addRoot(project, 'Project')
   const events = new WorkspaceEventBus()
