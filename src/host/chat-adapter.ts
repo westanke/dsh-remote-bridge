@@ -1177,7 +1177,17 @@ export class DshChatAdapter {
       const key = approvalKey(payload.sessionId, payload.approvalId)
       const previous = this.pendingApprovals.get(key)
       this.pendingApprovals.set(key, {
-        rpcId: frame.rpcId,
+        // 结算句柄必须取 payload 里 ApprovalBridge 放的那个 rpcId，不能取外层 frame.rpcId。
+        // `FrameHub.push`（dsh-0.2-bridge.ts）给每条帧**新造**一个随机 rpcId 作为信封 id；
+        // ApprovalBridge.respond 则按它 push 时塞进 payload.rpcId 的句柄在自己的 pending 表里
+        // 结算。两者不是同一个值。取错（取了 frame.rpcId）的真实症状（真机实测 2026-10-30，
+        // Desktop 宿主 / bridge v2.8.1）：GET /approvals 能列出这条（记录在本表），但 POST
+        // .../decision 永远 409 APPROVAL_NOT_PENDING —— 因为拿外层 id 去 respond 时，
+        // ApprovalBridge 查不到、回 accepted:false。旧单测没抓到是因为它们直接喂手造帧，
+        // 手造帧的外层 rpcId 恰好等于 payload 里的句柄，绕过了 FrameHub 的再包装。
+        rpcId: typeof payload.rpcId === 'string' && payload.rpcId.length > 0
+          ? payload.rpcId
+          : frame.rpcId,
         sessionId: payload.sessionId,
         approvalId: payload.approvalId,
         toolName: redactApprovalText(payload.toolName, 120),

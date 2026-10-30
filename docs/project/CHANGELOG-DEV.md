@@ -1,5 +1,34 @@
 # 开发日志
 
+## 未发版 · 修复审批决策恒 409（结算句柄取错）（2026-10-30）
+
+**症状**（真机 Desktop 宿主 / v2.8.1 实测）：手机端点「允许一次」并完成二次确认后，
+审批被消费（`GET /chat/sessions/{id}/approvals` 随即变空），但界面等 15s 报
+`WS 请求超时：approval-response`，命令并未执行；内核一直等到 10 分钟挂起超时才 delegate。
+用真 approvalId 立刻调 REST `POST .../approvals/{id}/decision` 同样恒回
+`409 APPROVAL_NOT_PENDING` —— 证明与 App、与 WS 通道都无关。
+
+**根因**：`ApprovalBridge` 发起审批时把自己 pending 表的**结算句柄**塞进 `payload.rpcId`
+再 `mux.push`；而 `FrameHub.push`（`dsh-0.2-bridge.ts`）给每条帧**新造**一个随机外层
+`rpcId` 作为信封/事件 id。适配层 `DshChatAdapter.captureApproval` 记的却是**外层**
+`frame.rpcId`，决策时拿它去 `respond()`，ApprovalBridge 按 payload 句柄查表查不到 →
+`accepted:false` → 409。「同一秒 GET 能列出、POST 却说不存在」的矛盾即源于此：
+清单读适配层自己的表（记录在），结算靠 ApprovalBridge 的表（句柄对不上）。
+
+**修复**：`captureApproval` 优先取 `payload.rpcId`（真正的结算句柄），外层 `frame.rpcId`
+仅在 payload 没带时兜底；其余把 `frame.rpcId` 当**事件 id** 的消费点（去重 / 归一化 id）
+一律不动——那正是它该被新造的用途。提问（question）侧不受影响：它按 `(sessionId, callId)`
+匹配并直连内核 `ctx.userQuestions`，不读信封 rpcId。
+
+**测试**：
+- 新增回归用例 "uses payload.rpcId (not the FrameHub outer id) when deciding an approval"
+  （`tests/chat-adapter.spec.ts`），复刻「外层信封 id ≠ payload 结算句柄」的真实 FrameHub
+  包装，并断言 `respond` 收到的是 payload 句柄；回退修复后该用例如期失败（验证它真盯得住）。
+- 全量 `pnpm check`：79 文件 / **829 用例**全绿，tsc / docs:check / build 通过。
+- 坑位入档 `PITFALLS.md`「把事件信封的外层 rpcId 当成结算句柄」并登记进 `AGENTS.md` §6。
+
+**版本号未动（仍 2.8.1）**：这是发版后发现的补丁，等用户确认后走 v2.8.2 补丁版。
+
 ## v2.8.1 · `/ws/mobile`：进对外契约 + 兑现三条传输承诺 + 补齐两处最后一米（2026-10-29）
 
 **依据**：`dsh-companion` 选了「C 档：全量 WS 优先 + REST 兜底」，`/ws/mobile` 从「能跑的内部通道」

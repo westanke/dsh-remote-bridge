@@ -471,6 +471,91 @@ describe('DSH chat choices', () => {
     }
   })
 
+  it('uses payload.rpcId (not the FrameHub outer id) when deciding an approval', async () => {
+    // 真机回归（Desktop 宿主 / bridge v2.8.1，2026-10-30）：ApprovalBridge 把自己 pending 表
+    // 的结算句柄塞进 `payload.rpcId` 后 mux.push；而 FrameHub.push 会给每条帧**再造**一个
+    // 随机外层 rpcId。旧实现 captureApproval 记的是外层 id，于是决策时 respond 拿外层 id
+    // 去结算 → ApprovalBridge 查不到 → accepted:false → 409 APPROVAL_NOT_PENDING，但同一秒
+    // GET /approvals 仍能列出它（记录在适配层表里）。这个用例复刻「内外两个 rpcId 不同」，
+    // 手造帧夹具绕过了 FrameHub 才让旧 bug 漏网。
+    const base = await mkdtemp(path.join(os.tmpdir(), 'daw-approval-hub-'))
+    cleanup.dir(base)
+    const project = path.join(base, 'project')
+    await mkdir(project)
+    const database = cleanup.db(new WorkspaceDatabase(path.join(base, 'state')))
+    const root = await database.addRoot(project, 'Project')
+    const responses: unknown[] = []
+    const OUTER_RPC = 'framehub-outer-id'
+    const HANDLE_RPC = 'approvalbridge-handle-id'
+    const adapter = new DshChatAdapter({
+      respond: async (message: unknown) => {
+        responses.push(message)
+        // 模拟 ApprovalBridge.respond：只认真正的句柄 HANDLE_RPC。
+        const rpc = (message as { rpcId?: unknown }).rpcId
+        return rpc === HANDLE_RPC ? { accepted: true as const } : { accepted: false as const }
+      },
+      sessions: {
+        list: async () => ({ result: { ok: true as const, value: { items: [{
+          sessionId: 'session-approval',
+          updatedAt: 1,
+          running: true,
+          blank: false,
+          cwd: await realpath(project),
+        }] } } }),
+        history: async () => ({ result: { ok: true as const, value: { events: [], hasMore: false } } }),
+      },
+      workspace: { list: async () => ({ result: { ok: true as const, value: { items: [], archivedSessionIds: [] } } }) },
+      agentPresets: { list: async () => ({ result: { ok: true as const, value: { presets: [], authorable: false, hasDocument: false } } }) },
+      events: {
+        // 复刻 FrameHub：外层信封 id 与 payload 里的结算句柄不是同一个值。
+        mux: async function* () {
+          yield {
+            rpcId: OUTER_RPC,
+            payload: {
+              type: 'approval/requested',
+              sessionId: 'session-approval',
+              approvalId: 'approval-9',
+              toolName: 'bash',
+              callId: 'call-9',
+              reason: 'danger-full-access',
+              rpcId: HANDLE_RPC,
+            },
+          }
+        },
+        host: async function* () {},
+      },
+    } as never, database)
+    const principal: DevicePrincipal = {
+      kind: 'device',
+      id: 'phone',
+      name: 'Phone',
+      scopes: new Set(['chat.read', 'chat.write']),
+      rootIds: new Set([root.id]),
+    }
+    const abort = new AbortController()
+    try {
+      adapter.startEvents(abort.signal, () => undefined)
+      await new Promise(resolve => setTimeout(resolve, 0))
+      const listed = await adapter.listPendingApprovals(principal, 'session-approval')
+      expect(listed.map(item => item.id)).toContain('approval-9')
+      // 关键断言：决策必须用 payload 里的句柄，且不抛 409。
+      await expect(adapter.decideApproval(principal, 'session-approval', 'approval-9', 'allowed-once'))
+        .resolves.toMatchObject({ id: 'approval-9', toolName: 'bash' })
+      expect(responses).toEqual([{
+        type: 'client-response',
+        rpcId: HANDLE_RPC,
+        result: {
+          ok: true,
+          value: { sessionId: 'session-approval', approvalId: 'approval-9', outcome: 'allowed-once' },
+        },
+      }])
+      expect(responses[0]).not.toMatchObject({ rpcId: OUTER_RPC })
+    } finally {
+      abort.abort()
+      database.close()
+    }
+  })
+
   it('redacts common secret forms and bounds approval text', () => {
     const source = 'TOKEN=plain-secret-value apiKey="json-secret" Bearer bearer-secret https://x.test?a=1&password=url-secret'
     const redacted = redactApprovalText(source, 90)

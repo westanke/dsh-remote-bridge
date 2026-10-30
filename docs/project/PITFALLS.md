@@ -837,3 +837,36 @@ node /usr/local/nodejs/bin/dsh plugin --profile web add <workspace>/pack/<tgz>
 脚本在打 tag 后立刻用 `git show "$TAG:artifacts/SHA256SUMS.txt" | cmp -s - artifacts/SHA256SUMS.txt`
 自检：不一致就 `exit 1`（tag 未推送，`git tag -d` 后重跑即可）。
 姊妹仓 `dsh-companion` 的 `release.sh` 在阶段 B 打 tag 后做同一道闸。
+
+### 把事件信封的外层 rpcId 当成结算句柄（approval 决策恒 409）
+
+`FrameHub.push(payload)`（`src/host/dsh-0.2-bridge.ts`）给每条帧**新造**一个随机外层
+`rpcId: randomUUID()` 作为信封/事件 id；而 `ApprovalBridge` 发起审批时把自己 pending 表的
+**结算句柄**塞进 `payload.rpcId`，`respond()` 按 payload 里这个值查表结算。两者不是同一个值。
+
+适配层 `DshChatAdapter.captureApproval` 一度记的是**外层** `frame.rpcId`，于是决策时
+`respond({ rpcId: 外层id })` 在 ApprovalBridge 表里查不到 → `accepted:false` →
+`409 APPROVAL_NOT_PENDING`，并把记录删掉。症状极具迷惑性（真机 Desktop 宿主 / v2.8.1，2026-10-30）：
+
+- 同一秒 `GET /chat/sessions/{id}/approvals` **能列出**这条审批（记录在适配层 pendingApprovals 表里）；
+- `POST .../approvals/{id}/decision` 却恒回 **409**，点完手机上转 15s 超时；
+- 审批没真正结算，内核一直等到 10 分钟超时才 delegate，期间命令没执行。
+
+**为什么单测漏网**：`tests/chat-adapter.spec.ts` 直接手造 `{ rpcId, payload:{type:'approval/requested',…} }`
+喂给 `startEvents`，手造帧的外层 rpcId 恰好就是断言里的 `'private-rpc-id'`，与「payload 里另有句柄」
+的真实管线不符——夹具绕过了 FrameHub 的再包装。
+
+**怎么发现的**：用裸 WS/REST 探针在真桥上做对照——先 `GET` 确认审批在、拿真 approvalId，再立刻
+`POST decision`，同样 409，于是排除「App 双发 / WS 路径」，回到桥侧顺着 `approvalKey → pendingApprovals
+→ FrameHub.push → ApprovalBridge.respond` 把两个 rpcId 对上。
+
+**铁律**：
+
+1. 区分「信封/事件 id」与「结算句柄」——前者每条帧唯一、用于去重与事件 id；后者是发起方放进
+   **payload** 的、要原样回传才能结算的关联键。看到 `record.rpcId = frame.rpcId` 先问「这条帧
+   有没有被再包一层」。
+2. 事件总线（FrameHub）若会重造信封 id，**不得**覆盖/顶替 payload 自带的关联字段。
+3. 适配层测试要覆盖「真实管线的再包装」，至少有一条用例让外层 id 与 payload 句柄**不同**，
+   断言决策用的是 payload 句柄（`tests/chat-adapter.spec.ts` 的
+   "uses payload.rpcId (not the FrameHub outer id)"）。
+4. question 侧不受影响：它按 `(sessionId, callId)` 匹配并直连内核 `ctx.userQuestions`，不读信封 rpcId。

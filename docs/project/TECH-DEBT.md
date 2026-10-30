@@ -21,7 +21,7 @@
 |---|---|---|---|
 | `src/host/dsh-0.2-bridge.ts` | 2 682 | **兼容适配层**：重建 0.1.x `apiProxy` 面容，一个文件里装了会话、审批、提问、模型多条链路的重建逻辑。改一条要读 1 700 行 | 按链路拆（session / approval / question / model 各一模块），公共面容抽 `api-proxy-facade.ts` |
 | `src/host/router.ts` | 2 062 | 全部 REST 路由集中一处；新端点往里加，旧端点没人敢删 | 按资源域拆 `routes/*.ts`，router 只做组装 |
-| `src/host/chat-adapter.ts` | 1 663 | 会话链路适配：列表/历史/发送/取消/workspace/agent-preset 全在一个文件 | 按端点族拆 |
+| `src/host/chat-adapter.ts` | 1 732 | 会话链路适配：列表/历史/发送/取消/workspace/agent-preset + 审批/提问适配全在一个文件（2026-10-30 修 approval 句柄 +11 注释/分支） | 按端点族拆 |
 | `src/host/database.ts` | 1 005 | 用户数据（根/设备/回收站/配对/幂等/审计）全在一个类里；每次加字段都要在这个文件里写迁移 | 按表族拆 `db/{roots,devices,trash,pairings}.ts`，迁移独立成 `db/migrations.ts` |
 | `src/host/settings-adapter.ts` | 731 | 提供商与模型目录、通用设置命名空间两件事挤在一个类；SEC-H11 的重定向闸门也落在这里 | 拆 `providers-adapter.ts` 与 `namespaces-adapter.ts` |
 | `src/client/workspace.tsx` | 1 225 | 「📱 手机设置」面板七张卡的全部状态与交互挤在一个组件文件里；v2.7.0 加插件卡后越线 | 每张卡拆独立文件（`client/cards/*.tsx`），`workspace.tsx` 只留外壳与导航 |
