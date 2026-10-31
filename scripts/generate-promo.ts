@@ -1,5 +1,5 @@
 /**
- * 生成首屏宣传图（16:9 横向）。
+ * 生成首屏宣传图（16:9 横向），中英双站各一版。
  *
  * ## 为什么需要这张图
  *
@@ -13,10 +13,30 @@
  * 不是另画的示意图。这里只做排版：把它们斜叠成一组，让人看出「有很多设置」。
  * 左半边的文案也全部取自 README 的既有表述，不新造功能承诺。
  *
+ * ## 文案按 locale 抽出来，版面一行不动（issue #6）
+ *
+ * 英文 README 曾经与中文共用 `assets/promo-16x9.png` —— 那张图左半边全是中文，
+ * 英文读者在读到第一行英文之前先看到一张读不懂的宣传卡。现在文案全部放进 `TEXT`，
+ * 一次跑出四张：
+ *
+ * | locale | README 首屏 | GitHub social preview |
+ * |---|---|---|
+ * | `zh` | `assets/promo-16x9.png` | `assets/promo-social.png` |
+ * | `en` | `assets/promo-16x9.en.png` | `assets/promo-social.en.png` |
+ *
+ * **只有文字换语言，版面一行不动**：两种语言的标题行数、副标题行数、事实条数必须一一对应，
+ * 因为版面是按中文定的（h1 三行填左栏、副标题三行、事实三项）。英文换了行数就会溢出或留白 ——
+ * 所以 `TEXT` 里每个数组的长度是**版面契约**，不是随手写的数量。
+ * 安装命令不分语言（插件市场的 CLI 就这一条），两侧同值。
+ *
  * ## 产物
  *
- * `assets/promo-16x9.png`（1600×900）。窄屏时 GitHub 会等比缩小，所以文字要够大、
+ * `assets/promo-16x9.png`（1600×900）等四张。窄屏时 GitHub 会等比缩小，所以文字要够大、
  * 对比度要够高，别指望用户放大看。
+ *
+ * ## 怎么跑
+ *
+ * `npx tsx scripts/generate-promo.ts` —— 一条命令出全部四张，不需要分两次。
  */
 import { chromium } from '@playwright/test'
 import { readFileSync } from 'node:fs'
@@ -31,7 +51,89 @@ const ROOT = process.cwd()
 const shot = (name: string): string =>
   `data:image/png;base64,${readFileSync(resolve(ROOT, 'assets/screenshots', name)).toString('base64')}`
 
-const html = `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">
+/**
+ * 两种语言的文案。**每个数组的长度是版面契约**（见文件头），中英必须一一对应；
+ * 改一边的行数就要同步改另一边，否则英文版会溢出或留白。
+ */
+const TEXT = {
+  zh: {
+    lang: 'zh-CN',
+    kicker: 'DeepSeek Harness 插件',
+    title: ['人已经出门，', '电脑还锁着 ——', '掏出手机继续用。'],
+    sub: [
+      '把 DSH 内核的私有 remote 协议翻译成版本化 REST，',
+      '配上 Android 客户端，聊天 / 会话 / 文件 / 设备',
+      '全程留在同一台机器上。',
+    ],
+    cmd: 'dsh plugin --profile web add dsh-remote-bridge',
+    facts: [
+      { b: '8 项设置', s: '主列表 5 + 高级组 3' },
+      { b: '默认只监听回环', s: '不启用就不出网' },
+      { b: 'Win / macOS / Linux', s: '免构建' },
+    ],
+  },
+  en: {
+    lang: 'en',
+    kicker: 'DeepSeek Harness plugin',
+    title: ['You left the house.', 'The desktop is still locked —', 'take out your phone and keep going.'],
+    sub: [
+      "Translates DSH's private remote protocol into versioned REST,",
+      'paired with an Android client, so chat, sessions, files',
+      'and devices all stay on the same machine.',
+    ],
+    cmd: 'dsh plugin --profile web add dsh-remote-bridge',
+    facts: [
+      { b: '8 settings', s: '5 in the main list + 3 advanced' },
+      { b: 'Loopback by default', s: 'stays offline until enabled' },
+      { b: 'Win / macOS / Linux', s: 'no build needed' },
+    ],
+  },
+} as const
+
+type Locale = keyof typeof TEXT
+
+/** 版面尺寸与 social preview 的收紧参数。 */
+const VARIANT = {
+  // README 首屏：16:9，GitHub 按正文宽度等比缩放，文字够大才看得清。
+  readme: {
+    w: 1600,
+    h: 900,
+    base: 'promo-16x9',
+    css: [] as ReadonlyArray<readonly [string, string]>,
+  },
+  // GitHub social preview（仓库分享卡片）：2:1。比例不对会被居中裁切，左右各切掉一大块。
+  // 这一版把右侧截图组整体上移收紧，避免在 640 高度里被切掉下半截。
+  social: {
+    w: 1280,
+    h: 640,
+    base: 'promo-social',
+    css: [
+      [
+        '<body>',
+        '<body style="--W:1280px;--H:640px;padding:38px 46px;grid-template-columns:500px 1fr;gap:26px">',
+      ],
+      ['h1 { font-size: 50px', 'h1 { font-size: 40px'],
+      ['.sub { font-size: 21px', '.sub { font-size: 17px'],
+      ['font-size: 17px; background: #18202a', 'font-size: 13.5px; background: #18202a'],
+      ['.right { position: relative; height: 780px; }', '.right { position: relative; height: 560px; }'],
+      ['.shot {\n    position: absolute; width: 272px', '.shot {\n    position: absolute; width: 218px'],
+    ] as ReadonlyArray<readonly [string, string]>,
+  },
+} as const
+
+function promoHtml(locale: Locale): string {
+  const t = TEXT[locale]
+  // 标题最后一行是强调色（中英都是），其余行原样。
+  const title = t.title
+    .map((line, i) => (i === t.title.length - 1 ? `<span class="accent">${line}</span>` : line))
+    .join('<br>')
+  // 副标题逐行折行，最后一行不带 `<br>`（多带一条会凭空多出一条空行）。
+  const sub = t.sub.map((line, i) => (i === t.sub.length - 1 ? line : `${line}<br>`)).join('\n      ')
+  const facts = t.facts
+    .map((f) => `      <div class="fact"><b>${f.b}</b><span>${f.s}</span></div>`)
+    .join('\n')
+
+  return `<!doctype html><html lang="${t.lang}"><head><meta charset="utf-8">
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body {
@@ -76,22 +178,18 @@ const html = `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">
      「一眼看出有这些设置项」，不是展示阴影层次。 */
   .s1 { left:   10px; top:   10px; transform: rotate(-2.4deg); z-index: 4; }
   .s2 { left:  390px; top:  100px; transform: rotate( 1.8deg); z-index: 3; }
-  .s3 { left:   60px; top:  380px; transform: rotate(-1.2deg); z-index: 2; }
-  .s4 { left:  430px; top:  470px; transform: rotate( 2.2deg); z-index: 1; }
+  .s3 { left:   60px; top: 380px; transform: rotate(-1.2deg); z-index: 2; }
+  .s4 { left:  430px; top: 470px; transform: rotate( 2.2deg); z-index: 1; }
 </style></head><body>
   <div class="left">
-    <span class="kicker">DeepSeek Harness 插件</span>
-    <h1>人已经出门，<br>电脑还锁着 ——<br><span class="accent">掏出手机继续用。</span></h1>
+    <span class="kicker">${t.kicker}</span>
+    <h1>${title}</h1>
     <p class="sub">
-      把 DSH 内核的私有 remote 协议翻译成版本化 REST，<br>
-      配上 Android 客户端，聊天 / 会话 / 文件 / 设备<br>
-      全程留在同一台机器上。
+      ${sub}
     </p>
-    <div class="cmd">dsh plugin --profile web add dsh-remote-bridge</div>
+    <div class="cmd">${t.cmd}</div>
     <div class="facts">
-      <div class="fact"><b>7 项设置</b><span>主列表 5 + 高级组 3</span></div>
-      <div class="fact"><b>默认只监听回环</b><span>不启用就不出网</span></div>
-      <div class="fact"><b>Win / macOS / Linux</b><span>免构建</span></div>
+${facts}
     </div>
   </div>
   <div class="right">
@@ -101,33 +199,24 @@ const html = `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">
     <div class="shot s4"><img src="${shot('panel-plugins.png')}"></div>
   </div>
 </body></html>`
+}
 
 const browser = await chromium.launch()
 
-// README 首屏：16:9，GitHub 按正文宽度等比缩放，文字够大才看得清。
-{
-  const page = await browser.newPage({ viewport: { width: 1600, height: 900 }, deviceScaleFactor: 1 })
-  await page.setContent(html.replace('--W, 1600px', '--W, 1600px').replace('--H, 900px', '--H, 900px'))
-  await page.waitForLoadState('networkidle')
-  await page.screenshot({ path: resolve(ROOT, 'assets/promo-16x9.png') })
-  console.log('wrote assets/promo-16x9.png (1600×900)')
-}
-
-// GitHub social preview（仓库分享卡片）：2:1。比例不对会被居中裁切，左右各切掉一大块。
-// 这一版把右侧截图组整体上移收紧，避免在 640 高度里被切掉下半截。
-{
-  const page = await browser.newPage({ viewport: { width: 1280, height: 640 }, deviceScaleFactor: 1 })
-  const social = html
-    .replace('<body>', '<body style="--W:1280px;--H:640px;padding:38px 46px;grid-template-columns:500px 1fr;gap:26px">')
-    .replace('h1 { font-size: 50px', 'h1 { font-size: 40px')
-    .replace('.sub { font-size: 21px', '.sub { font-size: 17px')
-    .replace('font-size: 17px; background: #18202a', 'font-size: 13.5px; background: #18202a')
-    .replace('.right { position: relative; height: 780px; }', '.right { position: relative; height: 560px; }')
-    .replace('.shot {\n    position: absolute; width: 272px', '.shot {\n    position: absolute; width: 218px')
-  await page.setContent(social)
-  await page.waitForLoadState('networkidle')
-  await page.screenshot({ path: resolve(ROOT, 'assets/promo-social.png') })
-  console.log('wrote assets/promo-social.png (1280×640)')
+// locale × 变体，一共四张。顺序无所谓，但一次调用跑完 —— 这就是 issue 要求的
+// 「重新生成两份是一条命令」。
+for (const locale of Object.keys(TEXT) as Locale[]) {
+  for (const key of Object.keys(VARIANT) as Array<keyof typeof VARIANT>) {
+    const v = VARIANT[key]
+    const out = `assets/${v.base}${locale === 'en' ? '.en' : ''}.png`
+    const page = await browser.newPage({ viewport: { width: v.w, height: v.h }, deviceScaleFactor: 1 })
+    let html = promoHtml(locale)
+    for (const [from, to] of v.css) html = html.replace(from, to)
+    await page.setContent(html)
+    await page.waitForLoadState('networkidle')
+    await page.screenshot({ path: resolve(ROOT, out) })
+    console.log(`wrote ${out} (${v.w}×${v.h}, ${locale})`)
+  }
 }
 
 await browser.close()

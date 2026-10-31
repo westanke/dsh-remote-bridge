@@ -8,7 +8,7 @@
 </p>
 
 <p align="center">
-  <img src="assets/promo-16x9.png" alt="dsh-remote-bridge: the Phone settings panel (five cards in the main list plus an Advanced settings group)" width="100%">
+  <img src="assets/promo-16x9.en.png" alt="dsh-remote-bridge: the Phone settings panel (five cards in the main list plus an Advanced settings group)" width="100%">
 </p>
 
 <p align="center">
