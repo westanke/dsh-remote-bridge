@@ -89,6 +89,33 @@ base64 膨胀 4/3，所以单条路径的原始文件实际上限约 **17.2 MiB*
 `docs:check` 四段全过（12 文档 / 39 tasks / 9 ADRs / STRUCTURE 84 锚点 / INTERFACES 87 锚点）；
 双产物 build 成功（host `lib/index.js` 628.64 kB、client `lib/client.cjs` 772.91 kB）。
 
+## 未发布 · router.ts 按 capability 拆分（2026-10-31）
+
+**基于什么**：TECH-DEBT.md 行数表的 `src/host/router.ts` 条目（issue #3）——
+2 062 行（实测 2 094）超 600 预算，REST 路由、`/manage` 管理面、隧道装配、
+幂等回放全在一个类里，新端点往里加、旧端点没人敢删。
+
+**干了什么**：按 capability 纯搬移到 `src/host/routes/` 下八个文件
+（chat 517 / shared 397 / files 414 / cloudflare 251 / settings 183 / devices 171 /
+plugins 54 / registry 45，全部 <600；`shared.ts` 承载路由上下文 `RouteCtx`/
+`ApiRouteCtx` 与跨块 helper，`registry.ts` 是 path → handler 的一屏总览）；
+`router.ts` 从 2 094 行减到 **345 行**，只保留：imports 与选项类型、三个保留门
+（免鉴权 healthz、限额配对兑换、`/manage` 鉴权门）、routes 循环分发、
+`openTunnelForCommand` 一行委托、`matchJobRoute`/`decodePathSegment` re-export。
+纯搬移：URL/method/status/error code/body 不变，`openapi.yaml` 未动，
+路由级鉴权（`requireAdmin`/`principal`/`requireScope`）贴着原 handler。
+契约测试**断言零改动**：`docs-contract.spec.ts` 的路由源读取范围从单个
+`router.ts` 跟随拆分扩为 `router.ts + routes/*.ts`（拼接顺序保证鉴权锚点语义
+不变），0 分歧与豁免集断言一字未动；这是本次唯一触碰的测试文件，
+不改它的替代方案是把 66 条路由条件搬回 `router.ts`（≈+250 行），
+与「拆出一个 `router.ts` 只做组装」的 issue 初衷相悖。
+
+**测了什么**：`tsc --noEmit` 0 错；路由字面量旧 37 条 vs registry 33 条，
+缺失 4 条全是保留门（healthz/配对兑换/manage 两态），零丢失零发明；
+`job-api` 29 + `security-h6` 7 用例先行通过；全量 `vitest` 提交前复跑；
+`docs:check` 通过（STRUCTURE 登记 routes/ 8 个新锚点）。
+TECH-DEBT.md 同提交删掉 `router.ts` 条目（行数债消失，按「清账」规则）。
+
 ## 未发布 · database.ts 按表族拆分（2026-10-31）
 
 **基于什么**：TECH-DEBT.md 行数表的 `src/host/database.ts` 条目（issue #5）——

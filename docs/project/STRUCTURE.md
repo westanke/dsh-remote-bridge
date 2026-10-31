@@ -54,7 +54,7 @@ dsh-remote-bridge/
                      └───────────────┬──────────────────────────┘
                                      ↓
                      ┌──────────────────────────────────────────┐
-                     │ src/host/router.ts  (ApiRouter)            │  唯一路由分派点
+                     │ src/host/router.ts + routes/*.ts (ApiRouter)│  唯一路由分派点（能力块按 capability 拆 routes/）
                      └───┬───────┬───────┬───────┬───────┬──────┘
                          ↓       ↓       ↓       ↓       ↓
               file-service  chat-adapter  settings-adapter  plugin-inventory  job-adapter
@@ -107,7 +107,7 @@ host services 之上重建 0.1.x 的 `apiProxy` 面容，让 `chat-adapter` / `s
 
 | 文件 | 职责 | 谁调用它 |
 | --- | --- | --- |
-| `router.ts` | `ApiRouter`：唯一路由分派点，含 `/api/v1` 版本化 REST 与 `/manage` 回环管理面 | `index.ts` 装配；`server.ts` 转发 |
+| `router.ts` | `ApiRouter` 组合根：分发装配 + 保留 healthz / 配对兑换 / `/manage` 门；能力块按 capability 委托 `routes/*.ts` | `index.ts` 装配；`server.ts` 转发 |
 | `server.ts` | `RemoteApiServer`（监听器启停/状态）、`attachEmbeddedRoutes`（把 API 代理与图片路由挂到 DSH webServer） | `index.ts`、`router.ts` |
 | `auth.ts` | `AuthService`：设备 token / loopback admin 两种身份，scope 与 root 校验，限流 | `router.ts`、`server.ts` |
 | `capabilities.ts` | `BRIDGE_CAPABILITIES` 能力位清单与 `connection.ready` 载荷（**清单与数量以本文件源码为准，勿在文档抄数字**） | `server.ts`（发首帧）、`tests/capabilities.spec.ts` |
@@ -223,7 +223,7 @@ host services 之上重建 0.1.x 的 `apiProxy` 面容，让 `chat-adapter` / `s
 | --- | --- | --- |
 | `src/host/dsh-0.2-bridge.ts` | ≈2 150 行 | 所有走内核的链路；改前必读 `DSH-0.2-COMPAT.md` 与 PITFALLS §apiProxy 消失 |
 | `src/host/chat-adapter.ts` | ≈1 480 行 | 会话/历史/审批/提问/命令/附件全部 REST 行为 |
-| `src/host/router.ts` | ≈1 430 行 | 全部对外路由与鉴权落点；改路由要同步 OpenAPI + capabilities 依据 |
+| `src/host/router.ts` | ≈345 行 | 分发组合根（healthz / 配对兑换 / `/manage` 门 + routes 循环）；改路由去 `src/host/routes/` 并同步 `routes/registry.ts`，鉴权与契约要求不变 |
 | `src/host/database.ts` | ≈410 行 | 持久层组合根：全部公开方法与跨表族事务都在这（2026-10-31 拆表族后）；改表结构去 `db/migrations.ts` 并跑 `migration-drill` |
 | `src/host/plugin-inventory.ts` | ≈640 行 | 插件清单与启停；profile 解析相关 |
 | `src/host/server.ts` | ≈450 行 | 监听器、`/dsh-workspace-api` 前缀（**不可动契约**）、WS 扇出与授权过滤 |
@@ -244,7 +244,7 @@ host services 之上重建 0.1.x 的 `apiProxy` 面容，让 `chat-adapter` / `s
 
 | 我要加… | 放哪 | 还要同步什么 |
 | --- | --- | --- |
-| 一个新 REST 路由 | `src/host/router.ts` 的 `dispatch` 分支；业务实现优先落到对应 adapter | `docs/api/openapi.yaml`、`docs/project/API.md`、需要就加能力位（附契约依据）、`kotlin-sdk`、合约测试、**本文与 INTERFACES 锚点** |
+| 一个新 REST 路由 | 对应 `src/host/routes/<capability>.ts` 的路由块（新块在 `src/host/routes/registry.ts` 补一行）；healthz / 配对兑换 / `/manage` 门留在 `src/host/router.ts`；业务实现优先落到对应 adapter | `docs/api/openapi.yaml`、`docs/project/API.md`、需要就加能力位（附契约依据）、`kotlin-sdk`、合约测试、**本文与 INTERFACES 锚点** |
 | 一个新内核适配（因内核行为而写） | `src/host/dsh-0.2-bridge.ts` | `@patch` 五要素（for/why/until/test）、`DSH-0.2-COMPAT.md`、指向的测试必须真实存在 |
 | 一个新持久化表/列 | `src/host/db/<表族>.ts`（迁移在 `src/host/db/migrations.ts`） | 迁移代码 + `tests/migration-drill.spec.ts`、`TECH-DEBT.md`（若涉及历史数据）；新文件登记本文机检锚点 |
 | 一个新的横切工具（路径/预算/序列化） | `src/host/` 下按职责命名的新文件 | **本文机检锚点必须登记**，否则 `docs:check` 变红；补单测 |
@@ -306,7 +306,16 @@ host services 之上重建 0.1.x 的 `apiProxy` 面容，让 `chat-adapter` / `s
 | `src/host/plugin-inventory.ts` | file | 插件清单与启停 |
 | `src/host/rate-limit.ts` | file | 固定窗口限流 |
 | `src/host/root-resolver.ts` | file | 绝对路径到授权根的解析 |
-| `src/host/router.ts` | file | 唯一路由分派点 |
+| `src/host/router.ts` | file | 唯一路由分派点（组合根：healthz / 配对兑换 / `/manage` 门 + routes 循环） |
+| `src/host/routes/` | dir | 路由按 capability 拆的模块（2026-10-31 自 router.ts 拆出，issue #3） |
+| `src/host/routes/chat.ts` | file | chat 域路由块：workspaces/presets/sessions/幂等回放/会话动作/schedules/speech |
+| `src/host/routes/cloudflare.ts` | file | 隧道域：manageCloudflare 路由块 + createTunnel/openTunnelForCommand/buildConfigText/tunnelStateFor |
+| `src/host/routes/devices.ts` | file | 设备域路由块：devices/self 与 /manage 设备、配对、访问面管理 |
+| `src/host/routes/files.ts` | file | 文件域：roots/trash/uploads/image 路由块 + requireRoot/authorizedRoots/dispatchEntries/dispatchContent |
+| `src/host/routes/plugins.ts` | file | 插件域路由块：settings/plugins 清单与启停 |
+| `src/host/routes/registry.ts` | file | 路由注册表：path → handler 一屏总览（有序 first-match-wins，routes 为文档性字面量） |
+| `src/host/routes/settings.ts` | file | 设置域路由块：host-services/providers/models/namespaces/provider 项级读写 |
+| `src/host/routes/shared.ts` | file | 路由上下文 RouteCtx/ApiRouteCtx + 跨块 helper（sendJson/readJson/audit 幂等回放/管道工具） |
 | `src/host/server.ts` | file | 监听器与嵌入路由 |
 | `src/host/settings-adapter.ts` | file | 提供商/模型设置 adapter |
 | `src/host/settings-namespace.ts` | file | 通用设置命名空间的写策略、脱敏与 ops 校验（纯函数） |

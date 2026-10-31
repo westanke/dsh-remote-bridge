@@ -380,7 +380,13 @@ if (asyncapiDoc.info?.version !== packageJson.version) failures.push('AsyncAPI v
 // == principal() 之前返回的端点集」，防止再出现 host-services 那种裸奔端点。
 // 解析逻辑与显式豁免（OPTIONS 预检、bare /jobs/{id} 的 405 守卫）见 scripts/docs-contract.ts。
 {
-  const routerSource = await readFile(path.join(root, 'src', 'host', 'router.ts'), 'utf8')
+  // router.ts 拆分后（#3）路由字面量在 routes/*.ts，扫描范围跟随拆分：
+  // router.ts（组合根 + 鉴权锚点）在前，routes/*.ts 排序拼接在后，语义与拆分前一致。
+  const routesDir = path.join(root, 'src', 'host', 'routes')
+  const routeFiles = (await readdir(routesDir)).filter(f => f.endsWith('.ts')).sort()
+  const sources = [await readFile(path.join(root, 'src', 'host', 'router.ts'), 'utf8')]
+  for (const f of routeFiles) sources.push(await readFile(path.join(routesDir, f), 'utf8'))
+  const routerSource = sources.join('\n')
   failures.push(...(await checkRouteContract({ routerSource, openApiYaml: openapi })))
 }
 if (asyncapiDoc.channels?.events?.address !== '/api/v1/events') failures.push('AsyncAPI is missing /api/v1/events')

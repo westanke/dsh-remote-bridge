@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs'
+import { readFileSync, readdirSync } from 'node:fs'
 import path from 'node:path'
 import { describe, expect, it } from 'vitest'
 import {
@@ -11,6 +11,23 @@ import {
 } from '../scripts/docs-contract.ts'
 
 const root = path.resolve(import.meta.dirname, '..')
+
+/**
+ * 真实仓库的路由面源码：router.ts（组合根，保留 healthz / 配对兑换 / /manage 门与鉴权锚点）
+ * + routes/*.ts（按 capability 拆出的路由块，字面量 `pathname === ...` / `pathname.match(...)` 在那里）。
+ * router.ts 拆分后路由字面量不再全在一个文件里，门禁的扫描范围跟随拆分走；
+ * 断言集与豁免判定一字不动，扫描只强不弱（routes/ 新文件自动纳入）。
+ */
+function realRouteSource(): string {
+  const routesDir = path.join(root, 'src/host/routes')
+  return [
+    readFileSync(path.join(root, 'src/host/router.ts'), 'utf8'),
+    ...readdirSync(routesDir)
+      .filter(f => f.endsWith('.ts'))
+      .sort()
+      .map(f => readFileSync(path.join(routesDir, f), 'utf8')),
+  ].join('\n')
+}
 
 /** 一份刚好承载 healthz/pairings 两个豁免端点 + 一个鉴权端点的最小 router 源码。 */
 function minimalRouter(): string {
@@ -60,14 +77,14 @@ function minimalOpenApi(extraPath?: { key: string; method: string; exempt?: bool
 
 describe('docs contract gate — real repository snapshot', () => {
   it('当前仓库的 router.ts 与 openapi.yaml 路由/豁免集完全一致（0 分歧）', async () => {
-    const routerSource = readFileSync(path.join(root, 'src/host/router.ts'), 'utf8')
+    const routerSource = realRouteSource()
     const openApiYaml = readFileSync(path.join(root, 'docs/api/openapi.yaml'), 'utf8')
     const failures = await checkRouteContract({ routerSource, openApiYaml })
     expect(failures).toEqual([])
   })
 
   it('当前无鉴权豁免恰好是 healthz 与 pairings/exchange（SEC-H1 回归）', () => {
-    const routerSource = readFileSync(path.join(root, 'src/host/router.ts'), 'utf8')
+    const routerSource = realRouteSource()
     const publicOps = extractUnauthenticatedOperations(extractCodeRoutes(routerSource))
     expect(publicOps).toEqual(['GET /healthz', 'POST /pairings/exchange'])
 

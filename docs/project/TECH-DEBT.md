@@ -20,12 +20,11 @@
 | 文件 | 行数 | 为什么是债 | 清账阶段 |
 |---|---|---|---|
 | `src/host/dsh-0.2-bridge.ts` | 2 682 | **兼容适配层**：重建 0.1.x `apiProxy` 面容，一个文件里装了会话、审批、提问、模型多条链路的重建逻辑。改一条要读 1 700 行 | 按链路拆（session / approval / question / model 各一模块），公共面容抽 `api-proxy-facade.ts` |
-| `src/host/router.ts` | 2 062 | 全部 REST 路由集中一处；新端点往里加，旧端点没人敢删 | 按资源域拆 `routes/*.ts`，router 只做组装 |
 | `src/host/chat-adapter.ts` | 1 732 | 会话链路适配：列表/历史/发送/取消/workspace/agent-preset + 审批/提问适配全在一个文件（2026-10-30 修 approval 句柄 +11 注释/分支） | 按端点族拆 |
 | `src/host/settings-adapter.ts` | 731 | 提供商与模型目录、通用设置命名空间两件事挤在一个类；SEC-H11 的重定向闸门也落在这里 | 拆 `providers-adapter.ts` 与 `namespaces-adapter.ts` |
 | `src/host/ws-handler.ts` | 861 | **`/ws/mobile` 的总装**：鉴权三入口（配对码 / 令牌 / Bearer 连接）、`handleMessage` 解码与分发、13 个域处理器委派、背压发送队列（含可重建帧挑选与 resync 补发）、hello 全在一个类里。2026-10-31 拆出 5 个基础帧到 `ws-basic.ts`、连接上限与心跳到 `ws-connection-policy.ts`（wc -l：HEAD 984 → 861，净 −123；原登记的 974 已过期）。**仍超预算**：issue #4 要求「只留鉴权 + 分发 + 发送路径」并 <600 行，而这三块实测约 430 行、加状态机/挂载/字段脚手架约 250 行，文件下限约 680 行——**`<600` 在该边界下不可达**，属 issue 估算偏乐观，不是拆分未尽 | 已拆 `ws-basic.ts` + `ws-connection-policy.ts`；下一刀：把 ping/subscribe/unsubscribe 三个连接级基础帧与协议常量（`KNOWN_UNSUPPORTED_FRAMES` / `headerValue` / `decodeBase64Utf8`）外移，估 861 → ~780，仍超 600；要真到 600 须放宽「发送路径留在主类」这条边界 |
 
-> 这五个是**已登记的债，不是许可**。新增超预算文件必须先入本表再写码。
+> 这四个是**已登记的债，不是许可**。新增超预算文件必须先入本表再写码。
 >
 > **2026-10-17 按事实更新行数**（原来是 1 730 / 1 245 / 1 233）：C 批四项改动分别落在
 > `chat-adapter.ts`（连接即重放、归档列表查询、`historyFormatVersion`，+139）、
@@ -61,6 +60,13 @@
 > `bff-upload.ts`(360) / `bff-schedule.ts`(580) / `bff-speech.ts`(298) 四个新文件里，
 > router 只增了分发与装配 —— 与 `provider-url-policy.ts` 同一处置。
 > 预算（600 行/文件）未变；这四个新文件都在预算内。
+> **2026-10-31 按 capability 拆分清账**（issue #3，`wc -l` 实测）：`router.ts` 2 094 →
+> **345**（组合根：imports + 选项类型 + handle/dispatch 的三个保留门 + openTunnelForCommand
+> 委托 + `matchJobRoute`/`decodePathSegment` re-export），能力块拆
+> `src/host/routes/{chat,cloudflare,devices,files,plugins,settings,shared,registry}.ts`
+> 8 个文件（54–517 行，全部 <600）。纯搬移：URL/method/status/error code/body 不变，
+> `openapi.yaml` 未动、契约测试零改动；`routes/registry.ts` 是 path → handler 的一屏总览
+> （`routes` 字面量为文档性，动态段以 handler 内分支为准）。同一提交删本表 `router.ts` 行。
 > **2026-10-29 `/ws/mobile` requestId 统一回显后复核**（`wc -l` 实测）：`src/host/ws-handler.ts`
 > 769 → **837**（+68：`AsyncLocalStorage` 请求上下文、`handleMessage` 拆出 `routeFrame`
 > 承载原分发链、`reportFrameError` 兜底分发异常；`sendFrame` 只在 `encodeFrame` 前多一次
