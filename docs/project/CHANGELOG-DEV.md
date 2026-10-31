@@ -1,5 +1,94 @@
 # 开发日志
 
+## 消费面总览 · v2.7.0 → v2.9.2（2026-10-31，**跨已发版本，不是新发版条目**）
+
+> **这一节只记桥侧事实**：本仓新增了哪些能力、给出了哪些接口、修了哪些缺陷。
+> 「客户端该怎么做」不在本节范围内 —— 每个客户端有自己的界面与取舍，由各自判断。
+> 已知的消费方（`dsh-companion` Android、`dsh-companion-harmony`）已收到同步说明。
+>
+> **为什么标题不写「未发布」**：它整理的是 **已经发出去**的十一版（2.7.0 → 2.9.2），
+> 没有任何未发布内容。`scripts/release.sh` 在找不到 `.release-body-<VER>.md` 时会兜底取
+> 本文件**顶部 60 行**当 Release 正文 —— 若这一节顶着「未发布」且排在最前，下一次发版
+> 就会把这份历史总览当成新版本说明发出去。因此标题带「跨已发版本」标记，且下一次发版前
+> **必须**补一份 `.release-body-<VER>.md`（见 `RELEASE.md`）。
+
+这一段跨 11 个提交标签，并非一次发版；把它们并成一份**从消费方视角**的清单，
+是因为各版 CHANGELOG 条目是按「为什么这么改」写的，对「我能用上什么」不友好。
+
+### 新增的接口
+
+**REST BFF（v2.8.0，只增不改，九条路径）**
+
+| 领域 | 端点 |
+|---|---|
+| 分块上传 | `POST`/`GET …/attachments/uploads`、`GET`/`DELETE …/uploads/{uploadId}`、`PUT …/uploads/{uploadId}/chunks/{index}`、`POST …/uploads/{uploadId}/complete` |
+| 定时任务 | `GET`/`POST /chat/schedules`、`PATCH`/`DELETE /chat/schedules/{id}` |
+| 官方语音 | `GET /chat/speech/catalog`、`POST /chat/speech/transcriptions`、`PUT /chat/speech/config` |
+
+**子会话历史（v2.9.0，只读窄口）**
+
+`GET /chat/sessions/{leadSessionId}/subagents/{subagentId}/messages`（参数 `beforeSeq` / `maxMessages`，
+响应结构与 `listMessages` 同形）。授权两步：Lead 对设备可见 + 内核投影背书成员关系。
+
+### 新增的能力位
+
+`attachment-chunked-upload-v1` / `chat-schedules-v1` / `speech-transcription-v1`（v2.8.0）、
+`subagent-history-v1`（v2.9.0）。名字已定稿，不可改名或加别名。
+
+其中两个**按运行时宿主服务剔除**：宿主没有 `ctx.schedule` 不发 `chat-schedules-v1`，
+没有 typert Gateway 不发 `speech-transcription-v1`。即「探测不到」是正常结局，不是故障。
+
+### 新增的字段
+
+- `Model.contextWindow` / `maxTokens`（v2.7.0）：目录里每个模型会并发查一次
+  `llm.resolveModelInfo`，按 `provider + model` 缓存 10 分钟，**失败不缓存**；
+  内核自己给了值就不覆盖。
+- `POST /chat/sessions` 的 `reuseBlank`（v2.7.0）：省略 / `true` → 优先复用同工作区的空白会话
+  （跳过 preset 不匹配的空白）；`false` → 强制新建。省略时请求体与旧版逐字节相同。
+- WS `session-create` 的 `workspaceId` / `agentPreset` / `reuseBlank`（v2.8.1）：
+  带 `workspaceId` 走 `createSessionInWorkspace`，否则仍走 `rootId` + `cwd`。
+- 首屏 `history` 附带 `projections`（v2.8.1）：只在**不带 `beforeSeq`** 时附带，
+  翻页刻意不带（那一帧有 1 MiB 上限）。
+- `Device.platform` / `model` / `nameSource`（v2.6.1 起生效，schema 早已声明）。
+
+### 传输层承诺（v2.8.1，`/ws/mobile`）
+
+这三条此前只写在文档里，本轮补进实现：
+
+- **心跳**：每 30 s ping，连续两个周期未回 pong 即 `terminate()`（用 terminate 不用 close ——
+  对端已不在，优雅挥手没人收）。
+- **连接上限**：默认 32，判定在 Upgrade **之前**，超出回 HTTP `429` + `Retry-After: 5`；
+  鉴权先于计数，未鉴权请求不占名额。
+- **背压告知**：发送队列 512 帧，溢出时优先丢**可重建帧**（`event` / `tasks-updated` /
+  `goal-updated` / `session-title-changed` / `queue-item-updated`），应答帧一律不丢；
+  排空后补发 `connection-resync-required`，载荷 `{dropped, reason:'backpressure'}`。
+
+### 修的缺陷
+
+- **审批决策恒 409**（v2.8.2）：`ApprovalBridge` 把结算句柄塞在 `payload.rpcId`，
+  而 `FrameHub.push` 会给每条帧新造一个外层 `rpcId` 当信封 id，适配层记错了那一层 →
+  决策时按 `respond()` 查表查不到 → `accepted:false` → 409。修法是 `captureApproval`
+  优先取 `payload.rpcId`，外层 id 仅在 payload 没带时兜底。其余把外层 id 当**事件 id**
+  的消费点一律没动（那正是它该被新造的用途）。
+- **发文件永远 400/500**（v2.7.1）：内核 `resolveAgent()` 返回的是 `{agent}` / `{error}`
+  包装对象，桥此前直接当 Agent 用，`agent.session.header.origin` 变成
+  `undefined.header.origin`，报错点在消费侧所以栈里看不到桥的位置。修法是识别包装形状，
+  成功解 `.agent`、失败**原样抛 `.error`**（保留内核稳定 code），并保留裸对象兼容。
+
+### 一处已知的接口事实（不是缺陷，但值得写明）
+
+`POST /chat/sessions/{sessionId}/attachments`（**单条**附件）的请求体上限是
+`readJson(req, 24_000_000)` —— **24,000,000 字节**，收的是 base64。
+base64 膨胀 4/3，所以单条路径的原始文件实际上限约 **17.2 MiB**。
+超过这个体积不是「桥拒绝得莫名其妙」，而是**该走分块上传**（上限 256 MiB，块大小
+1 MiB 由服务端在开票响应里回传）。此前这条上限从未写进对外文档。
+
+### 本文档门禁
+
+实测（2026-10-31，本机）：`tsc --noEmit` 0 错；`vitest` **80 个文件 / 834 个用例全绿**；
+`docs:check` 四段全过（12 文档 / 39 tasks / 9 ADRs / STRUCTURE 84 锚点 / INTERFACES 87 锚点）；
+双产物 build 成功（host `lib/index.js` 628.64 kB、client `lib/client.cjs` 772.91 kB）。
+
 ## v2.9.2 · 首屏换 16:9 宣传图（2026-10-31）
 
 **起因是一次流量诊断**：仓库 30 天 npm 下载 3686、14 天 clone 1075（132 个独立来源），
