@@ -814,6 +814,38 @@ export class ApiRouter {
       }
     }
 
+    // ── 子会话历史（受成员关系校验的只读窄口，2026-10-30）────────────────────
+    //
+    // 为什么不能复用 `GET /chat/sessions/{sessionId}/messages`：那条路径靠
+    // `requireSession()` 判定可见性，而它建立在 `listSessions()` 上，后者把
+    // `origin: 'subagent'` 的行整批滤掉了 —— 子会话 id 打进去必然 404。
+    // 详见 chat-adapter.ts 的 `subagentHistory` 注释（含「为什么选窄口而不是
+    // 拆过滤 / 放宽 requireSession」的权衡）。
+    //
+    // 路径刻意**带上 leadSessionId**：授权第一步就是「这个 Lead 对这台设备可见」，
+    // 把它写进路径而不是 query，可以让「谁授权了谁」在日志与审计里一眼可读，
+    // 也顺手杜绝「同一个子会话被任意 Lead 冒领」的歧义。
+    const subagentHistoryRoute = pathname.match(
+      /^\/api\/v1\/chat\/sessions\/([^/]+)\/subagents\/([^/]+)\/messages$/,
+    )
+    if (subagentHistoryRoute !== null) {
+      const leadSessionId = decodePathSegment(subagentHistoryRoute[1] as string)
+      const subagentId = decodePathSegment(subagentHistoryRoute[2] as string)
+      if (method === 'GET') {
+        this.options.auth.requireScope(principal, 'chat.read')
+        const beforeSeq = optionalInteger(url.searchParams.get('beforeSeq'))
+        const maxMessages = optionalInteger(url.searchParams.get('maxMessages'))
+        sendJson(res, 200, await this.options.chat.subagentHistory(principal, leadSessionId, subagentId, {
+          ...(beforeSeq === undefined ? {} : { beforeSeq }),
+          ...(maxMessages === undefined ? {} : { maxMessages }),
+        }))
+        return
+      }
+      // 只读是这条窄口的设计前提，不是遗漏：写成员会话会让「谁在指挥谁」含混，
+      // 官方 Web 端同样只允许经 Lead 的模型工具去写。
+      throw new ApiError(405, 'METHOD_NOT_ALLOWED', 'Subagent history is read-only.')
+    }
+
     // 附件字节：会话历史里的图片以 attachmentId 引用存在，客户端要靠这条把图取回来。
     //
     // id 形如 `sha256:<hex>` —— **含冒号**，所以路径段必须 URL 解码；

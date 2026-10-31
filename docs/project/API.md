@@ -380,6 +380,30 @@ GET /api/v1/attachments/{attachmentId}?sessionId=<sessionId>
 `GET /chat/sessions/{sessionId}/messages` 返回会话历史（`events` + `hasMore`，可选 `projections`），
 要求 `chat.read` 与对应 session 授权；`beforeSeq` 往回翻、`maxMessages` 限制条数。
 
+### 子会话（团队成员）历史：受成员关系校验的只读窄口
+
+`GET /chat/sessions/{leadSessionId}/subagents/{subagentId}/messages` 读**子会话**历史，
+参数与响应形状与上一条**完全一致**（同样受字节预算约束、同样带 `historyFormatVersion`）。
+
+为什么需要单独一条路径：内核 0.2.x 把子会话也列在 `sessions.list` 里并标 `origin: 'subagent'`，
+而桥把这类行整批滤掉（内核拒绝把子会话当普通会话激活，暴露出来只会得到「点开就崩」的行）。
+`requireSession()` 的可见性判定建立在 `listSessions()` 上，于是任何子会话 id 打进
+`/messages` 都必然 404 —— 手机端「团队面板里点成员看内容」因此走不通。
+
+授权分两步，缺一不可：
+
+1. **Lead 必须可见**：`{leadSessionId}` 走完全没变的既有规则（设备 scope + 授权根 + 归档状态）。
+2. **成员关系必须由内核背书**：读 Lead 的会话投影，要求 `{subagentId}` 出现在
+   `subagentCatalog[].id`（或 `agentTeam.members[].id`）里。这份目录是内核为这个 Lead
+   亲手发布的，不是桥维护的白名单 —— 猜一个 sessionId 来读别人的会话在这里不成立。
+
+两步都过之后才直读历史；**刻意不再调 `requireSession(subagentId)`**，那正是会必然 404 的一步。
+
+- 只读：非 `GET` 一律 `405 METHOD_NOT_ALLOWED`。写成员会话会让「谁在指挥谁」含混，
+  官方 Web 端同样只允许经 Lead 的模型工具去写。
+- 不满足成员关系、或 Lead 投影取不到时统一 `404 SUBAGENT_NOT_FOUND`（不区分「不存在」
+  与「不是成员」，避免把子会话 id 的存否变成探测面）。
+
 响应受**字节预算**约束（单次 2 MiB、单条事件 512 KiB）：
 
 - 整份超出预算时，从**最旧**端丢弃事件、保留最新的连续后缀，并把 `hasMore` 置 `true` ——

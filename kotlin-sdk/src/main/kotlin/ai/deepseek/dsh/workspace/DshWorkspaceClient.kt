@@ -541,6 +541,27 @@ class DshWorkspaceClient(
 
     fun listMessages(sessionId: String): JsonElement = executeJsonElement("chat/sessions/$sessionId/messages", "GET", null)
 
+    /**
+     * 读**子会话（团队成员）**的历史 —— 受成员关系校验的只读窄口。
+     *
+     * 不能复用 [listMessages]：那条路径靠会话列表判定可见性，而子会话被
+     * `sessions.list` 刻意滤掉（内核拒绝把它们当普通会话激活），所以任何子会话 id
+     * 打进去都是 404。这条窄口改成两步授权：Lead 会话必须可见 + 内核投影
+     * （`subagentCatalog` / `agentTeam.members`）必须背书成员关系。只读。
+     */
+    fun listSubagentMessages(
+        leadSessionId: String,
+        subagentId: String,
+        beforeSeq: Int? = null,
+        maxMessages: Int? = null,
+    ): JsonElement {
+        val query = buildString {
+            if (beforeSeq != null) append(if (isEmpty()) "?" else "&").append("beforeSeq=").append(beforeSeq)
+            if (maxMessages != null) append(if (isEmpty()) "?" else "&").append("maxMessages=").append(maxMessages)
+        }
+        return executeJsonElement("chat/sessions/$leadSessionId/subagents/$subagentId/messages$query", "GET", null)
+    }
+
     fun renameSession(sessionId: String, title: String) {
         val body = json.encodeToString(RenameRequest.serializer(), RenameRequest(title))
         executeUnit("chat/sessions/$sessionId", "PATCH", body)

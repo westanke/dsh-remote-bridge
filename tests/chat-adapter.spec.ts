@@ -220,6 +220,118 @@ describe('DSH chat choices', () => {
     expect(sessions[0]?.cwdAbsolute).toBe(rootPath)
   })
 
+  /**
+   * 子会话历史的成员关系校验。
+   *
+   * 这条窄口读的是**别人的会话内容**，授权一旦松，泄漏面就是团队成员的全部对话。
+   * 所以这里把边界都钉住：成员可以读、非成员 404、投影取不到也不放行。
+   *
+   * 关键设计：可见性**不**依赖 `listSessions()`（子会话被它滤掉了），而依赖内核
+   * 自己发布的 `subagentCatalog` / `agentTeam.members` 投影 —— 那份目录是内核为
+   * 这个 Lead 亲手发的，不是桥维护的白名单，所以「猜一个 id 来读」猜不中就是 404。
+   */
+  it('lets a teammate be read only when the Lead projection backs the membership', async () => {
+    const base = await mkdtemp(path.join(os.tmpdir(), 'daw-subagent-'))
+    cleanup.dir(base)
+    const rootPath = await realpath(base)
+    const database = cleanup.db(new WorkspaceDatabase(path.join(base, 'state')))
+    const root = await database.addRoot(base, 'Root')
+    let historySessionId: string | undefined
+    const api = {
+      sessions: {
+        list: async () => ({
+          result: { ok: true, value: { items: [
+            { sessionId: 'lead-1', updatedAt: 1, running: false, blank: false, cwd: rootPath },
+          ] } },
+        }),
+        projections: async () => ({
+          result: { ok: true, value: { values: {
+            // 子会话目录：主键 `id`。老夹具用过 `sessionId`，两种都要认。
+            subagentCatalog: [
+              { id: 'sub-catalog', createdAt: 1 },
+              { sessionId: 'sub-legacy-key', createdAt: 2 },
+            ],
+            agentTeam: { members: [{ id: 'lead-1', role: 'lead' }, { id: 'sub-team-only', role: 'teammate' }], tasks: [] },
+          } } },
+        }),
+        history: async (request: { payload: { sessionId: string } }) => {
+          historySessionId = request.payload.sessionId
+          return { result: { ok: true, value: { events: [{ seq: 1 }], hasMore: false } } }
+        },
+      },
+      workspace: { list: async () => ({ result: { ok: true, value: { items: [], archivedSessionIds: [] } } }) },
+    }
+    const adapter = new DshChatAdapter(api as never, database)
+    const principal: DevicePrincipal = {
+      kind: 'device',
+      id: 'phone',
+      name: 'Phone',
+      scopes: new Set(['chat.read']),
+      rootIds: new Set([root.id]),
+    }
+
+    // ① subagentCatalog[].id 背书
+    await expect(adapter.subagentHistory(principal, 'lead-1', 'sub-catalog', {}))
+      .resolves.toMatchObject({ events: [{ seq: 1 }], hasMore: false, historyFormatVersion: 1 })
+    expect(historySessionId).toBe('sub-catalog')
+
+    // ② 老夹具的 sessionId 键也要认，否则一条合法子会话会被误判 404
+    await expect(adapter.subagentHistory(principal, 'lead-1', 'sub-legacy-key', {}))
+      .resolves.toMatchObject({ hasMore: false })
+
+    // ③ agentTeam.members 也能背书（覆盖「团队已建、子会话目录还没同步」的中间态）
+    await expect(adapter.subagentHistory(principal, 'lead-1', 'sub-team-only', {}))
+      .resolves.toMatchObject({ hasMore: false })
+
+    // ④ 不在任何一份名单里的 id：404，且**不能**触到内核 history
+    historySessionId = undefined
+    await expect(adapter.subagentHistory(principal, 'lead-1', 'someone-elses-session', {}))
+      .rejects.toMatchObject({ status: 404, code: 'SUBAGENT_NOT_FOUND' })
+    expect(historySessionId).toBeUndefined()
+
+    // ⑤ Lead 自己不可见时，第一步就拦下（规则一行没放宽）
+    await expect(adapter.subagentHistory(principal, 'lead-unknown', 'sub-catalog', {}))
+      .rejects.toMatchObject({ status: 404, code: 'SESSION_NOT_FOUND' })
+  })
+
+  it('refuses to read a teammate when the Lead projection is unavailable', async () => {
+    // 投影取不到 = 无法证明成员关系 = 不放行。宁可 404 也不开盲盒：
+    // 这一步若「读不到就放过」，整条窄口就退化成任意会话读取。
+    const base = await mkdtemp(path.join(os.tmpdir(), 'daw-subagent-'))
+    cleanup.dir(base)
+    const rootPath = await realpath(base)
+    const database = cleanup.db(new WorkspaceDatabase(path.join(base, 'state')))
+    const root = await database.addRoot(base, 'Root')
+    let historyCalled = false
+    const api = {
+      sessions: {
+        list: async () => ({
+          result: { ok: true, value: { items: [
+            { sessionId: 'lead-1', updatedAt: 1, running: false, blank: false, cwd: rootPath },
+          ] } },
+        }),
+        projections: async () => ({ result: { ok: true, value: null } }),
+        history: async () => {
+          historyCalled = true
+          return { result: { ok: true, value: { events: [], hasMore: false } } }
+        },
+      },
+      workspace: { list: async () => ({ result: { ok: true, value: { items: [], archivedSessionIds: [] } } }) },
+    }
+    const adapter = new DshChatAdapter(api as never, database)
+    const principal: DevicePrincipal = {
+      kind: 'device',
+      id: 'phone',
+      name: 'Phone',
+      scopes: new Set(['chat.read']),
+      rootIds: new Set([root.id]),
+    }
+
+    await expect(adapter.subagentHistory(principal, 'lead-1', 'sub-catalog', {}))
+      .rejects.toMatchObject({ status: 404, code: 'SUBAGENT_NOT_FOUND' })
+    expect(historyCalled).toBe(false)
+  })
+
   it('normalizes token chunks and preset switches into stable mobile events', () => {
     expect(normalizeDshEvent({
       rpcId: 'delta-1',

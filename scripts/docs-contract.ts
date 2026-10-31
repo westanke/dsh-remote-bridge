@@ -127,6 +127,9 @@ const PARAM_NAMES_BY_SOURCE: Readonly<Record<string, readonly string[]>> = {
   '^/api/v1/chat/sessions/([^/]+)/fork$': ['sessionId'],
   '^/api/v1/chat/sessions/([^/]+)/archive$': ['sessionId'],
   '^/api/v1/chat/sessions/([^/]+)/messages$': ['sessionId'],
+  // 子会话历史的只读窄口（2026-10-30）：两段都在授权链上有意义 ——
+  // leadSessionId 决定「这个 Lead 对设备可见吗」，subagentId 是被读的对象。
+  '^/api/v1/chat/sessions/([^/]+)/subagents/([^/]+)/messages$': ['leadSessionId', 'subagentId'],
   '^/api/v1/attachments/([^/]+)$': ['attachmentId'],
   '^/api/v1/chat/sessions/([^/]+)/attachments$': ['sessionId'],
   '^/api/v1/chat/sessions/([^/]+)/commands$': ['sessionId'],

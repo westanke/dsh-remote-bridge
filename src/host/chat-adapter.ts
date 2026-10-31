@@ -37,7 +37,13 @@ export interface DshApiProxy {
   sessions: {
     list(request: { rpcId: string; payload: { cursor?: string } }): Promise<RpcResponse<{ items: DshSessionSummary[] }>>
     create(request: { rpcId: string; payload: { cwd?: string; workspaceId?: string; sessionId?: string; agentPreset?: string } }): Promise<RpcResponse<{ sessionId: string; agentPreset?: string }>>
-    history(request: { rpcId: string; payload: { sessionId: string; beforeSeq?: number; maxMessages?: number } }): Promise<RpcResponse<{ events: unknown[]; hasMore: boolean; projections?: unknown }>>
+    /**
+     * 读历史。`parentSessionId` + `subagentMode` 是本桥的**扩展字段**（内核契约里
+     * 没有）：带上它们表示「这是 parentSessionId 名下的子会话」，底层据此把地址
+     * 拼成 `kind:'subagent'`（内核只认这个形状，拿 childSessionId 冒充普通
+     * sessionId 会被 validateAddress() 拒掉）。不带就是普通会话，行为一字不变。
+     */
+    history(request: { rpcId: string; payload: { sessionId: string; beforeSeq?: number; maxMessages?: number; parentSessionId?: string; subagentMode?: 'one-shot' | 'continuable' | 'unknown' } }): Promise<RpcResponse<{ events: unknown[]; hasMore: boolean; projections?: unknown }>>
     /**
      * 提交一条 prompt。
      *
@@ -728,6 +734,112 @@ export class DshChatAdapter {
     // 带上**事件形状版本**：客户端可据此判断「这份 events 我能不能解析」。
     // 本轮只声明、不校验 —— 强制校验会打断已发布客户端的 beforeSeq 分页
     // （它们不认识这个字段，也就谈不上带对版本）。详见 capabilities.ts 的说明。
+    return { ...applyHistoryBudget(raw), historyFormatVersion: HISTORY_FORMAT_VERSION }
+  }
+
+  /**
+   * 读**子会话**（subagent / 团队成员）的历史 —— 受成员关系校验的只读窄口。
+   *
+   * ## 为什么需要一条单独的路径
+   *
+   * 内核 0.2.x 把子会话也列在 `sessions.list` 里、并标 `origin: 'subagent'`，
+   * 而桥在 `dsh-0.2-bridge.ts` 的 `sessions.list` 把它们**整批滤掉**（内核拒绝
+   * 把子会话当普通会话激活，暴露出来只会得到「点开就崩」的行）。`requireSession()`
+   * 的可见性判定正是建立在 `listSessions()` 上的，于是任何 `{subagentId}` 打进来
+   * 都是 404 —— 手机端「团队面板里点成员/子会话看内容」因此根本走不通。
+   *
+   * 三条路可选：拆掉 `origin` 过滤（把「点开就崩」的行放回列表，回归风险最大）、
+   * 放宽 `requireSession`（等于给所有会话开一条后门，最危险）、或者**单开一条
+   * 自带授权规则的窄口**。本实现选第三条：授权判定不依赖会话列表，改用**内核自己
+   * 发布的投影**来证明成员关系。
+   *
+   * ## 授权是怎么成立的（两步，缺一不可）
+   *
+   * ① **Lead 必须可见**：`requireSession(leadSessionId)` 走的是完全没变的既有规则
+   *    （设备 scope + 授权根 + 归档状态）。子会话能读，前提是它的 Lead 本来就能读。
+   * ② **成员关系必须由内核背书**：读 Lead 的会话投影，要求 `subagentId` 出现在
+   *    `subagentCatalog[].id`（或 `agentTeam.members[].id`，两者在内核里指向同一批
+   *    Session）里。这份目录是内核为这个 Lead 亲手发布的，不是我们维护的白名单，
+   *    所以「猜一个 sessionId 来读别人会话」在这里不成立 —— 猜不中就是 404。
+   *
+   * 通过这两步之后才直读历史。注意 ③ **刻意不再调 `requireSession`**：那正是会
+   * 必然 404 的那一步，授权已在 ①② 完成，③ 纯粹是取数据。
+   *
+   * ## 为什么只读
+   *
+   * 写子会话（给成员发消息、改它的模型/权限）会让「谁在指挥谁」变得含混：官方 Web 端
+   * 同样不允许人类直接写成员会话，一切经由 Lead 的模型工具。这条窄口只开放 `events`
+   * 读取，`POST` 一律 405。
+   */
+  async subagentHistory(
+    principal: Principal,
+    leadSessionId: string,
+    subagentId: string,
+    options: { beforeSeq?: number; maxMessages?: number },
+  ): Promise<{ events: unknown[]; hasMore: boolean; projections?: unknown; bytes?: number; truncated?: boolean; historyFormatVersion?: number }> {
+    // ① Lead 可见性：沿用既有规则，一行没放宽。
+    await this.requireSession(principal, leadSessionId)
+    // ② 成员关系：以 Lead 自己的投影为准。
+    const baseline = unwrapDsh(await this.api.sessions.projections({
+      rpcId: randomUUID(),
+      payload: { sessionId: leadSessionId },
+    }))
+    if (baseline === null || baseline === undefined) {
+      // 投影取不到就**不放行**：这时无法证明成员关系，宁可 404 也不开盲盒。
+      // （与 ws-team 的 projectionState:'unavailable' 是两种不同的诚实：
+      //  那边只是「这次没读到」，这边是「读不到就不授权」。）
+      throw new ApiError(404, 'SUBAGENT_NOT_FOUND', 'Session projections are unavailable, cannot verify membership.')
+    }
+    const values = baseline.values ?? {}
+    const members = new Set<string>()
+    // 子会话的 mode 也要一起记：内核 validateAddress() 会拿它和投影里的
+    // descriptor 比对（address.mode !== identity.mode 就判 subagent/unauthorized），
+    // 所以不能一律传 'unknown' —— 只有真的不知道时才传 unknown。
+    const modes = new Map<string, 'one-shot' | 'continuable' | 'unknown'>()
+    // subagentCatalog 的元素形状见 dsh-subagent 的 SubagentCatalogEntry：主键是 `id`。
+    // 老内核/夹具里出现过 `sessionId` 键，两个都认 —— 否则一条合法的子会话会被误判 404。
+    const catalog = values['subagentCatalog']
+    if (Array.isArray(catalog)) {
+      for (const entry of catalog) {
+        if (typeof entry !== 'object' || entry === null) continue
+        const record = entry as Record<string, unknown>
+        const id = typeof record['id'] === 'string' ? record['id'] : record['sessionId']
+        if (typeof id !== 'string' || id === '') continue
+        members.add(id)
+        const mode = record['mode']
+        if (mode === 'one-shot' || mode === 'continuable' || mode === 'unknown') modes.set(id, mode)
+      }
+    }
+    // agentTeam.members[].id 也是 SessionId（Lead 自己在内）。补上这一路是为了
+    // 覆盖「团队已建、子会话目录还没同步」的中间态 —— 两个投影不同步时，
+    // 只要任一能证明成员关系就算成立。
+    const team = values['agentTeam']
+    if (typeof team === 'object' && team !== null) {
+      const teamMembers = (team as Record<string, unknown>)['members']
+      if (Array.isArray(teamMembers)) {
+        for (const entry of teamMembers) {
+          if (typeof entry !== 'object' || entry === null) continue
+          const id = (entry as Record<string, unknown>)['id']
+          if (typeof id === 'string' && id !== '') members.add(id)
+        }
+      }
+    }
+    if (!members.has(subagentId)) {
+      throw new ApiError(404, 'SUBAGENT_NOT_FOUND', 'The session is not a member of this team.')
+    }
+    // ③ 取数据：字节预算与 historyFormatVersion 口径与 history() 完全一致，
+    //    否则同一个客户端要在两条路径上处理两种裁剪语义。
+    //    parentSessionId + subagentMode 交给底层拼 `kind:'subagent'` 地址 ——
+    //    内核只认这个形状，把 childSessionId 当普通 sessionId 递进去会被
+    //    validateAddress() 以「requires their durable parent address」拒掉。
+    const payload = {
+      sessionId: subagentId,
+      parentSessionId: leadSessionId,
+      subagentMode: modes.get(subagentId) ?? 'unknown',
+      ...(options.beforeSeq === undefined ? {} : { beforeSeq: options.beforeSeq }),
+      ...(options.maxMessages === undefined ? {} : { maxMessages: options.maxMessages }),
+    }
+    const raw = unwrapDsh(await this.api.sessions.history({ rpcId: randomUUID(), payload }))
     return { ...applyHistoryBudget(raw), historyFormatVersion: HISTORY_FORMAT_VERSION }
   }
 

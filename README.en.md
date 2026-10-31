@@ -9,7 +9,7 @@
 </p>
 
 <p align="center">
-  <img alt="Version" src="https://img.shields.io/badge/version-v2.8.2-087f8c">
+  <img alt="Version" src="https://img.shields.io/badge/version-v2.9.0-087f8c">
   <img alt="DSH plugin" src="https://img.shields.io/badge/DeepSeek_Harness-plugin-1f2328">
   <img alt="Platforms" src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-586069">
   <img alt="License" src="https://img.shields.io/badge/license-AGPL--3.0-2da44e">
@@ -402,7 +402,26 @@ inside the zero-change set, and 4 slots retained with 0 removed.
 
 ## Project
 
-- Version: `v2.8.2`
+- Version: `v2.9.0`
+- **v2.9.0 makes teammates (sub-sessions) readable**: the phone's team panel could list members and
+  sub-sessions but could not open a single one, because `sessions.list` filters out every row with
+  `origin === 'subagent'` (the bridge's own `dsh-0.2-bridge.ts:2327`, with a comment explaining that
+  exposing them "only yields rows that crash on tap"), so any sub-session id hitting `/messages` gets a
+  hard 404. Even past that visibility check the kernel's `validateAddress()` demands the
+  `{ kind:'subagent', parentSessionId, childSessionId, mode }` discriminated union instead of a plain
+  session address. This release adds a **read-only narrow port guarded by membership**:
+  `GET /api/v1/chat/sessions/{leadSessionId}/subagents/{subagentId}/messages`. Authorization takes two
+  steps — (1) the Lead session must be visible to the device (reusing `requireSession`, not a single rule
+  relaxed); (2) membership must be vouched for by a projection the kernel itself publishes
+  (`subagentCatalog[].id` or `agentTeam.members[].id`). Only then is history read directly, deliberately
+  **without** calling `requireSession(subagentId)` — removing the `origin` filter would put "crash on tap"
+  rows back into the list, while loosening `requireSession` would backdoor every session; the narrow port
+  has the cleanest boundary. Read-only (non-GET always 405), and `SUBAGENT_NOT_FOUND` deliberately does
+  not distinguish "does not exist" from "not your teammate", otherwise id existence becomes a probe
+  surface. New capability bit `subagent-history-v1` (it must be separate from `history-v1`, which always
+  404s on sub-session ids and therefore cannot advertise this). The same release re-checked DSH
+  0.2.1-rc.2 → rc.5: 18 of the 19 packages the bridge depends on are byte-identical, the only diff being
+  a single KDoc comment.
 - **v2.7.1 is a defect-fix release**: the kernel's `sessionController.resolveAgent()` returns an
   `{ agent }` / `{ error }` **envelope**, not the Agent itself (`dsh-api-session-controller/lib/index.js:365-368`
   `liveAgent()` and `:221-246` `resolve()` both have that shape). The bridge used to hand the envelope

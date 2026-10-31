@@ -1,7 +1,28 @@
 # 当前状态
 
-- 日期：2026-10-28（HEAD 已含 2.7.2；本节记录**未发版**的在途工作）
-- **未发版（工作区，待复核）**：**REST 对等面 —— 分块上传 / 定时任务 / 官方语音**。
+- 日期：2026-10-31（**已发版 v2.9.0**）
+- **已发版 v2.9.0（2026-10-31）**：**团队成员（子会话）历史 —— 受成员关系校验的只读窄口**。
+  - 真机痛点：`dsh-companion` 团队面板能列出成员与子会话，但点开任何一个都读不到内容。根因是双重设限：
+    `sessions.list` 在 `dsh-0.2-bridge.ts:2327` 把 `origin === 'subagent'` 的行整批滤掉，于是子会话 id
+    打 `/messages` 必然 404；即使绕过可见性，内核 `validateAddress()` 也要求
+    `{ kind:'subagent', parentSessionId, childSessionId, mode }` 判别联合寻址。
+  - 方案：不动 `sessions.list` 过滤、不放宽 `requireSession()` 通用规则，新增只读窄口。授权两步 ——
+    ① Lead 会话必须对设备可见（沿用 `requireSession(leadSessionId)`）；② 成员关系必须由内核投影背书
+    （`subagentCatalog[].id` 或 `agentTeam.members[].id`）。两步都过才直读历史，刻意不再调
+    `requireSession(subagentId)`。非 GET 一律 405。
+  - 新增端点 `GET /api/v1/chat/sessions/{leadSessionId}/subagents/{subagentId}/messages`
+    （参数 `beforeSeq` / `maxMessages`，响应同 `listMessages`）；错误码 `SUBAGENT_NOT_FOUND`（404，
+    刻意不区分「不存在」与「不是成员」）；能力位 `subagent-history-v1`；Kotlin SDK `listSubagentMessages`。
+  - 技术核心：`dsh-0.2-bridge.ts` 新增 `SessionAddressLike` 判别联合，`follow()` / `page()` 的 `address`
+    从写死 `{kind:'session'}` 放宽；`sessions.history` 从 payload 读 `parentSessionId`/`subagentMode` 拼地址。
+    `mode` 必须从 catalog 原样取（内核会比对，不符抛 `subagent/unauthorized`）；子会话不能硬问
+    `readSessionProjections`（会 500），用 follow 快照自带的 projections。
+  - 门禁：`pnpm check` 全绿 —— 80 文件 / **834 用例**，`tsc` / `docs:check` / `build`。
+  - **同时复核 DSH 0.2.1-rc.2 → 0.2.1-rc.5 兼容性**：逐包 diff `lib/` 产物，桥依赖 19 个包中 18 个
+    零差异，唯一差异是一行 KDoc 注释；rc.5 实跑 834 用例全绿。结论无需改代码。
+- **已发版 v2.8.2（2026-10-30）**：修复审批决策恒 409（`captureApproval` 取了 FrameHub 外层随机
+  `rpcId` 而非 `payload.rpcId` 结算句柄）。79 文件 / 829 用例全绿。
+- **历史在途记录（2026-10-28，已随 v2.8.0 发版）**：REST 对等面 —— 分块上传 / 定时任务 / 官方语音。
   - 依据 `docs/project/BFF-REST-CONTRACT.md` 新增九条只增不改的 `/api/v1` 端点
     （六个分块上传、四个定时任务、三个语音操作，共 13 个 operation），全部按
     「读取 `chat.read` / 动作 `chat.write`」过 `requireScope`，不新增 scope。

@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: DeepSeek Harness Mobile API
-  version: 2.8.2
+  version: 2.9.0
   description: Versioned file and chat BFF for mobile and third-party DSH clients. HTTP and HTTPS are both supported.
 servers:
   - url: http://127.0.0.1:3090/api/v1
@@ -24,7 +24,7 @@ paths:
                 properties:
                   ok: { type: boolean, const: true }
                   version: { type: string, const: v1 }
-                  pluginVersion: { type: string, const: 2.8.2 }
+                  pluginVersion: { type: string, const: 2.9.0 }
   /debug/host-services:
     get:
       operationId: hostServices
@@ -989,6 +989,80 @@ paths:
       responses:
         '202': { description: Prompt accepted by DSH. }
         '409': { $ref: '#/components/responses/Error' }
+  /chat/sessions/{leadSessionId}/subagents/{subagentId}/messages:
+    parameters:
+      - name: leadSessionId
+        in: path
+        required: true
+        description: |
+          The session that owns the team (the Lead). Its visibility is checked with the
+          ordinary session rules -- the narrow endpoint never relaxes them.
+        schema: { type: string }
+      - name: subagentId
+        in: path
+        required: true
+        description: |
+          A subagent / teammate session id. It is *not* required to be listed by
+          `GET /chat/sessions` (subagent sessions are filtered out of that list);
+          membership is verified against the Lead's own `subagentCatalog` /
+          `agentTeam.members` projection instead.
+        schema: { type: string }
+    get:
+      operationId: listSubagentMessages
+      description: |
+        Read the history of a subagent (teammate) session -- a read-only narrow endpoint.
+
+        Why it exists: `GET /chat/sessions/{sessionId}/messages` resolves visibility via
+        the session list, and subagent sessions are deliberately filtered out of that list
+        (the kernel refuses to activate them as ordinary sessions, so exposing them yields
+        rows that crash on open). Every subagent id therefore 404s on the ordinary path.
+
+        Authorization has two steps, both required: (1) the Lead session must be visible to
+        this device under the unchanged rules; (2) membership must be backed by the kernel's
+        own projection for that Lead (`subagentCatalog[].id` or `agentTeam.members[].id`).
+        Guessing a session id does not work -- a miss is a 404.
+
+        Read-only: any non-GET method is `405 METHOD_NOT_ALLOWED`. Writing to a teammate
+        session would blur who is directing whom; the official Web UI likewise only writes
+        through the Lead's model tools.
+      parameters:
+        - name: beforeSeq
+          in: query
+          schema: { type: integer, minimum: 0 }
+        - name: maxMessages
+          in: query
+          schema: { type: integer, minimum: 1 }
+      responses:
+        '200':
+          description: |
+            Identical shape and byte budget as `listMessages`: the oldest events may be
+            dropped (with `hasMore` forced to true) and oversized strings inside one event
+            may be head/tail clamped. `truncated`/`bytes` appear only when something was
+            actually clamped. `historyFormatVersion` is always present.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [events, hasMore]
+                properties:
+                  events:
+                    type: array
+                    items: { type: object, additionalProperties: true }
+                  hasMore: { type: boolean }
+                  projections: { type: object, additionalProperties: true }
+                  bytes: { type: integer, minimum: 0 }
+                  truncated: { type: boolean }
+                  historyFormatVersion: { type: integer, minimum: 1 }
+        '404':
+          description: |
+            `SUBAGENT_NOT_FOUND` -- either the subagent is not a member of this team, or
+            the Lead's projections were unavailable (membership unprovable). The two cases
+            are deliberately indistinguishable so the existence of a session id is not
+            turned into a probing surface.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '405': { $ref: '#/components/responses/Error' }
   /chat/sessions/{sessionId}/attachments:
     parameters:
       - name: sessionId

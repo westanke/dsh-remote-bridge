@@ -64,6 +64,10 @@ export const BRIDGE_CAPABILITIES: readonly string[] = [
   'session-archive-v1', // POST /chat/sessions/{sessionId}/archive
   'session-archive-list-v1', // GET /chat/sessions?archived=true（列出已归档；恢复不在本桥能力内）
   'history-v1', // GET/POST /chat/sessions/{sessionId}/messages
+  // 子会话（团队成员）历史的**只读**窄口（2026-10-30）。为什么必须是独立一位：
+  // 子会话被 `sessions.list` 刻意滤掉，`history-v1` 那条路径对子会话 id 永远 404 ——
+  // 客户端拿 history-v1 探测不到「这个桥能不能读团队成员的历史」。依据是新路径本身。
+  'subagent-history-v1', // GET /chat/sessions/{leadSessionId}/subagents/{subagentId}/messages
   'turn-cancel-v1', // POST /chat/runs/{id}/cancel
   'session-config-v1', // GET /chat/sessions/{id}/models、PUT …/model、PUT …/agent-preset
   'commands-v1', // GET/POST /chat/sessions/{sessionId}/commands

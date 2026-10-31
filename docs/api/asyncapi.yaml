@@ -1,7 +1,7 @@
 asyncapi: 3.0.0
 info:
   title: DeepSeek Harness Mobile Events
-  version: 2.8.2
+  version: 2.9.0
   description: |
     Live file and authorized DSH chat events. Reconnect clients must refresh
     REST state; unbounded replay is not provided.
@@ -153,6 +153,13 @@ channels:
       > `REQUEST_ID_ECHO_EXCLUDED_KINDS`, and add a line here. A push kind that
       > is missing from the set will start echoing a stale `requestId` from
       > whatever request happened to be in flight when it fired.
+
+      > **子会话历史不走 WS**（2026-10-30）：团队成员 / 子会话的历史只能经
+      > REST `GET /chat/sessions/{leadSessionId}/subagents/{subagentId}/messages`
+      > 读取，本协议**没有**对应帧，也不打算加。原因是普通 `history` 帧对子会话
+      > id 必然 404（子会话被 `sessions.list` 刻意滤掉），而那条窄口的授权靠
+      > 「Lead 可见 + 内核投影背书成员关系」两步，与 WS 连接级的会话白名单不是
+      > 一回事；硬塞进 WS 只会让两套授权语义打架。详见 `docs/project/API.md`。
 
       Rules:
 

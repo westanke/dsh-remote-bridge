@@ -9,7 +9,7 @@
 </p>
 
 <p align="center">
-  <img alt="Version" src="https://img.shields.io/badge/version-v2.8.2-087f8c">
+  <img alt="Version" src="https://img.shields.io/badge/version-v2.9.0-087f8c">
   <img alt="DSH plugin" src="https://img.shields.io/badge/DeepSeek_Harness-plugin-1f2328">
   <img alt="Platforms" src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-586069">
   <img alt="License" src="https://img.shields.io/badge/license-AGPL--3.0-2da44e">
@@ -433,7 +433,21 @@ DSH **0.2.1-rc.3** 隔离实例上**实跑验过**，不是静态推断：插件
 
 ## 项目信息
 
-- 当前版本：`v2.8.2`
+- 当前版本：`v2.9.0`
+- **v2.9.0 是团队成员（子会话）可读版**：手机端的团队面板此前只能看到成员与子会话的名字，点开读不到
+  任何内容 —— 因为 `sessions.list` 会把 `origin === 'subagent'` 的行整批滤掉（桥自己的
+  `dsh-0.2-bridge.ts:2327`，注释写明「暴露出来只会得到点开就崩的行」），子会话 id 打 `/messages`
+  必然 404；即使绕过可见性，内核 `validateAddress()` 也要求用
+  `{ kind:'subagent', parentSessionId, childSessionId, mode }` 判别联合寻址，而非普通会话地址。
+  这一版新增**受成员关系校验的只读窄口**
+  `GET /api/v1/chat/sessions/{leadSessionId}/subagents/{subagentId}/messages`：授权两步 ——
+  ① Lead 会话必须对设备可见（沿用 `requireSession`，规则一行不放宽）；② 成员关系必须由内核自己发布的
+  投影背书（`subagentCatalog[].id` 或 `agentTeam.members[].id`）。两步都过才直读历史，刻意不再调
+  `requireSession(subagentId)` —— 拆 `origin` 过滤会把「点开就崩」的行放回列表，放宽 `requireSession`
+  等于给所有会话开后门，窄口的边界最清晰。只读（非 GET 一律 405），错误码 `SUBAGENT_NOT_FOUND`
+  刻意不区分「不存在」与「不是成员」否则 id 是否存在就成了探测面。新增能力位 `subagent-history-v1`
+  （必须独立于 `history-v1`，后者对子会话永远 404 探测不到）。同版复核了 DSH 0.2.1-rc.2 → rc.5：
+  桥依赖的 19 个包中 18 个零差异，唯一差异是一行 KDoc 注释。
 - **v2.7.1 是缺陷修复版**：内核 `sessionController.resolveAgent()` 返回的是 `{ agent }` / `{ error }`
   **包装对象**而非 Agent 本体（`dsh-api-session-controller/lib/index.js:365-368` 的 `liveAgent()` 与
   `:221-246` 的 `resolve()` 都是这个形状），桥此前把包装对象直接当 Agent 传给 `fileUploads.upload()`，

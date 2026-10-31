@@ -25,6 +25,9 @@ const EVIDENCE: Record<string, { openapi?: string[]; asyncapi?: string[] }> = {
   // 依据是那个 query 参数本身（路径与 session-list-v1 共用，靠参数名区分能力）。
   'session-archive-list-v1': { openapi: ['name: archived'] },
   'history-v1': { openapi: ['/chat/sessions/{sessionId}/messages'] },
+  // 子会话历史是**另一条**路径：普通 history 对子会话 id 永远 404（被 sessions.list 滤掉），
+  // 所以这条能力位不能拿 history-v1 的路径当依据。
+  'subagent-history-v1': { openapi: ['/chat/sessions/{leadSessionId}/subagents/{subagentId}/messages'] },
   'turn-cancel-v1': { openapi: ['/chat/runs/{id}/cancel'] },
   'session-config-v1': {
     openapi: ['/chat/sessions/{sessionId}/model', '/chat/sessions/{sessionId}/agent-preset'],

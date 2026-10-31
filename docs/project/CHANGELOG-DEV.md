@@ -1,5 +1,79 @@
 # 开发日志
 
+## v2.9.0 · 团队成员（子会话）历史：受成员关系校验的只读窄口（2026-10-31）
+
+**依据**：`dsh-companion` 的团队面板能列出成员与子会话，但**点开任何一个都读不到内容**。
+真机现象是「团队面板中的子会话无法查看」——这不是 App 没接线，而是桥与内核双重设限：
+
+- 桥的 `requireSession()` 靠 `listSessions()` 判可见性，而 `sessions.list` 在
+  `dsh-0.2-bridge.ts:2327` 把 `origin === 'subagent'` 的行**整批滤掉**（注释写明：内核 0.2.x 会列出
+  子会话，但宿主拒绝把它们当普通会话激活，暴露出来只会得到「点开就崩」的行）。于是任何子会话 id
+  打 `/messages` 必然 404。
+- 就算绕过可见性判定，内核也会拦：`dsh-api-session-controller` 的 `validateAddress()` 对
+  `kind:'session'` 且 `header.origin === 'subagent'` 抛
+  `session/agent-busy: subagent Sessions require their durable parent address`，
+  要求用 `{ kind:'subagent', parentSessionId, childSessionId, mode }` 这套判别联合寻址。
+
+**方案**：不动 `sessions.list` 的过滤，也不放宽 `requireSession()` 的通用规则，而是**新增一个
+只读窄口**，授权分两步：
+
+1. **Lead 会话必须对设备可见** —— 沿用 `requireSession(principal, leadSessionId)`，规则一行不放宽。
+2. **成员关系必须由内核自己发布的投影背书** —— 读 Lead 会话的 `sessions.projections`，要求目标 id
+   出现在 `subagentCatalog[].id`（兼容旧键 `sessionId`）或 `agentTeam.members[].id` 里。
+
+两步都过才直读历史，**刻意不再调 `requireSession(subagentId)`**。理由：
+- 拆 `origin` 过滤会把「点开就崩」的行放回列表，回归风险最大；
+- 放宽 `requireSession` 等于给所有会话开后门，最危险；
+- 窄口的安全边界最清晰：能读一个子会话的唯一理由，是它确实挂在你能看见的 Lead 下面。
+
+只读（非 GET 一律 `405 METHOD_NOT_ALLOWED`）：写成员会话会让「谁在指挥谁」含混，官方 Web 端也只
+允许经 Lead 的模型工具写。
+
+### 新增
+
+- `GET /api/v1/chat/sessions/{leadSessionId}/subagents/{subagentId}/messages` ——
+  参数 `beforeSeq` / `maxMessages`，响应结构与 `listMessages` 完全一致（同一套
+  `applyHistoryBudget` 字节预算与 `historyFormatVersion`）。
+- 错误码 `SUBAGENT_NOT_FOUND`（404）：**刻意不区分**「子会话不存在」与「不是你的团队成员」，
+  否则子会话 id 是否存在就成了探测面。同时覆盖「Lead 投影不可用，无法校验成员关系」的情形。
+- 能力位 `subagent-history-v1`：必须独立于 `history-v1` —— 后者对子会话 id 永远 404，客户端
+  拿它探测不到「这个桥能不能读团队成员的历史」。
+- Kotlin SDK：`DshWorkspaceClient.listSubagentMessages(leadSessionId, subagentId, beforeSeq, maxMessages)`。
+
+### 修复
+
+- **子会话历史的寻址形状**（本轮改动的技术核心）：`dsh-0.2-bridge.ts` 新增导出类型
+  `SessionAddressLike`，把 `SessionControllerLike.follow()` / `page()` 的 `address` 从写死的
+  `{ kind:'session', sessionId }` 放宽为判别联合；`sessions.history` RPC 处理器从 payload 读
+  `parentSessionId` / `subagentMode` 拼地址，有父会话才用 `kind:'subagent'`，否则维持原样
+  （**既有全部调用方零影响**）。
+- **`mode` 不能一律传 `unknown`**：内核 `validateAddress()` 会比对
+  `address.mode !== identity.mode` 并抛 `subagent/unauthorized`，所以 mode 必须从
+  `subagentCatalog` 条目的 `mode` 字段原样取。
+- **子会话投影不能硬问**：`SessionProjectionsRequest` 只有 `sessionId` 字段，对子会话调
+  `readSessionProjections` 会 500。改为
+  `projectionsOf(snapshot) ?? (address.kind === 'session' ? … : undefined)`，
+  follow 快照自带的 projections 已经够用。
+
+### 测试
+
+- 新增 `tests/subagent-history-api.spec.ts`（3 用例，HTTP 级）：成员可读且两段 id 原样落到适配层、
+  `POST` 返 405 且适配层未被调用、无凭据返 401/403。
+- `tests/chat-adapter.spec.ts` 加 2 用例：`'lets a teammate be read only when the Lead projection
+  backs the membership'`（覆盖 catalog `id` 背书、旧键 `sessionId` 兼容、`agentTeam.members` 背书、
+  非成员 404 且未触 history、Lead 不可见报 `SESSION_NOT_FOUND` 五种情形）、
+  `'refuses to read a teammate when the Lead projection is unavailable'`。
+- 全量 `pnpm check`：80 文件 / **834 用例**全绿，`tsc` / `docs:check` / `build` 通过。
+
+### 版本
+
+v2.9.0 次版本号（**新能力面**，不是补丁）：新增一条对外端点 + 一个新能力位 + 一个内核地址联合类型的
+支持。既有 REST 端点、WS 帧、能力位语义一条没动，向后兼容。
+
+**同时复核了 DSH 0.2.1-rc.2 → 0.2.1-rc.5 的兼容性**：以 rc.2 官方 tarball 为基线逐包 diff `lib/`
+产物，桥依赖的 19 个包中 **18 个零差异**，唯一差异是 `dsh-api-session-controller` 改了一行 KDoc
+注释（`service.d.ts:36`，不参与运行）。rc.5 环境实跑全量单测 834 全绿。结论：**无需任何代码改动**。
+
 ## v2.8.2 · 修复审批决策恒 409（结算句柄取错）（2026-10-30）
 
 **症状**（真机 Desktop 宿主 / v2.8.1 实测）：手机端点「允许一次」并完成二次确认后，

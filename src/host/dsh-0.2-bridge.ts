@@ -85,6 +85,23 @@ export interface AttachmentStoreLike {
   ): Promise<{ ref: { mediaType: string }; data: Uint8Array }>
 }
 
+/**
+ * 内核的 `SessionAddress` 判别联合（`dsh-api-session-controller` 的
+ * types.d.ts:406-414）。普通会话用 `kind:'session'`，**子会话必须**用
+ * `kind:'subagent'` 并带上父会话 id —— 内核在 `validateAddress()` 里对
+ * `{kind:'session'}` 且 header.origin==='subagent' 直接抛
+ * `session/agent-busy: "subagent Sessions require their durable parent address"`。
+ * 也就是说：子会话历史一直是可读的，只是必须按内核要的地址形状去问。
+ */
+export type SessionAddressLike =
+  | { kind: 'session'; sessionId: string }
+  | {
+    kind: 'subagent'
+    parentSessionId: string
+    childSessionId: string
+    mode: 'one-shot' | 'continuable' | 'unknown'
+  }
+
 export interface SessionControllerLike {
   list(request: { cursor?: string }, signal: AbortSignal): Promise<{ items: readonly unknown[] }>
   create(request: { workspaceId?: string; cwd?: string; sessionId?: string; agentPreset?: string }): Promise<{ sessionId: string; agentPreset?: string }>
@@ -96,7 +113,7 @@ export interface SessionControllerLike {
    * a well-formed but *empty* page — a silent failure, not an error.
    */
   follow(request: {
-    address: { kind: 'session'; sessionId: string }
+    address: SessionAddressLike
     maxMessages?: number
     /**
      * Assistant presentation frames are opt-in: without `assistantStream: true`
@@ -122,7 +139,7 @@ export interface SessionControllerLike {
    * `beforeSeq` is optional and acts as an earlier boundary.
    */
   page(request: {
-    address: { kind: 'session'; sessionId: string }
+    address: SessionAddressLike
     throughSeq: number
     beforeSeq?: number
     maxMessages?: number
@@ -2331,6 +2348,21 @@ export function createDsh02ApiProxy(
       create: request => call('sessions.create', (signal) => host.sessionController.create(request.payload)),
       history: request => call('sessions.history', async (signal) => {
         const { sessionId, maxMessages, beforeSeq } = request.payload
+        // 子会话历史：内核要的是 `kind:'subagent'` 地址（带父会话 id），
+        // 而不是把 childSessionId 当普通 sessionId 递进去 —— 后者会被
+        // validateAddress() 判成「subagent Sessions require their durable
+        // parent address」而拒掉。授权（这个 child 是否真是该 Lead 的成员）
+        // 由 chat-adapter.subagentHistory 在调这里之前就查完，本层只管寻址。
+        const parentSessionId = (request.payload as { parentSessionId?: unknown }).parentSessionId
+        const subagentMode = (request.payload as { subagentMode?: unknown }).subagentMode
+        const address: SessionAddressLike = typeof parentSessionId === 'string' && parentSessionId !== ''
+          ? {
+            kind: 'subagent',
+            parentSessionId,
+            childSessionId: sessionId,
+            mode: subagentMode === 'one-shot' || subagentMode === 'continuable' ? subagentMode : 'unknown',
+          }
+          : { kind: 'session', sessionId }
         const controller = new AbortController()
         // 外层超时必须能传到内核：否则 `call` 的 10 s 只是"我们不再等"，
         // 而内核那边继续读流、继续占资源。`addEventListener` 一次性转发即可。
@@ -2338,7 +2370,7 @@ export function createDsh02ApiProxy(
         else signal.addEventListener('abort', () => controller.abort(), { once: true })
         try {
           const stream = host.sessionController.follow(
-            { address: { kind: 'session', sessionId }, ...(maxMessages === undefined ? {} : { maxMessages }) },
+            { address, ...(maxMessages === undefined ? {} : { maxMessages }) },
             controller.signal,
           )
           const first = await stream[Symbol.asyncIterator]().next()
@@ -2356,7 +2388,12 @@ export function createDsh02ApiProxy(
           //
           // 仍然保留回落：老内核（0.2.0）的 snapshot 不带它，那时
           // `readSessionProjections` 补的那一次调用仍是客户端看到权限档位的唯一途径。
-          const projections = projectionsOf(snapshot) ?? await readSessionProjections(host, sessionId, controller.signal)
+          // 子会话不回退去单问 projections：内核的 SessionProjectionsRequest
+          // 只有 `sessionId`（types.d.ts:414），问不到子会话的投影；而 follow 的
+          // snapshot 分支本身带 projections，正常路径已经够用。硬问只会换来一个
+          // 500，把「读到了但没投影」变成「整个读失败」。
+          const projections = projectionsOf(snapshot)
+            ?? (address.kind === 'session' ? await readSessionProjections(host, sessionId, controller.signal) : undefined)
           const withProjections = <T extends object>(payload: T): T | (T & { projections: unknown }) =>
             projections === undefined ? payload : { ...payload, projections }
           // When beforeSeq is not provided, return the follow snapshot (current behavior)
@@ -2371,7 +2408,7 @@ export function createDsh02ApiProxy(
           // throughSeq must come from the follow snapshot's cursor — hard-coding
           // one returns a well-formed but empty page (a silent failure).
           const page = await host.sessionController.page({
-            address: { kind: 'session', sessionId },
+            address,
             throughSeq: snapshot.cursor,
             beforeSeq,
             ...(maxMessages === undefined ? {} : { maxMessages }),
