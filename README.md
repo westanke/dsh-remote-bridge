@@ -1,50 +1,43 @@
 # dsh-remote-bridge
 
 <p align="center">
-  <strong>把 DSH 内核的私有 remote 协议翻译成版本化 REST，供手机与第三方客户端远程访问这台机器；桌面端则提供一个集中设置中心。</strong>
+  <strong>人已经出门，电脑还锁着 —— 掏出手机，继续用这台机器。</strong><br>
+  把 DSH 内核的私有 remote 协议翻译成版本化 REST，配上 Android 客户端
+  <a href="https://github.com/westanke/dsh-companion">dsh-companion</a>，
+  聊天、会话、文件、设备全程留在同一台机器上。
 </p>
 
 <p align="center">
-  中文 · <a href="./README.en.md">English</a>
+  <img src="assets/screenshots/panel-roots.png" alt="DSH 设置里的「📱 手机设置」面板：主列表五张折叠卡片，另有一个高级设置组（根目录/识图/插件）" width="420">
 </p>
 
 <p align="center">
-  <img alt="Version" src="https://img.shields.io/badge/version-v2.9.0-087f8c">
+  <code>dsh plugin --profile web add dsh-remote-bridge</code>
+</p>
+
+<p align="center">
+  <a href="./README.en.md">English</a> ·
+  <img alt="Version" src="https://img.shields.io/badge/version-v2.9.1-087f8c">
   <img alt="DSH plugin" src="https://img.shields.io/badge/DeepSeek_Harness-plugin-1f2328">
   <img alt="Platforms" src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-586069">
   <img alt="License" src="https://img.shields.io/badge/license-AGPL--3.0-2da44e">
 </p>
 
-`dsh-remote-bridge` 是 DeepSeek Harness（DSH）的远程访问桥接插件：它把 DSH 内核的私有 remote 协议翻译成版本化的 REST 接口，让 dsh-companion（[GitHub](https://github.com/westanke/dsh-companion) · [Gitee](https://gitee.com/westanke/dsh-companion)）等受信任客户端在离开电脑后仍能使用同一套聊天、工作区与文件能力；桌面端在你的 DSH 设置里提供一个「手机设置」，内联七张设置卡片（根目录 / 远程访问 / 设备 / 识图 / 回收站 / 审计 / App 下载），每张卡片各自折叠、可多张同时展开。）。
+`dsh-remote-bridge` 是 DeepSeek Harness（DSH）的远程访问桥接插件：它把 DSH 内核的私有 remote 协议翻译成版本化的 REST 接口，让 dsh-companion（[GitHub](https://github.com/westanke/dsh-companion) · [Gitee](https://gitee.com/westanke/dsh-companion)）等受信任客户端在离开电脑后仍能使用同一套聊天、工作区与文件能力；桌面端在你的 DSH 设置里提供一个「手机设置」，内联折叠卡片：主列表五张（远程访问 / 外网隧道 / 设备 / 回收站 / App 下载），另有默认收起的「高级设置」组收纳根目录、识图与插件三项，每张卡片各自折叠、可多张同时展开。
+
+**它适合谁**：把 DSH 当主力工具、但不想被「必须坐在电脑前」绑住的人。远程访问**默认关闭**，未启用时只监听回环地址——装完不会自动把机器暴露到局域网。
 
 界面默认中文，可随时切换 English。插件支持 Windows、macOS 和 Linux，安装包已经包含编译产物，不要求用户在服务器上重新构建。
 
-> **版本警告**：请务必使用  ≥ `v2.0.4`版本。
-
-> **DSH 0.2.x 兼容性**：本分支在上游 `v1.0.0` 的基础上增加了对 DSH `0.2.0-rc.2` 的兼容层。
-> 0.2.x 用 `dsh-api-gateway` 替换了提供 `apiProxy` 服务的 `dsh-host-apiproxy`，导致上游版本在
-> 0.2.x 上无法启动（表现为「添加根目录返回 405」）。兼容层的完整说明——基于什么、为什么、改了什么、
-> 测了什么——见 [DSH 0.2.x 兼容性适配说明](./docs/project/DSH-0.2-COMPAT.md)。
+> **版本警告**：请务必使用 ≥ `v2.0.4` 版本。
 >
-> **对 DSH 0.2.1-rc.2 的适配结论**（2026-10-20 复核，依据 `docs/project/DSH-0.2.1-ADAPTATION.md`）：
-> 本插件**刻意不 import 任何 `@deepseek-ai/*` 包**，全部宿主服务经结构类型 + Host 注入消费
-> （见 `src/host/dsh-0.2-bridge.ts` 头注释）。逐一到 `0.2.1-rc.2` 实装包核对：`cordis.patch.yml`
-> 的 10 项 `inject` 服务名**全部仍存在且签名未变**，`engines.dsh` 在 0.2.1 被内核识别
-> （`dsh-app-boot/lib/index.js` 的 `prepareProfileEntries`），不满足时只把该 entry 置
-> `disabled` 并打 stderr，**宿主进程不退出**。故本插件无需改码即可运行于 `0.2.1-rc.2`。
->
-> **两版的功能差异（重要）**：`inject` 里只放**两个版本都存在**的服务 —— cordis 的 inject 是
-> **硬依赖**，任何一个服务缺失就整个插件不激活（CI 在 0.2.0-rc.2 基线上实锤过：
-> 一度因为把 0.2.1 才有的服务写进 inject 而让插件在 0.2.0 上整体不激活）。
-> 因此 0.2.1 才提供的服务（**后台任务** `jobController`、**权限档位目录**
-> `permissionPresets`、文件上传 `fileUploads`、附件存储 `attachments`）改为运行时经
-> `ctx.reflect.get(name, false)` 读取：**0.2.1-rc.2 上这些功能全部可用，0.2.0-rc.2 上
-> 自动降级**（如后台任务端点返回 404、权限档位走内置目录），插件本体两种内核都能跑。
-> 用 `GET /api/v1/debug/host-services` 可以查这台机器上哪些可选能力可用。
+> **DSH 0.2.x 兼容性**与 **0.2.1-rc.2 适配结论**涉及注入服务的取舍，篇幅较长，
+> 统一放在 [兼容性与已知限制](#兼容性与已知限制) 一节，安装前建议扫一眼。
 
 ## 实际效果
 
-桌面端的入口**就在你的 DSH 设置里**：打开设置，找到标题为「📱 手机设置」的一节，点进去直接内联渲染七张折叠卡片，不再另开弹窗。它只做设置。
+
+桌面端的入口**就在你的 DSH 设置里**：打开设置，找到标题为「📱 手机设置」的一节，点进去直接内联渲染折叠卡片（主列表五张 + 一个「高级设置」组），不再另开弹窗。它只做设置。
 
 远程访问默认关闭。管理员可在本机 WebUI 中设置绑定 IP、端口和新设备的初始权限。
 
@@ -140,7 +133,7 @@ dsh plugin --profile web add ./dsh-remote-bridge-v2.7.1.tgz
 
 ### 桌面端设置面板
 
-入口在 DSH 设置里，标题为「手机设置」。设置区**内联渲染**，不另开弹窗；七张折叠卡片平铺，可多张同时展开，默认展开「根目录」：
+入口在 DSH 设置里，标题为「手机设置」。设置区**内联渲染**，不另开弹窗；主列表五张折叠卡片平铺，可多张同时展开，默认展开「远程访问」；授权根目录、识图与插件这三项收在「高级设置」组里（根目录排第一，因为没它就没有可授权的落点），点开照旧能改：
 
 | 分区 | 用途 |
 | --- | --- |
@@ -149,7 +142,7 @@ dsh plugin --profile web add ./dsh-remote-bridge-v2.7.1.tgz
 | 设备 | 查看设备权限与根目录授权，随时撤销 |
 | 识图 | 设置图片交接目录（识图路径），并只读展示出厂默认 `.dsh-images` 与兜底目录 |
 | 回收站 | 查看与恢复被删除的条目（只列出来自手机 App 的删除记录） |
-| 审计 | 查看操作类型与对象的审计记录 |
+| 插件 | 查看本 profile 装了哪些插件、启用或停用、检查更新，并能跳转到内核的插件列表 |
 | App 下载 | 扫码下载 Android 客户端，二维码指向两个站点的 Releases 列表页 |
 
 
@@ -372,6 +365,29 @@ dsh plugin --profile web remove dsh-remote-bridge
 
 ## 兼容性与已知限制
 
+### DSH 0.2.0 / 0.2.1 两版的内核差异
+
+本分支在上游 `v1.0.0` 的基础上增加了对 DSH `0.2.0-rc.2` 的兼容层。0.2.x 用
+`dsh-api-gateway` 替换了提供 `apiProxy` 服务的 `dsh-host-apiproxy`，导致上游版本在 0.2.x 上
+无法启动（表现为「添加根目录返回 405」）。兼容层的完整说明——基于什么、为什么、改了什么、
+测了什么——见 [DSH 0.2.x 兼容性适配说明](./docs/project/DSH-0.2-COMPAT.md)。
+
+**对 DSH 0.2.1-rc.2 的适配结论**（2026-10-20 复核，依据 `docs/project/DSH-0.2.1-ADAPTATION.md`）：
+本插件**刻意不 import 任何 `@deepseek-ai/*` 包**，全部宿主服务经结构类型 + Host 注入消费
+（见 `src/host/dsh-0.2-bridge.ts` 头注释）。逐一到 `0.2.1-rc.2` 实装包核对：`cordis.patch.yml`
+的 10 项 `inject` 服务名**全部仍存在且签名未变**，`engines.dsh` 在 0.2.1 被内核识别
+（`dsh-app-boot/lib/index.js` 的 `prepareProfileEntries`），不满足时只把该 entry 置
+`disabled` 并打 stderr，**宿主进程不退出**。故本插件无需改码即可运行于 `0.2.1-rc.2`。
+
+**两版的功能差异（重要）**：`inject` 里只放**两个版本都存在**的服务 —— cordis 的 inject 是
+**硬依赖**，任何一个服务缺失就整个插件不激活（CI 在 0.2.0-rc.2 基线上实锤过：
+一度因为把 0.2.1 才有的服务写进 inject 而让插件在 0.2.0 上整体不激活）。
+因此 0.2.1 才提供的服务（**后台任务** `jobController`、**权限档位目录**
+`permissionPresets`、文件上传 `fileUploads`、附件存储 `attachments`）改为运行时经
+`ctx.reflect.get(name, false)` 读取：**0.2.1-rc.2 上这些功能全部可用，0.2.0-rc.2 上
+自动降级**（如后台任务端点返回 404、权限档位走内置目录），插件本体两种内核都能跑。
+用 `GET /api/v1/debug/host-services` 可以查这台机器上哪些可选能力可用。
+
 ### 某些 DSH 构建缺少附件存储服务
 
 DSH 的 cordis 注入属性（`ctx.attachments` / `ctx.fileUploads`）是惰性解析的：读取一个没有任何组件提供的服务会抛错。2.0.3 起改为**容错读取**——服务缺席时插件照常激活，只有真正用到该能力的接口返回可读错误：
@@ -433,7 +449,7 @@ DSH **0.2.1-rc.3** 隔离实例上**实跑验过**，不是静态推断：插件
 
 ## 项目信息
 
-- 当前版本：`v2.9.0`
+- 当前版本：`v2.9.1`
 - **v2.9.0 是团队成员（子会话）可读版**：手机端的团队面板此前只能看到成员与子会话的名字，点开读不到
   任何内容 —— 因为 `sessions.list` 会把 `origin === 'subagent'` 的行整批滤掉（桥自己的
   `dsh-0.2-bridge.ts:2327`，注释写明「暴露出来只会得到点开就崩的行」），子会话 id 打 `/messages`

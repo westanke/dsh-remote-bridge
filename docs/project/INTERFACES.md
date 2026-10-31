@@ -422,7 +422,11 @@ export const PLUGIN_VERSION: string          // shared/version.ts，与 package.
 | --- | --- | --- |
 | `WorkspaceApiError` / `DirectoryPage` / `ContentResult` | `api.ts` | 浏览器侧 REST 客户端 |
 | 客户端插件入口（slot 注册） | `index.tsx` | 面板与图片交接渲染的注册点 |
-| 手机设置面板组件 | `workspace.tsx` | 七张折叠卡片（含插件清单与启停） |
+| 手机设置面板外壳 | `workspace.tsx` | 分区常量（`ADMIN_TABS` 5 张 / `ADVANCED_TABS` 3 张）、共享状态（refresh / 隧道 / 通知）、`CardsProvider` 接线 |
+| 卡片共享上下文 | `cards/context.ts` | `CardsContext` / `useCards()`：至少两卡共用的状态与动作 |
+| 卡片外壳 | `cards/shell.tsx` | `SettingsCard` / `AdvancedGroup` / `tabIcon` / `tabLabelKey` / `tabDescKey` / `TAB_DESC_KEYS` |
+| 跨卡小部件与纯函数 | `cards/shared.tsx` | `CopyButton` / `formatBytes` / `formatEndpoint` / `messageOf` / `apiErrorKey` / `pluginStateKey` / `delay` |
+| 八张设置卡 | `cards/{roots,remote,tunnel,devices,trash,image,plugins,app-download}.tsx` | 每卡一个文件，签名统一 `{ open, onToggle }` |
 | `PLUGINS_TAB_ID` / `PLUGINS_TAB_KIND` / `pluginsTabDefinition` / `PluginsTabTitle` / `makePluginsTabBody` | `plugins.tsx` | 插件清单的右侧栏 tab：`SidebarRightTabDefinition` + guide 卡片（rc.3 起可 pin） |
 | 交接消息解析 | `handoff.tsx` | 用户消息行首标记 → 图片 |
 | 语言 store 与文案 | `i18n.tsx` | `zh-CN` / `en` |

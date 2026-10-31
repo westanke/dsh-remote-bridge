@@ -3,7 +3,7 @@ import { useCallback, useEffect, useState } from 'react'
 import type { PluginEntry, PluginInventory } from '../shared/contracts.ts'
 import type { WorkspaceApi } from './api.ts'
 import { getWorkspaceLocale, translate, useWorkspaceI18n } from './i18n.tsx'
-import { messageOf, pluginStateKey } from './workspace.tsx'
+import { messageOf, pluginStateKey } from './cards/shared.tsx'
 
 /**
  * 插件清单的右侧栏形态：一个真正的 `SidebarRightTabDefinition`。

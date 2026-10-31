@@ -24,7 +24,6 @@
 | `src/host/chat-adapter.ts` | 1 732 | 会话链路适配：列表/历史/发送/取消/workspace/agent-preset + 审批/提问适配全在一个文件（2026-10-30 修 approval 句柄 +11 注释/分支） | 按端点族拆 |
 | `src/host/database.ts` | 1 005 | 用户数据（根/设备/回收站/配对/幂等/审计）全在一个类里；每次加字段都要在这个文件里写迁移 | 按表族拆 `db/{roots,devices,trash,pairings}.ts`，迁移独立成 `db/migrations.ts` |
 | `src/host/settings-adapter.ts` | 731 | 提供商与模型目录、通用设置命名空间两件事挤在一个类；SEC-H11 的重定向闸门也落在这里 | 拆 `providers-adapter.ts` 与 `namespaces-adapter.ts` |
-| `src/client/workspace.tsx` | 1 225 | 「📱 手机设置」面板七张卡的全部状态与交互挤在一个组件文件里；v2.7.0 加插件卡后越线 | 每张卡拆独立文件（`client/cards/*.tsx`），`workspace.tsx` 只留外壳与导航 |
 | `src/host/ws-handler.ts` | 974 | **`/ws/mobile` 的总装**：鉴权三入口（配对码 / 令牌 / Bearer 连接）、`handleMessage` 解码与分发、13 个域处理器委派、5 个基础帧实现（message/workspaces/sessions/history/attachment）、背压发送队列（含可重建帧挑选与 resync 补发）、连接上限、心跳与 hello 全在一个类里。自 `/ws/mobile` 网关那一轮起就超预算且一直未入表（既有欠账，不是本轮引入） | 把 5 个基础帧抽成 `ws-basic.ts`（与 9 个域处理器同构），`ws-handler.ts` 只留鉴权 + 分发 + 发送；心跳与连接上限可再抽 `ws-connection-policy.ts` |
 
 > 这三个是**已登记的债，不是许可**。新增超预算文件必须先入本表再写码。

@@ -63,6 +63,12 @@ export const WORKSPACE_CSS = `
    不再把「未知进度」伪装成恒定 30%。 */
 .daw-progress-fill.indeterminate{width:40%;background:linear-gradient(90deg,transparent,var(--dsw-alias-state-info-primary,var(--daw-accent,var(--daw-line))),transparent);animation:daw-indeterminate 1.1s ease-in-out infinite}
 @keyframes daw-indeterminate{0%{transform:translateX(-120%)}100%{transform:translateX(280%)}}
+/* 「高级设置」组：外层是个普通卡片，组内的卡片缩进一格并挂一道左侧色条，
+   让人一眼看出「这些是嵌进去的，不是与主列表同级」。功能上与主列表完全一致。 */
+.daw-advanced-group .daw-card-body{display:flex;flex-direction:column;gap:10px;padding-bottom:14px}
+.daw-advanced-body .daw-card{border-left:3px solid var(--dsw-alias-state-info-primary,var(--daw-accent));background:var(--dsw-alias-bg-layer-3,var(--daw-panel))}
+.daw-advanced-body .daw-card-header{padding:12px 14px}
+.daw-advanced-body .daw-card-name{font-size:14px}
 @media (max-width:720px){.daw-form-row,.daw-listener-form{grid-template-columns:1fr}.daw-admin{padding:12px}.daw-qr-grid{grid-template-columns:1fr}.daw-qr-image{width:150px;height:150px}.daw-inline-command{margin:8px 0 0}}
 `
 

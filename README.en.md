@@ -1,56 +1,44 @@
 # dsh-remote-bridge
 
 <p align="center">
-  <strong>Translates DSH's private remote protocol into a versioned REST API for mobile and third-party clients, plus a centralized settings center on the desktop.</strong>
+  <strong>You left the house. The desktop is still locked. Take out your phone and keep using that machine.</strong><br>
+  Translates DSH's private remote protocol into a versioned REST API so the Android client
+  <a href="https://github.com/westanke/dsh-companion">dsh-companion</a> keeps your chats,
+  sessions, files and devices on the same machine.
 </p>
 
 <p align="center">
-  <a href="./README.md">中文</a> · English
+  <img src="assets/screenshots/panel-roots.png" alt="The 📱 Phone settings panel: five collapsible cards in the main list, plus an Advanced settings group (Roots / Image reading / Plugins)" width="420">
 </p>
 
 <p align="center">
-  <img alt="Version" src="https://img.shields.io/badge/version-v2.9.0-087f8c">
+  <code>dsh plugin --profile web add dsh-remote-bridge</code>
+</p>
+
+<p align="center">
+  <a href="./README.md">中文</a> ·
+  <img alt="Version" src="https://img.shields.io/badge/version-v2.9.1-087f8c">
   <img alt="DSH plugin" src="https://img.shields.io/badge/DeepSeek_Harness-plugin-1f2328">
   <img alt="Platforms" src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-586069">
   <img alt="License" src="https://img.shields.io/badge/license-AGPL--3.0-2da44e">
 </p>
 
-`dsh-remote-bridge` is the remote-access bridge plugin for DeepSeek Harness (DSH). It translates DSH's private remote protocol into a versioned REST API so dsh-companion ([GitHub](https://github.com/westanke/dsh-companion) · [Gitee](https://gitee.com/westanke/dsh-companion)) and other trusted clients can keep using the same chat, workspace, and file capabilities while away from the machine. On the desktop it provides a **Phone settings** section inside your DSH settings, rendering seven collapsible cards inline (Roots / Remote / Devices / Image reading / Trash / Audit / App download), each folding on its own and several may stay open at once. **The desktop no longer offers a file-management UI**: the file tree and editor were deleted in 2.2.0 — manage files from the phone app, or ask the agent to use its tools in a conversation (see "No file-management UI on the desktop").
+`dsh-remote-bridge` is the remote-access bridge plugin for DeepSeek Harness (DSH). It translates DSH's private remote protocol into a versioned REST API so dsh-companion ([GitHub](https://github.com/westanke/dsh-companion) · [Gitee](https://gitee.com/westanke/dsh-companion)) and other trusted clients can keep using the same chat, workspace, and file capabilities while away from the machine. On the desktop it provides a **Phone settings** section inside your DSH settings, rendering collapsible cards inline: five in the main list (Remote / Public tunnel / Devices / Trash / App download) plus a collapsed-by-default **Advanced settings** group holding Roots, Image reading and Plugins — every card folds on its own and several may stay open at once.
+
+**Who it is for**: people who use DSH as their main tool but do not want to be tied to the desk. Remote access is **off by default** — until you enable it, the plugin listens on loopback only, so installing it never exposes the machine to the LAN by itself.
 
 The interface is bilingual and defaults to Chinese. Prebuilt packages run on Windows, macOS, and Linux without compiling on the target server.
 
 > **Version warning**: the published `v2.0.0` and `v2.0.1` have serious defects (`v2.0.0` fails to read any historical images; `v2.0.1` cannot activate the plugin). Use **`v2.2.0`** (or ≥ `v2.0.4`).
 > `v2.0.2` and `v2.0.3` were **never released** — do not look for installers under those version numbers.
-
-> **DSH 0.2.x compatibility**: this branch adds a compatibility layer for DSH `0.2.0-rc.2` on top of
-> upstream `v1.0.0`. DSH 0.2.x replaced `dsh-host-apiproxy` (which provided the `apiProxy` service)
-> with `dsh-api-gateway`, leaving the upstream release unable to start on 0.2.x — it surfaces as
-> "adding an authorized root returns 405". Background, rationale, changes, and test results are in
-> [DSH 0.2.x compatibility notes](./docs/project/DSH-0.2-COMPAT.md).
 >
-> **Adaptation to DSH 0.2.1-rc.2** (rechecked 2026-10-20; see `docs/project/DSH-0.2.1-ADAPTATION.md`):
-> this plugin **deliberately imports no `@deepseek-ai/*` package** — every host service is consumed
-> through a structural type injected by the running Host (see the header comment in
-> `src/host/dsh-0.2-bridge.ts`). Checked one by one against the installed `0.2.1-rc.2` packages:
-> all 10 `inject` service names in `cordis.patch.yml` **still exist with unchanged signatures**, and
-> `engines.dsh` is recognized by the 0.2.1 kernel (`prepareProfileEntries` in
-> `dsh-app-boot/lib/index.js`) — an unmet range only sets that entry to `disabled` and prints to
-> stderr; **the host process does not exit**. So no code change is needed to run on `0.2.1-rc.2`.
->
-> **Functional differences between the two versions (important)**: the `inject` list holds **only
-> services that exist in both versions** — cordis treats `inject` as a **hard dependency**, and a
-> single missing service leaves the whole plugin inactive (proven by CI on the 0.2.0-rc.2 baseline:
-> writing a 0.2.1-only service into `inject` once made the plugin fail to activate on 0.2.0).
-> The services that only 0.2.1 provides (**background jobs** `jobController`, the **permission
-> catalog** `permissionPresets`, file upload `fileUploads`, attachment storage `attachments`) are
-> therefore read at runtime through `ctx.reflect.get(name, false)`: **all of them work on
-> 0.2.1-rc.2 and degrade automatically on 0.2.0-rc.2** (the jobs endpoints answer 404 there, the
-> permission catalog falls back to its built-in one) — the plugin itself runs on both kernels.
-> `GET /api/v1/debug/host-services` reports which optional capabilities the current machine has.
+> **DSH 0.2.x compatibility** and the **0.2.1-rc.2 adaptation notes** involve the trade-offs of the
+> injected services and run long, so they live in
+> [Compatibility & known limits](#compatibility--known-limits) — worth a skim before installing.
 
 ## What it looks like
 
-The desktop entry lives **inside your DSH settings**: look for the section titled **📱 Phone settings**, which renders seven collapsible cards inline — no second dialog. It is settings-only and contains **no file tree**: the standalone page `/dsh-workspace` and its file tree and CodeMirror editor were deleted in 2.2.0. The reason and the cost are covered in "No file-management UI on the desktop" below.
+The desktop entry lives **inside your DSH settings**: look for the section titled **📱 Phone settings**, which renders collapsible cards inline (five in the main list plus an Advanced settings group) — no second dialog. It is settings-only and contains **no file tree**: the standalone page `/dsh-workspace` and its file tree and CodeMirror editor were deleted in 2.2.0. The reason and the cost are covered in "No file-management UI on the desktop" below.
 
 Remote access remains disabled until a local administrator chooses a bind address, port, and initial device permissions.
 
@@ -159,7 +147,7 @@ The entry lives in DSH settings under the title **Phone settings**. It renders s
 | Devices | Inspect and revoke device scopes and per-root grants |
 | Image reading | Set the handoff directory (the image-reading path); shows the read-only factory default `.dsh-images` and the fallback directory |
 | Trash | View and restore deleted entries (only deletions made from the phone app appear here) |
-| Audit | Operation type and target audit records |
+| Plugins | See what this profile has installed, enable or disable it, check for updates, and jump to the kernel's plugin list |
 | App download | Scan to install the Android client; the codes point at both hosts' Releases list pages |
 
 The sidebar gear button was **removed**: having the entry in both the sidebar and the settings page gave one thing two starting points. The in-conversation **Files** tab is gone too, so the desktop now has exactly one entry point.
@@ -402,7 +390,7 @@ inside the zero-change set, and 4 slots retained with 0 removed.
 
 ## Project
 
-- Version: `v2.9.0`
+- Version: `v2.9.1`
 - **v2.9.0 makes teammates (sub-sessions) readable**: the phone's team panel could list members and
   sub-sessions but could not open a single one, because `sessions.list` filters out every row with
   `origin === 'subagent'` (the bridge's own `dsh-0.2-bridge.ts:2327`, with a comment explaining that

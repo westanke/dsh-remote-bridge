@@ -1,5 +1,137 @@
 # 开发日志
 
+## v2.9.1 · 设置页收敛 + 拆卡 + 修「开启云隧道点了没反应」（2026-10-31）
+
+**用户症状**：在「外网隧道」卡点「开启云隧道」，隧道起来了，但**没有生成配置码**。
+
+**根因不是拆卡回归，是一处早就存在的断链** —— 机械核对过原版，`createTunnel()` 在同一位置
+也不带参数，拆卡前后一字不差。三处证据：
+
+1. 前端：`tunnel` 卡的按钮是 `createTunnel()`（无参）。只有 `remote` 卡那枚「开启隧道并生成
+   配置」按钮才传 `{ thenGenConfig: true }`。
+2. 服务端：`router.ts:1422` 的 `if (wantConfig)` 是**唯一**生成 `configText` 的地方，且只在
+   `cloudflare/create` 那一次请求里跑（拿到地址后立即 `buildConfigText`）。
+3. 安全模型：隧道一旦运行，管理面判据 0（`TUNNEL_MODE_ADMIN_DISABLED`，见 `auth.ts:18`）
+   把 `/manage/config/text` 一律挡成 403 —— 所以「先开隧道、再想办法生成配置」这条路径
+   **在服务端根本不存在**，错过创建窗口就只剩「停掉重开」一条路。
+
+**改了三处**：
+
+- `cards/tunnel.tsx` 的开启按钮改为 `createTunnel({ thenGenConfig: true })`：用户在这张卡点
+  「开启云隧道」，要的就是「能连上来」，而连上来必须有配置码。
+- `cards/tunnel.tsx` 也渲染 `ConfigTextPanel`（组件从 `remote.tsx` 提到 `shared.tsx`）。
+  理由：用户是在**这张卡**点的按钮，码若只在 remote 卡显示、而那张卡此刻收起着，
+  用户就会以为点了没反应。同一份 `configText` 经 context 下发，两处是同一个值。
+- 补上**一直缺失的补步按钮**「用隧道地址生成配置」。`tunnelUrlPending` 的文案早就把用户
+  指到这个按钮上，但 `generateConfigForUrl` 只在主壳定义了函数、**没有任何 UI 触发它**。
+  慢机器上 `create` 在 12s 内抓不到域名时，用户此前没有任何出路。
+  新增文案键 `tunnelGenConfigByUrl`，与提示语措辞逐字一致（免得用户照着提示找一个不同名的按钮）。
+
+**没有动的地方**：隧道状态仍住 `AdminPanel`（`refresh` 里先于 `/manage/status` 拉取那条判据），
+停止按钮仍不被 `roots.length === 0` 锁死。
+
+### 设置页拆卡：每张卡一个文件，AdminPanel 630 → 334 行
+
+**起因**：`workspace.tsx` 1 308 行、`AdminPanel` 单函数 630 行的账已挂在 `TECH-DEBT.md`。上一轮把隧道
+拆成独立卡、并把根目录/识图/插件收进「高级设置」组，只削薄了**单张卡**，整体仍是一个巨型组件 ——
+拆卡才是清账的那一步。
+
+**结果**：
+
+| | 之前 | 之后 |
+|---|---|---|
+| `workspace.tsx` | 1 308 行 | **473 行**（-64%） |
+| `AdminPanel` | 630 行 | **334 行**（-47%，进 600 预算） |
+| 文件数 | 1 个巨型文件 | `cards/` 下 11 个（8 张卡 + context/shell/shared 三层） |
+
+**分层**：
+
+- `cards/context.ts` —— `CardsContext`：至少两张卡要用的状态与动作（api/t/status/roots/
+  managementLocked/refresh/notify/copyText/error/setError + 隧道字段组）。
+- `cards/shell.tsx` —— 折叠卡片外壳 `SettingsCard` / `AdvancedGroup` / `tabIcon` / 标签与描述键。
+- `cards/shared.tsx` —— 跨卡小部件与纯函数（`CopyButton` / `formatBytes` / `formatEndpoint` /
+  `messageOf` / `apiErrorKey` / `pluginStateKey` / `delay` 等）。
+- `cards/*.tsx` —— 8 张卡各自一个文件，签名统一 `{ open, onToggle }`。
+
+**判据：什么进 context、什么留在卡片里**。只有一张卡用的状态（根目录输入草稿、识图草稿、
+配对码与倒计时、设备编辑态、回收站列表）留在卡片自己文件里；提上来会让 context 变成第二个
+巨型组件，只是换个写法。
+
+**三处「写必须打回全局」的共享需求**（拆卡时暴露出来的真实耦合，不是图省事）：
+
+1. `setStatus` —— `poll()` 住在 remote 卡，但 `enableRemote` 的 `.then(result => poll(result.id))`
+   后面**没有 refresh()**，界面从「启用配对」翻成「关闭远程 + 新配对码」全靠 poll 里这一句
+   `setStatus(next)`。本地镜像会让 devices/roots 读到陈旧 status。
+2. `setConfigText` / `setConfigTextBusy` —— 这两个状态被两处写：tunnel 卡的
+   `generateConfigForUrl()` 与 remote 卡的手动「生成配置文件」按钮。分开存会导致
+   「remote 手动生成后 ConfigTextPanel 不出」。
+3. 隧道状态本身**不能搬进卡片**：`toggleCard` 不给 `refresh` 传参，而 `refresh` 依赖
+   `openCards` —— 能搬进卡片的是「展开才拉」，不能搬的是「先于 status 拉取」那条判据。
+
+**懒加载的等价替换**：`AdminPanel.refresh()` 里原先的
+`if (openCards.has('trash')) setTrash(...)` / `if (openCards.has('image')) …`
+改成各卡自己的 `useEffect` 判 `props.open`（同一个 Set、同一个值），请求时机不变。
+`trash` 卡另补 `reloadAfterAction()`：列表状态搬走后 `refresh()` 已不知道它存在，
+不补的话「还原」成功了那一行却还在。
+
+**测试跟着代码走**（两处读源码的断言，函数搬家导致误报）：
+
+- `tests/i18n.spec.ts` 的管理面拒绝码用例：`apiErrorKey` 搬进 `cards/shared.tsx`，原先只读
+  `workspace.tsx` 会报「码没映射」（文案明明在）。
+- `tests/scope-picker.spec.ts` 四条：权限选择器搬进 `cards/remote.tsx`、设备授权网格在
+  `cards/devices.tsx`，原先只读 `workspace.tsx` 会报「enableRemote 没找到」。
+- 两处都改成读**拼接**结果而不是单个固定文件：用例语义是「这个客户端里有没有」，不该关心
+  代码住在哪个文件。断言强度不变 —— 真的缺了仍然会红。
+
+**三个历史坑的归属不变**：隧道状态先于 `/manage/status` 拉取（含 403 的 `tunnelLockout` 豁免）
+留在 `AdminPanel.refresh()`；隧道停止按钮不被 `roots.length === 0` 锁死，在 `tunnel.tsx`；
+`managementLocked` 由主壳算好下发，卡片一律取自 context、不自己算第二份真值。
+
+**销账**：`TECH-DEBT.md` 里 `workspace.tsx` 那条已删（按「只许收紧」纪律，债务消失同批删条目）。
+`AdminPanel` 334 行、单卡最大 302 行（`remote.tsx`），全在 600 行预算内。
+
+### 设置页收敛：隧道拆卡 + 识图/插件收进「高级设置」
+
+**起因**：用户反馈设置页「内容过多，可否精简，保留必须的功能」。量化后确认问题不在卡片张数，
+而在**卡片内部的层次**：`remote` 一张卡 123 行、7 个按钮、4 个输入、40 个 i18n 键，
+同时装着「绑定 IP/端口」（局域网场景）与「Cloudflare 隧道」（外网场景）这两件毫不相干的事 ——
+30 个 `tunnel*` 键全挤在 `remote` 的命名空间里，局域网用户也要面对一堆隧道警告。历史上那条
+「重进设置页误显隧道停止且管理面死锁」的真机故障，就出在这层耦合上（`refresh()` 先请求必返 403
+的 `/manage/status`，中断整个 try，后面豁免的 `tunnelStatus()` 走不到）。
+
+**改动**：
+
+- **`remote` 拆成两张**：`remote` 只留绑定 IP/端口/保存/状态/配对码/权限；新增 `tunnel` 卡装
+  隧道开关、URL、进度、安全警告与配置文本。`remote` 由 123 行降至 88 行。
+- **`roots`、`image`、`plugins` 移出主列表，收进「高级设置」组**（`ADVANCED_TABS = ['roots','image','plugins']`，默认收起）。
+  `roots` 排组首：没有授权根目录，启用远程访问与创建隧道都会被 `roots.length === 0` 锁死，
+  它是所有远程能力的**前置**，放在最上面才对。
+- **默认展开卡从 `roots` 改为 `remote`**。`DEFAULT_PANEL_SECTION` 不能再指向组内的卡 ——
+  那样进来看到的是一张折叠着的卡，用户不会知道该先授权根目录。同时把 `advancedOpen` 的初值
+  改为 `ADVANCED_TABS.includes(initialOpen)`：万一以后有人把默认值改回组内卡，组会自动展开，
+  不会出现「默认卡落在关着的组里」这种死角。
+  **功能一格没少**：两张卡仍是完整 `SettingsCard`，懒加载照旧（`image` 走
+  `openCards.has('image')`、`plugins` 走自己的 `props.open`），点开即用。
+  关键实现取舍：**没有**把 `image`/`plugins` 从 `AdminTab` 里删掉 —— 那样 `openCards`
+  永远不含它们，分区请求永不发出，等于把功能连根拔掉却留着类型和接口，留下「看着还支持」的假象。
+  因此主列表与高级组各自一个常量，`AdminTab` 保持全集。
+- **`tests/i18n.spec.ts` 的映射表断言从「只比 `ADMIN_TABS`」改成「比对两组并集 + 逐名比对」**。
+  原写法在分组后会误判缺键；改为并集后还补了逐名集合比对 —— 否则「两组各移出一张、各加一张新的」
+  数量不变而映射表漏键，数量断言照样绿。
+- **`e2e/styles.spec.ts` 新增一条**「高级设置」组用例，守住「取消显示 ≠ 取消功能」：
+  断言 `ADVANCED_TABS` 为 `['roots','image','plugins']`、这三个 tab 都不在 `ADMIN_TABS`、
+  默认展开卡不落在组内、组内真能渲染出对应数量的卡片、且左侧色条真的生效（用 CSS 变量而非写死颜色）。
+- **截图从 4 张变 6 张**：新增 `panel-tunnel.png`，并把「高级设置」组的层次如实画进每张图
+  （画成不分组的平铺列表等于向市场展示一个不存在的界面）。`screenshots.json` 同步。
+  顺带修掉 `generate-screenshots.ts` 里硬编码的死键 `audit`（v2.6.0 早已移除审计卡，
+  脚本与 `ADMIN_TABS` 脱节，导致生成出带一张不存在卡片的截图）。
+- **README 双站与 STRUCTURE / INTERFACES / TECH-DEBT 同步**：所有「七张卡片」的表述改为
+  「主列表六张 + 高级设置组两张」。
+
+**未清完的账**：`workspace.tsx` 1 296 行、`AdminPanel` 单函数 651 行（此前 637），
+**仍在 600 行预算外** —— 本轮拆分只削薄了单张卡，整体依旧是一个巨型组件。
+已在 `TECH-DEBT.md` 如实登记，不算清账。
+
 ## v2.9.0 · 团队成员（子会话）历史：受成员关系校验的只读窄口（2026-10-31）
 
 **依据**：`dsh-companion` 的团队面板能列出成员与子会话，但**点开任何一个都读不到内容**。

@@ -100,11 +100,23 @@ describe('workspace translations', () => {
     const table = /TAB_DESC_KEYS: Record<AdminTab, MessageKey> = \{([\s\S]*?)\}/.exec(source)
     if (table === null) throw new Error('workspace.tsx 里找不到 TAB_DESC_KEYS 映射表')
     const pairs = [...table[1]!.matchAll(/(\S+?):\s*'(\w+)'/g)]
-    // 卡的张数以 ADMIN_TABS 为准，不写死数字：删掉一个卡（例如 2026-10-22 移除审计，
-    // 用户理由是「就自己用、暂时没必要」）时，这条断言不该变成一处需要手工同步的常数。
+    // 张数不写死：`TAB_DESC_KEYS` 必须**全覆盖** `AdminTab`，而卡片分两组呈现 ——
+    // `ADMIN_TABS`（主列表平铺）与 `ADVANCED_TABS`（收进「高级设置」组，功能照旧）。
+    // 所以这里比对的是两组的**并集**，不是主列表。2026-10-31 把 image / plugins 收进
+    // 高级组时，原先只比 `ADMIN_TABS` 的写法会把「映射表比主列表多两行」误判成缺键。
     const tabs = /ADMIN_TABS: readonly AdminTab\[\] = \[([^\]]*)\]/.exec(source)
     if (tabs === null) throw new Error('workspace.tsx 里找不到 ADMIN_TABS')
-    expect(pairs.length).toBe(tabs[1]!.split(',').filter(item => item.trim().length > 0).length)
+    const advanced = /ADVANCED_TABS: readonly AdminTab\[\] = \[([^\]]*)\]/.exec(source)
+    if (advanced === null) throw new Error('workspace.tsx 里找不到 ADVANCED_TABS')
+    const listed = [...tabs[1]!.split(','), ...advanced[1]!.split(',')]
+      .map(item => item.trim().replace(/^'|'$/g, ''))
+      .filter(item => item.length > 0)
+    expect(pairs.length).toBe(listed.length)
+
+    // 光比数量不够：两组都从 ADMIN_TABS 移走一张、又各加一张新的，数量不变而映射表会漏键。
+    // 所以逐名比对 —— 映射表里的 tab 名必须与两组并集**逐个对上**。
+    const named = [...table[1]!.matchAll(/(\S+?):\s*'(\w+)'/g)].map(m => m[1]!.replace(/^'|'$/g, ''))
+    expect(new Set(named)).toEqual(new Set(listed))
 
     for (const [, tab, key] of pairs) {
       // 键名回显成 `key` 本身即表示字典里查不到 —— 这正是白屏那次的表现。
@@ -117,13 +129,21 @@ describe('workspace translations', () => {
   // `TUNNEL_MODE_ADMIN_DISABLED` 该去停隧道，看到 `ADMIN_HOST_NOT_LOOPBACK` 该换地址打开 ——
   // 混成一句「没有权限」会把人引向错误的操作。这里同时钉住「码确实被映射了」与「文案不重复」。
   it('explains each management-refusal code with its own actionable sentence', () => {
-    const source = readFileSync(new URL('../src/client/workspace.tsx', import.meta.url), 'utf8')
+    // 读**拼接**结果而不是某个固定文件：`apiErrorKey` 这几条映射 2026-10-31 随设置页拆卡
+    // 从 workspace.tsx 搬到了 cards/shared.tsx，且后续还可能再动。
+    //
+    // 这条用例的语义是「这些码在**这个客户端**里被映射到了文案键」，它不该关心函数住在哪个文件。
+    // 写死单文件路径会造出两种假失败/假绿：文件搬走后报「码没映射」（误导人去加文案，而文案就在），
+    // 或者有人为了让它绿去放宽断言。拼接后强度不变 —— 码不在任何地方映射仍然会红。
+    const source = ['workspace.tsx', 'cards/shared.tsx']
+      .map(file => readFileSync(new URL(`../src/client/${file}`, import.meta.url), 'utf8'))
+      .join('\n')
     const codes = ['TUNNEL_MODE_ADMIN_DISABLED', 'ADMIN_PROXY_FORWARDED', 'ADMIN_HOST_NOT_LOOPBACK', 'ADMIN_LOOPBACK_REQUIRED']
     const seen = new Set<string>()
     for (const code of codes) {
       // 映射表里必须真有这个码对应到一个 MessageKey（从源码里抠，防止「加了码没加文案」）。
       const mapped = new RegExp(`error\\.code === '${code}'\\) return '([\\w]+)'`).exec(source)
-      expect(mapped, `${code} 没有在 workspace.tsx 里映射到文案键`).not.toBeNull()
+      expect(mapped, `${code} 没有在客户端源码里映射到文案键`).not.toBeNull()
       const key = mapped![1] as MessageKey
       expect(translate('zh-CN', key), key).not.toBe(key)
       expect(translate('en', key), key).not.toBe(key)

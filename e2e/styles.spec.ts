@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test'
-import { ADMIN_TABS, DEFAULT_PANEL_SECTION } from '../src/client/workspace.tsx'
+import { ADMIN_TABS, ADVANCED_TABS, DEFAULT_PANEL_SECTION } from '../src/client/workspace.tsx'
 import { WORKSPACE_CSS } from '../src/client/styles.ts'
 import { APP_QR_CODES } from '../src/client/app-qr.ts'
 
@@ -58,23 +58,75 @@ const qrBody = `<div class="daw-qr-grid">
     </div>`
 
 /** 与 `AdminPanel` 的产出一致：七张卡平铺，默认展开指定那张，其余收起。 */
-function panelHtml(openTab: string): string {
-  const cards = ADMIN_TABS.map(name =>
-    cardHtml(name, name === openTab, name === 'roots' ? rootsBody : name === 'app-download' ? qrBody : ''),
-  ).join('')
+/**
+ * 「高级设置」组展开后的产出一致性：外层一个组卡，组内平铺 `ADVANCED_TABS`。
+ *
+ * 与 `panelHtml` 分开是有意的：主列表与高级组是**两处不同的渲染**，把它们混进同一个
+ * fixture 里，就分不清「卡片少了」是分组生效还是卡片被删了。
+ */
+function advancedHtml(): string {
+  const cards = ADVANCED_TABS.map(name => cardHtml(name, false, BODY_FOR[name] ?? '')).join('')
+  return `<!doctype html><html><head><meta charset="utf-8"><style>${WORKSPACE_CSS}</style>
+    <style>body{margin:0;background:#fff}</style></head><body>
+    <div id="stage" style="width:640px;padding:16px">
+      <div class="daw-settings-section">
+        <main class="daw-admin">
+          <section class="daw-card daw-card-open daw-advanced-group">
+            <button type="button" class="daw-card-header" aria-expanded="true">
+              <span class="daw-card-icon" aria-hidden="true"></span>
+              <span class="daw-card-headtext">
+                <span class="daw-card-name">高级设置</span>
+                <span class="daw-card-desc">平时用不到的几项，收在这里。</span>
+              </span>
+              <span class="daw-card-chevron daw-card-chevron-open" aria-hidden="true">▾</span>
+            </button>
+            <div class="daw-card-body daw-advanced-body">${cards}</div>
+          </section>
+        </main>
+      </div>
+    </div></body></html>`
+}
+
+/** 单张卡要展示的 body：有真实交互的才画，其余留空（测结构，不测内容）。 */
+const BODY_FOR: Record<string, string> = { roots: rootsBody, 'app-download': qrBody }
+
+/**
+ * 完整面板：主列表（`ADMIN_TABS`）平铺 + 「高级设置」组（`ADVANCED_TABS`）。
+ *
+ * `groupOpen` 默认 **true**：多数用例量的是「卡片画得对不对」，组收起会让组内卡不渲染，
+ * 那些断言就全部量不到样式。但「默认只展开一张」那条必须传 `false` —— 它量的恰恰是
+ * 真实初始状态（组默认收起），两者不能共用同一个默认值。
+ */
+function panelHtml(openTab: string, groupOpen = true): string {
+  const cards = ADMIN_TABS.map(name => cardHtml(name, name === openTab, BODY_FOR[name] ?? '')).join('')
+  const advanced = ADVANCED_TABS.map(name => cardHtml(name, name === openTab, BODY_FOR[name] ?? '')).join('')
 
   return `<!doctype html><html><head><meta charset="utf-8"><style>${WORKSPACE_CSS}</style>
     <style>body{margin:0;background:#fff}</style></head><body>
     <div id="stage" style="width:640px;padding:16px">
       <div class="daw-settings-section">
         <p class="daw-list-meta">管理这台机器的手机访问：配对、权限、回收站与客户端下载。</p>
-        <main class="daw-admin">${cards}</main>
+        <main class="daw-admin">${cards}
+          <section class="daw-card${groupOpen ? ' daw-card-open' : ''} daw-advanced-group">
+            <button type="button" class="daw-card-header" aria-expanded="${groupOpen}">
+              <span class="daw-card-icon" aria-hidden="true"></span>
+              <span class="daw-card-headtext">
+                <span class="daw-card-name">高级设置</span>
+                <span class="daw-card-desc">平时用不到的几项，收在这里，功能与主列表一致。</span>
+              </span>
+              <span class="daw-card-chevron${groupOpen ? ' daw-card-chevron-open' : ''}" aria-hidden="true">▾</span>
+            </button>
+            ${groupOpen ? `<div class="daw-card-body daw-advanced-body">${advanced}</div>` : ''}
+          </section>
+        </main>
       </div>
     </div></body></html>`
 }
 
 test('添加根目录按钮真的可见 —— 不是白字白底', async ({ page }) => {
-  await page.setContent(panelHtml(DEFAULT_PANEL_SECTION))
+  // 显式展开 roots，而不是跟着默认卡走：这条量的是那张卡的按钮配色，
+  // 默认卡换成谁都与它无关（2026-10-31 默认卡已从 roots 改为 remote）。
+  await page.setContent(panelHtml('roots'))
   const button = page.locator('#add-root')
   await expect(button).toBeVisible()
   await expect(button).toHaveText('添加')
@@ -99,22 +151,50 @@ test('添加根目录按钮真的可见 —— 不是白字白底', async ({ pag
   expect(inside).toBe(true)
 })
 
-test('七张卡片平铺，默认只展开一张', async ({ page }) => {
-  await page.setContent(panelHtml(DEFAULT_PANEL_SECTION))
+test('主列表卡片平铺，默认只展开一张', async ({ page }) => {
+  // 组收起：这才是用户首次进设置页看到的真实状态。
+  await page.setContent(panelHtml(DEFAULT_PANEL_SECTION, false))
 
-  const cards = page.locator('.daw-card')
-  await expect(cards).toHaveCount(ADMIN_TABS.length)
+  // 主列表卡片 + 1 个「高级设置」组外壳；组收起时组内卡不渲染。
+  const cards = page.locator('.daw-admin > .daw-card')
+  await expect(cards).toHaveCount(ADMIN_TABS.length + 1)
 
   // 卡片是竖着排下来的，不是叠在一起。
   const tops = await cards.evaluateAll(els => els.map(el => Math.round(el.getBoundingClientRect().top)))
   expect(new Set(tops).size).toBe(tops.length)
 
-  // 默认展开一张，且展开的那张带 aria-expanded="true"。
+  // 默认展开一张（主列表里那张），组自己保持收起 —— 组若也带 dw-card-open，这里会是 2。
   const opened = page.locator('.daw-card-open')
   await expect(opened).toHaveCount(1)
   await expect(page.locator('.daw-card-header[aria-expanded="true"]')).toHaveCount(1)
   // 收起状态的卡不渲染展开体 —— DOM 里不该出现一堆隐藏的表单。
   await expect(page.locator('.daw-card-body')).toHaveCount(1)
+})
+
+test('「高级设置」组收纳 roots / image / plugins，功能照旧可达', async ({ page }) => {
+  // 这条守的是「取消显示 ≠ 取消功能」：分区从主列表拿掉，但必须仍能渲染出真正的卡片，
+  // 而不是只剩一个类型定义。ADVANCED_TABS 一旦被清空或两处脱节，这里立刻红 ——
+  // 否则「功能还在」只是文件里的一句注释。
+  //
+  // `roots` 排第一不是随手：没有授权根目录，启用远程访问与创建隧道都会被
+  // `roots.length === 0` 锁死。组首放它，等于把「先授权」摆在最前。
+  expect(ADVANCED_TABS).toEqual(['roots', 'image', 'plugins'])
+  for (const tab of ADVANCED_TABS) {
+    expect(ADMIN_TABS).not.toContain(tab)
+  }
+
+  // 默认卡不能落在组里：否则进来看到的是一张收起的卡，甚至整组是收起的。
+  // 真出现这种情况时 AdminPanel 会自动把组展开（见它的 advancedOpen 初始化），
+  // 但默认值本身也应该指向主列表的卡。
+  expect(ADVANCED_TABS).not.toContain(DEFAULT_PANEL_SECTION)
+
+  await page.setContent(advancedHtml())
+  const cards = page.locator('.daw-advanced-body .daw-card')
+  await expect(cards).toHaveCount(ADVANCED_TABS.length)
+
+  // 组内卡片缩进且带左侧色条：靠 CSS 变量而不是写死颜色，深色主题下才跟得上宿主。
+  const borderLeft = await cards.first().evaluate(el => getComputedStyle(el).borderLeftWidth)
+  expect(Number.parseFloat(borderLeft)).toBeGreaterThan(0)
 })
 
 test('卡片圆角与描边真的生效，且没有写死颜色', async ({ page }) => {

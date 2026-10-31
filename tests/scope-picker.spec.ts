@@ -103,7 +103,16 @@ describe('pairing carries the scopes the user picked', () => {
  *    （否则勾了也白发）。
  */
 describe('the scope picker in the settings panel', () => {
-  const source = readFileSync(new URL('../src/client/workspace.tsx', import.meta.url), 'utf8')
+  // 读**拼接**结果而不是单个固定文件：权限选择器 2026-10-31 随设置页拆卡从
+  // workspace.tsx 搬进了 cards/remote.tsx（设备侧的授权网格在 cards/devices.tsx），
+  // 而这条用例的语义是「这个客户端里的选择器是可交互的」，它不该关心代码住在哪个文件。
+  //
+  // 写死单文件会造出误导性的失败：搬家后报「enableRemote 没找到」/「没有 grantedScopes」，
+  // 读的人会以为功能被删了，而它只是在隔壁文件里。拼接后断言强度不变 ——
+  // 真的没有可交互选择器、或真的传了 DEVICE_SCOPES，仍然会红。
+  const source = ['workspace.tsx', 'cards/remote.tsx', 'cards/devices.tsx']
+    .map(file => readFileSync(new URL(`../src/client/${file}`, import.meta.url), 'utf8'))
+    .join('\n')
 
   it('is interactive rather than read-only', () => {
     const picker = /daw-scope-grid[\s\S]{0,400}?scopeLabel\(locale, scope\)/.exec(source)

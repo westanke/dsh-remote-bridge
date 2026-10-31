@@ -149,12 +149,13 @@ host services 之上重建 0.1.x 的 `apiProxy` 面容，让 `chat-adapter` / `s
 | `cloudflared.ts` | `CloudflaredTunnelManager`：cloudflared 二进制下载（择源）与隧道进程管理 |
 | `host-service-probe.ts` | 注入面探针：记录哪些 host service 真的注入了（**只在 apply 期间采样**） |
 
-### 3.2 `src/client/` —— DSH WebUI 浏览器半边（8 个文件）
+### 3.2 `src/client/` —— DSH WebUI 浏览器半边（9 个文件 + `cards/` 下的 11 个卡片文件）
 
 | 文件 | 职责 |
 | --- | --- |
 | `index.tsx` | 客户端插件入口：向 `settings.section` 等 slot 注册组件 |
-| `workspace.tsx` | 「📱 手机设置」面板主体（七张折叠卡片：根目录/远程访问/设备/识图/回收站/插件/App 下载） |
+| `workspace.tsx` | 「📱 手机设置」面板**外壳**：分区常量（`ADMIN_TABS` 5 张 / `ADVANCED_TABS` 3 张）、共享状态（refresh / 隧道 / 通知）、`CardsProvider` 接线。每张卡的内容在 `cards/*.tsx` |
+| `cards/*.tsx` | 每张设置卡一个文件（11 个）。`context.ts` 是共享层，`shell.tsx` 是卡片外壳，`shared.tsx` 是跨卡小部件；其余 8 个各是一张卡 |
 | `plugins.tsx` | 插件清单的右侧栏形态：`SidebarRightTabDefinition` + guide 卡片（rc.3 起可 pin），body 复用 `/settings/plugins` |
 | `handoff.tsx` | 图片交接消息 → 真图片（只认用户消息里的行首标记，挂在 `conversation.chat.turnTail` 座位） |
 | `i18n.tsx` | 双语文案与语言 store（`zh-CN` / `en`），跨 slot 同步 |
@@ -230,7 +231,7 @@ host services 之上重建 0.1.x 的 `apiProxy` 面容，让 `chat-adapter` / `s
 | `src/host/provider-url-policy.ts` | ≈190 行 | 供应商 baseURL 地址策略（纯函数） |
 | `src/host/device-identity.ts` | ≈200 行 | 设备身份探测（纯函数） |
 | `src/host/cloudflared.ts` | ≈430 行 | 隧道与二进制下载 |
-| `src/client/workspace.tsx` | ≈1230 行 | 面板全部交互 |
+| `src/client/workspace.tsx` | ≈473 行 | 面板外壳（拆卡前是 1308 行的巨型组件） |
 | `src/shared/version.ts` | 1 行 | 版本号；与 `package.json`、两站 README、OpenAPI/AsyncAPI 版本同源 |
 
 > 行数只是**量级提示**，精确基线与债务状态以 [TECH-DEBT.md](TECH-DEBT.md) 为准
@@ -246,7 +247,7 @@ host services 之上重建 0.1.x 的 `apiProxy` 面容，让 `chat-adapter` / `s
 | 一个新内核适配（因内核行为而写） | `src/host/dsh-0.2-bridge.ts` | `@patch` 五要素（for/why/until/test）、`DSH-0.2-COMPAT.md`、指向的测试必须真实存在 |
 | 一个新持久化表/列 | `src/host/database.ts` | 迁移代码 + `tests/migration-drill.spec.ts`、`TECH-DEBT.md`（若涉及历史数据） |
 | 一个新的横切工具（路径/预算/序列化） | `src/host/` 下按职责命名的新文件 | **本文机检锚点必须登记**，否则 `docs:check` 变红；补单测 |
-| 一个新面板卡片 | `src/client/workspace.tsx`（+ `i18n.tsx` 双语文案） | 面板截图 `assets/screenshots/`、`styles.ts`（若加样式） |
+| 一个新面板卡片 | 新建 `src/client/cards/<name>.tsx`，在 `workspace.tsx` 的对应分组常量与渲染里各加一行（+ `i18n.tsx` 双语文案） | 面板截图 `assets/screenshots/`、`styles.ts`（若加样式）、`TAB_DESC_KEYS`（`cards/shell.tsx`） |
 | 一个新浏览器组件/slot | `src/client/index.tsx` 注册 | `package.json` 的 `dsh.client.inject`（若需要新 client 依赖） |
 | 一个新测试 | `tests/` 按 §3.4 主题分组，命名 `Xxx.spec.ts` | `TESTING.md` 记演进；修 bug 必须带回归用例 |
 | 一份新文档 | `docs/project/` | 若属必需文档，加到 `scripts/check-project-docs.ts` 的 `requiredDocs`；更新 `docs/project/README.md` 索引 |
@@ -325,7 +326,19 @@ host services 之上重建 0.1.x 的 `apiProxy` 面容，让 `chat-adapter` / `s
 | `src/client/index.tsx` | file | 客户端插件入口与 slot 注册 |
 | `src/client/plugins.tsx` | file | 插件清单的右侧栏 tab 形态 |
 | `src/client/styles.ts` | file | 面板 CSS |
-| `src/client/workspace.tsx` | file | 手机设置面板主体 |
+| `src/client/workspace.tsx` | file | 手机设置面板外壳：分区常量、共享状态持有（refresh/隧道/通知）、CardsProvider 接线 |
+| `src/client/cards/` | dir | 每张设置卡一个文件（2026-10-31 从 workspace.tsx 拆出） |
+| `src/client/cards/context.ts` | file | CardsContext：卡片共享状态与动作（至少两卡要用的才进这里） |
+| `src/client/cards/shell.tsx` | file | 折叠卡片外壳 SettingsCard / AdvancedGroup / tabIcon / tabLabelKey / tabDescKey |
+| `src/client/cards/shared.tsx` | file | 跨卡复用的小部件与纯函数（CopyButton / formatBytes / messageOf / apiErrorKey 等） |
+| `src/client/cards/roots.tsx` | file | 根目录卡（高级设置组首位；没有它远程与隧道都被锁死） |
+| `src/client/cards/remote.tsx` | file | 远程访问卡（绑定 IP/端口、配对码、权限勾选、操作轮询 poll） |
+| `src/client/cards/tunnel.tsx` | file | 外网隧道卡（Cloudflare 快速隧道的开关与进度） |
+| `src/client/cards/devices.tsx` | file | 设备卡（已配对手机、权限与吊销、DeviceRow） |
+| `src/client/cards/trash.tsx` | file | 回收站卡（手机端删除记录的恢复与彻底清理，展开才拉取） |
+| `src/client/cards/image.tsx` | file | 识图卡（图片落盘目录名，展开才拉取） |
+| `src/client/cards/plugins.tsx` | file | 插件卡（profile 插件清单、启停、检查更新） |
+| `src/client/cards/app-download.tsx` | file | App 下载卡（双站二维码与地址） |
 | `src/shared/` | dir | 双端共享契约与版本 |
 | `src/shared/contracts.ts` | file | 共享契约类型 |
 | `src/shared/version.ts` | file | PLUGIN_VERSION |
