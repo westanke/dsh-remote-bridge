@@ -22,11 +22,10 @@
 | `src/host/dsh-0.2-bridge.ts` | 2 682 | **兼容适配层**：重建 0.1.x `apiProxy` 面容，一个文件里装了会话、审批、提问、模型多条链路的重建逻辑。改一条要读 1 700 行 | 按链路拆（session / approval / question / model 各一模块），公共面容抽 `api-proxy-facade.ts` |
 | `src/host/router.ts` | 2 062 | 全部 REST 路由集中一处；新端点往里加，旧端点没人敢删 | 按资源域拆 `routes/*.ts`，router 只做组装 |
 | `src/host/chat-adapter.ts` | 1 732 | 会话链路适配：列表/历史/发送/取消/workspace/agent-preset + 审批/提问适配全在一个文件（2026-10-30 修 approval 句柄 +11 注释/分支） | 按端点族拆 |
-| `src/host/database.ts` | 1 005 | 用户数据（根/设备/回收站/配对/幂等/审计）全在一个类里；每次加字段都要在这个文件里写迁移 | 按表族拆 `db/{roots,devices,trash,pairings}.ts`，迁移独立成 `db/migrations.ts` |
 | `src/host/settings-adapter.ts` | 731 | 提供商与模型目录、通用设置命名空间两件事挤在一个类；SEC-H11 的重定向闸门也落在这里 | 拆 `providers-adapter.ts` 与 `namespaces-adapter.ts` |
 | `src/host/ws-handler.ts` | 861 | **`/ws/mobile` 的总装**：鉴权三入口（配对码 / 令牌 / Bearer 连接）、`handleMessage` 解码与分发、13 个域处理器委派、背压发送队列（含可重建帧挑选与 resync 补发）、hello 全在一个类里。2026-10-31 拆出 5 个基础帧到 `ws-basic.ts`、连接上限与心跳到 `ws-connection-policy.ts`（wc -l：HEAD 984 → 861，净 −123；原登记的 974 已过期）。**仍超预算**：issue #4 要求「只留鉴权 + 分发 + 发送路径」并 <600 行，而这三块实测约 430 行、加状态机/挂载/字段脚手架约 250 行，文件下限约 680 行——**`<600` 在该边界下不可达**，属 issue 估算偏乐观，不是拆分未尽 | 已拆 `ws-basic.ts` + `ws-connection-policy.ts`；下一刀：把 ping/subscribe/unsubscribe 三个连接级基础帧与协议常量（`KNOWN_UNSUPPORTED_FRAMES` / `headerValue` / `decodeBase64Utf8`）外移，估 861 → ~780，仍超 600；要真到 600 须放宽「发送路径留在主类」这条边界 |
 
-> 这三个是**已登记的债，不是许可**。新增超预算文件必须先入本表再写码。
+> 这五个是**已登记的债，不是许可**。新增超预算文件必须先入本表再写码。
 >
 > **2026-10-17 按事实更新行数**（原来是 1 730 / 1 245 / 1 233）：C 批四项改动分别落在
 > `chat-adapter.ts`（连接即重放、归档列表查询、`historyFormatVersion`，+139）、
@@ -79,6 +78,16 @@
 > **新登记一条**：`src/host/ws-handler.ts` 自 `/ws/mobile` 网关那一轮起就超预算且从未入表，
 > 属既有欠账（本轮之前已经是 769 行），按「既有文件越线，处置同新增超预算」补登。
 > 预算（600 行/文件）未变；清账阶段未变。
+
+> **2026-10-31 database.ts 按表族拆完后复核**（`wc -l` 实测）：`src/host/database.ts`
+> 1 005 → **411**（组合根：连接/PRAGMA/迁移装配/跨表族事务 + 全部公开方法的一行委托），
+> 表族拆到 `src/host/db/` 下九个文件（devices 423 / migrations 163 / roots 158 /
+> audit 113 / pairings 73 / trash 73 / idempotency 33 / secrets 14），**全部在预算内**。
+> `database.ts` 条目**按「清账」删掉**：行数债已消失，不是许可。
+> 拆法要点：表族依赖叶子朝上（secrets → audit → roots → devices → pairings），
+> 跨族依赖走构造注入（`RootLookup` 只读口 + `bumpRevision` 回调），
+> 跨表族事务（`exchangePairing`）留在组合根 —— SQLite 事务挂在连接上。
+> 对外 API 零改动：12 处 import 与全部 database spec 原样通过。
 
 ## 已知结构性债务
 

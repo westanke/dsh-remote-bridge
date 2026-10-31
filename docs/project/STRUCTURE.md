@@ -70,7 +70,7 @@ dsh-remote-bridge/
 
   横切与支撑（不参与上面这条主链）：
     auth.ts / rate-limit.ts     鉴权与限流
-    database.ts                 持久层（node:sqlite）
+    database.ts + db/            持久层组合根 + 按表族拆的 db/*.ts（node:sqlite）
     event-bus.ts                进程内事件总线 → server.ts 扇出到 WebSocket
     image-handoff.ts            识图路径设置 + 只读图片路由
     cloudflared.ts              Cloudflare 隧道进程管理
@@ -135,7 +135,7 @@ host services 之上重建 0.1.x 的 `apiProxy` 面容，让 `chat-adapter` / `s
 
 | 文件 | 职责 |
 | --- | --- |
-| `database.ts` | `WorkspaceDatabase`：node:sqlite 持久层（根/设备/配对/设置/回收站/审计），含迁移与撤销清理 |
+| `database.ts` | `WorkspaceDatabase`：node:sqlite 持久层**组合根**（连接/PRAGMA/迁移装配/跨表族事务），公开方法一行委托到 `db/*.ts` 表族模块（根/设备/配对/设置/回收站/审计/幂等） |
 | `event-bus.ts` | `WorkspaceEventBus`：进程内订阅/发布，server 据此扇出到 WS |
 | `rate-limit.ts` | `FixedWindowLimiter`：固定窗口限流（鉴权失败、配对尝试、普通请求三档） |
 | `errors.ts` | `ApiError` / `asApiError`：REST 错误码与 HTTP 状态的统一载体 |
@@ -224,7 +224,7 @@ host services 之上重建 0.1.x 的 `apiProxy` 面容，让 `chat-adapter` / `s
 | `src/host/dsh-0.2-bridge.ts` | ≈2 150 行 | 所有走内核的链路；改前必读 `DSH-0.2-COMPAT.md` 与 PITFALLS §apiProxy 消失 |
 | `src/host/chat-adapter.ts` | ≈1 480 行 | 会话/历史/审批/提问/命令/附件全部 REST 行为 |
 | `src/host/router.ts` | ≈1 430 行 | 全部对外路由与鉴权落点；改路由要同步 OpenAPI + capabilities 依据 |
-| `src/host/database.ts` | ≈640 行 | 用户数据（根/设备/回收站）；改表要写迁移并跑 `migration-drill` |
+| `src/host/database.ts` | ≈410 行 | 持久层组合根：全部公开方法与跨表族事务都在这（2026-10-31 拆表族后）；改表结构去 `db/migrations.ts` 并跑 `migration-drill` |
 | `src/host/plugin-inventory.ts` | ≈640 行 | 插件清单与启停；profile 解析相关 |
 | `src/host/server.ts` | ≈450 行 | 监听器、`/dsh-workspace-api` 前缀（**不可动契约**）、WS 扇出与授权过滤 |
 | `src/host/settings-adapter.ts` | ≈430 行 | 提供商/模型设置页 |
@@ -246,7 +246,7 @@ host services 之上重建 0.1.x 的 `apiProxy` 面容，让 `chat-adapter` / `s
 | --- | --- | --- |
 | 一个新 REST 路由 | `src/host/router.ts` 的 `dispatch` 分支；业务实现优先落到对应 adapter | `docs/api/openapi.yaml`、`docs/project/API.md`、需要就加能力位（附契约依据）、`kotlin-sdk`、合约测试、**本文与 INTERFACES 锚点** |
 | 一个新内核适配（因内核行为而写） | `src/host/dsh-0.2-bridge.ts` | `@patch` 五要素（for/why/until/test）、`DSH-0.2-COMPAT.md`、指向的测试必须真实存在 |
-| 一个新持久化表/列 | `src/host/database.ts` | 迁移代码 + `tests/migration-drill.spec.ts`、`TECH-DEBT.md`（若涉及历史数据） |
+| 一个新持久化表/列 | `src/host/db/<表族>.ts`（迁移在 `src/host/db/migrations.ts`） | 迁移代码 + `tests/migration-drill.spec.ts`、`TECH-DEBT.md`（若涉及历史数据）；新文件登记本文机检锚点 |
 | 一个新的横切工具（路径/预算/序列化） | `src/host/` 下按职责命名的新文件 | **本文机检锚点必须登记**，否则 `docs:check` 变红；补单测 |
 | 一个新面板卡片 | 新建 `src/client/cards/<name>.tsx`，在 `workspace.tsx` 的对应分组常量与渲染里各加一行（+ `i18n.tsx` 双语文案） | 面板截图 `assets/screenshots/`、`styles.ts`（若加样式）、`TAB_DESC_KEYS`（`cards/shell.tsx`） |
 | 一个新浏览器组件/slot | `src/client/index.tsx` 注册 | `package.json` 的 `dsh.client.inject`（若需要新 client 依赖） |
@@ -278,7 +278,16 @@ host services 之上重建 0.1.x 的 `apiProxy` 面容，让 `chat-adapter` / `s
 | `src/host/chat-adapter.ts` | file | 会话/历史/审批/提问/命令 adapter |
 | `src/host/cloudflared.ts` | file | Cloudflare 隧道与二进制管理 |
 | `src/host/config-text.ts` | file | DSH1 配置文本编解码 |
-| `src/host/database.ts` | file | node:sqlite 持久层 |
+| `src/host/database.ts` | file | node:sqlite 持久层组合根（连接/PRAGMA/迁移装配/跨表族事务，公开方法委托到 db/*.ts） |
+| `src/host/db/` | dir | 持久层按表族拆的模块（2026-10-31 从 database.ts 拆出，issue #5） |
+| `src/host/db/audit.ts` | file | 审计表族 AuditTable（append/list/prune 两段删除；只存 id/时间/动作/详情 JSON） |
+| `src/host/db/devices.ts` | file | 设备表族 DevicesTable（鉴权/身份/改名/scope 与 root 授权/撤销/修剪；bumpRevision 回调注入） |
+| `src/host/db/idempotency.ts` | file | 幂等回放表族 IdempotencyTable（read/save/prune） |
+| `src/host/db/migrations.ts` | file | 有序 forward-only 迁移 runMigrations（建表 + 四列 ALTER + roots UNIQUE 重建） |
+| `src/host/db/pairings.ts` | file | 配对码表族 PairingsTable（create/lookup/markUsed 原语；跨族兑换事务在组合根） |
+| `src/host/db/roots.ts` | file | 授权根表族 RootsTable（add/list/get/ensureBuiltin/remove + dumpSchema） |
+| `src/host/db/secrets.ts` | file | hashSecret（sha256 hex，令牌/配对码共用） |
+| `src/host/db/trash.ts` | file | 回收站记录表族 TrashTable（insert/updateStatus/get/list/remove） |
 | `src/host/dsh-0.2-bridge.ts` | file | DSH 0.2.x 适配层（重建 apiProxy 面容） |
 | `src/host/errors.ts` | file | ApiError 与错误归一 |
 | `src/host/event-bus.ts` | file | 进程内事件总线 |
@@ -293,7 +302,7 @@ host services 之上重建 0.1.x 的 `apiProxy` 面容，让 `chat-adapter` / `s
 | `src/host/path-policy.ts` | file | 相对路径校验 |
 | `src/host/device-identity.ts` | file | 设备身份探测（结构化头优先，UA 兜底判平台） |
 | `src/host/provider-url-policy.ts` | file | 供应商 baseURL 地址策略（私网默认拒绝） |
-| `src/host/retention.ts` | file | audit/idempotency 表的保留期清理调度（策略层，SQL 在 database.ts） |
+| `src/host/retention.ts` | file | audit/idempotency 表的保留期清理调度（策略层，SQL 在 db/audit.ts 与 db/idempotency.ts） |
 | `src/host/plugin-inventory.ts` | file | 插件清单与启停 |
 | `src/host/rate-limit.ts` | file | 固定窗口限流 |
 | `src/host/root-resolver.ts` | file | 绝对路径到授权根的解析 |

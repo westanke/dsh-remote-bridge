@@ -50,7 +50,8 @@ export const IDEMPOTENCY_PRUNE_EVERY = 50
 /**
  * 数据库需要提供的最小端口。
  *
- * 两个方法都由 `database.ts` 实现（表在那里）。声明成接口而不是直接 import
+ * 两个方法都由 `WorkspaceDatabase` 实现（SQL 在 `db/idempotency.ts` /
+ * `db/audit.ts` 表族模块，`database.ts` 一行委托）。声明成接口而不是直接 import
  * `WorkspaceDatabase`，是为了让「数据库还没提供这两个方法」这件事在类型层面
  * 就是一个**可判定**的状态（[resolveRetentionPort] 返回 null），而不是运行期崩。
  */

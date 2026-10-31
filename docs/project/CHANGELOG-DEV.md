@@ -89,6 +89,32 @@ base64 膨胀 4/3，所以单条路径的原始文件实际上限约 **17.2 MiB*
 `docs:check` 四段全过（12 文档 / 39 tasks / 9 ADRs / STRUCTURE 84 锚点 / INTERFACES 87 锚点）；
 双产物 build 成功（host `lib/index.js` 628.64 kB、client `lib/client.cjs` 772.91 kB）。
 
+## 未发布 · database.ts 按表族拆分（2026-10-31）
+
+**基于什么**：TECH-DEBT.md 行数表的 `src/host/database.ts` 条目（issue #5）——
+1 005 行超 600 预算，用户数据（根/设备/配对/回收站/幂等/审计）全在一个类里，
+每加一个字段都要回到这个文件写迁移。
+
+**干了什么**：按表族拆到 `src/host/db/` 下九个文件（依赖叶子朝上：
+`secrets → audit → roots → devices → pairings`，`trash` / `idempotency` / `migrations` 独立；
+跨族依赖走构造注入——`RootLookup` 只读口 + `bumpRevision` 回调，没有循环依赖），
+`db/migrations.ts` 单独承载有序 forward-only 迁移；`database.ts` 从 1 005 行减到 **411 行**，
+变成**组合根**：连接/PRAGMA/迁移装配 + 全部公开方法的一行委托 +
+跨表族事务（`exchangePairing`，SQLite 事务挂在连接上，只有组合根能包住四张表的原子写）。
+对外 API 零改动：12 处 import 原样（`WorkspaceDatabase` / `StoredRoot` /
+`AuthenticatedDevice` / `TrashRecord` / `hashSecret` 全部仍从 `database.ts` 导出）。
+
+**拆分中抓到的一个坑**：FUNC-5 的「审计与业务同生共死」用例靠
+`vi.spyOn(database, 'audit')` 把组合根方法换成会抛错的桩。若把 `AuditTable` 实例
+直接注入表族，事务里的审计调用会绕开这道缝，2 条用例静默变红。改法：表族依赖窄类型
+`AuditSink`（audit.ts 里的函数类型），组合根注入 `(...args) => this.audit(...args)`
+—— 闭包调用时才解引用，spy 拦得住，测试原样通过。
+
+**测了什么**：`tsc --noEmit` 0 错；`docs:check` 通过（STRUCTURE 登记 9 个新锚点）；
+全量 `vitest`（80 文件 / 834 用例，含全部 database spec 与 `migration-drill`）提交前复跑通过；
+`retention.ts` 窄端口（duck-typing 的 `pruneIdempotency` / `pruneAudit`）不受委托影响。
+TECH-DEBT.md 同提交删掉 `database.ts` 条目（行数债消失，按「清账」规则）。
+
 ## v2.9.2 · 首屏换 16:9 宣传图（2026-10-31）
 
 **起因是一次流量诊断**：仓库 30 天 npm 下载 3686、14 天 clone 1075（132 个独立来源），
