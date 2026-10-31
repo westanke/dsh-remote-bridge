@@ -52,6 +52,8 @@ import { HostHandler } from './ws-host.ts'
 import { TeamHandler } from './ws-team.ts'
 import { ScheduleHandler } from './ws-schedule.ts'
 import { SpeechHandler } from './ws-speech.ts'
+import { MobileBasicFrames, type MobileDeviceView } from './ws-basic.ts'
+import { MobileConnectionPolicy } from './ws-connection-policy.ts'
 import type { HostRemoteHandle } from './ws-host-services.ts'
 import { MobileEventBridge, makeEventAuthorizer, makeSessionFilter } from './ws-event-bridge.ts'
 
@@ -77,7 +79,7 @@ interface MobileSocketState {
   /** 经过鉴权的主体（配对成功后合成，或 token 认证后直接得）。 */
   principal: Principal
   /** 设备视图（配对时从 exchangePairing 得，后续从 principal 推断）。 */
-  device: { id: string; name: string; scopes: DeviceScope[]; rootIds: string[] } | undefined
+  device: MobileDeviceView | undefined
   /** 配对时一次性下发的 token（paired 帧里带给客户端）。 */
   pairingToken: string | undefined
   /** 是否已发过 hello（配对流需要先 paired 再 hello）。 */
@@ -102,8 +104,9 @@ interface MobileSocketState {
    * - 非空 = 只收这些会话的事件（无 sessionId 的全局/文件帧仍放行）。
    */
   subscribed: Set<string> | undefined
-  /** 域处理器实例（由构造函数注入）。 */
+  /** 基础帧处理器 + 域处理器实例（每条连接一套，由 acceptSocket 构造）。 */
   handlers: {
+    basic: MobileBasicFrames
     sessions: SessionHandler
     hitl: HitlHandler
     models: ModelsHandler
@@ -245,8 +248,6 @@ export class MobileGatewayWsHandler {
   private readonly heartbeatIntervalMs: number
   /** 单连接发送队列深度（溢出时先丢可重建帧）。 */
   private readonly queueLimit: number
-  /** 心跳定时器（首个连接接入时惰性启动，{@link stop} 时清掉）。 */
-  private heartbeatTimer: ReturnType<typeof setInterval> | undefined
 
   constructor(
     private readonly database: WorkspaceDatabase,
@@ -268,9 +269,13 @@ export class MobileGatewayWsHandler {
     )
     // 语音处理器在构造期就存在：缺内核服务时也能回结构化 unavailable，服务后到时再 setRemote。
     this.speech = new SpeechHandler(undefined, key => (frame) => this.sendFrame(key as WebSocket, frame))
+    // 连接策略持的是 sockets 的**引用**：心跳要遍历同一张表，stop() 清空后它自然看到 0 条。
+    this.connectionPolicy = new MobileConnectionPolicy(this.maxConnections, this.heartbeatIntervalMs, this.sockets)
   }
 
   private readonly eventBridge: MobileEventBridge<WebSocket>
+  /** 连接生命周期策略（上限 + 心跳），见 ws-connection-policy.ts。 */
+  private readonly connectionPolicy: MobileConnectionPolicy<MobileSocketState>
 
   // ───────────────────────── 路径判定（由 server.ts 调用）─────────────────────────
 
@@ -423,14 +428,15 @@ export class MobileGatewayWsHandler {
   // ───────────────────────── 接受连接（公共）─────────────────────────
 
   private acceptSocket(webSocket: WebSocket, principal: Principal, req: IncomingMessage, device?: { id: string; name: string; scopes: DeviceScope[]; rootIds: string[]; pairingToken?: string }): void {
+    const deviceView: MobileDeviceView | undefined = device === undefined ? undefined : {
+      id: device.id,
+      name: device.name,
+      scopes: device.scopes,
+      rootIds: device.rootIds,
+    }
     const state: MobileSocketState = {
       principal,
-      device: device === undefined ? undefined : {
-        id: device.id,
-        name: device.name,
-        scopes: device.scopes,
-        rootIds: device.rootIds,
-      },
+      device: deviceView,
       pairingToken: device?.pairingToken ?? undefined,
       helloSent: false,
       connectionKey: randomUUID(),
@@ -441,6 +447,7 @@ export class MobileGatewayWsHandler {
       dropped: 0,
       subscribed: undefined,
       handlers: {
+        basic: new MobileBasicFrames(this.chat, frame => this.sendFrame(webSocket, frame), principal, deviceView),
         sessions: new SessionHandler(this.chat, (frame) => this.sendFrame(webSocket, frame), this.database),
         hitl: new HitlHandler(this.chat, (frame) => this.sendFrame(webSocket, frame)),
         models: new ModelsHandler(this.chat, (frame) => this.sendFrame(webSocket, frame)),
@@ -468,7 +475,7 @@ export class MobileGatewayWsHandler {
     this.sockets.set(webSocket, state)
     this.eventBridge.attach(webSocket, state.principal)
     // 心跳惰性启动：没有连接时不留定时器（`unref()` 之外的第二道保险）。
-    this.startHeartbeat()
+    this.connectionPolicy.startHeartbeat()
 
     webSocket.on('pong', () => { state.isAlive = true })
     webSocket.on('message', (data: Buffer | string) => {
@@ -612,19 +619,19 @@ export class MobileGatewayWsHandler {
         this.handleUnsubscribe(webSocket, clientFrame)
         return
       case 'message':
-        await this.handleMessageFrame(webSocket, state, clientFrame)
+        await state.handlers.basic.message(clientFrame)
         return
       case 'workspaces':
-        await this.handleWorkspaces(webSocket, state)
+        await state.handlers.basic.workspaces()
         return
       case 'sessions':
-        await this.handleSessions(webSocket, state, clientFrame)
+        await state.handlers.basic.sessions(clientFrame)
         return
       case 'history':
-        await this.handleHistory(webSocket, state, clientFrame)
+        await state.handlers.basic.history(clientFrame)
         return
       case 'attachment':
-        await this.handleAttachment(webSocket, state, clientFrame)
+        await state.handlers.basic.attachment(clientFrame)
         return
     }
 
@@ -670,7 +677,7 @@ export class MobileGatewayWsHandler {
     this.sendError(webSocket, 'UNKNOWN_TYPE', `Unknown frame type: ${type}`)
   }
 
-  // ───────────────────────── 基础帧处理器（保留在主类）─────────────────────────
+  // ───────────────────────── 基础帧：连接级控制（ping/subscribe/unsubscribe）─────────────────────────
 
   private handlePing(webSocket: WebSocket): void {
     // 上游 pong 用 at（毫秒时间戳）；time 一并带上兼容本桥早期客户端。
@@ -703,96 +710,6 @@ export class MobileGatewayWsHandler {
     state.subscribed = undefined
     this.eventBridge.clearFilter(webSocket)
     this.sendFrame(webSocket, { kind: 'sent', data: { type: 'unsubscribe', acknowledged: true } })
-  }
-
-  /**
-   * 处理 `message` 帧：若未带 sessionId，先在用户首个授权根目录下建一个空会话；
-   * 再把内容送进 chat.prompt。响应 `sent`，客户端后续通过 WS 的 `event` 帧
-   * （或 REST /api/v1/events）拿回流式增量。
-   */
-  private async handleMessageFrame(webSocket: WebSocket, state: MobileSocketState, frame: ClientFrame): Promise<void> {
-    let sessionId = (frame as { sessionId?: string }).sessionId
-    if (sessionId === undefined || sessionId === '') {
-      // 自动建会话：在用户首个授权根目录下新建空会话。
-      const rootIds = state.device?.rootIds ?? [...state.principal.rootIds]
-      const rootId = rootIds[0] ?? ''
-      const created = await this.chat.createSession(state.principal, rootId, '', { reuseBlank: false })
-      sessionId = created.id
-    }
-
-    const content = (frame as { content?: unknown }).content
-    const mode = (frame as { mode?: string }).mode ?? 'queue'
-    const clientTimeZone = (frame as { clientTimeZone?: string }).clientTimeZone
-    const locale = (frame as { locale?: string }).locale
-
-    const { accepted, command } = await this.chat.prompt(
-      state.principal,
-      sessionId,
-      content as import('./chat-adapter.ts').PromptContentPart[],
-      mode as 'queue' | 'steer',
-      clientTimeZone,
-      locale as import('./dsh-0.2-bridge.ts').HandoffLocale | undefined,
-    )
-
-    this.sendFrame(webSocket, {
-      kind: 'sent',
-      data: {
-        sessionId,
-        accepted,
-        ...(command !== undefined ? { command } : {}),
-      },
-    })
-  }
-
-  private async handleWorkspaces(webSocket: WebSocket, state: MobileSocketState): Promise<void> {
-    const workspaces = await this.chat.listWorkspaces(state.principal)
-    this.sendFrame(webSocket, { kind: 'workspaces', data: { workspaces } })
-  }
-
-  private async handleSessions(webSocket: WebSocket, state: MobileSocketState, frame: ClientFrame): Promise<void> {
-    const archived = (frame as Record<string, unknown>).archived === true
-    const sessions = await this.chat.listSessions(state.principal, { archived })
-    this.sendFrame(webSocket, { kind: 'sessions', data: { sessions } })
-  }
-
-  private async handleHistory(webSocket: WebSocket, state: MobileSocketState, frame: ClientFrame): Promise<void> {
-    const sessionId = (frame as { sessionId?: string }).sessionId
-    if (sessionId === undefined) {
-      this.sendFrame(webSocket, { kind: 'error', data: { code: 'MISSING_PARAMS', message: 'history needs sessionId.' } })
-      return
-    }
-    const beforeSeq = (frame as { beforeSeq?: number }).beforeSeq
-    const maxMessages = (frame as { maxMessages?: number }).maxMessages
-    const opts: Record<string, unknown> = {}
-    if (beforeSeq !== undefined) opts.beforeSeq = beforeSeq
-    if (maxMessages !== undefined) opts.maxMessages = maxMessages
-    const { events, hasMore, projections } = await this.chat.history(state.principal, sessionId, opts)
-    this.sendFrame(webSocket, {
-      kind: 'history',
-      data: {
-        sessionId,
-        events,
-        hasMore,
-        // 投影（待办 / 目标 / 统计 / 上下文压力 / 智能体团队）此前在这一帧里被丢掉了：
-        // `chat.history()` 明明返回它、REST 路由原样透传，只有这里解构时漏掉 ——
-        // 于是客户端「首屏走 WS」就必然拿到空投影，只能退回 REST 再拉一次。
-        // 只对首屏（没有 beforeSeq）附带：翻历史页要投影没有意义，而这一帧有 1 MiB 上限，
-        // 每页都塞一份纯属浪费额度。
-        ...(beforeSeq !== undefined || projections === undefined ? {} : { projections }),
-      },
-    })
-  }
-
-  private async handleAttachment(webSocket: WebSocket, state: MobileSocketState, frame: ClientFrame): Promise<void> {
-    const sessionId = typeof frame.sessionId === 'string' ? frame.sessionId : undefined
-    const data = typeof frame.data === 'string' ? frame.data : undefined
-    const name = typeof frame.name === 'string' ? frame.name : undefined
-    if (sessionId === undefined || data === undefined) {
-      this.sendFrame(webSocket, { kind: 'error', data: { code: 'MISSING_PARAMS', message: 'attachment frame needs sessionId and data (base64).' } })
-      return
-    }
-    const result = await this.chat.uploadAttachment(state.principal, sessionId, data, name)
-    this.sendFrame(webSocket, { kind: 'attachment', data: { receiptId: result.receiptId, name: result.name } })
   }
 
   // ───────────────────────── 发送与背压 ─────────────────────────
@@ -911,7 +828,7 @@ export class MobileGatewayWsHandler {
 
   /** 关闭所有连接（server.stop 时调用）。 */
   async stop(timeoutMs = 1000): Promise<void> {
-    this.clearHeartbeat()
+    this.connectionPolicy.clearHeartbeat()
     this.eventBridge.dispose()
     const closures: Array<Promise<void>> = []
     for (const webSocket of [...this.sockets.keys()]) {
@@ -925,60 +842,20 @@ export class MobileGatewayWsHandler {
     this.sockets.clear()
   }
 
-  // ───────────────────────── 心跳与连接上限 ─────────────────────────
-
-  /**
-   * 心跳循环：每 `heartbeatIntervalMs` ping 一次，**连续错过两个周期**才 terminate。
-   *
-   * 为什么必须有这一步：`/ws/mobile` 是手机上的长连接，切网、熄屏、NAT 表项过期都会留下
-   * **半开连接** —— 内核这边没有任何事件，TCP 要等自己超时才报错（默认以分钟计），期间
-   * 这条连接一直占着 `sockets` 里的额度、每次广播还白查一遍库。API 文档承诺「连续错过
-   * 2 个心跳周期 terminate」，这里就是把它兑现。
-   *
-   * 两个刻意的取舍：
-   * - `terminate()` 而不是 `close()`：对端已经不在，优雅挥手没人收，只会多等一个超时；
-   *   `close`/`error` 里注册的 `teardown` 会照常摘表、摘事件桥、中止语音与文件传输；
-   * - 存活标记用底层 `pong` 控制帧：客户端库自动回，不需要业务代码配合（业务层的
-   *   `ping` 帧是另一回事，用于测 RTT）。
-   */
-  private startHeartbeat(): void {
-    if (this.heartbeatTimer !== undefined) return
-    this.heartbeatTimer = setInterval(() => {
-      for (const [socket, state] of this.sockets) {
-        if (!state.isAlive) {
-          socket.terminate()
-          continue
-        }
-        state.isAlive = false
-        try {
-          socket.ping()
-        } catch {
-          // 控制帧都发不出去 = 这条连接已经不可写；下一轮按 isAlive 逻辑清掉。
-        }
-      }
-    }, this.heartbeatIntervalMs)
-    // `unref()` 必需：这个定时器永不自然结束，不 unref 会让进程退不掉。
-    this.heartbeatTimer.unref?.()
-  }
-
-  private clearHeartbeat(): void {
-    if (this.heartbeatTimer === undefined) return
-    clearInterval(this.heartbeatTimer)
-    this.heartbeatTimer = undefined
-  }
+  // ───────────────────────── 连接生命周期（见 ws-connection-policy.ts）─────────────────────────
 
   /**
    * 连接数上限（供 server.ts 在 **Upgrade 之前**判定是否回 429）。
    *
-   * 为什么要在 upgrade 前判：升级之后就只能发 WS 关闭码，`Retry-After` 根本无法表达，
-   * 客户端也拿不到「稍后再试」这个语义（只会看到一次莫名其妙的断连）。
+   * 上限与心跳的**实现**在 `ws-connection-policy.ts`；这里保留两个访问器，server.ts 的调用面
+   * 不变 —— 它只认 `MobileGatewayWsHandler`，不该为了读一个数字去依赖策略类。
    */
   connectionLimit(): number {
-    return this.maxConnections
+    return this.connectionPolicy.connectionLimit()
   }
 
   /** 当前连接数（供 metrics / 观测）。 */
   connectionCount(): number {
-    return this.sockets.size
+    return this.connectionPolicy.connectionCount()
   }
 }
