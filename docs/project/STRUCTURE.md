@@ -60,8 +60,9 @@ dsh-remote-bridge/
               file-service  chat-adapter  settings-adapter  plugin-inventory  job-adapter
                          ↓       ↓       ↓       ↓       ↓
                      ┌──────────────────────────────────────────┐
-                     │ src/host/dsh-0.2-bridge.ts                 │  重建 0.1.x apiProxy 面容
-                     │ （适配层，不是业务层 —— 全部 @patch 在这里） │
+                     │ src/host/dsh-0.2-bridge.ts（组装根）        │  重建 0.1.x apiProxy 面容
+                     │ （适配层不是业务层；链路实现在 bridge/      │
+                     │   九模块，@patch 随所在链路整段搬移）       │
                      └───────────────┬──────────────────────────┘
                                      ↓
                             DSH 内核 host services
@@ -129,7 +130,7 @@ host services 之上重建 0.1.x 的 `apiProxy` 面容，让 `chat-adapter` / `s
 
 | 文件 | 职责 | 谁调用它 |
 | --- | --- | --- |
-| `dsh-0.2-bridge.ts` | **0.2.x 适配层（≈2 150 行，已在 TECH-DEBT 登记）**：重建 `apiProxy` 面容、可选服务探测、图片交接读盘、权限目录归一 | `index.ts` 构造后注入各 adapter |
+| `dsh-0.2-bridge.ts` | **0.2.x 适配层（组装根，≈594 行）**：工厂 `createDsh02ApiProxy` + `bridge/` re-export 面；链路实现在 `bridge/` 九模块（结构视图/宿主读取/RPC/帧中枢/审批提问/附件/权限/投影/模型） | `index.ts` 构造后注入各 adapter |
 
 **支撑件**
 
@@ -221,7 +222,6 @@ host services 之上重建 0.1.x 的 `apiProxy` 面容，让 `chat-adapter` / `s
 
 | 文件 | 量级 | 改它会影响 |
 | --- | --- | --- |
-| `src/host/dsh-0.2-bridge.ts` | ≈2 150 行 | 所有走内核的链路；改前必读 `DSH-0.2-COMPAT.md` 与 PITFALLS §apiProxy 消失 |
 | `src/host/chat-adapter.ts` | ≈1 480 行 | 会话/历史/审批/提问/命令/附件全部 REST 行为 |
 | `src/host/router.ts` | ≈345 行 | 分发组合根（healthz / 配对兑换 / `/manage` 门 + routes 循环）；改路由去 `src/host/routes/` 并同步 `routes/registry.ts`，鉴权与契约要求不变 |
 | `src/host/database.ts` | ≈410 行 | 持久层组合根：全部公开方法与跨表族事务都在这（2026-10-31 拆表族后）；改表结构去 `db/migrations.ts` 并跑 `migration-drill` |
@@ -245,7 +245,7 @@ host services 之上重建 0.1.x 的 `apiProxy` 面容，让 `chat-adapter` / `s
 | 我要加… | 放哪 | 还要同步什么 |
 | --- | --- | --- |
 | 一个新 REST 路由 | 对应 `src/host/routes/<capability>.ts` 的路由块（新块在 `src/host/routes/registry.ts` 补一行）；healthz / 配对兑换 / `/manage` 门留在 `src/host/router.ts`；业务实现优先落到对应 adapter | `docs/api/openapi.yaml`、`docs/project/API.md`、需要就加能力位（附契约依据）、`kotlin-sdk`、合约测试、**本文与 INTERFACES 锚点** |
-| 一个新内核适配（因内核行为而写） | `src/host/dsh-0.2-bridge.ts` | `@patch` 五要素（for/why/until/test）、`DSH-0.2-COMPAT.md`、指向的测试必须真实存在 |
+| 一个新内核适配（因内核行为而写） | 对应 `src/host/bridge/<链路>.ts`；跨链路的挂组装根 `dsh-0.2-bridge.ts` | `@patch` 五要素（for/why/until/test）、`DSH-0.2-COMPAT.md`、指向的测试必须真实存在 |
 | 一个新持久化表/列 | `src/host/db/<表族>.ts`（迁移在 `src/host/db/migrations.ts`） | 迁移代码 + `tests/migration-drill.spec.ts`、`TECH-DEBT.md`（若涉及历史数据）；新文件登记本文机检锚点 |
 | 一个新的横切工具（路径/预算/序列化） | `src/host/` 下按职责命名的新文件 | **本文机检锚点必须登记**，否则 `docs:check` 变红；补单测 |
 | 一个新面板卡片 | 新建 `src/client/cards/<name>.tsx`，在 `workspace.tsx` 的对应分组常量与渲染里各加一行（+ `i18n.tsx` 双语文案） | 面板截图 `assets/screenshots/`、`styles.ts`（若加样式）、`TAB_DESC_KEYS`（`cards/shell.tsx`） |
@@ -275,6 +275,17 @@ host services 之上重建 0.1.x 的 `apiProxy` 面容，让 `chat-adapter` / `s
 | `src/host/bff-schedule.ts` | file | REST 定时任务（五段 Vixie cron 与 IANA 时区校验、内核记录↔REST cron 视图映射、PATCH 局部更新） |
 | `src/host/bff-speech.ts` | file | REST 官方语音（catalog/transcriptions/config，复用 ws-speech 的上限与归一，缺服务回 200 available:false） |
 | `src/host/bff-upload.ts` | file | REST 分块上传票据与 spool（1 MiB 切片、1 小时票据、断点续传 alreadyReceived、缺块 409 details.missing） |
+| `src/host/bridge/` | dir | 0.2.x 适配层按链路拆的模块（2026-10-31 自 dsh-0.2-bridge.ts 拆出，issue #2） |
+| `src/host/bridge/attachments.ts` | file | 图片交接与附件读取：handoff 落盘判定（currentModelSelection/modelIsConfirmedTextOnly）、readHandoffImageFile、HandoffLocale |
+| `src/host/bridge/chat.ts` | file | 审批桥 ApprovalBridge 与提问桥 QuestionBridge（挂起态与超时） |
+| `src/host/bridge/frame-hub.ts` | file | FrameHub 帧中枢（背压/重建）+ SessionEventRelay + wireSessionRegistryRelay（原工厂内联接线） |
+| `src/host/bridge/host-reads.ts` | file | 宿主读取助手：sessionIdOfAgent/sessionIdOf/readArchivedSessionIds/createAgentResolver（原工厂内联） |
+| `src/host/bridge/kernel-services.ts` | file | 0.2.x 宿主服务结构视图 + UserQuestionsLike 视图 + optionalService |
+| `src/host/bridge/models.ts` | file | 模型目录补容 modelCapacityOf/enrichModelGroups（TTL 缓存，不缓存失败） |
+| `src/host/bridge/permissions.ts` | file | 权限档位目录读取与降级清单（normalizePermissionCatalog/FALLBACK_PERMISSION_CATALOG） |
+| `src/host/bridge/projections.ts` | file | 会话投影读取 projectionsOf/readSessionProjections（@patch history-projections-passthrough 随行） |
+| `src/host/bridge/proxy-options.ts` | file | CreateDsh02ApiProxyOptions（原工厂签名内联类型抽出的命名类型） |
+| `src/host/bridge/rpc.ts` | file | RPC 信封与超时纪律（call/ok/toRpcError/timeoutSignal，原样搬出） |
 | `src/host/chat-adapter.ts` | file | 会话/历史/审批/提问/命令 adapter |
 | `src/host/cloudflared.ts` | file | Cloudflare 隧道与二进制管理 |
 | `src/host/config-text.ts` | file | DSH1 配置文本编解码 |
@@ -288,7 +299,7 @@ host services 之上重建 0.1.x 的 `apiProxy` 面容，让 `chat-adapter` / `s
 | `src/host/db/roots.ts` | file | 授权根表族 RootsTable（add/list/get/ensureBuiltin/remove + dumpSchema） |
 | `src/host/db/secrets.ts` | file | hashSecret（sha256 hex，令牌/配对码共用） |
 | `src/host/db/trash.ts` | file | 回收站记录表族 TrashTable（insert/updateStatus/get/list/remove） |
-| `src/host/dsh-0.2-bridge.ts` | file | DSH 0.2.x 适配层（重建 apiProxy 面容） |
+| `src/host/dsh-0.2-bridge.ts` | file | DSH 0.2.x 适配层组装根（工厂 + bridge/ re-export 面，公开 API 零改动） |
 | `src/host/errors.ts` | file | ApiError 与错误归一 |
 | `src/host/event-bus.ts` | file | 进程内事件总线 |
 | `src/host/file-service.ts` | file | 授权根文件服务 |

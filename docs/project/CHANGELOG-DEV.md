@@ -89,6 +89,29 @@ base64 膨胀 4/3，所以单条路径的原始文件实际上限约 **17.2 MiB*
 `docs:check` 四段全过（12 文档 / 39 tasks / 9 ADRs / STRUCTURE 84 锚点 / INTERFACES 87 锚点）；
 双产物 build 成功（host `lib/index.js` 628.64 kB、client `lib/client.cjs` 772.91 kB）。
 
+## 未发布 · dsh-0.2-bridge.ts 按链路拆分（2026-10-31）
+
+**基于什么**：TECH-DEBT.md 行数表的 `src/host/dsh-0.2-bridge.ts` 条目（issue #2）——
+2 682 行（实测 2 796）超 600 预算：重建 0.1.x `apiProxy` 面容的适配层一个文件装了
+结构视图、RPC 信封、帧中枢、审批、提问、附件交接、权限目录、会话投影、模型容量九条链路。
+
+**干了什么**：`src/host/bridge/` 十文件纯搬移（kernel-services 523 / chat 543 /
+attachments 362 / frame-hub 361 / rpc 174 / host-reads 134 / models 126 /
+permissions 108 / projections 87 / proxy-options 29，全部 <600 行）；
+`dsh-0.2-bridge.ts` 2 796 → **594** 组装根（工厂 `createDsh02ApiProxy` 留在原地）。
+两处工厂内联闭包原样包装成显式参数函数：`wireSessionRegistryRelay`（host.on
+会话注册接线，frame-hub.ts）与 `createAgentResolver`（agentFor/agentForQuestions，
+host-reads.ts）——函数体逐字保留，`host` 由闭包改参数；签名内联 options 类型抽出为
+`bridge/proxy-options.ts` 的 `CreateDsh02ApiProxyOptions`（语义不变）。组装根
+re-export 面与拆分前逐一对应，15 处 import 零改动；7 处 `@patch` 注解随所在链路
+整段搬移，`patch-discipline.spec` 断言未动照常通过。同提交删 TECH-DEBT.md 行数条目
+（DEBT-001/004 的「位置」随之改指 `bridge/`）。
+
+**测了什么**：`tsc --noEmit` 0 错；`docs:check` 全绿；bridge 相关 8 spec 110 用例绿
+（dsh-0.2-bridge / frame-hub-backpressure / handoff-hardening / image-handoff /
+history-projections / permission-presets / approval-timeout / patch-discipline）；
+全量 80 文件 834 用例绿。
+
 ## 未发布 · router.ts 按 capability 拆分（2026-10-31）
 
 **基于什么**：TECH-DEBT.md 行数表的 `src/host/router.ts` 条目（issue #3）——

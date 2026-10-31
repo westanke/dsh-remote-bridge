@@ -19,7 +19,6 @@
 
 | 文件 | 行数 | 为什么是债 | 清账阶段 |
 |---|---|---|---|
-| `src/host/dsh-0.2-bridge.ts` | 2 682 | **兼容适配层**：重建 0.1.x `apiProxy` 面容，一个文件里装了会话、审批、提问、模型多条链路的重建逻辑。改一条要读 1 700 行 | 按链路拆（session / approval / question / model 各一模块），公共面容抽 `api-proxy-facade.ts` |
 | `src/host/chat-adapter.ts` | 1 732 | 会话链路适配：列表/历史/发送/取消/workspace/agent-preset + 审批/提问适配全在一个文件（2026-10-30 修 approval 句柄 +11 注释/分支） | 按端点族拆 |
 | `src/host/settings-adapter.ts` | 731 | 提供商与模型目录、通用设置命名空间两件事挤在一个类；SEC-H11 的重定向闸门也落在这里 | 拆 `providers-adapter.ts` 与 `namespaces-adapter.ts` |
 | `src/host/ws-handler.ts` | 861 | **`/ws/mobile` 的总装**：鉴权三入口（配对码 / 令牌 / Bearer 连接）、`handleMessage` 解码与分发、13 个域处理器委派、背压发送队列（含可重建帧挑选与 resync 补发）、hello 全在一个类里。2026-10-31 拆出 5 个基础帧到 `ws-basic.ts`、连接上限与心跳到 `ws-connection-policy.ts`（wc -l：HEAD 984 → 861，净 −123；原登记的 974 已过期）。**仍超预算**：issue #4 要求「只留鉴权 + 分发 + 发送路径」并 <600 行，而这三块实测约 430 行、加状态机/挂载/字段脚手架约 250 行，文件下限约 680 行——**`<600` 在该边界下不可达**，属 issue 估算偏乐观，不是拆分未尽 | 已拆 `ws-basic.ts` + `ws-connection-policy.ts`；下一刀：把 ping/subscribe/unsubscribe 三个连接级基础帧与协议常量（`KNOWN_UNSUPPORTED_FRAMES` / `headerValue` / `decodeBase64Utf8`）外移，估 861 → ~780，仍超 600；要真到 600 须放宽「发送路径留在主类」这条边界 |
@@ -95,14 +94,25 @@
 > 跨表族事务（`exchangePairing`）留在组合根 —— SQLite 事务挂在连接上。
 > 对外 API 零改动：12 处 import 与全部 database spec 原样通过。
 
+> **2026-10-31 dsh-0.2-bridge.ts 按链路拆完复核**（`wc -l` 实测）：2 796 →
+> **594**（组装根：`createDsh02ApiProxy` 工厂 + `bridge/` re-export 面），
+> 链路拆到 `src/host/bridge/` 下十文件（kernel-services 523 / chat 543 /
+> attachments 362 / frame-hub 361 / rpc 174 / host-reads 134 / models 126 /
+> permissions 108 / projections 87 / proxy-options 29），**全部在预算内**。
+> 条目**按「清账」删掉**：行数债已消失，不是许可。拆法要点：纯搬移 +
+> 两处工厂内联闭包包装成显式参数函数（`wireSessionRegistryRelay`/
+> `createAgentResolver`，行为不变）+ 签名内联 options 类型抽出命名类型；
+> 对外 re-export 面零改动（15 处 import 原样）；7 处 `@patch` 随链路整段
+> 搬移，`patch-discipline.spec` 断言未动照常通过。
+
 ## 已知结构性债务
 
 | ID | 债务 | 位置 | 为什么现在不动 | 清账条件 |
 |---|---|---|---|---|
-| DEBT-001 | 0.2.x 兼容层与 0.1.x 面容双轨并存 | `src/host/dsh-0.2-bridge.ts` | 用户内核版本跨度大（0.1.x / 0.2.x 都要能跑） | 上游明确只支持 0.2.x，或本项目发布 3.0 只支持 0.2.x |
+| DEBT-001 | 0.2.x 兼容层与 0.1.x 面容双轨并存 | `src/host/bridge/`（组装根 `dsh-0.2-bridge.ts`） | 用户内核版本跨度大（0.1.x / 0.2.x 都要能跑） | 上游明确只支持 0.2.x，或本项目发布 3.0 只支持 0.2.x |
 | DEBT-002 | README 双站无自动对账 | `README.md` / `README.en.md` | `docs:check` 不覆盖 README；TS 侧无 README 解析器 | `docs:check` 扩展：校验版本号/插件基线/测试数双站一致 |
 | DEBT-003 | `@patch` 四要素无脚本校验 | 全仓 | 制度已立（`AGENTS.md` §3.3），尚无扫描器 | `docs:check` 或独立脚本：扫 `// @patch` 块验四要素齐全 + `test` 指向的测试真实存在 |
-| DEBT-004 | 历史兼容补丁未全部自报 | `src/host/dsh-0.2-bridge.ts` 等 | 存量补丁一次清完会动到刚真机验收过的逻辑 | 按代际分批收编；**可以不再无声增长** |
+| DEBT-004 | 历史兼容补丁未全部自报 | `src/host/bridge/` 等 | 存量补丁一次清完会动到刚真机验收过的逻辑 | 按代际分批收编；**可以不再无声增长** |
 | DEBT-005 | `/ws/mobile` 的帧联合类型未收录 handler 实际处理的全部帧 | `src/host/ws-protocol.ts` 的 `ClientFrameType` / `ServerFrameKind` | `asyncapi.yaml` 是按**实际行为**写的契约（handler 认哪些帧、发哪些帧），两个联合类型是早期按域分批加的，缺了后来补的帧。补齐要逐个核对 handler 分支，且补完必须同步删掉契约白名单（`scripts/check-project-docs.ts` 与 `tests/mobile-frame-contract.spec.ts` 两处），一次做不完容易两处不同步 | 把 `ws-protocol.ts` 两个联合类型补到与 handler 实际行为一致；同一提交删掉 `MOBILE_CLIENT_ONLY_IN_CONTRACT` / `MOBILE_SERVER_ONLY_IN_CONTRACT` 两个白名单里的对应项（白名单只许变短，测试会盯） |
 
 > **DEBT-005 的白名单是台账不是豁免**：`scripts/check-project-docs.ts` 与
