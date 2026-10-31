@@ -8,7 +8,7 @@
 </p>
 
 <p align="center">
-  <img src="assets/screenshots/panel-roots.png" alt="DSH 设置里的「📱 手机设置」面板：主列表五张折叠卡片，另有一个高级设置组（根目录/识图/插件）" width="420">
+  <img src="assets/promo-16x9.png" alt="dsh-remote-bridge：手机设置面板（主列表五张卡片 + 高级设置组）" width="100%">
 </p>
 
 <p align="center">
@@ -17,7 +17,7 @@
 
 <p align="center">
   <a href="./README.en.md">English</a> ·
-  <img alt="Version" src="https://img.shields.io/badge/version-v2.9.1-087f8c">
+  <img alt="Version" src="https://img.shields.io/badge/version-v2.9.2-087f8c">
   <img alt="DSH plugin" src="https://img.shields.io/badge/DeepSeek_Harness-plugin-1f2328">
   <img alt="Platforms" src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-586069">
   <img alt="License" src="https://img.shields.io/badge/license-AGPL--3.0-2da44e">
@@ -449,7 +449,7 @@ DSH **0.2.1-rc.3** 隔离实例上**实跑验过**，不是静态推断：插件
 
 ## 项目信息
 
-- 当前版本：`v2.9.1`
+- 当前版本：`v2.9.2`
 - **v2.9.0 是团队成员（子会话）可读版**：手机端的团队面板此前只能看到成员与子会话的名字，点开读不到
   任何内容 —— 因为 `sessions.list` 会把 `origin === 'subagent'` 的行整批滤掉（桥自己的
   `dsh-0.2-bridge.ts:2327`，注释写明「暴露出来只会得到点开就崩的行」），子会话 id 打 `/messages`

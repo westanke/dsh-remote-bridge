@@ -8,7 +8,7 @@
 </p>
 
 <p align="center">
-  <img src="assets/screenshots/panel-roots.png" alt="The 📱 Phone settings panel: five collapsible cards in the main list, plus an Advanced settings group (Roots / Image reading / Plugins)" width="420">
+  <img src="assets/promo-16x9.png" alt="dsh-remote-bridge: the Phone settings panel (five cards in the main list plus an Advanced settings group)" width="100%">
 </p>
 
 <p align="center">
@@ -17,7 +17,7 @@
 
 <p align="center">
   <a href="./README.md">中文</a> ·
-  <img alt="Version" src="https://img.shields.io/badge/version-v2.9.1-087f8c">
+  <img alt="Version" src="https://img.shields.io/badge/version-v2.9.2-087f8c">
   <img alt="DSH plugin" src="https://img.shields.io/badge/DeepSeek_Harness-plugin-1f2328">
   <img alt="Platforms" src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-586069">
   <img alt="License" src="https://img.shields.io/badge/license-AGPL--3.0-2da44e">
@@ -390,7 +390,7 @@ inside the zero-change set, and 4 slots retained with 0 removed.
 
 ## Project
 
-- Version: `v2.9.1`
+- Version: `v2.9.2`
 - **v2.9.0 makes teammates (sub-sessions) readable**: the phone's team panel could list members and
   sub-sessions but could not open a single one, because `sessions.list` filters out every row with
   `origin === 'subagent'` (the bridge's own `dsh-0.2-bridge.ts:2327`, with a comment explaining that

@@ -1,5 +1,29 @@
 # 开发日志
 
+## v2.9.2 · 首屏换 16:9 宣传图（2026-10-31）
+
+**起因是一次流量诊断**：仓库 30 天 npm 下载 3686、14 天 clone 1075（132 个独立来源），
+但页面只有 82 次浏览、57 个独立访客、**1 个 star**。引荐来源里 Bing 19 次、github.com 1 次 ——
+市场渠道的曝光并没有转化成「停下来看一眼」。
+
+**判断**：不是渠道数量不够，是首屏缺一张「一眼看懂在干什么」的图。此前首屏放的是
+`panel-roots.png`（728 px 宽的**竖向**设置面板），在 GitHub 上缩到 420 px 后基本看不清；
+而同类竞品（`dsh-plugin-mobile-gateway`，132 star）首屏是一张 16:9 成品 promo 图、占满宽度。
+
+**改动**：
+
+- 新增 `scripts/generate-promo.ts`，产出两张：
+  - `assets/promo-16x9.png`（1600×900）—— README 首屏，`width="100%"`
+  - `assets/promo-social.png`（1280×640）—— GitHub social preview（仓库分享卡片是 2:1，
+    比例不对会被居中裁切，所以单独出一版并收紧右侧截图组）
+- 素材**全部复用** `generate-screenshots.ts` 从 `src/client/` 真实渲染出的四张面板图，
+  只做排版（斜置错开），不另画界面、不新造功能承诺。文案取自 README 既有表述。
+- 两张 README 首屏图从 `panel-roots.png` 换成 `promo-16x9.png`。
+- `STRUCTURE.md` 登记新脚本。
+
+**踩到的一个坑**：宣传图里图片用 `file://` 全部裂成图标 —— `page.setContent()` 的文档没有
+origin，Chromium 不加载 file 资源。改 base64 内嵌后正常（与 `app-qr.ts` 用 data URL 同理）。
+
 ## v2.9.1 · 设置页收敛 + 拆卡 + 修「开启云隧道点了没反应」（2026-10-31）
 
 **用户症状**：在「外网隧道」卡点「开启云隧道」，隧道起来了，但**没有生成配置码**。

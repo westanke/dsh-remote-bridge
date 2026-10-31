@@ -196,7 +196,8 @@ host services 之上重建 0.1.x 的 `apiProxy` 面容，让 `chat-adapter` / `s
 | `push-all.sh` / `setup-remotes.sh` | 三远端推送与命名整理 |
 | `check-project-docs.ts` | **`pnpm docs:check` 的实现**（必需文档、ROADMAP、ADR 索引、坑位双向、根 README、patch inject、本文锚点） |
 | `generate-app-qr.mjs` | 生成 `src/client/app-qr.ts` |
-| `generate-screenshots.ts` | 生成 `assets/screenshots/` |
+| `generate-screenshots.ts` | 生成 `assets/screenshots/`（六张设置面板真实渲染图） |
+| `generate-promo.ts` | 生成 README 首屏 `assets/promo-16x9.png`（1600×900）与 GitHub social preview `assets/promo-social.png`（1280×640）。素材复用上面那批面板截图，只做排版，不另画界面 |
 | `validate-entry.ts` / `smoke-profile-install.ts` | 入口与 profile 安装冒烟 |
 | `e2e-stream-probe.mjs` | e2e 流探针 |
 | `ws-frame-probe.mjs` | `/ws/mobile` 帧探针：连真桥逐帧打印请求→响应的 requestId 落点（发现「契约说回显、实现不回显」那类问题；MockWebServer 测不出） |
