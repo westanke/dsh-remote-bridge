@@ -1,6 +1,13 @@
 # 开发日志
 
-## 未发布 · `/ws/mobile` 单帧上限 maxPayloadBytes 可配（#10）（2026-11-01）
+## v2.10.0 · 四个超预算文件拆到预算内 + `/ws/mobile` 单帧上限可配（2026-11-01）
+
+**这一版两件事**：①把 v2.9.x 期间登记在 `TECH-DEBT.md` 行数表里的四个超预算文件，按
+issue #2/#3/#4/#5 拆到预算附近（三个已清账、`ws-handler.ts` 如实留债）；②把 `/ws/mobile`
+的单帧上限从写死 1 MiB 变成可配（#10）——这是 `dsh-companion` #12「发原图必超时」的 P2 结论。
+**默认值全部不变，未配置 `maxPayloadBytes` 时零行为变化。**
+
+### 一、`/ws/mobile` 单帧上限 maxPayloadBytes 可配（#10）
 
 **基于什么**：dsh-companion #12 的 P2 结论 —— 客户端此前允许 8 MiB 原图，而桥 `/ws/mobile`
 单帧上限写死 1 MiB（`ws` 库 `DEFAULT_MAX_PAYLOAD_BYTES`），超限帧读到帧头就被
@@ -33,6 +40,107 @@ a hard-wired 4 MiB」——`serverOptions.maxPayloadBytes = 8 KiB` 时 `speech-c
   要验需在 profile 配置里加 `maxPayloadBytes`（如 `8388608`）并重启，再由客户端发一张
   压缩后仍 >1 MiB 的图（当前客户端上限 700 KiB 永远压不到 1 MiB 以上，故此条实际依赖
   先放宽客户端 `MAX_ENCODED_IMAGE_BYTES`，或改用 REST 口径验证）。
+
+### 二、`dsh-0.2-bridge.ts` 按链路拆分（#2）
+
+**基于什么**：TECH-DEBT.md 行数表的 `src/host/dsh-0.2-bridge.ts` 条目（issue #2）——
+2 682 行（实测 2 796）超 600 预算：重建 0.1.x `apiProxy` 面容的适配层一个文件装了
+结构视图、RPC 信封、帧中枢、审批、提问、附件交接、权限目录、会话投影、模型容量九条链路。
+
+**干了什么**：`src/host/bridge/` 十文件纯搬移（kernel-services 523 / chat 543 /
+attachments 362 / frame-hub 361 / rpc 174 / host-reads 134 / models 126 /
+permissions 108 / projections 87 / proxy-options 29，全部 <600 行）；
+`dsh-0.2-bridge.ts` 2 796 → **594** 组装根（工厂 `createDsh02ApiProxy` 留在原地）。
+两处工厂内联闭包原样包装成显式参数函数：`wireSessionRegistryRelay`（host.on
+会话注册接线，frame-hub.ts）与 `createAgentResolver`（agentFor/agentForQuestions，
+host-reads.ts）——函数体逐字保留，`host` 由闭包改参数；签名内联 options 类型抽出为
+`bridge/proxy-options.ts` 的 `CreateDsh02ApiProxyOptions`（语义不变）。组装根
+re-export 面与拆分前逐一对应，15 处 import 零改动；7 处 `@patch` 注解随所在链路
+整段搬移，`patch-discipline.spec` 断言未动照常通过。同提交删 TECH-DEBT.md 行数条目
+（DEBT-001/004 的「位置」随之改指 `bridge/`）。
+
+**测了什么**：`tsc --noEmit` 0 错；`docs:check` 全绿；bridge 相关 8 spec 110 用例绿
+（dsh-0.2-bridge / frame-hub-backpressure / handoff-hardening / image-handoff /
+history-projections / permission-presets / approval-timeout / patch-discipline）；
+全量 80 文件 834 用例绿。
+
+### 三、`router.ts` 按 capability 拆分（#3）
+
+**基于什么**：TECH-DEBT.md 行数表的 `src/host/router.ts` 条目（issue #3）——
+2 062 行（实测 2 094）超 600 预算，REST 路由、`/manage` 管理面、隧道装配、
+幂等回放全在一个类里，新端点往里加、旧端点没人敢删。
+
+**干了什么**：按 capability 纯搬移到 `src/host/routes/` 下八个文件
+（chat 517 / shared 397 / files 414 / cloudflare 251 / settings 183 / devices 171 /
+plugins 54 / registry 45，全部 <600；`shared.ts` 承载路由上下文 `RouteCtx`/
+`ApiRouteCtx` 与跨块 helper，`registry.ts` 是 path → handler 的一屏总览）；
+`router.ts` 从 2 094 行减到 **345 行**，只保留：imports 与选项类型、三个保留门
+（免鉴权 healthz、限额配对兑换、`/manage` 鉴权门）、routes 循环分发、
+`openTunnelForCommand` 一行委托、`matchJobRoute`/`decodePathSegment` re-export。
+纯搬移：URL/method/status/error code/body 不变，`openapi.yaml` 未动，
+路由级鉴权（`requireAdmin`/`principal`/`requireScope`）贴着原 handler。
+契约测试**断言零改动**：`docs-contract.spec.ts` 的路由源读取范围从单个
+`router.ts` 跟随拆分扩为 `router.ts + routes/*.ts`（拼接顺序保证鉴权锚点语义
+不变），0 分歧与豁免集断言一字未动；这是本次唯一触碰的测试文件，
+不改它的替代方案是把 66 条路由条件搬回 `router.ts`（≈+250 行），
+与「拆出一个 `router.ts` 只做组装」的 issue 初衷相悖。
+
+**测了什么**：`tsc --noEmit` 0 错；路由字面量旧 37 条 vs registry 33 条，
+缺失 4 条全是保留门（healthz/配对兑换/manage 两态），零丢失零发明；
+`job-api` 29 + `security-h6` 7 用例先行通过；全量 `vitest` 提交前复跑；
+`docs:check` 通过（STRUCTURE 登记 routes/ 8 个新锚点）。
+TECH-DEBT.md 同提交删掉 `router.ts` 条目（行数债消失，按「清账」规则）。
+
+### 四、`database.ts` 按表族拆分（#5）
+
+**基于什么**：TECH-DEBT.md 行数表的 `src/host/database.ts` 条目（issue #5）——
+1 005 行超 600 预算，用户数据（根/设备/配对/回收站/幂等/审计）全在一个类里，
+每加一个字段都要回到这个文件写迁移。
+
+**干了什么**：按表族拆到 `src/host/db/` 下九个文件（依赖叶子朝上：
+`secrets → audit → roots → devices → pairings`，`trash` / `idempotency` / `migrations` 独立；
+跨族依赖走构造注入——`RootLookup` 只读口 + `bumpRevision` 回调，没有循环依赖），
+`db/migrations.ts` 单独承载有序 forward-only 迁移；`database.ts` 从 1 005 行减到 **411 行**，
+变成**组合根**：连接/PRAGMA/迁移装配 + 全部公开方法的一行委托 +
+跨表族事务（`exchangePairing`，SQLite 事务挂在连接上，只有组合根能包住四张表的原子写）。
+对外 API 零改动：12 处 import 原样（`WorkspaceDatabase` / `StoredRoot` /
+`AuthenticatedDevice` / `TrashRecord` / `hashSecret` 全部仍从 `database.ts` 导出）。
+
+**拆分中抓到的一个坑**：FUNC-5 的「审计与业务同生共死」用例靠
+`vi.spyOn(database, 'audit')` 把组合根方法换成会抛错的桩。若把 `AuditTable` 实例
+直接注入表族，事务里的审计调用会绕开这道缝，2 条用例静默变红。改法：表族依赖窄类型
+`AuditSink`（audit.ts 里的函数类型），组合根注入 `(...args) => this.audit(...args)`
+—— 闭包调用时才解引用，spy 拦得住，测试原样通过。
+
+**测了什么**：`tsc --noEmit` 0 错；`docs:check` 通过（STRUCTURE 登记 9 个新锚点）；
+全量 `vitest`（80 文件 / 834 用例，含全部 database spec 与 `migration-drill`）提交前复跑通过；
+`retention.ts` 窄端口（duck-typing 的 `pruneIdempotency` / `pruneAudit`）不受委托影响。
+TECH-DEBT.md 同提交删掉 `database.ts` 条目（行数债消失，按「清账」规则）。
+
+### 五、`ws-handler.ts` 拆基础帧与连接策略（#4，**未达 `<600`，如实留债**）
+
+984 → 882 行，净减 102（不含 #10 新增的 21 行，那部分见第一节）：`ws-basic.ts`（123 行）装
+message/workspaces/sessions/history/attachment 五个基础帧，与 13 个域处理器同构、每连接一实例；
+`ws-connection-policy.ts`（87 行）装连接上限与心跳，持 `sockets` 引用；主类保留鉴权三入口、
+`handleMessage` 分发、发送/背压路径与 ping/subscribe/unsubscribe 三个连接级基础帧。
+**线协议零变更**（帧名/载荷/错误码不动），security 属性保留。
+
+issue #4 的验收写的是「只留鉴权 + 分发 + 发送路径」并 `<600` 行，而这三块实测约 430 行，
+加状态机/挂载/字段脚手架约 250 行，**文件下限约 680 行 —— `<600` 在该边界下不可达**，
+属 issue 估算偏乐观，不是拆分未尽。这条已连同逐项拆法写进 `TECH-DEBT.md` 的 `ws-handler.ts` 一行。
+测试：ws 套件 129 用例、全量 80 文件/834 用例全绿。
+
+### 六、文档与宣传
+
+- 英文 README 首屏换英文宣传图（#6）：此前中英共用 `assets/promo-16x9.png`，英文读者读到第一行英文前先看到一张读不懂的中文宣传卡；文案抽进 `TEXT`，一条命令出四张（中英 × 16:9 / social），只有文字换语言。
+- `AGENTS.md` 新增 §2.5「开工口径：先开 issue，再动手」——改 bug / 加新功能前先开 issue（写清现象/影响面/做法/验收），提交信息带编号，关闭贴验证证据。
+- `CHANGELOG-DEV.md` 新增「消费面总览 v2.7.0 → v2.9.2」一节（跨已发版本的桥侧能力索引，不是发版条目），见下方。
+
+### 本文档门禁
+
+实测（2026-11-01，本机）：`tsc --noEmit` 0 错；`vitest` **80 个文件 / 835 个用例全绿**
+（#10 新增 audioLimit 跟随用例）；`docs:check` 四段全过（12 文档 / STRUCTURE 115 锚点 /
+INTERFACES 87 锚点）；双产物 build 成功。
 
 ## 消费面总览 · v2.7.0 → v2.9.2（2026-10-31，**跨已发版本，不是新发版条目**）
 
