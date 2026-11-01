@@ -43,7 +43,7 @@ async function startHarness(options: {
    * 既等不起（30 s 一个周期）也压不满（512 深度要发五百多帧），必须能调小才验得动
    * 「文档承诺的那三条行为」。
    */
-  serverOptions?: { maxConnections?: number; heartbeatIntervalMs?: number; socketQueueLimit?: number }
+  serverOptions?: { maxConnections?: number; heartbeatIntervalMs?: number; socketQueueLimit?: number; maxPayloadBytes?: number }
 } = {}) {
   const base = await mkdtemp(path.join(os.tmpdir(), 'daw-mgw-'))
   cleanup.dir(base)
@@ -1121,6 +1121,25 @@ describe('mobile gateway WebSocket (/ws/mobile) — schedule & speech remote fal
     const reply = frames.find(frame => frame.kind === 'speech-catalog')?.data as { maxAudioBytes?: number; available?: boolean }
     expect(reply.available).toBe(true)
     expect(reply.maxAudioBytes).toBeLessThanOrEqual(4 * 1024 * 1024)
+    socket.close()
+  })
+
+  it('speech audioLimit tracks the configured ws frame limit instead of a hard-wired 4 MiB', async () => {
+    // issue #10：真实 `ws` 帧上限被调小后，speech-catalog 的 maxAudioBytes 必须跟着缩
+    // （audioLimit = floor((maxPayload-4096)/4)*3，8 KiB 帧 → floor(3992/4)*3 = 3 072），
+    // 不能再是 SpeechHandler 自带 64 MiB 默认值推出的 4 MiB —— 那会引导客户端发
+    // 一个必被 close(1009) 的帧。
+    const remote = fakeRemote()
+    const { database, root, url } = await startHarness({
+      hostRemote: remote.handle,
+      serverOptions: { maxPayloadBytes: 8 * 1024 },
+    })
+    const { socket, frames } = await authed(database, root.id, url)
+    socket.send(JSON.stringify({ type: 'speech-catalog', requestId: 'sp2' }))
+    await nextKind(frames, 'speech-catalog')
+    const reply = frames.find(frame => frame.kind === 'speech-catalog')?.data as { maxAudioBytes?: number; available?: boolean }
+    expect(reply.available).toBe(true)
+    expect(reply.maxAudioBytes).toBe(3_072)
     socket.close()
   })
 

@@ -267,7 +267,7 @@ README 双站的「要求 bridge ≥ X.Y.Z」是**安装门槛**，不是功能�
 ```ts
 export const name = 'dsh-remote-bridge'
 export const inject = [/* 10 项硬依赖，必须与 cordis.patch.yml 双向对齐 */]
-export interface Config { dataDir?: string; port?: number; remoteHost?: string; maxUploadBytes?: number }
+export interface Config { dataDir?: string; port?: number; remoteHost?: string; maxUploadBytes?: number; maxPayloadBytes?: number }
 export async function apply(ctx: HostContext, config: Config = {}): Promise<void>
 export default apply
 ```

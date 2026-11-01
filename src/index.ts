@@ -79,6 +79,15 @@ export interface Config {
   remoteHost?: string
   maxUploadBytes?: number
   /**
+   * WS 单帧最大字节数（默认 1 MiB，超限由 `ws` 直接 `close(1009)`）。
+   *
+   * 同时约束 `/api/v1/events` 与 `/ws/mobile` 两条 upgrade（同一 `WebSocketServer`）。
+   * 调大它手机端才能发大图原图、语音 base64 帧才不受 ~785 KB 的隐性卡口 ——
+   * dsh-companion#12 的 P2：客户端已按 700 KiB 压缩兜底，这里给想发更大原图的
+   * 部署开口子。默认值刻意不变，现有部署行为零变化。
+   */
+  maxPayloadBytes?: number
+  /**
    * 额外允许手机端写入的设置命名空间（默认空）。
    *
    * 精确 ns（`ui-chat`）或通配前缀（`llm-*`）。与内置策略叠加：`ui-*` 与以
@@ -114,6 +123,8 @@ export async function apply(ctx: HostContext, config: Config = {}): Promise<void
   const remoteHost = normalizeListenerHost(config.remoteHost ?? DEFAULT_REMOTE_HOST)
   const maxUploadBytes = config.maxUploadBytes ?? 20 * 1024 * 1024
   if (!Number.isSafeInteger(maxUploadBytes) || maxUploadBytes < 1) throw new Error('dsh-remote-bridge: maxUploadBytes must be positive')
+  const maxPayloadBytes = config.maxPayloadBytes ?? 1024 * 1024
+  if (!Number.isSafeInteger(maxPayloadBytes) || maxPayloadBytes < 1) throw new Error('dsh-remote-bridge: maxPayloadBytes must be positive')
 
   const database = new WorkspaceDatabase(dataDir)
   // 清掉历史遗留的「标记式」撤销设备。
@@ -249,6 +260,9 @@ export async function apply(ctx: HostContext, config: Config = {}): Promise<void
     // 「静默少一个功能」。过滤规则与理由见 `capabilities.ts` 的
     // `CAPABILITY_REQUIREMENTS`。
     capabilities,
+    // 单帧上限从配置一路传下来：`ws` 的 `maxPayload` 只在构造期能设，
+    // 超限帧它自己 `close(1009)`。校验在上面 apply 入口（与 maxUploadBytes 同款）。
+    maxPayloadBytes,
   })
   // /ws/mobile 的全局模型目录 / providers / 文件浏览需要 settings 与 files 适配器，
   // 它们在此刻才构造完成（晚于 RemoteApiServer），通过 setter 注入避免构造顺序环。

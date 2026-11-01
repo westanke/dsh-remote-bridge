@@ -188,6 +188,10 @@ export class RemoteApiServer implements RemoteControl {
         maxConnections: this.maxConnections,
         heartbeatIntervalMs: this.heartbeatIntervalMs,
         queueLimit: this.socketQueueLimit,
+        // 帧上限同源下发：语音的 audioLimit 必须按真实 `ws` maxPayload 算，
+        // 否则 SpeechHandler 自带 64 MiB 默认值得出 4 MiB 限额，而底层 1 MiB
+        // 就 `close(1009)` —— 两个数字互相不知情（issue #10）。
+        maxPayloadBytes: Math.max(1, options.maxPayloadBytes ?? DEFAULT_MAX_PAYLOAD_BYTES),
       },
     )
   }

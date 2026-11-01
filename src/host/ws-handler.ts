@@ -73,6 +73,11 @@ export interface MobileGatewayOptions {
   heartbeatIntervalMs?: number
   /** 单连接发送队列深度，默认 {@link DEFAULT_MOBILE_QUEUE_LIMIT}。 */
   queueLimit?: number
+  /**
+   * 真实 `ws` 单帧上限（server.ts 同源下发，默认 1 MiB）。
+   * 语音的 audioLimit 按它算，保证应用层限额与底层 close(1009) 一致（issue #10）。
+   */
+  maxPayloadBytes?: number
 }
 
 interface MobileSocketState {
@@ -129,6 +134,9 @@ const DEFAULT_MOBILE_MAX_CONNECTIONS = 32
 
 /** 心跳周期。连续错过 **两个** 周期才 terminate（偶发丢包不误杀）。 */
 const DEFAULT_MOBILE_HEARTBEAT_INTERVAL_MS = 30_000
+
+/** 真实 `ws` 单帧上限的兜底值（与 server.ts 的 DEFAULT_MAX_PAYLOAD_BYTES 同值）。 */
+const DEFAULT_MOBILE_MAX_PAYLOAD_BYTES = 1024 * 1024
 
 /** 发送队列里的一项：闭包 + 「丢了能不能重拉补齐」的标记（反压时据此选择牺牲者）。 */
 interface QueuedFrame {
@@ -236,7 +244,11 @@ export class MobileGatewayWsHandler {
     // 语音管理器始终存在（这样缺内核服务时也能回 speech-catalog available:false 与
     // 结构化 unavailable），只更新其远程句柄；它是进程级单一实例以维持全局转写并发计数。
     if (this.speech === undefined) {
-      this.speech = new SpeechHandler(remote, key => (frame) => this.sendFrame(key as WebSocket, frame))
+      this.speech = new SpeechHandler(
+        remote,
+        key => (frame) => this.sendFrame(key as WebSocket, frame),
+        this.maxPayloadBytes,
+      )
     } else {
       this.speech.setRemote(remote)
     }
@@ -248,6 +260,8 @@ export class MobileGatewayWsHandler {
   private readonly heartbeatIntervalMs: number
   /** 单连接发送队列深度（溢出时先丢可重建帧）。 */
   private readonly queueLimit: number
+  /** 真实 `ws` 单帧上限（server.ts 同源下发）；语音 audioLimit 按它算（issue #10）。 */
+  private readonly maxPayloadBytes: number
 
   constructor(
     private readonly database: WorkspaceDatabase,
@@ -260,6 +274,7 @@ export class MobileGatewayWsHandler {
     this.maxConnections = Math.max(1, options.maxConnections ?? DEFAULT_MOBILE_MAX_CONNECTIONS)
     this.heartbeatIntervalMs = Math.max(1, options.heartbeatIntervalMs ?? DEFAULT_MOBILE_HEARTBEAT_INTERVAL_MS)
     this.queueLimit = Math.max(1, options.queueLimit ?? DEFAULT_MOBILE_QUEUE_LIMIT)
+    this.maxPayloadBytes = Math.max(1, options.maxPayloadBytes ?? DEFAULT_MOBILE_MAX_PAYLOAD_BYTES)
     // 事件桥：授权过滤后把 bridge 事件以 {kind:'event', data:event} 主动推给每条连接。
     this.eventBridge = new MobileEventBridge<WebSocket>(
       events,
@@ -268,7 +283,13 @@ export class MobileGatewayWsHandler {
       (conn, event) => this.sendFrame(conn, { kind: 'event', data: event }),
     )
     // 语音处理器在构造期就存在：缺内核服务时也能回结构化 unavailable，服务后到时再 setRemote。
-    this.speech = new SpeechHandler(undefined, key => (frame) => this.sendFrame(key as WebSocket, frame))
+    // audioLimit 按真实帧上限算（issue #10）：SpeechHandler 自带的 64 MiB 默认值
+    // 曾让限额虚标到 4 MiB，而底层 `ws` 1 MiB 就 close(1009)。
+    this.speech = new SpeechHandler(
+      undefined,
+      key => (frame) => this.sendFrame(key as WebSocket, frame),
+      this.maxPayloadBytes,
+    )
     // 连接策略持的是 sockets 的**引用**：心跳要遍历同一张表，stop() 清空后它自然看到 0 条。
     this.connectionPolicy = new MobileConnectionPolicy(this.maxConnections, this.heartbeatIntervalMs, this.sockets)
   }

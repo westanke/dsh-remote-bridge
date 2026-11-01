@@ -1,5 +1,33 @@
 # 开发日志
 
+## 未发布 · `/ws/mobile` 单帧上限 maxPayloadBytes 可配（#10）（2026-11-01）
+
+**基于什么**：dsh-companion #12 的 P2 结论 —— 客户端此前允许 8 MiB 原图，而桥 `/ws/mobile`
+单帧上限写死 1 MiB（`ws` 库 `DEFAULT_MAX_PAYLOAD_BYTES`），超限帧读到帧头就被
+`close(1009)`，桥的 message 处理器根本没被调用。客户端侧已用「发送前压缩到 700 KiB」
+收口，但想发更大的原图必须由桥放开上限。同源问题：`SpeechHandler` 自带 64 MiB 默认
+payload 假设，audioLimit 按 4 MiB 宣称，而底层真实帧上限只有 1 MiB —— 目录报的限额
+与实际能过的帧脱节（客户端照目录发必被掐）。
+
+**改了什么**（默认值不变，未配置时零行为变化）：
+
+- `src/index.ts`：`Config` 新增 `maxPayloadBytes?: number`（默认 1 MiB）；`apply()` 校验
+  必须为正整数，非法直接 throw（照 `maxUploadBytes` 范式）。两条 WS upgrade
+  （`/ws/mobile` 与 REST BFF 同一 `WebSocketServer`）**同源下发**，不会出现一边能发大帧一边不能。
+- `src/host/server.ts` → `MobileGatewayWsHandler`：新 options 槽位 `maxPayloadBytes`。
+- `src/host/ws-handler.ts`：新常量 `DEFAULT_MOBILE_MAX_PAYLOAD_BYTES = 1 MiB` 兜底；
+  **`SpeechHandler` 的 audioLimit 改按真实帧上限算**（构造期与 `attachRemoteServices`
+  两处都传 `this.maxPayloadBytes`）——目录 `speech-catalog` 的 `maxAudioBytes`
+  从此不再虚标，`speech-transcribe` 的准入校验与目录承诺一致。
+- `docs/project/INTERFACES.md` §4.1：Config 签名同步。
+
+**怎么验**：新增用例「speech audioLimit tracks the configured ws frame limit instead of
+a hard-wired 4 MiB」——`serverOptions.maxPayloadBytes = 8 KiB` 时 `speech-catalog`
+回 `maxAudioBytes === 3 072`（公式 `floor((8192−4096)/4)×3`），而不是旧默认值推出的 4 MiB。
+
+- [ ] 真机/本机验证：配置 `maxPayloadBytes` 后 `dsh-companion` 能发 >1 MiB 原图（等用户重启桥后验证）
+- [ ] 默认行为不变：不配置该键时行为与改动前逐字节一致
+
 ## 消费面总览 · v2.7.0 → v2.9.2（2026-10-31，**跨已发版本，不是新发版条目**）
 
 > **这一节只记桥侧事实**：本仓新增了哪些能力、给出了哪些接口、修了哪些缺陷。
