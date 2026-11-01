@@ -25,8 +25,14 @@ payload 假设，audioLimit 按 4 MiB 宣称，而底层真实帧上限只有 1 
 a hard-wired 4 MiB」——`serverOptions.maxPayloadBytes = 8 KiB` 时 `speech-catalog`
 回 `maxAudioBytes === 3 072`（公式 `floor((8192−4096)/4)×3`），而不是旧默认值推出的 4 MiB。
 
-- [ ] 真机/本机验证：配置 `maxPayloadBytes` 后 `dsh-companion` 能发 >1 MiB 原图（等用户重启桥后验证）
-- [ ] 默认行为不变：不配置该键时行为与改动前逐字节一致
+- [x] **默认行为不变（已实测，2026-11-01）**：桥重启加载新版插件后 `cordis.patch.yml` 仍是空数组
+  （未配置 `maxPayloadBytes`），`dsh-companion` 发 4.26 MB 原图 → 客户端侧压到 697.0 KiB →
+  一次发送成功、无错误条，`logcat` 查 `WS_CHANNEL_CLOSED|WS_TIMEOUT|请求超时|Image type|close(1009)`
+  零命中。即**默认 1 MiB 兜底路径逐字节照旧**。
+- [ ] 配置 `maxPayloadBytes` 后能发 >1 MiB 原图：**未验证**——本次桥跑的是默认值，没配键。
+  要验需在 profile 配置里加 `maxPayloadBytes`（如 `8388608`）并重启，再由客户端发一张
+  压缩后仍 >1 MiB 的图（当前客户端上限 700 KiB 永远压不到 1 MiB 以上，故此条实际依赖
+  先放宽客户端 `MAX_ENCODED_IMAGE_BYTES`，或改用 REST 口径验证）。
 
 ## 消费面总览 · v2.7.0 → v2.9.2（2026-10-31，**跨已发版本，不是新发版条目**）
 
