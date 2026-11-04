@@ -1,5 +1,37 @@
 # 开发日志
 
+## writeFromDeb 并发竞态：临时文件名只用 pid，两个 create 请求互相删对方的 deb（2026-11-04，未发版，#11）
+
+**现象（真机复现）**：UOS 机器上 `POST /manage/cloudflare/create` 返回 502
+`TUNNEL_DOWNLOAD_FAILED`，`details.reason` 为
+「dpkg-deb 解包失败：Command failed: dpkg-deb -x .cloudflared.deb-7714 .cloudflared-extract-7714
+dpkg-deb: 错误: 读取归档 .cloudflared.deb-7714 失败: 没有那个文件或目录」。
+单发请求无法复现；重试一次就成功。
+
+**根因**：`writeFromDeb` 的临时文件名只用 `process.pid`
+（`.cloudflared.deb-<pid>` / `.cloudflared-extract-<pid>`），而插件跑在 DSH
+主进程内——**同一 pid 会并发处理多个 create 请求**（客户端 5 秒超时后重试是常态，
+curl 断开并不会中止服务端已在跑的下载+解包）。两个解包链路共用同名临时文件：
+后写者的 `writeFile` 覆盖/重建同名 deb，先完成者的 `finally rm` 把对方刚落的
+deb 删掉，对方的 `dpkg-deb` 就报「读取归档失败：没有那个文件或目录」。
+错误里的「相对路径」是 `sanitizeDownloadError` 把绝对路径脱敏成 basename 的假象，
+与 cwd 无关——最初怀疑的「`execFile` 未传 `cwd`」是错误结论（同机单发复现实验
+三种路径形态全部成功，已证伪）。
+
+**影响面**：仅并发 create（客户端重试、面板双击、IM 命令与 REST 同时触发）；
+单发路径行为不变。`.cloudflared.tmp-<pid>`（裸二进制分支）有同类隐患，一并修。
+
+**做法**：临时名加随机后缀（`randomBytes(6).toString('hex')`）：
+`.deb-<pid>-<rand>` / `.extract-<pid>-<rand>` / `.tmp-<pid>-<rand>`，每次调用唯一，
+从根上消除共享名。`writeFromDeb` 改为导出（生产入口仍是 `ensureCloudflared`），
+仅供回归测试。
+
+**怎么验**：新增 `tests/cloudflared-deb-race.spec.ts`——mock `execFile` 成
+「挂到放行才退出」锁死事故交错（A、B 先后进解包 → B 先放行走完整流程含 finally
+清理 → 再放 A），旧实现下必现「读取归档失败」、修复后双双成功（红-绿均已实测）；
+另有串行冒烟与「无临时文件残留」断言。`pnpm check` 全绿（81 文件 837 用例）。
+
+
 ## v2.10.0 · 四个超预算文件拆到预算内 + `/ws/mobile` 单帧上限可配（2026-11-01）
 
 **这一版两件事**：①把 v2.9.x 期间登记在 `TECH-DEBT.md` 行数表里的四个超预算文件，按

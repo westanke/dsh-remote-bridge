@@ -1,5 +1,5 @@
 import { spawn, execFile, type ChildProcess } from 'node:child_process'
-import { createHash } from 'node:crypto'
+import { createHash, randomBytes } from 'node:crypto'
 import { chmod, mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 
@@ -446,7 +446,9 @@ export async function ensureCloudflared(
         return writeFromDeb(dataDir, res.body, url)
       }
       report?.({ stage: 'unpacking', labelKey: 'tunnelStageWriteBinary', percent: null })
-      const tmp = path.join(dataDir, `.cloudflared.tmp-${process.pid}`)
+      // 临时名同样带随机后缀（#11）：并发调用共用 `.tmp-<pid>` 时，A 的 rename 可能
+      // 拿到 B 写了一半的文件，或 B 的 writeFile 截断 A 正在 rename 的源。
+      const tmp = path.join(dataDir, `.cloudflared.tmp-${process.pid}-${randomBytes(6).toString('hex')}`)
       await writeFile(tmp, res.body)
       await chmod(tmp, 0o755)
       await rename(tmp, existing)
@@ -472,11 +474,18 @@ export async function ensureCloudflared(
  *
  * 失败时抛出的错误**已脱敏**：`execFile` 的原始错误含两个绝对路径
  * （deb 与解包目录），直接外传会泄露本机目录结构。
+ *
+ * 导出仅供回归测试用（#11 并发竞态）：生产入口是 `ensureCloudflared`。
  */
-async function writeFromDeb(dataDir: string, debBuffer: Buffer, url: string): Promise<string> {
+export async function writeFromDeb(dataDir: string, debBuffer: Buffer, url: string): Promise<string> {
   await mkdir(dataDir, { recursive: true })
-  const debPath = path.join(dataDir, `.cloudflared.deb-${process.pid}`)
-  const extractDir = path.join(dataDir, `.cloudflared-extract-${process.pid}`)
+  // 临时名必须**每次调用唯一**，不能只用 pid：插件跑在 DSH 主进程内，同一 pid 会并发
+  // 处理多个 create 请求（客户端超时重试是常态），同名临时文件会让两个解包链路互相
+  // 踩——先完成者的 finally rm 会删掉后写者刚落的 deb，dpkg-deb 报「读取归档失败:
+  // 没有那个文件或目录」（2026-11-04 真机复现，#11）。随机后缀从根上消除共享名。
+  const uniq = `${process.pid}-${randomBytes(6).toString('hex')}`
+  const debPath = path.join(dataDir, `.cloudflared.deb-${uniq}`)
+  const extractDir = path.join(dataDir, `.cloudflared-extract-${uniq}`)
   await writeFile(debPath, debBuffer)
   await mkdir(extractDir, { recursive: true })
   try {
