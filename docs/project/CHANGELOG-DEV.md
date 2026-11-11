@@ -320,6 +320,50 @@ base64 膨胀 4/3，所以单条路径的原始文件实际上限约 **17.2 MiB*
 `docs:check` 四段全过（12 文档 / 39 tasks / 9 ADRs / STRUCTURE 84 锚点 / INTERFACES 87 锚点）；
 双产物 build 成功（host `lib/index.js` 628.64 kB、client `lib/client.cjs` 772.91 kB）。
 
+## 未发布 · npm 可信发布者（OIDC）自动发布链路（2026-11-11）
+
+**基于什么**：npm 已在 2025-12-09 吊销全部 classic token，`npm login` 现在只签发 2 小时会话令牌；
+长期令牌只剩细粒度令牌（GAT），而 npm 已公告 **GAT 的直接发布豁免 2027-01 结束** ——
+到那时 bypass-2FA 令牌发不动包。本仓的发布链路当时只有一条：本地
+`scripts/release.sh` → `scripts/publish-npm.sh`（用账号的 90 天 GAT 直发）。要摆脱
+「发布必须挂着一把长期令牌」，正规做法是 npm 的**可信发布者（trusted publishing）**：
+CI 用一次性 OIDC 身份换短时效令牌，仓库里不存任何 npm 凭据。
+
+**干了什么**：
+
+1. 新增 `.github/workflows/publish.yml`：监听 tag `v*`，`permissions: id-token: write`
+   + `contents: read`，checkout → pnpm 装依赖 → **校验 tag 与 package.json 版本号一致** →
+   `pnpm check`（仓库门禁，与 `release.sh` 第 1 步同口径）→ `npx --yes npm@12 publish --provenance`
+   → 回读 registry 确认（轮询 6 分钟）。
+   - 用 npm@12 是为了与 `scripts/publish-npm.sh` 保持一致（本地 npm 不支持 staged）；
+     **npm@12 同样内置 OIDC**（`lib/utils/oidc.js`），换来的短时效令牌写进 `opts`，
+     最终 PUT 带 `authorization: Bearer <oidc token>`。
+   - `setup-node` 刻意**不填** `cache`：发布构建命中陈旧 node_modules 缓存会让产物不可复现。
+   - CI 里**不放** `NODE_AUTH_TOKEN` 之类的占位变量：OIDC 换令牌发生在 `ENEEDAUTH`
+     检查之前，不需要任何本地凭据。
+2. `docs/project/RELEASE.md` 增 **§2.1 可信发布者（OIDC 自动发布）**：前置两件（账号配
+   security key / TOTP 认证器 App；npm 网页登记「可信的发布者」）、三个必查项
+   （`repository.url` 与 GitHub 仓库一致、`id-token: write`、只用托管 runner）、
+   触发时机与 **0–3 小时延迟**（tag 由 `release.sh` 打、先推 Gitee，再由
+   `mirror-sync.yml` 每 3 小时 `push --mirror` 同步到 GitHub）、以及与本机令牌路线的取舍。
+   原「国内镜像」小节顺延为 §2.2。
+3. `docs/project/STRUCTURE.md` 同步：目录树第 32 行改写；§3.6「其余目录」表新增
+   `.github/workflows/` 一行（三个工作流各自的职责）；§5 决策表新增「一个新 GitHub Actions
+   工作流」一行（放哪 + 要同步什么）。
+4. 新增坑位「可信发布者只认「2FA 设备」，邮箱验证码不算（403 Please enable 2fa for your
+   account）」，并在 `AGENTS.md` §6 索引同名登记。
+
+**踩到的坑**（详见 `PITFALLS.md` 同名条目）：账号 `tfa.mode` 是 `auth-and-writes`，
+但手上**只有邮箱 8 位验证码**这一种手段 —— 按 npm 文档邮箱码只是登录补充验证，**不是 2FA
+设备**，所以 `POST /-/package/dsh-remote-bridge/trust` 一律回
+`403 {"message":"Please enable 2fa for your account"}`（换令牌类型、加 `npm-otp`、加
+`npm-auth-type: web` 头全试过，同一句）。bypass-2FA 的 GAT 连这个接口都无权调
+（另一句 `may not perform this action`）。解法是给账号补一把可交互设备：网页 Add security
+key（生物识别或硬件钥匙），或 `npm profile enable-2fa auth-and-writes` 配 TOTP 认证器 App。
+
+**当前状态**：工作流与文档已就位，**npm 网页端的 2FA 设备还没配，自动发布尚未跑通一次**；
+本机令牌路线（`dsh-local`，2027-02-09 到期）仍是当前实际在用的发布路径。
+
 ## 未发布 · dsh-0.2-bridge.ts 按链路拆分（2026-10-31）
 
 **基于什么**：TECH-DEBT.md 行数表的 `src/host/dsh-0.2-bridge.ts` 条目（issue #2）——

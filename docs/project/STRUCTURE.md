@@ -29,7 +29,7 @@ dsh-remote-bridge/
 ├── assets/                  面板截图与应用下载二维码（进发布包）
 ├── artifacts/               本地打包产物与 Release 正文（**勿手改**）
 ├── lib/                     构建产物（tsdown 输出，**勿手改**）
-└── .github/workflows/       CI 与镜像从站同步
+└── .github/workflows/       CI、镜像从站同步与 npm 可信发布（publish.yml）
 ```
 
 根级配置文件各自的分工：
@@ -215,6 +215,7 @@ host services 之上重建 0.1.x 的 `apiProxy` 面容，让 `chat-adapter` / `s
 | `e2e/` | `styles.spec.ts`：渲染真实 DOM 量计算样式，**不需要服务器**，只需 chromium |
 | `assets/` | 面板截图与 QR 图，进发布包（`package.json` 的 `files`） |
 | `artifacts/`、`lib/` | 产物目录，**勿手改** |
+| `.github/workflows/` | 三个工作流：`ci.yml`（三平台 × 双 Node 矩阵 + e2e + 安装冒烟 + Kotlin SDK）、`mirror-sync.yml`（Gitee 主源 → GitHub 从站，每 3 小时）、`publish.yml`（tag `v*` 触发，**可信发布者 / OIDC** 自动发 npm，仓库里不存任何 npm 凭据；前置与配置见 [RELEASE.md](RELEASE.md) §2.1） |
 
 ---
 
@@ -250,6 +251,7 @@ host services 之上重建 0.1.x 的 `apiProxy` 面容，让 `chat-adapter` / `s
 | 一个新的横切工具（路径/预算/序列化） | `src/host/` 下按职责命名的新文件 | **本文机检锚点必须登记**，否则 `docs:check` 变红；补单测 |
 | 一个新面板卡片 | 新建 `src/client/cards/<name>.tsx`，在 `workspace.tsx` 的对应分组常量与渲染里各加一行（+ `i18n.tsx` 双语文案） | 面板截图 `assets/screenshots/`、`styles.ts`（若加样式）、`TAB_DESC_KEYS`（`cards/shell.tsx`） |
 | 一个新浏览器组件/slot | `src/client/index.tsx` 注册 | `package.json` 的 `dsh.client.inject`（若需要新 client 依赖） |
+| 一个新 GitHub Actions 工作流 | `.github/workflows/<name>.yml`（沿用 `ci.yml` 的 action 版本风格：checkout@v4 / pnpm/action-setup@v4 / setup-node@v4） | 若与发布链路相关：同步 [RELEASE.md](RELEASE.md) §2.1 的前置清单；`package.json` 的 `repository.url` 必须与 GitHub 仓库完全一致；npm 网页「可信的发布者」里填的**工作流文件名**必须与本文件名一致 |
 | 一个新测试 | `tests/` 按 §3.4 主题分组，命名 `Xxx.spec.ts` | `TESTING.md` 记演进；修 bug 必须带回归用例 |
 | 一份新文档 | `docs/project/` | 若属必需文档，加到 `scripts/check-project-docs.ts` 的 `requiredDocs`；更新 `docs/project/README.md` 索引 |
 | 一个新 ADR | `docs/project/decisions/ADR-NNNN-*.md` | `docs/project/README.md` 的 ADR 索引（`docs:check` 校验） |

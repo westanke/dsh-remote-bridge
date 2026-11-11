@@ -1,0 +1,92 @@
+name: Publish
+
+# 可信发布者（trusted publishing / OIDC）入口：打 tag 即自动发 npm。
+#
+# 为什么不用长期 token：npm 已于 2025-12-09 吊销全部 classic token，`npm login`
+# 现在只签发 2 小时会话令牌；长期方案只剩细粒度令牌（GAT）或可信发布者。可信发布者
+# 让 CI 用一次性 OIDC 身份换短时效令牌，**仓库里不存任何 npm 凭据**。
+#
+# 前置（在 npm 网页一次性配好，配错了这里只会表现为发布失败）：
+#   1) 账号开 2FA，并且配一把**可交互**的 2FA 设备（security key / TOTP 认证器 App）。
+#      只收邮箱验证码不算 2FA 设备 —— 可信发布者接口会直接回 403
+#      `Please enable 2fa for your account`。
+#   2) 在 https://www.npmjs.com/package/dsh-remote-bridge/settings/trusted-publishers
+#      新增一条：出版者 GitHub Actions / 组织或用户 westanke / 仓库 dsh-remote-bridge /
+#      **工作流文件名 publish.yml**（只写文件名，必须与本文件同名）/ 环境留空 /
+#      允许的操作勾上「允许 npm publish」。
+#
+# 触发时机：tag v* 推到 GitHub。tag 由 scripts/release.sh 打并先推 Gitee，再由
+# .github/workflows/mirror-sync.yml 每 3 小时从 Gitee `push --mirror` 同步到 GitHub
+# （用的是 secret MIRROR_PAT，PAT 推送会触发工作流，GITHUB_TOKEN 推送不会），
+# 因此 GitHub 侧自动发布有 **0–3 小时延迟**。
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+# id-token: write 是 trusted publishing 的关键权限：没有它，npm 拿不到
+# ACTIONS_ID_TOKEN_REQUEST_URL/TOKEN，会跳过 OIDC 然后报 ENEEDAUTH。
+# contents: read 用来 checkout。
+permissions:
+  id-token: write
+  contents: read
+
+concurrency:
+  group: publish-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with: { version: 11.19.0 }
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          registry-url: 'https://registry.npmjs.org'
+          # 这里刻意**不填** cache。setup-node 的 cache 会缓存 node_modules，发布
+          # 构建一旦命中陈旧缓存，包内容就不可复现了；官方模板同样要求发布构建
+          # 不走依赖缓存。pnpm 的 store 缓存是内容寻址的，保留无妨。
+
+      - name: verify tag matches package version
+        shell: bash
+        run: |
+          tag_ver="${GITHUB_REF_NAME#v}"
+          pkg_ver="$(node -p "require('./package.json').version")"
+          if [ "$tag_ver" != "$pkg_ver" ]; then
+            echo "::error::tag $GITHUB_REF_NAME does not match package.json version $pkg_ver"
+            exit 1
+          fi
+
+      - run: pnpm install --frozen-lockfile
+
+      # 仓库门禁（typecheck && test && docs:check && build），与 scripts/release.sh
+      # 第 1 步同口径。build 产出的 lib/ 进 tarball（files[] 里有 lib/**）。
+      - run: pnpm check
+
+      - name: publish to npm (trusted publishing / OIDC)
+        # 用 npm@12 与 scripts/publish-npm.sh 保持一致：本地 npm 版本可能不支持
+        # staged 发布，npm@12 两条路都支持。npm@12 同样内置 OIDC（lib/utils/oidc.js），
+        # 换来的短时效令牌会写进 opts，PUT 请求带 `authorization: Bearer <oidc token>`。
+        # --provenance：公开仓库 + trusted publishing 会自动开 provenance，这里显式写死。
+        run: npx --yes npm@12 publish --provenance
+
+      - name: verify in registry
+        shell: bash
+        run: |
+          ver="${GITHUB_REF_NAME#v}"
+          # 以 registry 回读为准（CDN 索引有延迟），与 scripts/publish-npm.sh 同思路。
+          for _ in $(seq 1 24); do
+            if npm view "dsh-remote-bridge@$ver" version 2>/dev/null | grep -qx "$ver"; then
+              echo "registry ok: dsh-remote-bridge@$ver"
+              exit 0
+            fi
+            sleep 15
+          done
+          echo "::error::dsh-remote-bridge@$ver not visible in registry after 6 minutes"
+          exit 1

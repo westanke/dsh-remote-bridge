@@ -910,3 +910,58 @@ node /usr/local/nodejs/bin/dsh plugin --profile web add <workspace>/pack/<tgz>
    断言决策用的是 payload 句柄（`tests/chat-adapter.spec.ts` 的
    "uses payload.rpcId (not the FrameHub outer id)"）。
 4. question 侧不受影响：它按 `(sessionId, callId)` 匹配并直连内核 `ctx.userQuestions`，不读信封 rpcId。
+
+---
+
+### 可信发布者只认「2FA 设备」，邮箱验证码不算（403 Please enable 2fa for your account）
+
+**症状**（2026-11-11 配 npm 可信发布者时，实测三轮都撞同一句）：
+
+1. 直接打 `POST https://registry.npmjs.org/-/package/dsh-remote-bridge/trust` → 回
+   `403 {"message":"Please enable 2fa for your account"}`；
+2. `npm trust github dsh-remote-bridge --file publish.yml --repo westanke/dsh-remote-bridge
+   --allow-publish --allow-stage-publish` → 终端先打印
+   `Two-factor authentication is required for this operation`，再问 `Do you want to proceed? (y/N)`；
+3. npm 网页「可信的发布者」表单也存不下来。
+
+换令牌类型、加 `npm-otp`、加 `npm-auth-type: web` / `npm-command: trust` 头 —— 全试过，
+**同一句 403**，响应头连 `www-authenticate` 都没有（所以 CLI 走不到「提示输 OTP」那一步）。
+
+**根因**：npm 的 2FA **设备**只有两种形态 —— **security key（WebAuthn：Touch ID / Face ID /
+Windows Hello，或 Yubikey / Thetis / Feitian 硬件钥匙）** 与 **TOTP 认证器 App**。
+**邮箱验证码不是 2FA 设备**，它只是登录时的补充验证（npm 文档原话：没有 2FA 设备时才用
+邮箱码）。账号的 `GET /-/npm/v1/user` 确实报 `tfa.mode = auth-and-writes`，但**手上只有邮箱码
+这一种手段** → 服务端判定「没有可交互的 2FA 设备」，一律 403。
+
+两个附带事实（都实测过，别再重复试）：
+
+- **bypass-2FA 的 GAT 无权调这个接口**，报的是另一句
+  `Granular access tokens that bypass two-factor authentication may not perform this action`
+  （见 https://gh.io/npm-gat-bypass2fa-deprecation）。想配可信发布者，只能用**会话令牌或
+  非 bypass 令牌 + 有效 `npm-otp`**。
+- body 形状也会被拒，但**报错在 403 之后**、极易误导：body 必须是**数组**（单对象 →
+  400 `"value" must be an array`；空数组 → 400 `"value" must contain at least 1 items`）。
+- `npm profile enable-2fa auth-and-writes` 在账号已开 2FA 时是**空操作**，只打印
+  `Two factor authentication is already enabled and set to auth-and-writes` 就返回；
+  想用它补 TOTP 设备得先 `disable`（而 disable 本身要设备认证）→ **只能走网页配**。
+
+**现在怎么办**：在 npm 网页 → 头像 → Account → Two-Factor Authentication → Enable 2FA →
+输密码 → **Add security key**（浏览器生物识别或硬件钥匙）；或终端
+`npm profile enable-2fa auth-and-writes` 配 TOTP 认证器 App（会打印二维码 + secret，
+需要手机装认证器 App）。⚠️ **必须抄下恢复码**：用恢复码登录会触发 **72 小时安全冻结**，
+期间不能发包、不能建令牌、不能改设置。
+
+配好设备后再在 npm 网页「可信的发布者」登记（出版者 GitHub Actions / `westanke` /
+`dsh-remote-bridge` / 工作流文件名 `publish.yml` / 环境留空 / 勾「允许 npm publish」）。
+命令行等价物：`npm trust github dsh-remote-bridge --file publish.yml
+--repo westanke/dsh-remote-bridge --allow-publish --allow-stage-publish`。
+
+**铁律**：
+
+1. **邮箱验证码 ≠ 2FA 设备**。判断账号能不能配可信发布者，看「有没有一把可交互的设备」，
+   不是看 `tfa.mode` 字段。
+2. **npm 不会在保存可信发布者配置时校验它** —— 填错文件名、填错仓库，都要到**发布那一刻**
+   才暴露成一次失败的 run。所以配置完先手工打一个 tag 验一次。
+3. 工作流里必须写 `permissions: id-token: write`，否则 npm 跳过 OIDC 直接报 `ENEEDAUTH`；
+   只能用 GitHub 托管 runner，自托管不支持。
+4. 配置与排查细节见 `docs/project/RELEASE.md` §2.1。

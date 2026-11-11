@@ -1,6 +1,15 @@
 # 当前状态
 
 - 日期：2026-11-11（**已发版 v2.10.1**，#11 + #13 两处修复已合入并发布）
+- **进行中 REL-006（2026-11-11）· npm 可信发布者（OIDC）自动发布**：
+  `.github/workflows/publish.yml` 已写好（tag `v*` 触发、`id-token: write`、OIDC 换短时效令牌、
+  仓库里不存任何 npm 凭据），配套文档已同步（`RELEASE.md` §2.1、`STRUCTURE.md` §3.6/§5、
+  `PITFALLS.md` 新坑位）。**当前卡在 npm 网页端**：账号需补一把可交互 2FA 设备
+  （security key 或 TOTP 认证器 App；**邮箱验证码不算 2FA 设备**，配好前
+  `POST /-/package/<pkg>/trust` 恒回 403 `Please enable 2fa for your account`），
+  之后还要在 npm 网页登记「可信的发布者」（工作流文件名 `publish.yml`）。
+  **自动发布尚未跑通一次**；当前实际在用的发布路径仍是本机令牌
+  （`dsh-local`，2027-02-09 到期）走 `bash scripts/release.sh`。
 - **已发版 v2.10.1（2026-11-11）**：①审批侧从「接管 = 否决下游」改成「进入即委托 + 竞速」
   （#13）——电脑端官方 WebUI 的审批卡立刻出现，不再等 10 分钟超时；②Cloudflare 隧道
   create 时两个请求互相删对方的 deb（#11，临时文件名加随机后缀）。

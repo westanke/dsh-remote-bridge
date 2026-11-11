@@ -179,7 +179,64 @@ curl -s https://registry.npmjs.org/dsh-remote-bridge/<version> | head -c 200   #
    npm 11+ 才有 `npm stage list/approve/reject`；本机 npm 10 没有，必要时用
    `npx npm@12 stage list`。
 
-### 国内镜像
+### 2.1 可信发布者（trusted publishing / OIDC 自动发布）
+
+> **状态：工作流已就位（`.github/workflows/publish.yml`），但 npm 网页端的账号 2FA 设备还没配好，
+> 因此自动发布目前**尚未**跑通一次。下面是前置与配法。**
+
+CI 里**不存任何 npm 凭据**：GitHub Actions 用一次性 OIDC 身份换短时效令牌，npm CLI 会自动
+探测并优先使用它（`npm/lib/utils/oidc.js`：有 `ACTIONS_ID_TOKEN_REQUEST_URL/TOKEN` 才换，
+换到的令牌写进 `opts`，最终 PUT 带 `authorization: Bearer <oidc token>`；这一步发生在
+`ENEEDAUTH` 检查**之前**，所以仓库里不需要 `NODE_AUTH_TOKEN` 之类的占位变量）。
+
+**前置一：账号要有「可交互」的 2FA 设备。** npm 的两档模式是 `auth-only` 与
+`auth-and-writes`；设备形态是 **security key（WebAuthn：Touch ID / Face ID / Windows Hello
+或 Yubikey / Thetis / Feitian 硬件钥匙）** 或 **TOTP 认证器 App**。
+⚠️ **只收邮箱验证码不算 2FA 设备** —— 邮箱码只是登录时的补充验证。可信发布者接口
+（`POST /-/package/<pkg>/trust`）对这类账号一律回
+`403 {"message":"Please enable 2fa for your account"}`。
+配法：npm 网页 → 头像 → Account → Two-Factor Authentication → Enable 2FA → 输密码 →
+Add security key（**抄下恢复码**，用恢复码登录会触发 72 小时安全冻结，期间不能发布）。
+网页配不了就用终端 `npm profile enable-2fa auth-and-writes` 配 TOTP 认证器 App
+（会打印二维码 + secret，需手机装认证器 App）。
+
+**前置二：在 npm 网页登记「可信的发布者」。**
+`https://www.npmjs.com/package/dsh-remote-bridge/settings/trusted-publishers` → 新增：
+
+| 字段 | 填什么 |
+| --- | --- |
+| 出版者 | GitHub Actions |
+| 组织或用户 | `westanke` |
+| 仓库 | `dsh-remote-bridge` |
+| 工作流文件名 | `publish.yml`（**只写文件名**，必须与 `.github/workflows/publish.yml` 完全一致，大小写敏感） |
+| 环境名称 | 留空 |
+| 允许的操作 | 勾「允许 npm publish」 |
+
+命令行等价物（npm CLI ≥11.5.1）：
+`npm trust github dsh-remote-bridge --file publish.yml --repo westanke/dsh-remote-bridge --allow-publish --allow-stage-publish`。
+⚠️ **npm 不会在保存时校验这条配置**，填错了要到发布那一刻才暴露。
+
+**三个必查项**（错了都是发布失败，不是配置报错）：
+
+1. `package.json` 的 `repository.url` 必须与 GitHub 仓库完全一致 —— 本仓是
+   `git+https://github.com/westanke/dsh-remote-bridge.git` ✅。
+2. 工作流必须写 `permissions: id-token: write`，否则 npm 跳过 OIDC 并报 `ENEEDAUTH`。
+3. **只能用 GitHub 托管 runner**（`ubuntu-latest`），自托管 runner 不支持。
+
+**触发时机与延迟**：工作流监听 tag `v*`。tag 由 `scripts/release.sh` 打、先推 Gitee，
+再由 `.github/workflows/mirror-sync.yml` 每 3 小时从 Gitee `push --mirror` 同步到 GitHub
+（用 secret `MIRROR_PAT`；PAT 推送会触发工作流，`GITHUB_TOKEN` 推送不会），
+所以 **GitHub 侧自动发布有 0–3 小时延迟**。要立刻发，走本地路线
+（`bash scripts/release.sh`，用本机 90 天 GAT 直发）。
+
+**取舍**：本机路线（`scripts/publish-npm.sh`）已验证可用，但依赖长期令牌；npm 已公告
+**直接发布的令牌豁免 2027-01 结束**，届时 bypass-2FA 令牌发不动。可信发布者没有这个期限，
+但要求账号把 2FA 设备配齐，且发布依赖 GitHub 可用性。**长期方案是可信发布者为主、
+本机令牌为兜底**：本机那把 `dsh-local` 令牌 2027-02-09 到期，到期前重新签发一把
+（签发脚本是开发机上的 `~/.local/bin/dsh-npm-token`，它会申请一把 90 天的细粒度令牌并
+写回 `~/.npmrc`；**仓库里不要提交任何脚本或凭据**）。
+
+### 2.2 国内镜像
 
 `registry.npmmirror.com` 是官方源的镜像，**不要往它发布**（它另有「非官方包」通道，代价是
 只有把源指向它的机器能装、无备份、CI 直接失败）。发到官方源后：

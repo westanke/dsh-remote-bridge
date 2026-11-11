@@ -43,3 +43,4 @@
 | CFG-001 | done | - | 新增 `POST /manage/config/text` 与 WebUI「生成配置文本」入口，让用户不必开终端跑脚本即可产出 `DSH1:` 文本 |
 | REL-005 | in-progress | PLUGIN-001,CFG-001,FS-003,REL-004 | 下游 DSH 0.2.x 适配版合并到 `main` 并发布 `v2.0.0`：host bridge 从 `apiProxy` 迁到 host services，新增插件清单、配置文本、绝对路径解析与会话附件读取四个端点；版本在 package.json、OpenAPI、AsyncAPI、Kotlin SDK 与客户端展示处统一为 `2.0.0` |
 | IMAGE-001 | in-progress | CHAT-005,UI-002 | 设置页新增「识图」分区：图片交接目录（识图路径）可改、出厂默认 `.dsh-images` 只读展示；交接写盘与读图共用同一套解析；把 dsh-image-paths 的 Turn 尾图集并入本插件，只读路由改为「会话 + 裸文件名」（目录不由客户端给），含纯逻辑、HTTP 层与客户端解析测试 |
+| REL-006 | in-progress | REL-005 | npm 可信发布者（trusted publishing / OIDC）自动发布：`.github/workflows/publish.yml` 在 tag `v*` 触发后用一次性 OIDC 身份发 npm，**仓库里不存任何 npm 凭据**；前置是账号配一把可交互 2FA 设备（security key / TOTP 认证器 App，邮箱码不算）并在 npm 网页登记「可信的发布者」；验收标准是手工打一个测试 tag 后 registry 出现该版本 |
