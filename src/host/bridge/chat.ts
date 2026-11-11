@@ -22,22 +22,62 @@ import { sessionIdOfAgent } from './host-reads.ts'
 // ── approval answerer bridge ──────────────────────────────────────────────
 
 /**
+ * 一次审批请求的归宿。
+ *
+ * `answered` **只**来自客户端（`respond` 那条路）；`aborted` / `timeout` 是
+ * 服务端自己判的（宿主中止 / 挂起超时），客户端给不了它们。
+ */
+type ApprovalBridgeOutcome =
+  | { kind: 'answered'; outcome: 'allowed-once' | 'rejected' }
+  | { kind: 'aborted' }
+  | { kind: 'timeout' }
+
+/**
+ * 内核认可的审批结论（`dsh-user-approval/lib/types/index.js:15` 的 OUTCOMES
+ * 去掉 `'unavailable'`）。
+ *
+ * 为什么单独列一份：内核把「没有审批通道」也塞进 OUTCOMES（`'unavailable'`），
+ * 但那是**兜底值**（这台机器上没有远端客户端接这单），**不是答复** ——
+ * 见 `ApprovalBridge.attach` 里对下游结算的处理。
+ */
+type KernelApprovalOutcome = 'allowed-once' | 'rejected' | 'cancelled'
+
+const isKernelApprovalOutcome = (value: unknown): value is KernelApprovalOutcome =>
+  value === 'allowed-once' || value === 'rejected' || value === 'cancelled'
+
+/**
  * 0.2.x answers approvals through the Cordis waterfall `approval/request`,
  * whose listener claims a pending question by returning an outcome, while
  * `approval/asked` / `approval/decided` remain log-only audit session events.
  * The old `apiProxy` instead handed the client a `rpcId` and accepted the
  * decision back through `respond({ type: 'client-response' })`.
  *
- * This bridge joins the two: it claims a request, publishes the familiar
- * `approval/requested` frame carrying a bridge-minted `approvalId`, and settles
- * when the client answers through `respond()`. An unanswered request delegates
- * to the next answerer (the official WebUI) by calling `next()`, so installing
- * this plugin never removes the built-in approval surface.
+ * This bridge joins the two: it **delegates on entry** to the next answerer
+ * (the official WebUI), publishes the familiar `approval/requested` frame
+ * carrying a bridge-minted `approvalId`, and settles with whichever side
+ * answers first.
+ *
+ * Why delegate on entry (#13): in a Cordis waterfall a listener that does not
+ * call `next()` vetoes the rest of the chain (cordis `lib/index.js:307-325`:
+ * "a listener that does not call next() vetoes the rest of the chain").
+ * Holding the request back for up to 10 minutes before calling `next()` meant
+ * the official WebUI never saw it during that window — the desktop approval
+ * card only appeared when the timeout fired (measured 605s…6864s between
+ * `approval/asked` and `approval/decided`). Delegating on entry makes the
+ * desktop card appear at once; the two surfaces race. See [QuestionBridge]
+ * for the same pattern on the question side.
+ *
+ * The cost of racing: both sides show a card and the loser has to give it up.
+ * The mobile side is told to void its card by an `approval/resolved` frame
+ * **without** `outcome`; if it answers anyway it gets `not-pending`
+ * (409 APPROVAL_NOT_PENDING). The official client has no external revoke
+ * channel, so a desktop card answered after the mobile won stays on screen
+ * until the user clicks it.
  */
 export class ApprovalBridge {
   private readonly pending = new Map<string, {
-    /** 结算入口。`delegate` 是**服务端自己**的选择（超时/中止），客户端永远给不了它。 */
-    settle: (outcome: 'allowed-once' | 'rejected' | 'cancelled' | 'delegate') => void
+    /** 结算入口。`answered` 只来自客户端，另外两种是服务端自己判的。 */
+    settle: (outcome: ApprovalBridgeOutcome) => void
     /** 挂起超时定时器；结算时**必须**清掉，否则定时器会拖住进程。 */
     timer: NodeJS.Timeout
     requestedAt: number
@@ -59,56 +99,80 @@ export class ApprovalBridge {
     //      （events.ts:255），排在官方 WebUI 的监听器**之后**；官方 WebUI 若自己
     //      处理掉这次审批就不会调 `next()`，本钩子**永远不被调用** —— 症状正是
     //      「电脑端一切正常、手机端一张卡都没有」，且两侧日志都不会说一句话。
-    // until: 上游把审批也改成可并行的广播语义，或本插件不再需要抢在 WebUI 之前接管。
+    // until: 上游把审批也改成可并行的广播语义（两端各自收到同一份请求），
+    //        本插件不再需要抢在 WebUI 之前挂自己的监听器。
     // test: tests/dsh-0.2-bridge.spec.ts › registers both interaction hooks at the head of the waterfall chain
     this.host.on('approval/request', async (...args: any[]) => {
       const req = args[0] as { agent?: unknown; toolName?: unknown; reason?: unknown; callId?: unknown; signal?: AbortSignal }
       const next = args[args.length - 1] as () => Promise<unknown>
+
+      // **进入时就把 next() 调掉，而且整条路径只调这一次。**
+      //
+      // 为什么（#13）：waterfall 里「不调 next()」= 否决整条链。旧实现把这次审批
+      // 攥在手里最多 10 分钟才 next()，官方 WebUI 那条远端 answerer 在这期间
+      // **根本没收到请求** —— 电脑端的审批卡要等到超时才出现（实测 asked→decided
+      // 605s…6864s，5 次恰为 600s + 反应时间）。改成进入即委托：电脑端立刻有卡，
+      // 手机端同时也有卡，谁先答谁赢（与 [QuestionBridge] 同一个范式）。
+      //
+      // 两个理由（与 QuestionBridge 同款）：
+      // 1. cordis 的 `next()` 是从**共享数组** shift（`lib/index.js:317-325`），调两次会
+      //    跳过一个监听者；所以「谁赢之后才决定调不调」是错的写法 —— 必须在这里算好。
+      // 2. 先委托才不必抢注册顺序：官方 WebUI（远端 answerer）立刻拿到这张卡。
+      const delegate = (async (): Promise<unknown> => {
+        if (typeof next !== 'function') {
+          // 契约被破坏时给一个明确的拒绝，而不是返回 undefined ——
+          // 内核会把任何不认识的值归一成 'unavailable'，看不出是契约破了。
+          throw new Error('approval/request was dispatched without a next() delegate')
+        }
+        return (next as () => unknown)()
+      })()
+      // 这个 promise 稍后一定会有结果，而那时可能已经没人在 await 它了
+      // （手机端先赢时我们直接返回自己的结论）。先挂一个空 handler 把 rejection
+      // 吞掉，避免 unhandledRejection 污染进程日志。
+      // 注意：这不改变 delegate 本身的结果 —— 后面该 await 的地方照样看得到 reject。
+      void delegate.catch(() => {})
+
       const sessionId = sessionIdOfAgent(req.agent)
       const toolName = typeof req.toolName === 'string' ? req.toolName : undefined
-      if (sessionId === undefined || toolName === undefined) return next()
+      // 取不到会话/工具名就没法挂手机端那张卡，但**不能自己吞掉这次审批**：
+      // 交回下游（官方 WebUI）继续走，电脑端照旧能答。
+      if (sessionId === undefined || toolName === undefined) return await delegate
+
       const approvalId = randomUUID()
       const rpcId = randomUUID()
-      const outcome = await new Promise<'allowed-once' | 'rejected' | 'cancelled' | 'delegate'>(resolve => {
+      // 结算函数要在这条 Promise 的构造器里建出来，而定时器反过来要调用它 ——
+      // 循环引用只能这样打破（盒子先声明，构造器里再填）。
+      let settleHeld: ((value: ApprovalBridgeOutcome) => void) | undefined
+      // **挂起超时**：客户端不答、宿主也不 abort 时，此前这个 Promise 永不结算，
+      // 内核那一轮就永久阻塞，`pending` 条目也只增不减（= 内存与行为双泄漏）。
+      //
+      // 超时**绝不**自动 `allowed-once`：那等于「没人回答 = 默认批准」，是把安全
+      // 判据交给一个定时器。超时按 `timeout` 结算，收尾时回落到内核自己的兜底
+      // （`'unavailable'` = 没有审批通道 → 工具被拒）。
+      //
+      // `unref()`：这个定时器最长挂 10 分钟，不该拦住进程退出；
+      // 正常结算路径一定会 `clearTimeout`。
+      const timer = setTimeout(() => {
+        this.pending.delete(rpcId)
+        settleHeld?.({ kind: 'timeout' })
+      }, APPROVAL_PENDING_TIMEOUT_MS)
+      timer.unref?.()
+      const held = new Promise<ApprovalBridgeOutcome>(resolve => {
         let done = false
-        // `delegate` 也在 settle 的取值范围里：超时与中止都由服务端按它结算。
-        // 客户端那条路（`respond`）仍然只接受 allowed-once / rejected。
-        const settle = (value: 'allowed-once' | 'rejected' | 'cancelled' | 'delegate'): void => {
+        const settle = (value: ApprovalBridgeOutcome): void => {
           if (done) return
           done = true
-          clearTimeout(entry.timer)
+          clearTimeout(timer)
           resolve(value)
         }
-        const entry: { settle: typeof settle; timer: NodeJS.Timeout; requestedAt: number } = {
-          settle,
-          // 占位：下面立刻覆盖。写成两段是因为 `settle` 要用到 `entry.timer`，
-          // 而 `entry` 又要用到 `settle` —— 循环引用只能这样打破。
-          timer: setTimeout(() => undefined, 0),
-          requestedAt: Date.now(),
-        }
-        // **挂起超时**：客户端不答、宿主也不 abort 时，此前这个 Promise 永不结算，
-        // 内核那一轮就永久阻塞，`pending` 条目也只增不减（= 内存与行为双泄漏）。
-        //
-        // 超时按 `delegate` 结算 —— **绝不能**自动 `allowed-once`：那等于
-        // 「没人回答 = 默认批准」，是把安全判据交给一个定时器。`delegate` 会让
-        // 内核回到下游（官方 WebUI）继续等，同时给客户端推一条 `approval/resolved`，
-        // 那张陈旧卡片自己消失。
-        //
-        // `unref()`：这个定时器最长挂 10 分钟，不该拦住进程退出；
-        // 正常结算路径一定会 `clearTimeout`。
-        clearTimeout(entry.timer)
-        entry.timer = setTimeout(() => {
-          this.pending.delete(rpcId)
-          settle('delegate')
-        }, APPROVAL_PENDING_TIMEOUT_MS)
-        entry.timer.unref?.()
-        this.pending.set(rpcId, entry)
+        settleHeld = settle
+        this.pending.set(rpcId, { settle, timer, requestedAt: Date.now() })
+        // 中止 = 宿主撤了这次审批。内核自己也会把 answer 与 signal 竞速、
+        // abort 时直接给 'cancelled'（`dsh-user-approval/lib/index.js:176`），
+        // 这里给同一个结论，别让两端口径不一样。
         req.signal?.addEventListener('abort', () => {
           this.pending.delete(rpcId)
-          if (done) return
-          done = true
-          clearTimeout(entry.timer)
-          resolve('delegate')
+          settle({ kind: 'aborted' })
         }, { once: true })
         this.mux.push({
           type: 'approval/requested',
@@ -120,17 +184,62 @@ export class ApprovalBridge {
           ...(typeof req.reason === 'string' ? { reason: req.reason } : {}),
         })
       })
+
+      // 竞速：电脑端（下游）先答 vs 手机端先答 vs 挂起超时 vs 中止。
+      //
+      // 下游的 'unavailable' **不是答复** —— 那是内核在「链上没人接」时的兜底值
+      //（`dsh-user-approval/lib/index.js:176`：`() => Promise.resolve("unavailable")`），
+      // 语义是「这台机器上没有审批通道」，不是「用户拒了」。把它当成答复，等于
+      // 手机端还没答就被内核拒掉（这正是 #13 里「手机离线」那一档的由来）。
+      // 所以只有真正的结论（allowed-once / rejected / cancelled）才结束竞速，
+      // 其余一律继续等手机端。
+      //
+      // 下游**失败**也不算「有人答了」，与 QuestionBridge 同理。
+      const first = await Promise.race([
+        delegate.then(
+          value => (isKernelApprovalOutcome(value)
+            ? { kind: 'downstream' as const, outcome: value }
+            : new Promise<never>(() => {})),
+          () => new Promise<never>(() => {}),
+        ),
+        held,
+      ])
+
       // 结算路径（respond / abort / timeout）都会自己清定时器；这里再清一次是幂等的，
       // 防的是将来有人加第三条结算路径时忘记清。
+      // **电脑端先赢**这一条尤其要清：那条路不经过 `settle`，定时器会白挂 10 分钟。
+      clearTimeout(timer)
       this.pending.delete(rpcId)
-      this.mux.push({
-        type: 'approval/resolved',
-        sessionId,
-        approvalId,
-        ...(outcome === 'delegate' ? {} : { outcome }),
-      })
-      if (outcome === 'delegate') return next()
-      return outcome
+
+      if (first.kind === 'answered') {
+        // 手机端先赢：结论就是客户端给的那个，交回内核当这次工具调用的结果。
+        // 带 outcome —— 手机端要知道自己点的「允许」被采纳了。
+        this.mux.push({ type: 'approval/resolved', sessionId, approvalId, outcome: first.outcome })
+        return first.outcome
+      }
+      if (first.kind === 'downstream') {
+        // 电脑端先赢：手机端那张卡要作废 —— **不带 outcome**，语义是
+        // 「这张审批不再等人了」，不是「用户拒了」。
+        // 官方客户端没有外部撤销通道，电脑端那张卡要用户点一下才消失。
+        this.mux.push({ type: 'approval/resolved', sessionId, approvalId })
+        return first.outcome
+      }
+      if (first.kind === 'aborted') {
+        // 宿主中止了这轮审批：内核也会 resolve 'cancelled'，这里给同一个结论。
+        this.mux.push({ type: 'approval/resolved', sessionId, approvalId })
+        return 'cancelled'
+      }
+      // 超时：没人答（手机端没答，电脑端也没答 —— 电脑端要是答了，早就赢下竞速了）。
+      //
+      // 这里**不能**去 `await delegate`：委托是在进入时就发出的，电脑端那张卡
+      // 还挂着等人点，await 它等于把「挂起超时」这个上限又绕过去了 ——
+      // 上限存在的意义就是「没人回答时内核不能被永久阻塞」。
+      //
+      // 回落成内核兜底的 `'unavailable'`（= 没有审批通道 → 工具被拒）。
+      // **绝不是** `'allowed-once'`：那等于「没人回答 = 默认批准」，是把安全判据
+      // 交给一个定时器。
+      this.mux.push({ type: 'approval/resolved', sessionId, approvalId })
+      return 'unavailable'
     }, { prepend: true })
   }
 
@@ -140,7 +249,8 @@ export class ApprovalBridge {
     const value = message.result.value
     const outcome = value && typeof value === 'object' ? (value as { outcome?: unknown }).outcome : undefined
     if (outcome !== 'allowed-once' && outcome !== 'rejected') return { accepted: false, reason: 'bad-response' }
-    entry.settle(outcome)
+    // 只有客户端（手机端）能给出这两条结论；`answered` 只能从这里来。
+    entry.settle({ kind: 'answered', outcome })
     return { accepted: true }
   }
 }
@@ -210,10 +320,13 @@ export const SESSION_RELAY_LIMIT = 8
  * 通知被划掉。修复前遇到这种情况，用户看到的是「agent 卡住不动了」，
  * 除了重启 dsh 没有别的出路。
  *
- * 为什么超时是 `delegate` 而**不是** `allowed-once`：把「没人回答」解释成
- * 「默认批准」等于让安全判据失效于一个定时器。`delegate` 让内核回到下游
- * （官方 WebUI）继续等，同时推一条 `approval/resolved` 让陈旧卡片消失 ——
+ * 超时**绝不**自动 `allowed-once`：把「没人回答」解释成「默认批准」等于让安全
+ * 判据失效于一个定时器。超时按 `timeout` 结算，收尾时回落到**下游的结论**
+ * （下游也没人答就是内核兜底的 `'unavailable'` = 没有审批通道 → 拒）——
  * 功能上「回到没有这个插件时的行为」，这才是正确的降级方向。
+ *
+ * 注意：下游那条路在**进入时**就已经委托出去了（见 [ApprovalBridge.attach]），
+ * 所以「回落」不是「现在才开始委托」，而是「这次等来的是下游的结论」。
  */
 export const APPROVAL_PENDING_TIMEOUT_MS = 10 * 60_000
 
@@ -240,9 +353,10 @@ export const QUESTION_PENDING_TIMEOUT_MS = 10 * 60_000
  * 1. **先委托，再竞速 —— 两端都能答**：进入时立刻调一次 `next()`（把这条请求交给
  *    后面的监听者，也就是官方 WebUI 那条远端 answerer），同时自己挂一张卡给 App，
  *    然后 `Promise.race`：谁先给出答案就算谁的。
- *    这与 ApprovalBridge 不同（它是「接管 = 否决下游」，cordis `lib/index.js:307-325`
- *    的文档原话：a listener that does not call next() vetoes the rest of the chain）——
- *    审批那边先不调，问题这边先调。代价是两端各有一张卡，后答的那张会变陈旧
+ *    审批侧现在也是这个范式了（#13 之前不是 —— 它是「接管 = 否决下游」，
+ *    cordis `lib/index.js:307-325` 的文档原话：a listener that does not call next()
+ *    vetoes the rest of the chain，结果电脑端的审批卡要等到 10 分钟超时才出现）。
+ *    代价是两端各有一张卡，后答的那张会变陈旧
  *    （客户端会收到 409「已不再等待」，语义正确）。
  * 2. **`this` 不能当 agent 用**：dispatcher 把它绑成 `scopeTarget(agent, agent)`
  *    （`lib/types/index.js:327`），而 `Scoped<T>` 明确写着

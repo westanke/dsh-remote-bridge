@@ -1,5 +1,56 @@
 # 开发日志
 
+## 审批否决下游：电脑端审批卡要等 10 分钟才出现（2026-11-11，未发版，#13）
+
+**现象（真机复现）**：Windows 11 桌面 WebUI + 手机配对但离线。手机端审批卡片**立刻**出现，
+电脑端官方 WebUI 的那张卡却要等几分钟到一小时才可点。实测 11 次审批的
+`approval/asked` → `approval/decided` 间隔：
+8.1s / 21.7s / 310.3s / 372.4s / 605.0s / 676.9s / 724.3s / 759.4s / 1354.5s / 6864.1s
+——其中 5 次**恰好**是 600s + 反应时间（600s = `APPROVAL_PENDING_TIMEOUT_MS`）。
+同期 `tool/call` → `approval/asked` 只有 7–122ms，说明请求本身早就到了桥。
+
+**根因**：`ApprovalBridge.attach` 以 `{ prepend: true }` 注册后，在 `await` 挂起期间
+**从不调 `next()`**。而 Cordis 的 waterfall 契约是
+「**a listener that does not call `next()` vetoes the rest of the chain**」
+（cordis `lib/index.js:307-325`）—— 不调 `next()` 等于**否决整条链**，
+官方 WebUI 那条远端 answerer **根本没收到这次请求**。
+旧实现只在超时后才 `if (outcome === 'delegate') return next()`，
+于是电脑端那张卡恰好在超时那一刻才冒出来。
+提问侧（`QuestionBridge`）早就是「进入即委托 + 竞速」，审批侧没有 —— 两侧范式不一致。
+
+**影响面**：所有经本插件转发的审批（`approval/request`），**桌面端官方 WebUI 全部收不到**；
+手机端不受影响（它走的是本插件自己 `mux.push` 的 `approval/requested` 帧）。
+wire schema 未变（`approval/resolved` 的 `outcome` 本来就是可选字段，enum 已含
+`cancelled`/`unavailable`），REST 契约与 Kotlin SDK 不动。
+
+**做法**：审批侧改成与提问侧同一个范式 ——
+**进入即委托**（`next()` 在这条路径上只调一次，`next` 从 cordis 共享数组 shift，调两次会跳过一个监听者），
+然后与手机端 `Promise.race`：
+- 下游给 `'unavailable'` **不算答复**（那是内核「链上没人接」的兜底值，
+  `dsh-user-approval/lib/index.js:176`），必须继续等手机端；
+- 手机端先赢 → 推**带** `outcome` 的 `approval/resolved`，返回该结论；
+- 电脑端先赢 → 推**不带** `outcome` 的 `approval/resolved`（语义 = 收起陈旧卡片），
+  返回下游结论；
+- 宿主中止 → 返回 `'cancelled'`（与内核口径一致）；
+- 超时 → 回落成内核兜底 `'unavailable'`，**绝不** `'allowed-once'`
+  （「没人回答 = 默认批准」是把安全判据交给一个定时器）。
+另外把挂起超时定时器**外提**到 `held` 之外：电脑端先赢那条路不经过 `settle`，
+定时器会白挂 10 分钟。
+
+**代价（明确认下来）**：两端各一张卡，后答的那端拿到 `not-pending`
+（409 APPROVAL_NOT_PENDING）；官方客户端**没有外部撤销通道**，
+手机端先赢时电脑端那张卡要用户点一下才消失。
+这正是 `docs/project/decisions/ADR-0009-single-winner-interactions.md`
+落到选项 B（并行下发）后的既定代价。
+
+**怎么验**：`tests/approval-timeout.spec.ts` 改写 3 条旧用例并新增 4 条
+（进入即委托 / 下游 `'unavailable'` 不算答复 / 电脑端先赢作废手机端卡 /
+中止给 `'cancelled'`）；`tests/dsh-0.2-bridge.spec.ts` 两条断言按新语义改
+（`delegated` 立即为 true；中止后 outcome 为 `'cancelled'`）。
+`pnpm check` 全绿。**真机复验未做**（需重启宿主后看电脑端审批卡是否立刻出现）。
+坑位登记：`PITFALLS.md` §审批否决下游：电脑端审批卡要等 10 分钟才出现；
+ADR-0009 状态 proposed → accepted。
+
 ## writeFromDeb 并发竞态：临时文件名只用 pid，两个 create 请求互相删对方的 deb（2026-11-04，未发版，#11）
 
 **现象（真机复现）**：UOS 机器上 `POST /manage/cloudflare/create` 返回 502

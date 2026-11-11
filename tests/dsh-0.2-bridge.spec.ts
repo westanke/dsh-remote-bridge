@@ -195,7 +195,12 @@ describe('dsh 0.2.x bridge: approval answerer', () => {
     })
     expect(accepted).toEqual({ accepted: true })
     expect(await outcomePromise).toBe('allowed-once')
-    expect(delegated).toBe(false)
+    // #13：委托在**进入时**就发出去了 —— 官方 WebUI 那条远端 answerer 必须立刻
+    // 收到这次请求，电脑端的审批卡才会马上出现（旧实现攥到超时才 next()，
+    // 电脑端要等 605s…6864s 才看到那张卡）。
+    // 注意下游给的 `'unavailable'` 只是内核兜底值（= 这台机器上没有审批通道），
+    // 不算答复，所以手机端这一答仍然是胜者。
+    expect(delegated).toBe(true)
     controller.abort()
   })
 
@@ -218,7 +223,9 @@ describe('dsh 0.2.x bridge: approval answerer', () => {
     }, next)
     // A client that never answers (or disconnects) must not strand the request.
     controller.abort()
-    expect(await outcomePromise).toBe('unavailable')
+    // 宿主中止 = 这轮审批作废。内核自己也会把 answer 与 signal 竞速、abort 时给
+    // 'cancelled'（`dsh-user-approval/lib/index.js:176`），这里给同一个结论。
+    expect(await outcomePromise).toBe('cancelled')
     expect(delegated).toBe(true)
   })
 

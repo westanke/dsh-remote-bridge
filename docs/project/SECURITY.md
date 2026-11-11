@@ -18,6 +18,17 @@
 - 配对默认只给五档 scope（`chat.read`/`chat.write`/`files.read`/`files.write`/`settings.read`），**刻意不含** `files.delete` 与 `settings.write`；三条配对路径共用 `DEFAULT_DEVICE_SCOPES`。用户仍可手动勾选破坏性权限（2.6.1）。
 - 通用设置命名空间（`/settings/namespaces`）要求 `settings.read` / `settings.write`，但**默认只有 `ui-*` 与以 `locale` 结尾的命名空间可写**；`llm-*`、`permission`、`agent-default-model`、`subagent-*` 等一律只读。理由、放宽开关与两道脱敏见下节「通用设置命名空间的写权限（2.6.0 起）」。
 - 待审批列表要求 `chat.read`，决定要求 `chat.write`，两者还会重新检查会话所属 root grant。插件仅在 Host 内保存 DSH `rpcId`，向设备返回独立审批 ID；工具参数按 API Key、token、密码、Bearer 等常见形式脱敏并限长，审计不记录原因或命令。`danger-full-access` 标记为高风险，Android 必须二次确认且只允许单次授权。
+- **审批的降级方向是「拒」不是「准」（2026-11-11 起，#13）**：审批请求现在**进入即委托**给官方 WebUI
+  那条远端 answerer（不调 `next()` 在 Cordis waterfall 里等于否决整条链，电脑端就永远收不到这张卡），
+  然后与手机端 `Promise.race`，**谁先答谁赢**。三条可证伪的断言：
+  ① **挂起超时不自动批准** —— 超时按内核兜底 `'unavailable'` 结算（= 没有审批通道 → 工具被拒），
+  **绝不** `'allowed-once`；「没人回答 = 默认批准」等于把安全判据交给一个定时器。
+  ② **内核兜底值 `'unavailable'` 不是答复** —— 下游给这个值时必须继续等手机端，
+  当成答复等于手机端还没答就被拒掉。
+  ③ **落败端的响应一律 `not-pending`**（409 APPROVAL_NOT_PENDING），不得二次结算。
+  认下来的代价：两端各一张卡，手机端先赢时电脑端那张卡没有外部撤销通道，要用户点一下才消失。
+  回归钉子：`tests/approval-timeout.spec.ts`（超时回落 `'unavailable'` / 下游兜底值不算答复 /
+  电脑端先赢后迟到响应 `not-pending`）。
 - 诊断端点 `GET /api/v1/debug/host-services` 与其它 `/api/v1` 路由同级鉴权：先过 `principal()`，再要求 `settings.read` scope（admin 身份自动继承）；本构建未注入报告时回 404。2.5.2 修复（SEC-H1）：它此前位于 `principal()` 之前、无需任何凭据即可读到宿主注入面与内核原始错误文本，而 openapi 全局 `bearerAuth` 从未给它豁免——属于契约违约。新增的运行期 metrics 字段挂在这份报告上而**不另开路由**（另开一条就再造一个要单独守的鉴权面）。回归断言见 `tests/security-h1.spec.ts`；免设备令牌的端点集合由 `scripts/docs-contract.ts` 在 `docs:check` 中与 openapi 的 `security: []` 集合双向核对，目前恰好只有 `GET /healthz` 与 `POST /pairings/exchange`。
 - 图片交接的**只读**路由（`GET /plugin/dsh-remote-bridge/raw`）不要求设备令牌 —— 浏览器不会给 `<img>` 加 `Authorization`，这条口子也无法进 REST 前缀（那条前缀上的每个请求都需要令牌或回环管理身份）。它的守门条件是：`Host` 必须回环（DNS 重绑定防护）、**浏览器带 `Sec-Fetch-Site` 时跨站一律 403**（仅 `same-origin` 与 `none` 放行）、同源 `/plugin/` 前缀页面的 `Referer` 放行、文件名必须匹配 `^[0-9a-f]{64}\.(png|jpe?g|webp|gif|heic|heif|bmp|avif)$`、**目录永远由宿主按会话推出**（客户端只递会话与裸文件名，递不进目录或绝对路径）、扩展名声明必须与魔术字节一致、体积上限 32 MiB。取不到一律 404 且不区分「会话不存在」与「文件不存在」。**刻意的口子（SEC-H8，与代码对齐）**：无 `Sec-Fetch-Site` 且无 `Origin` 的调用方不是浏览器页面（`curl`、脚本、测试），此时回环可达性本身就是访问模型（与本地 GUI 其余部分一致），直接放行——浏览器一定发这两个头之一，所以这条口子对网页攻击不成立。判定真值在 `image-handoff.ts` 的 `sameOrigin()`。把 GUI 绑到非回环网卡时必须同步放宽 `image-handoff.ts` 的 `loopbackHost`。
 - 识图路径（交接目录名）只接受**单段**目录名：空值、超长、`/`、`\`、NUL、`.`、`..` 一律拒绝（`400 IMAGE_SUBDIR_INVALID`）。因此它无法把图片落点带出会话工作目录。改动进审计（`image.subdir`），记录的是新目录名，不含任何路径正文。

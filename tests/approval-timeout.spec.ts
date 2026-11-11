@@ -3,7 +3,7 @@ import type { Dsh02HostServices } from '../src/host/dsh-0.2-bridge.ts'
 import { createDsh02ApiProxy } from '../src/host/dsh-0.2-bridge.ts'
 
 /**
- * 审批与提问的**挂起超时**（FUNC-2）。
+ * 审批与提问的**挂起超时**（FUNC-2）与「先委托再竞速」（#13）。
  *
  * ## 修的是什么
  *
@@ -15,13 +15,23 @@ import { createDsh02ApiProxy } from '../src/host/dsh-0.2-bridge.ts'
  * `QuestionBridge` 同形（它还有一道 `MAX_PENDING_QUESTIONS = 32` 的上限，
  * 但那个上限只管「数量」，管不了「时间」—— 32 条僵尸提问照样能把新卡片全挡住）。
  *
+ * ## #13：审批侧也改成「先委托，再竞速」
+ *
+ * 旧实现在 `await` 挂起期间**从不调 `next()`**。cordis 的 waterfall 契约下，
+ * 不调 `next()` = 否决整条链，官方 WebUI 那条远端 answerer 根本没收到这次请求 ——
+ * 电脑端的审批卡要等到 10 分钟超时才出现（实测 `approval/asked` →
+ * `approval/decided` 605s…6864s）。
+ *
+ * 现在进入即调一次 `next()`：电脑端立刻有卡，手机端同时有卡，谁先答谁赢。
+ *
  * ## 这里钉住的性质
  *
- * 1. 9:59 仍然挂起、10:00 按 **delegate** 结算（**绝不能**是 allowed-once）；
+ * 1. 9:59 仍然挂起、10:00 结算成 **`'unavailable'`**（**绝不能**是 allowed-once）；
  * 2. 超时后推 `approval/resolved`（客户端那张卡才能消失）；
  * 3. 重复 `respond()` 不二次结算；
- * 4. 定时器被清掉（不泄漏）；
- * 5. 提问侧同口径，且 `sweepExpired` 能把漏网条目扫掉。
+ * 4. 定时器被清掉（不泄漏）—— 包括**电脑端先赢**那条路；
+ * 5. 进入即委托（电脑端立刻拿到卡），下游的 `'unavailable'` 不算答复；
+ * 6. 提问侧同口径，且 `sweepExpired` 能把漏网条目扫掉。
  */
 
 const TIMEOUT_MS = 10 * 60_000
@@ -116,24 +126,28 @@ afterEach(() => {
 })
 
 describe('approval pending timeout', () => {
-  it('keeps an unanswered approval pending at 9:59 and delegates at 10:00', async () => {
+  it('keeps an unanswered approval pending at 9:59 and falls back to unavailable at 10:00', async () => {
     const { host, fire } = fakeHost()
     const proxy = createDsh02ApiProxy(host, { imageHandoff: false })
     const mux = collectFrames(proxy)
 
     // 一次审批请求进来：它内部 `await` 一个由 respond/abort/timeout 结算的 Promise。
     // 这里**不 await** 它，而是拿到 promise 再推进时间 —— 否则测试会死等。
+    //
+    // 下游（官方 WebUI）用一个**永不结算**的 promise：真实世界里那张卡是挂在那里
+    // 等人点的。写成 `async () => 'downstream'` 会立刻赢下竞速，测不到超时。
+    const downstream = pendingDownstream()
     let settled = false
     const hook = fire('approval/request', {
       agent,
       toolName: 'bash',
       reason: 'danger-full-access',
       signal: undefined,
-    }, async () => 'downstream-answer')
-    const tracked = hook.then((value) => {
+    }, downstream.run).then((value) => {
       settled = true
       return value
     })
+    const tracked = hook
 
     // 让钩子跑到「已挂起」那一步（事件推出来就说明 pending 表已经写入了）。
     await vi.advanceTimersByTimeAsync(0)
@@ -144,13 +158,13 @@ describe('approval pending timeout', () => {
     expect(settled).toBe(false)
     expect(mux.frames.some(frame => frame.type === 'approval/resolved')).toBe(false)
 
-    // 10:00：超时 → 结算成 delegate（**不是** allowed-once）。
+    // 10:00：超时 → 结算成内核兜底 `'unavailable'`（**不是** allowed-once）。
     await vi.advanceTimersByTimeAsync(1_000)
-    await expect(tracked).resolves.toBe('downstream-answer')
+    await expect(tracked).resolves.toBe('unavailable')
     expect(settled).toBe(true)
-    // 关键：内核拿到的不是「批准」，而是「交给下游」。
+    // 手机端那张卡要消失（否则它变成一张点不动的陈旧卡片）。
     expect(mux.frames.filter(frame => frame.type === 'approval/resolved')).toHaveLength(1)
-    // **绝不能**自动批准：超时那条 resolved 帧不带 outcome（delegate 分支）。
+    // **绝不能**自动批准：超时那条 resolved 帧不带 outcome。
     const resolved = mux.frames.find(frame => frame.type === 'approval/resolved')
     expect(resolved?.outcome).toBeUndefined()
 
@@ -162,14 +176,15 @@ describe('approval pending timeout', () => {
     const proxy = createDsh02ApiProxy(host, { imageHandoff: false })
     const mux = collectFrames(proxy)
 
-    const hook = fire('approval/request', { agent, toolName: 'bash' }, async () => 'downstream')
+    const downstream = pendingDownstream()
+    const hook = fire('approval/request', { agent, toolName: 'bash' }, downstream.run)
     await vi.advanceTimersByTimeAsync(0)
     const requested = mux.frames.find(frame => frame.type === 'approval/requested')
     expect(requested?.rpcId).toBeDefined()
 
     // 超时先到。
     await vi.advanceTimersByTimeAsync(TIMEOUT_MS)
-    await expect(hook).resolves.toBe('downstream')
+    await expect(hook).resolves.toBe('unavailable')
 
     // 迟到的客户端决定：必须得到 `not-pending`（409 语义），而不是二次结算。
     const late = await proxy.respond({
@@ -189,7 +204,8 @@ describe('approval pending timeout', () => {
     const proxy = createDsh02ApiProxy(host, { imageHandoff: false })
     const mux = collectFrames(proxy)
 
-    const hook = fire('approval/request', { agent, toolName: 'bash' }, async () => 'downstream')
+    const downstream = pendingDownstream()
+    const hook = fire('approval/request', { agent, toolName: 'bash' }, downstream.run)
     await vi.advanceTimersByTimeAsync(0)
     const requested = mux.frames.find(frame => frame.type === 'approval/requested')
 
@@ -205,6 +221,132 @@ describe('approval pending timeout', () => {
     // 定时器必须被清掉 —— 否则它会活到 10 分钟后再给一个已完成的 Promise 补一次结算。
     // `vi.getTimerCount()` 是判断这件事最直接的方式。
     expect(vi.getTimerCount()).toBe(0)
+
+    await mux.settle()
+  })
+})
+
+describe('approval delegates on entry (#13)', () => {
+  it('hands the request to the next answerer on entry so the desktop card appears at once', async () => {
+    const { host, fire } = fakeHost()
+    const proxy = createDsh02ApiProxy(host, { imageHandoff: false })
+    const mux = collectFrames(proxy)
+
+    // 官方 WebUI 那边接了这单，但**还没人答**（挂起）。
+    const downstream = pendingDownstream()
+    const next = vi.fn(() => downstream.run())
+
+    const hook = fire('approval/request', { agent, toolName: 'bash' }, next)
+
+    // 关键（#13）：`next()` 在**进入时**就被调掉了 —— 不是等到超时才调。
+    // 旧实现攥着请求最多 10 分钟才 next()，官方 WebUI 在那期间根本没收到请求，
+    // 电脑端的审批卡要等到超时才出现（实测 asked→decided 605s…6864s）。
+    expect(next).toHaveBeenCalledTimes(1)
+
+    await vi.advanceTimersByTimeAsync(0)
+    expect(mux.frames.some(frame => frame.type === 'approval/requested')).toBe(true)
+
+    // 委托已经发出去了，但还没人答 —— 所以这次审批**仍在挂起**。
+    let settled = false
+    void hook.then(() => { settled = true })
+    await vi.advanceTimersByTimeAsync(TIMEOUT_MS - 1_000)
+    expect(settled).toBe(false)
+
+    await mux.settle()
+  })
+
+  it('ignores an unavailable downstream answer and keeps waiting for the mobile client', async () => {
+    const { host, fire } = fakeHost()
+    const proxy = createDsh02ApiProxy(host, { imageHandoff: false })
+    const mux = collectFrames(proxy)
+
+    // 下游给的是内核兜底值 `'unavailable'` —— 语义是「这台机器上没有审批通道」，
+    // **不是答复**。把它当答复，等于手机端还没答就被内核拒掉（#13 里手机离线那档）。
+    const next = vi.fn(async () => 'unavailable')
+
+    let settled = false
+    const hook = fire('approval/request', { agent, toolName: 'bash' }, next).then((value) => {
+      settled = true
+      return value
+    })
+    await vi.advanceTimersByTimeAsync(0)
+
+    // 下游已经给过 'unavailable' 了，但它不算答复 —— 这次审批还在等手机端。
+    await vi.advanceTimersByTimeAsync(1_000)
+    expect(settled).toBe(false)
+    expect(mux.frames.some(frame => frame.type === 'approval/resolved')).toBe(false)
+
+    const requested = mux.frames.find(frame => frame.type === 'approval/requested')
+    const accepted = await proxy.respond({
+      type: 'client-response',
+      rpcId: requested?.rpcId as string,
+      result: { ok: true, value: { outcome: 'allowed-once' } },
+    })
+    expect(accepted).toEqual({ accepted: true })
+    await expect(hook).resolves.toBe('allowed-once')
+    expect(vi.getTimerCount()).toBe(0)
+
+    await mux.settle()
+  })
+
+  it('lets the desktop answerer win the race and voids the mobile card', async () => {
+    const { host, fire } = fakeHost()
+    const proxy = createDsh02ApiProxy(host, { imageHandoff: false })
+    const mux = collectFrames(proxy)
+
+    const downstream = pendingDownstream()
+    const hook = fire('approval/request', { agent, toolName: 'bash' }, downstream.run)
+    await vi.advanceTimersByTimeAsync(0)
+    const requested = mux.frames.find(frame => frame.type === 'approval/requested')
+
+    // 电脑端先答：结论直接交回内核。
+    downstream.resolve('allowed-once')
+    await expect(hook).resolves.toBe('allowed-once')
+
+    // 手机端那张卡要作废 —— **不带 outcome**，语义是「这张审批不再等人了」，
+    // 不是「用户拒了」。
+    const resolved = mux.frames.find(frame => frame.type === 'approval/resolved')
+    expect(resolved).toBeDefined()
+    expect(resolved?.outcome).toBeUndefined()
+
+    // 电脑端先赢这条路**不经过** settle，定时器必须由结算路径自己清掉，
+    // 否则它会白挂 10 分钟（并让 `vi.getTimerCount()` 永远不为 0）。
+    expect(vi.getTimerCount()).toBe(0)
+
+    // 输了的一方再答 —— 必须得到 not-pending（409 语义）。
+    const late = await proxy.respond({
+      type: 'client-response',
+      rpcId: requested?.rpcId as string,
+      result: { ok: true, value: { outcome: 'rejected' } },
+    })
+    expect(late).toEqual({ accepted: false, reason: 'not-pending' })
+    expect(mux.frames.filter(frame => frame.type === 'approval/resolved')).toHaveLength(1)
+
+    await mux.settle()
+  })
+
+  it('returns cancelled when the host aborts the request', async () => {
+    const { host, fire } = fakeHost()
+    const proxy = createDsh02ApiProxy(host, { imageHandoff: false })
+    const mux = collectFrames(proxy)
+
+    const controller = new AbortController()
+    const downstream = pendingDownstream()
+    const hook = fire('approval/request', {
+      agent,
+      toolName: 'bash',
+      signal: controller.signal,
+    }, downstream.run)
+    await vi.advanceTimersByTimeAsync(0)
+
+    controller.abort()
+    // 内核自己也会把 answer 与 signal 竞速、abort 时给 'cancelled'
+    // （`dsh-user-approval/lib/index.js:176`），这里给同一个结论。
+    await expect(hook).resolves.toBe('cancelled')
+    // 手机端那张卡也要作废。
+    const resolved = mux.frames.find(frame => frame.type === 'approval/resolved')
+    expect(resolved).toBeDefined()
+    expect(resolved?.outcome).toBeUndefined()
 
     await mux.settle()
   })

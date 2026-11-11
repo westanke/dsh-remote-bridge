@@ -348,6 +348,46 @@ Cordis 4.0.2（`vendor/cordis/src/events.ts`）：
 
 ---
 
+### 审批否决下游：电脑端审批卡要等 10 分钟才出现
+
+**症状**（#13，v2.10.0 真机，Windows 11 桌面 WebUI + 手机配对但离线）：
+手机端审批卡片**立刻**出现，电脑端官方 WebUI 的那张卡却要等几分钟到一小时才可点。
+实测 11 次审批的 `approval/asked` → `approval/decided` 间隔：
+8.1s / 21.7s / 310.3s / 372.4s / 605.0s / 676.9s / 724.3s / 759.4s / 1354.5s / 6864.1s
+——其中 5 次**恰好**是 600s + 反应时间（600s = `APPROVAL_PENDING_TIMEOUT_MS`）。
+
+**根因**：`ApprovalBridge.attach` 以 `{ prepend: true }` 注册后，
+在 `await` 挂起期间**从不调 `next()`**。而 Cordis 的 waterfall 契约是
+「**a listener that does not call `next()` vetoes the rest of the chain**」
+（cordis `lib/index.js:307-325`）—— 不调 `next()` 等于**否决整条链**，
+官方 WebUI 那条远端 answerer **根本没收到这次请求**。
+旧实现只在超时后才 `if (outcome === 'delegate') return next()`，
+于是电脑端那张卡恰好在超时那一刻才冒出来。
+
+**与上面那条坑的关系**：「waterfall 不 prepend 就等于没注册」讲的是**链首位置**；
+这条讲的是**调不调 `next()`**。两条是不同的失败方式，症状却相反 ——
+不 prepend 是手机端一张卡都没有，否决下游是手机端有卡、电脑端没有。
+
+**现在怎么办**（#13）：审批侧改成与 `QuestionBridge` 同一个范式 ——
+**进入即委托**（`next()` 只在这条路径上被调一次），然后与手机端 `Promise.race`：
+- 下游给 `'unavailable'` **不算答复**（那是内核「链上没人接」的兜底值，
+  `dsh-user-approval/lib/index.js:176`），必须继续等手机端；
+- 手机端先赢 → 推**带** `outcome` 的 `approval/resolved`；
+- 电脑端先赢 → 推**不带** `outcome` 的 `approval/resolved`（语义 = 收起陈旧卡片）；
+- 超时 → 回落成内核兜底 `'unavailable'`，**绝不** `'allowed-once'`。
+
+**代价（必须认下来）**：两端各一张卡，后答的那端拿到 `not-pending`
+（409 APPROVAL_NOT_PENDING）；官方客户端**没有外部撤销通道**，
+手机端先赢时电脑端那张卡要用户点一下才消失。
+这正是 `docs/project/decisions/ADR-0009-single-winner-interactions.md` 讨论的选项 B。
+
+**铁律**：① 在 waterfall 链上插界面，**先委托再竞速**，不要「攥住等自己答」；
+② 内核兜底值（`'unavailable'`）是「没有通道」，**不是答复** ——
+把它当答复等于手机端还没答就被拒；③ 超时**绝不**自动批准 ——
+「没人回答 = 默认批准」是把安全判据交给一个定时器。
+
+---
+
 ### npm 发布：本地 npm 不支持 staged，报错方向还相反
 
 **症状**（2026-10-19 发 v2.4.2 时）：

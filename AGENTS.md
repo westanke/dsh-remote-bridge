@@ -18,7 +18,7 @@
 | 知道某文件/目录干什么、新文件该放哪 | `docs/project/STRUCTURE.md` |
 | 知道某模块导出什么、接口签名长什么样 | `docs/project/INTERFACES.md` |
 | 知道某个接口长什么样 | `docs/project/API.md` + `docs/api/openapi.yaml` + `docs/api/asyncapi.yaml` |
-| 知道为什么这么设计 | `docs/project/ARCHITECTURE.md` → `docs/project/decisions/`（9 条 ADR，其中 ADR-0009 为 **proposed**） |
+| 知道为什么这么设计 | `docs/project/ARCHITECTURE.md` → `docs/project/decisions/`（9 条 ADR） |
 | 改 wire schema | 先改 `API.md` + OpenAPI + AsyncAPI + Kotlin SDK + 测试，**再**改实现 |
 | 改代码前避坑 | `docs/project/PITFALLS.md`（名字 = 触发词 = 锚点） |
 | 发版 | `docs/project/RELEASE.md` |
@@ -259,6 +259,7 @@ docs/api/            ← OpenAPI + AsyncAPI（wire schema 的权威）
 - `审批与提问卡片全灭`
 - `抢答与 next() 委托`
 - `waterfall 不 prepend 就等于没注册`
+- `审批否决下游：电脑端审批卡要等 10 分钟才出现`
 - `wait.callId 判据过严`
 - `npm pack 与 pnpm pack`
 - `Gitee Release 死链`

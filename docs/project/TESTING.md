@@ -8,6 +8,7 @@
 
 | 日期 | 环境 | 验证 | 结果 |
 | --- | --- | --- | --- |
+| 2026-11-11 | Linux / Node 24.19.0 | 审批侧改为「进入即委托 + 两端竞速」（**#13**）：`ApprovalBridge` 不再否决下游，电脑端官方 WebUI 的审批卡立刻出现 | 通过；`tsc --noEmit` exit 0、**81 个测试文件 / 841 个用例全绿**（`tests/approval-timeout.spec.ts` 改写 3 条 + 新增 4 条：进入即委托、下游 `'unavailable'` 不算答复、电脑端先赢作废手机端卡并清定时器、中止给 `'cancelled'`、超时回落 `'unavailable'` 绝非 `allowed-once`；`tests/dsh-0.2-bridge.spec.ts` 两条断言按新语义改）、`docs:check`（ADR-0009 状态 proposed → accepted）、`build` 通过。**真机复验未做**（需重启宿主后确认电脑端审批卡立刻出现） |
 | 2026-10-17 | Linux / Node 24.19.0 | 浏览器层样式契约（e2e）：`./node_modules/.bin/playwright test` | 通过；**4 个用例 / 2.6s**（添加根目录按钮真可见、七张卡片平铺与默认展开、圆角描边生效且未写死颜色、App 下载卡片二维码渲染）。**不需要服务器**（渲染真实 DOM 量计算样式），只需 chromium。⚠️ 本机 `pnpm` 坏，故用 `node_modules/.bin/playwright` 直接跑 |
 | 2026-10-17 | Linux / Node 24.19.0 | `@patch` 四要素机检（`tests/patch-discipline.spec.ts`） | 通过；**37 个测试文件 / 275 个用例**。五要素齐全 + `test` 指向的文件与**用例名**真实存在 + 下限断言。另做了一次 **mutation check**（故意写错用例名 → 确认会红 → 恢复），避免「永远绿的检查」 |
 | 2026-10-17 | Linux / Node 24.19.0 | 坑位索引一致性并入 `docs:check`（索引 ↔ PITFALLS 正文双向 + 下限断言） | 通过；`tsc --noEmit` exit 0、`docs:check`（10 文档 / 39 任务 / 9 ADR）、`vitest run` 36 文件 / 274 用例。**新检查第一次跑就抓到自己的实现 bug**（从必需文档缓存取 PITFALLS 拿到空串），靠**下限断言**定位 |
