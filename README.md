@@ -17,7 +17,7 @@
 
 <p align="center">
   <a href="./README.en.md">English</a> ·
-  <img alt="Version" src="https://img.shields.io/badge/version-v2.10.0-087f8c">
+  <img alt="Version" src="https://img.shields.io/badge/version-v2.10.1-087f8c">
   <img alt="DSH plugin" src="https://img.shields.io/badge/DeepSeek_Harness-plugin-1f2328">
   <img alt="Platforms" src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-586069">
   <img alt="License" src="https://img.shields.io/badge/license-AGPL--3.0-2da44e">
@@ -86,10 +86,10 @@ dsh plugin --profile web add dsh-remote-bridge
 dsh plugin --profile web add dsh-remote-bridge --registry https://registry.npmmirror.com
 
 # ② GitHub Release 的 tarball
-dsh plugin --profile web add https://github.com/westanke/dsh-remote-bridge/releases/download/v2.7.1/dsh-remote-bridge-v2.7.1.tgz
+dsh plugin --profile web add https://github.com/westanke/dsh-remote-bridge/releases/download/v2.10.1/dsh-remote-bridge-v2.10.1.tgz
 
 # ③ Gitee Release 的 tarball（国内访问更快）
-dsh plugin --profile web add https://gitee.com/westanke/dsh-remote-bridge/releases/download/v2.7.1/dsh-remote-bridge-v2.7.1.tgz
+dsh plugin --profile web add https://gitee.com/westanke/dsh-remote-bridge/releases/download/v2.10.1/dsh-remote-bridge-v2.10.1.tgz
 
 npx @deepseek-ai/dsh web
 ```
@@ -105,7 +105,7 @@ npx @deepseek-ai/dsh web
 从 GitHub Release 下载离线安装包时，可直接安装 tarball：
 
 ```sh
-dsh plugin --profile web add ./dsh-remote-bridge-v2.7.1.tgz
+dsh plugin --profile web add ./dsh-remote-bridge-v2.10.1.tgz
 ```
 
 ## 第一次使用
@@ -427,13 +427,17 @@ pnpm check
 pnpm pack
 ```
 
-`pnpm check` 覆盖类型检查、文档一致性与测试；当前 **76 个测试文件 / 698 个用例**，外加 **8 个浏览器层用例**（Playwright 实测量出的计算样式，含 375px 窄屏契约），全部通过。
+`pnpm check` 覆盖类型检查、文档一致性与测试；当前 **81 个测试文件 / 841 个用例**，外加 **9 个浏览器层用例**（Playwright 实测量出的计算样式，含 375px 窄屏契约），全部通过。
 
 `npm pack` 的产物约 **0.64 MB**（v2.6.1 实测 669,434 字节，SHA-256 `9bf0189b…2cd35`）：2.2.0 删除独立页及其编辑器依赖、并关闭 source map 之后从 1.72 MB 降下来，之后随投影透传、权限 BFF 与五维加固小幅增长。
 
 v2.5.0 在 DSH **0.2.1-rc.2** 上完成真机验证：14/14 宿主服务全部可注入、三个 jobs 端点实测通过、
 权限档位目录返回内核真实三档。开发基线为上游 `dsh-v0.2.1-rc.2`（commit `687f282e8625c6b8d11ff58211a90524be2e4317`），
 兼容范围见上文 `engines.dsh`。CI 覆盖 Windows、Ubuntu 和 macOS。
+
+**v2.10.1 的验证状态**：81 个测试文件 / **841 个用例**全绿、`typecheck`/`docs:check`/构建通过。
+这一版修两处：审批改为「进入即委托 + 两端竞速」（#13，电脑端审批卡不再等 10 分钟超时）
+与 Cloudflare 隧道 create 的并发临时文件竞态（#11）。**真机复验未做。**
 
 **v2.7.1 的验证状态**：76 个测试文件 / **701 个用例**全绿、`typecheck`/`docs:check`/构建通过。
 这一版只改 `src/host/dsh-0.2-bridge.ts` 的 `agentFor` 与对应回归测试，其余代码与 v2.7.0 逐字节相同。
@@ -449,7 +453,7 @@ DSH **0.2.1-rc.3** 隔离实例上**实跑验过**，不是静态推断：插件
 
 ## 项目信息
 
-- 当前版本：`v2.10.0`
+- 当前版本：`v2.10.1`
 - **v2.9.0 是团队成员（子会话）可读版**：手机端的团队面板此前只能看到成员与子会话的名字，点开读不到
   任何内容 —— 因为 `sessions.list` 会把 `origin === 'subagent'` 的行整批滤掉（桥自己的
   `dsh-0.2-bridge.ts:2327`，注释写明「暴露出来只会得到点开就崩的行」），子会话 id 打 `/messages`

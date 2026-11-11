@@ -17,7 +17,7 @@
 
 <p align="center">
   <a href="./README.md">中文</a> ·
-  <img alt="Version" src="https://img.shields.io/badge/version-v2.10.0-087f8c">
+  <img alt="Version" src="https://img.shields.io/badge/version-v2.10.1-087f8c">
   <img alt="DSH plugin" src="https://img.shields.io/badge/DeepSeek_Harness-plugin-1f2328">
   <img alt="Platforms" src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-586069">
   <img alt="License" src="https://img.shields.io/badge/license-AGPL--3.0-2da44e">
@@ -90,10 +90,10 @@ dsh plugin --profile web add dsh-remote-bridge
 dsh plugin --profile web add dsh-remote-bridge --registry https://registry.npmmirror.com
 
 # 2. tarball from the GitHub release
-dsh plugin --profile web add https://github.com/westanke/dsh-remote-bridge/releases/download/v2.7.1/dsh-remote-bridge-v2.7.1.tgz
+dsh plugin --profile web add https://github.com/westanke/dsh-remote-bridge/releases/download/v2.10.1/dsh-remote-bridge-v2.10.1.tgz
 
 # 3. tarball from the Gitee release (faster from mainland China)
-dsh plugin --profile web add https://gitee.com/westanke/dsh-remote-bridge/releases/download/v2.7.1/dsh-remote-bridge-v2.7.1.tgz
+dsh plugin --profile web add https://gitee.com/westanke/dsh-remote-bridge/releases/download/v2.10.1/dsh-remote-bridge-v2.10.1.tgz
 
 npx @deepseek-ai/dsh web
 ```
@@ -110,7 +110,7 @@ Restart DSH after installation, then open settings — The section is titled **�
 To install a downloaded release archive:
 
 ```sh
-dsh plugin --profile web add ./dsh-remote-bridge-v2.7.1.tgz
+dsh plugin --profile web add ./dsh-remote-bridge-v2.10.1.tgz
 ```
 
 ## First connection
@@ -368,11 +368,17 @@ pnpm check
 pnpm pack
 ```
 
-`pnpm check` covers type-checking, documentation consistency, and tests. It currently passes **76 test files / 698 cases**, plus **8 browser-layer cases** (Playwright measuring real computed styles, including the 375px narrow-viewport contract).
+`pnpm check` covers type-checking, documentation consistency, and tests. It currently passes **81 test files / 841 cases**, plus **9 browser-layer cases** (Playwright measuring real computed styles, including the 375px narrow-viewport contract).
 
 `npm pack` produces roughly a **0.64 MB** archive (v2.6.1 measured 669,434 bytes, SHA-256 `9bf0189b…2cd35`): 2.2.0 dropped the standalone page and its editor dependencies and turned source maps off, down from 1.72 MB; it has since grown slightly with projection passthrough, the permission BFF, and the five-dimension hardening.
 
 v2.5.0 was verified on DSH **0.2.1-rc.2** on real hardware: all 14/14 host services injected, the three jobs endpoints exercised, and the permission catalog returned the kernel's real three presets. The development baseline is upstream `dsh-v0.2.1-rc.2` (commit `687f282e8625c6b8d11ff58211a90524be2e4317`); see `engines.dsh` above for the supported range. CI covers Windows, Ubuntu, and macOS.
+
+**v2.10.1 verification status**: 81 test files / **841 cases** green; `typecheck`, `docs:check`, and
+the build all pass. This release fixes two defects: approvals now delegate on entry and race both
+ends (#13 — the desktop approval card no longer waits for the 10-minute timeout), and concurrent
+Cloudflare tunnel creates no longer delete each other's temporary deb (#11). **Not yet re-verified
+on real hardware.**
 
 **v2.7.1 verification status**: 76 test files / **701 cases** green; `typecheck`, `docs:check`, and the
 build all pass. This release touches only `agentFor` in `src/host/dsh-0.2-bridge.ts` plus its regression
@@ -390,7 +396,7 @@ inside the zero-change set, and 4 slots retained with 0 removed.
 
 ## Project
 
-- Version: `v2.10.0`
+- Version: `v2.10.1`
 - **v2.9.0 makes teammates (sub-sessions) readable**: the phone's team panel could list members and
   sub-sessions but could not open a single one, because `sessions.list` filters out every row with
   `origin === 'subagent'` (the bridge's own `dsh-0.2-bridge.ts:2327`, with a comment explaining that
