@@ -95,11 +95,19 @@ GET /api/v1/chat/schedules?sessionId={id}
     "enabled": true,
     "createdAt": 1717000000000,
     "lastRunAt": 1717084800000,
-    "nextRunAt": 1717171200000
+    "nextRunAt": 1717171200000,
+    "kind": "cron"
   } ] }
 ```
 
 `sessionId` 可选；缺省返回全部（App 的「定时任务」页需要跨会话看）。
+
+> **视图表达力**（对齐 `bff-schedule.ts` 文件头）：内核有 after / at / every / daily /
+> weekly / cron / rrule 七种计时。**P2-E（DSH 0.2.2）起全部回**：item 恒带
+> `kind`（七种之一）；daily/weekly 折算成等价五段 cron，其余 kind 回 `cron:null`
+> + 规则字段（`rrule` / `everySeconds` / `afterSeconds`）—— 折算成会重复的 cron
+> 是更坏的错，宁可让旧客户端按真值过滤 `cron` 后看到的集合不变。
+> `createdAt` 自 DSH 0.2.2 起回真实 epoch 毫秒（更早的内核记录面没有该字段 → `null`）。
 
 ### 2.2 新建
 
@@ -112,11 +120,17 @@ POST /api/v1/chat/schedules
 - `text` 长度 1..8000；`cron` 为标准五段 Vixie 表达式（与 App 内 UI 一致）；
   `timezone` 必须是 IANA 名，非法 → `400 BODY_INVALID`。
 - 会话不存在 → `404 NOT_FOUND`。
+- **P2-E 新形态**（additive）：`{ "text": "…", "timing": {…内核七种原样…},
+  "target"?: { "kind": "new_once" | "new", "create"?: { "cwd"?, "agentPreset"? } } }`。
+  `timing` 与 `cron`/`timezone` 互斥、`target` 与 `sessionId` 互斥（都 400，桥先拒）；
+  `target` 存在时不做会话可见性检查 —— 会话由内核在首次投递时创建，item 的
+  `sessionId` 为空串。`timing` 内部字段由内核校验，不合法 → `400 BODY_INVALID`
+  （`details.reason` 带内核 `ScheduleInputErrorCode`）。
 
 ### 2.3 改 / 删
 
 ```
-PATCH  /api/v1/chat/schedules/{id}   { "enabled"?: bool, "text"?: string, "cron"?: string, "timezone"?: string }
+PATCH  /api/v1/chat/schedules/{id}   { "enabled"?: bool, "text"?: string, "cron"?: string, "timezone"?: string, "timing"?: {…} }
 → 200 <item>
 
 DELETE /api/v1/chat/schedules/{id}
@@ -124,6 +138,15 @@ DELETE /api/v1/chat/schedules/{id}
 ```
 
 `PATCH` 只改传入的字段；显式 `"enabled": false` 是暂停，不是删除。
+`timing`（P2-E）整体替换计时原样透传，与 `cron`/`timezone` 互斥（400）。
+
+> **暂停与恢复**（DSH 0.2.2 起）：内核 `edit` 支持 `patch.active`，桥把 `enabled`
+> 双向映射过去 —— 暂停 `enabled:false`、恢复 `enabled:true` 都回 200 与最新 item
+> （恢复从下一个未来发生开始）。已经 `ended` 的任务恢复 → `409 CONFLICT`，
+> `details.reason = "SCHEDULE_ENDED"`。内核拒绝输入（`schedule/input-invalid`）→
+> `400 BODY_INVALID`，`details.reason` 带内核的结构化错误码；目标会话已归档
+> （`schedule/target-archived`）→ `409 CONFLICT`，`details.reason = "SCHEDULE_TARGET_ARCHIVED"`。
+> 更早的内核没有暂停操作，`enabled:false` 回 `400`（`details.reason = "ENABLED_UNSUPPORTED"`）。
 
 ---
 

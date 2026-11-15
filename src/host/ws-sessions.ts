@@ -12,7 +12,7 @@ import type { WorkspaceDatabase } from './database.ts'
 import type { DshChatAdapter } from './chat-adapter.ts'
 import { ApiError } from './errors.ts'
 import { matchAuthorizedRootResolved } from './root-resolver.ts'
-import type { ClientFrame } from './ws-protocol.ts'
+import type { ClientFrame, SessionWaitFrame } from './ws-protocol.ts'
 
 /** 单条连接的发送回调签名。 */
 export type SendFrame = (frame: { kind: string; data?: unknown }) => void
@@ -36,6 +36,8 @@ export class SessionHandler {
         return await this.handleSessionArchive(principal, frame)
       case 'session-rename':
         return await this.handleSessionRename(principal, frame)
+      case 'session-wait':
+        return await this.handleSessionWait(principal, frame as SessionWaitFrame)
       case 'fork':
         return await this.handleFork(principal, frame)
       case 'workspace-create':
@@ -131,6 +133,33 @@ export class SessionHandler {
       this.sendFrame({ kind: 'session-renamed', data: { sessionId, title } })
     } catch (error) {
       this.reportError(error, 'Failed to rename session.')
+    }
+    return true
+  }
+
+  // ───────────────────────── session-wait ─────────────────────────
+
+  /**
+   * DSH 0.2.2 `session/wait`（P2-C）：阻塞等待会话静止 / 待输入 / 超时。
+   * `timeoutMs` 缺省由适配层给 30 s（钳到 1..120_000）；回帧把内核结果原样
+   * 放进 `data.wait`——`reason`/`state`(cursor,active,running,queue,pendingInput)/
+   * `output`(records,truncated) 都不加工。
+   */
+  private async handleSessionWait(principal: Principal, frame: SessionWaitFrame): Promise<boolean> {
+    const sessionId = typeof frame.sessionId === 'string' ? frame.sessionId : undefined
+    if (sessionId === undefined) {
+      this.sendFrame({ kind: 'error', data: { code: 'MISSING_PARAMS', message: 'session-wait needs sessionId.' } })
+      return true
+    }
+    try {
+      const wait = await this.chat.sessionWait(principal, sessionId, {
+        timeoutMs: frame.timeoutMs,
+        afterSeq: frame.afterSeq,
+        maxMessages: frame.maxMessages,
+      })
+      this.sendFrame({ kind: 'session-waited', data: { sessionId, wait } })
+    } catch (error) {
+      this.reportError(error, 'Failed to wait for session.')
     }
     return true
   }

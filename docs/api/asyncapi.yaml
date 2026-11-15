@@ -1,7 +1,7 @@
 asyncapi: 3.0.0
 info:
   title: DeepSeek Harness Mobile Events
-  version: 2.10.1
+  version: 2.11.0
   description: |
     Live file and authorized DSH chat events. Reconnect clients must refresh
     REST state; unbounded replay is not provided.
@@ -244,7 +244,7 @@ components:
           id: { type: string }
           type:
             type: string
-            examples: [file.changed, file.trashed, chat.message.delta, chat.message.committed, chat.session.status, chat.session.snapshot, chat.deliverables.presented, chat.approval.requested, chat.approval.resolved, chat.turn.failed, connection.ready, connection.resyncRequired]
+            examples: [file.changed, file.trashed, chat.message.delta, chat.message.committed, chat.session.status, chat.session.snapshot, chat.deliverables.presented, chat.approval.requested, chat.approval.resolved, chat.turn.failed, chat.agent-preset.selected, chat.models.updated, connection.ready, connection.resyncRequired]
           time: { type: integer }
           data:
             oneOf:
@@ -525,6 +525,7 @@ components:
             - session-cancel
             - session-archive
             - session-rename
+            - session-wait
             - session-agent-preset
             - fork
             - workspace-create
@@ -672,6 +673,7 @@ components:
             - session-cancelled
             - session-archived
             - session-renamed
+            - session-waited
             - session-archives
             - session-title-changed
             - fork

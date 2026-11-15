@@ -53,7 +53,6 @@ interface Harness {
 async function harness(options: {
   chat?: Record<string, unknown>
   remote?: HostRemoteHandle
-  schedule?: { create: (sessionId: string, request: Record<string, unknown>) => Promise<unknown> }
 } = {}): Promise<Harness> {
   const base = await mkdtemp(path.join(os.tmpdir(), 'dsh-bff-rest-'))
   cleanup.dir(base)
@@ -74,7 +73,6 @@ async function harness(options: {
     remote: {} as never,
     maxUploadBytes: 1024,
     ...(options.remote === undefined ? {} : { hostRemote: options.remote }),
-    ...(options.schedule === undefined ? {} : { schedule: options.schedule }),
   })
   const server = createServer((req, res) => { void router.handle(req, res) })
   await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))
@@ -369,40 +367,55 @@ describe('REST BFF 分块上传', () => {
 })
 
 describe('REST BFF 定时任务', () => {
-  /** 一条内核 catalog 条目（cron 形态）。 */
+  /** 一条内核 0.2.2 catalog 条目（cron 形态；sessionId 在 target 里，记录面没有顶层字段）。 */
   function entry(overrides: Record<string, unknown> = {}): Record<string, unknown> {
     return {
       id: 'sch_1',
       kind: 'cron',
-      sessionId: 'S1',
       title: '喝水',
       prompt: '喝水',
       expression: '0 8 * * *',
       timeZone: 'Asia/Shanghai',
       scheduledAt: '2026-10-29T00:00:00.000Z',
       status: 'active',
+      target: { kind: 'session', sessionId: 'S1' },
+      involvedSessionIds: ['S1'],
+      createdAt: '2026-10-28T00:00:00.000Z',
+      updatedAt: '2026-10-28T09:00:00.000Z',
       ...overrides,
     }
   }
 
-  /** 一个假的内核 Remote：catalog / update / delete 都记账。 */
+  /** 一个假的内核 Remote：0.2.2 方法面（catalog 裸数组 / create / edit）。 */
   function remote(state: {
     entries: Record<string, unknown>[]
     seen?: { method: string; args: Record<string, unknown> }[]
-    update?: (request: Record<string, unknown>) => unknown
+    create?: (request: Record<string, unknown>) => unknown
+    edit?: (request: Record<string, unknown>) => unknown
   }): HostRemoteHandle {
     return {
       invoke: async (namespace: string, method: string, args?: Record<string, unknown>) => {
         expect(namespace).toBe('schedule')
         state.seen?.push({ method, args: args ?? {} })
-        if (method === 'catalog') return { items: state.entries }
-        if (method === 'update') {
-          const request = (args?.['request'] ?? {}) as Record<string, unknown>
-          if (state.update !== undefined) return state.update(request)
-          const record = request['record'] as Record<string, unknown> | undefined
-          return { id: request['id'], updated: true, record: { ...entry(), ...(record ?? {}), ...(request['prompt'] === undefined ? {} : { prompt: request['prompt'] }) } }
+        const request = (args?.['request'] ?? {}) as Record<string, unknown>
+        if (method === 'catalog') return state.entries
+        if (method === 'create') {
+          if (state.create !== undefined) return state.create(request)
+          const timing = (request['timing'] ?? {}) as Record<string, unknown>
+          const cron = (timing['cron'] ?? {}) as Record<string, unknown>
+          const rawExpression = cron['expression']
+          return entry({
+            prompt: request['prompt'],
+            title: request['title'],
+            // 内核会 canonicalize 回写（多空格折叠成单空格）。
+            expression: typeof rawExpression === 'string' ? rawExpression.trim().split(/\s+/).join(' ') : undefined,
+            timeZone: cron['time_zone'],
+          })
         }
-        if (method === 'delete') return { id: args?.['request'] ? (args['request'] as Record<string, unknown>)['id'] : undefined, deleted: true }
+        if (method === 'edit') {
+          if (state.edit !== undefined) return state.edit(request)
+          return { id: request['id'], deleted: true }
+        }
         throw new Error(`unexpected schedule method ${method}`)
       },
       stream: async () => { throw new Error('unused') },
@@ -411,10 +424,8 @@ describe('REST BFF 定时任务', () => {
 
   it('validates cron and timezone locally and never creates on bad input', async () => {
     const seen: { method: string; args: Record<string, unknown> }[] = []
-    const created: unknown[] = []
     const app = await harness({
       remote: remote({ entries: [], seen }),
-      schedule: { create: async (_sessionId, request) => { created.push(request); return entry() } },
     })
     try {
       const { writer, reader } = await tokens(app)
@@ -442,7 +453,6 @@ describe('REST BFF 定时任务', () => {
       expect(badZone.status).toBe(400)
 
       // 非法输入一次也没打到内核。
-      expect(created).toHaveLength(0)
       expect(seen).toHaveLength(0)
 
       const ok = await app.call({
@@ -454,32 +464,49 @@ describe('REST BFF 定时任务', () => {
       expect(ok.status).toBe(201)
       const item = await ok.json() as Record<string, unknown>
       expect(item['cron']).toBe('0 8 * * *')
-      // createdAt 内核没有 → 必须显式为 null，而不是省略或冒充 scheduledAt。
-      expect(item['createdAt']).toBeNull()
+      // 0.2.2 记录面带了 createdAt → 回真实 epoch，而不是 null。
+      expect(item['createdAt']).toBe(Date.parse('2026-10-28T00:00:00.000Z'))
       expect(item['nextRunAt']).toBe(Date.parse('2026-10-29T00:00:00.000Z'))
-      expect(created).toHaveLength(1)
+      const created = seen.at(-1)
+      expect(created?.method).toBe('create')
+      // 桥只校验不重排：expression 原样透传，canonicalize 是内核的事。
+      expect(created?.args['request']).toEqual({
+        title: '喝水',
+        prompt: '喝水',
+        timing: { kind: 'cron', cron: { expression: '0  8  * * *', time_zone: 'Asia/Shanghai' } },
+        target: { kind: 'session', sessionId: 'S1' },
+      })
     } finally {
       await app.close()
     }
   })
 
-  it('PATCHes only the fields that were sent', async () => {
+  it('PATCHes only the fields that were sent, and pauses/resumes via patch.active', async () => {
     const seen: { method: string; args: Record<string, unknown> }[] = []
-    let received: Record<string, unknown> | undefined
+    const entries = [entry()]
     const app = await harness({
       remote: remote({
-        entries: [entry()],
+        entries,
         seen,
-        update: request => {
-          received = request
-          return { id: 'sch_1', updated: true, record: entry({ expression: '30 9 * * *' }) }
+        edit: request => {
+          // 把改动写回目录（模拟内核），并推进 updatedAt —— 乐观并发要拿到新值。
+          const patch = (request['patch'] ?? {}) as Record<string, unknown>
+          const target = entries[0] as Record<string, unknown>
+          const timing = patch['timing'] as Record<string, unknown> | undefined
+          if (timing !== undefined) {
+            const cron = timing['cron'] as Record<string, unknown>
+            target['expression'] = cron['expression']
+            target['timeZone'] = cron['time_zone']
+          }
+          if (patch['active'] !== undefined) target['status'] = patch['active'] ? 'active' : 'paused'
+          target['updatedAt'] = '2026-10-28T10:00:00.000Z'
+          return { ...target }
         },
       }),
-      schedule: { create: async () => entry() },
     })
     try {
       const { writer } = await tokens(app)
-      // 只改 cron：prompt/title 不能出现在 update 请求里。
+      // 只改 cron：patch 里不能出现 prompt/title；expectedUpdatedAt 是目录里的旧值。
       const patched = await app.call({
         method: 'PATCH',
         path: '/chat/schedules/sch_1',
@@ -488,46 +515,85 @@ describe('REST BFF 定时任务', () => {
       })
       expect(patched.status).toBe(200)
       expect((await patched.json() as Record<string, unknown>)['cron']).toBe('30 9 * * *')
-      expect(received?.['prompt']).toBeUndefined()
-      expect(received?.['title']).toBeUndefined()
-      expect(received?.['change']).toEqual({
+      const first = seen.at(-1)
+      expect(first?.method).toBe('edit')
+      const firstRequest = first?.args['request'] as Record<string, unknown>
+      const firstPatch = firstRequest['patch'] as Record<string, unknown>
+      expect(firstRequest['action']).toBe('update')
+      expect(firstPatch['prompt']).toBeUndefined()
+      expect(firstPatch['title']).toBeUndefined()
+      expect(firstPatch['timing']).toEqual({
         kind: 'cron',
         cron: { expression: '30 9 * * *', time_zone: 'Asia/Shanghai' },
       })
-      // expected 必须是原始快照（内核乐观并发用）。
-      expect((received?.['expected'] as Record<string, unknown>)['expression']).toBe('0 8 * * *')
+      expect(firstRequest['expectedUpdatedAt']).toBe('2026-10-28T09:00:00.000Z')
 
-      // 暂停：内核没有该操作 → 400 + 明确的 reason，而不是假装成功。
+      // 暂停（0.2.2 新增）：active → patch.active:false。
       const paused = await app.call({
         method: 'PATCH',
         path: '/chat/schedules/sch_1',
         token: writer,
         body: { enabled: false },
       })
-      expect(paused.status).toBe(400)
-      expect(errorOf(await paused.json()).details['reason']).toBe('ENABLED_UNSUPPORTED')
+      expect(paused.status).toBe(200)
+      expect((await paused.json() as Record<string, unknown>)['enabled']).toBe(false)
+      const pauseRequest = seen.at(-1)?.args['request'] as Record<string, unknown>
+      expect((pauseRequest['patch'] as Record<string, unknown>)['active']).toBe(false)
 
-      // 已结束的任务不能「续上」。
+      // 恢复：paused → patch.active:true（expectedUpdatedAt 取的是上一次推进后的值）。
+      const resumed = await app.call({
+        method: 'PATCH',
+        path: '/chat/schedules/sch_1',
+        token: writer,
+        body: { enabled: true },
+      })
+      expect(resumed.status).toBe(200)
+      expect((await resumed.json() as Record<string, unknown>)['enabled']).toBe(true)
+      const resumeRequest = seen.at(-1)?.args['request'] as Record<string, unknown>
+      expect((resumeRequest['patch'] as Record<string, unknown>)['active']).toBe(true)
+      expect(resumeRequest['expectedUpdatedAt']).toBe('2026-10-28T10:00:00.000Z')
+
+      // 状态没变的 enabled 是空操作：不打内核，直接回当前 item。
+      const noop = await app.call({
+        method: 'PATCH',
+        path: '/chat/schedules/sch_1',
+        token: writer,
+        body: { enabled: true },
+      })
+      expect(noop.status).toBe(200)
+      expect(seen.at(-1)?.method).toBe('catalog')
+    } finally {
+      await app.close()
+    }
+  })
+
+  it('rejects resuming an ended schedule with 409 SCHEDULE_ENDED', async () => {
+    const app = await harness({
+      remote: remote({ entries: [entry({ status: 'ended' })] }),
+    })
+    try {
+      const { writer } = await tokens(app)
       const ended = await app.call({
         method: 'PATCH',
         path: '/chat/schedules/sch_1',
         token: writer,
         body: { enabled: true },
       })
-      expect(ended.status).toBe(200) // 当前状态 active，enabled:true 是空操作
+      expect(ended.status).toBe(409)
+      expect(errorOf(await ended.json()).details['reason']).toBe('SCHEDULE_ENDED')
     } finally {
       await app.close()
     }
   })
 
   it('answers 404 for an unknown session on create and an unknown id on delete, and 204 on delete', async () => {
+    const seen: { method: string; args: Record<string, unknown> }[] = []
     const app = await harness({
       chat: {
         isSessionAuthorized: async (_principal: unknown, sessionId: string) => sessionId === 'S1',
         uploadAttachment: async () => ({ receiptId: 'att_1', name: null }),
       },
-      remote: remote({ entries: [entry()] }),
-      schedule: { create: async () => entry() },
+      remote: remote({ entries: [entry()], seen }),
     })
     try {
       const { writer } = await tokens(app)
@@ -544,6 +610,9 @@ describe('REST BFF 定时任务', () => {
 
       const removed = await app.call({ method: 'DELETE', path: '/chat/schedules/sch_1', token: writer })
       expect(removed.status).toBe(204)
+      const deleteRequest = seen.at(-1)?.args['request'] as Record<string, unknown>
+      expect(deleteRequest['action']).toBe('delete')
+      expect(deleteRequest['expectedUpdatedAt']).toBe('2026-10-28T09:00:00.000Z')
 
       const unknownDelete = await app.call({ method: 'DELETE', path: '/chat/schedules/sch_nope', token: writer })
       expect(unknownDelete.status).toBe(404)
@@ -552,25 +621,114 @@ describe('REST BFF 定时任务', () => {
     }
   })
 
-  it('hides one-shot and interval reminders that a cron view cannot represent', async () => {
+  it('lists every timing kind since P2-E: non-cron entries surface kind + rule fields instead of hiding', async () => {
     const app = await harness({
       remote: remote({
         entries: [
           entry(),
           entry({ id: 'sch_at', kind: 'at', at: '2026-10-30T00:00:00.000Z' }),
           entry({ id: 'sch_every', kind: 'every', everySeconds: 600 }),
+          entry({ id: 'sch_rrule', kind: 'rrule', rrule: 'FREQ=DAILY;COUNT=5' }),
           entry({ id: 'sch_daily', kind: 'daily', time: '08:30', timeZone: 'Asia/Shanghai' }),
         ],
       }),
-      schedule: { create: async () => entry() },
     })
     try {
       const { reader } = await tokens(app)
       const listed = await app.call({ method: 'GET', path: '/chat/schedules', token: reader })
       expect(listed.status).toBe(200)
       const items = (await listed.json() as { items: Record<string, unknown>[] }).items
-      expect(items.map(item => item['id'])).toEqual(['sch_1', 'sch_daily'])
-      expect(items[1]?.['cron']).toBe('30 8 * * *')
+      // 全部回显（不再隐藏）；cron/daily 仍给折算 cron，其余 cron:null + 规则字段。
+      expect(items.map(item => item['id'])).toEqual(['sch_1', 'sch_at', 'sch_every', 'sch_rrule', 'sch_daily'])
+      expect(items[1]).toMatchObject({ kind: 'at', cron: null })
+      expect(items[2]).toMatchObject({ kind: 'every', cron: null, everySeconds: 600 })
+      expect(items[3]).toMatchObject({ kind: 'rrule', cron: null, rrule: 'FREQ=DAILY;COUNT=5' })
+      expect(items[4]).toMatchObject({ kind: 'daily', cron: '30 8 * * *' })
+    } finally {
+      await app.close()
+    }
+  })
+
+  it('passes timing/target through on create (new_once needs no session visibility) and rejects conflicts', async () => {
+    const seen: { method: string; args: Record<string, unknown> }[] = []
+    const app = await harness({
+      remote: remote({ entries: [entry()], seen }),
+    })
+    try {
+      const { writer } = await tokens(app)
+
+      // timing 与 cron/timezone 互斥、target 与 sessionId 互斥（桥侧先拒，不打内核）。
+      const mixed = await app.call({
+        method: 'POST', path: '/chat/schedules', token: writer,
+        body: { sessionId: 'S1', text: 'x', cron: '0 8 * * *', timing: { kind: 'at', at: '2026-11-20T00:00:00.000Z' } },
+      })
+      expect(mixed.status).toBe(400)
+      const both = await app.call({
+        method: 'POST', path: '/chat/schedules', token: writer,
+        body: { sessionId: 'S1', target: { kind: 'new_once' }, text: 'x', cron: '0 8 * * *' },
+      })
+      expect(both.status).toBe(400)
+
+      // new_once：没有 sessionId，桥不做 sessionVisible，timing 原样透传。
+      const created = await app.call({
+        method: 'POST', path: '/chat/schedules', token: writer,
+        body: {
+          target: { kind: 'new_once', create: { agentPreset: 'pair' } },
+          text: '每天目标',
+          timing: { kind: 'rrule', rrule: 'FREQ=DAILY;COUNT=5' },
+        },
+      })
+      expect(created.status).toBe(201)
+      const request = seen.at(-1)?.args['request'] as Record<string, unknown>
+      expect(request['timing']).toEqual({ kind: 'rrule', rrule: 'FREQ=DAILY;COUNT=5' })
+      expect(request['target']).toEqual({ kind: 'new_once', create: { agentPreset: 'pair' } })
+      expect(request['title']).toBe('每天目标')
+    } finally {
+      await app.close()
+    }
+  })
+
+  it('passes a whole timing change through on PATCH; timing and cron/timezone are mutually exclusive', async () => {
+    const seen: { method: string; args: Record<string, unknown> }[] = []
+    const app = await harness({
+      remote: remote({
+        entries: [entry()],
+        seen,
+        // 假 edit：只处理 update，把 every 形态回写成内核样子。
+        edit: (request) => {
+          const patch = request['patch'] as Record<string, unknown> | undefined
+          const timing = patch?.['timing'] as Record<string, unknown> | undefined
+          return timing?.['kind'] === 'every'
+            ? entry({ kind: 'every', everySeconds: 600 })
+            : entry()
+        },
+      }),
+    })
+    try {
+      const { writer } = await tokens(app)
+
+      const patched = await app.call({
+        method: 'PATCH', path: '/chat/schedules/sch_1', token: writer,
+        body: { timing: { kind: 'every', every_seconds: 600 } },
+      })
+      expect(patched.status).toBe(200)
+      const view = await patched.json() as Record<string, unknown>
+      expect(view['kind']).toBe('every')
+      expect(view['everySeconds']).toBe(600)
+      const request = seen.at(-1)?.args['request'] as Record<string, unknown>
+      expect((request['patch'] as Record<string, unknown>)['timing'])
+        .toEqual({ kind: 'every', every_seconds: 600 })
+
+      const mixed = await app.call({
+        method: 'PATCH', path: '/chat/schedules/sch_1', token: writer,
+        body: { timing: { kind: 'at', at: '2026-11-20T00:00:00.000Z' }, cron: '0 9 * * *' },
+      })
+      expect(mixed.status).toBe(400)
+      const unknownKind = await app.call({
+        method: 'PATCH', path: '/chat/schedules/sch_1', token: writer,
+        body: { timing: { kind: 'monthly' } },
+      })
+      expect(unknownKind.status).toBe(400)
     } finally {
       await app.close()
     }

@@ -46,11 +46,12 @@ describe('capability filtering at connection time', () => {
   })
 
   /**
-   * 新三位的运行时过滤：`schedule` 与宿主 `ctx.schedule` 同生死（没有它，
-   * 列表与新建都只会 503）；`speech` 只在网关整体缺失时剔除（内核没装语音包时
-   * 目录仍回 200 `available:false`，客户端要能区分「支持但没配」与「不支持」）。
+   * 新三位的运行时过滤：`schedule` 与内核 typertGateway Remote 同生死（没有它，
+   * 列表与新建都只会 503；DSH 0.2.2 起 create/edit 也在远程面上）；`speech` 只在
+   * 网关整体缺失时剔除（内核没装语音包时目录仍回 200 `available:false`，客户端要能
+   * 区分「支持但没配」与「不支持」）。
    */
-  it('drops only the schedule capability when the host schedule service is absent', () => {
+  it('drops only the schedule capability when the kernel schedule remote is absent', () => {
     const caps = availableCapabilities({ schedule: false })
     expect(caps).not.toContain('chat-schedules-v1')
     // 差集精确等于 1：不能顺手删掉语音或分块上传。

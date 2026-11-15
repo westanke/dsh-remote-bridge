@@ -22,7 +22,6 @@ import { ApiRouter } from './host/router.ts'
 import { attachEmbeddedRoutes, RemoteApiServer } from './host/server.ts'
 import { DshSettingsAdapter } from './host/settings-adapter.ts'
 import { createHostRemoteServices } from './host/ws-host-services.ts'
-import type { ScheduleCreatePort } from './host/bff-rest.ts'
 import { PLUGIN_VERSION } from './shared/version.ts'
 
 /**
@@ -230,17 +229,11 @@ export async function apply(ctx: HostContext, config: Config = {}): Promise<void
   // 同样是可选服务：reflect.get 取不到就不启用，WS 帧回结构化 unavailable 引导 REST。
   // 提到 RemoteApiServer 之前构造，是因为能力位要在构造时就能如实声明（见下）。
   const hostRemote = createHostRemoteServices(reflect)
-  // 定时任务的**新建**没有远程方法：`dsh-schedule` 只注册了
-  // catalog / changed / delete / history / list / update（见 `bff-schedule.ts` 文件头），
-  // `create` 只在宿主 cordis 服务 `ctx.schedule` 上。同样是可选服务 ——
-  // 取不到时 REST 的 POST 回 503 `schedule/create-unavailable`，而不是假的 201。
-  const schedule = reflect?.get === undefined
-    ? undefined
-    : reflect.get('schedule', false) as ScheduleCreatePort | undefined
   const capabilities = {
     jobs: jobControllerAvailable,
-    // `chat-schedules-v1` 与宿主 `ctx.schedule` 同生死：没有它，列表与新建都只会回 503。
-    schedule: schedule !== undefined,
+    // `chat-schedules-v1` 随 typertGateway Remote 同生死（DSH 0.2.2 起 create/edit
+    // 都在远程面上，宿主 ctx.schedule 端口不再需要）。
+    schedule: hostRemote.services !== undefined,
     // `speech-transcription-v1` 只在网关整体缺失时剔除 —— 内核没装语音包时
     // `GET …/catalog` 仍回 200 `{available:false,reason}`，客户端要能区分
     // 「支持但本机没配」与「不支持」。理由写在 `capabilities.ts`。
@@ -280,7 +273,6 @@ export async function apply(ctx: HostContext, config: Config = {}): Promise<void
     maxUploadBytes,
     imageFallbackDir: imageHandoffDir,
     ...(hostRemote.services === undefined ? {} : { hostRemote: hostRemote.services }),
-    ...(schedule === undefined ? {} : { schedule }),
     ...(hostServiceReport === undefined ? {} : { hostServiceReport }),
     ...(jobControllerAvailable && reflect?.get
       ? { jobs: new JobAdapter({ jobController: reflect.get('jobController', false) as never }) }

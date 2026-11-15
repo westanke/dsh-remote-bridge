@@ -371,6 +371,17 @@ describe('DSH chat choices', () => {
       data: { sessionId: 'session-1', agentPreset: 'minimal' },
     })
     expect(normalizeDshEvent({
+      rpcId: 'models-1',
+      payload: {
+        type: 'host/remote-event',
+        event: 'llm/models-updated',
+        args: ['deepseek'],
+      },
+    }, 'host', 102)).toMatchObject({
+      type: 'chat.models.updated',
+      data: { provider: 'deepseek' },
+    })
+    expect(normalizeDshEvent({
       rpcId: 'private-rpc-id',
       payload: {
         type: 'approval/requested',

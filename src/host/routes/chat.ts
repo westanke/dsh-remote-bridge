@@ -1,6 +1,7 @@
 // 会话/工作区/预设/命令/调度/语音路由块 —— 从 router.ts 纯搬移（issue #3）。
 import path from 'node:path'
 import { handoffLocaleOf } from '../dsh-0.2-bridge.ts'
+import { BUILTIN_COMMAND_TOKENS } from '../chat-adapter.ts'
 import { ApiError } from '../errors.ts'
 import { readJson, sendJson, readPromptParts, readUserQuestionAnswer, optionalInteger, commandName, decodePathSegment, audit, readIdempotent, saveIdempotent, matchJobRoute, type ApiRouteCtx } from './shared.ts'
 
@@ -320,7 +321,11 @@ export async function sessionActions(ctx: ApiRouteCtx): Promise<boolean> {
     const sessionId = decodePathSegment(commandsRoute[1] as string)
     if (method === 'GET') {
       options.auth.requireScope(principal, 'chat.read')
-      sendJson(res, 200, { items: await options.chat.listCommands(principal, sessionId) })
+      sendJson(res, 200, {
+        items: await options.chat.listCommands(principal, sessionId),
+        // DSH 0.2.2 first-party command spellings (en/zh), additive (P2-B).
+        builtinTokens: BUILTIN_COMMAND_TOKENS,
+      })
       return true
     }
     if (method === 'POST') {
@@ -439,6 +444,20 @@ export async function sessionActions(ctx: ApiRouteCtx): Promise<boolean> {
     }
   }
 
+
+  const sessionWaitRoute = pathname.match(/^\/api\/v1\/chat\/sessions\/([^/]+)\/wait$/)
+
+  if (sessionWaitRoute !== null && method === 'POST') {
+    // DSH 0.2.2 `session/wait`（P2-C）：长轮询等待会话静止 / 待输入 / 超时。
+    // 读侧语义（只观察，不改变会话状态），所以挂在 chat.read 下；HTTP 层不设
+    // 服务器级超时兜底——适配层已把 timeoutMs 钳到 120 s 且 RPC 有 +5 s 余量。
+    const sessionId = decodePathSegment(sessionWaitRoute[1] as string)
+    options.auth.requireScope(principal, 'chat.read')
+    const body = await readJson(req, 4_096) as Record<string, unknown>
+    const wait = await options.chat.sessionWait(principal, sessionId, body)
+    sendJson(res, 200, { wait })
+    return true
+  }
 
   const sessionAgentPresetRoute = pathname.match(/^\/api\/v1\/chat\/sessions\/([^/]+)\/agent-preset$/)
 

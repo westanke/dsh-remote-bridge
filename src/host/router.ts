@@ -3,7 +3,7 @@ import { type IncomingMessage, type ServerResponse } from 'node:http'
 import { type DeviceScope } from '../shared/contracts.ts'
 import { PLUGIN_VERSION } from '../shared/version.ts'
 import { type AuthService, requestAddress } from './auth.ts'
-import { createBffRest, type BffRest, type ScheduleCreatePort } from './bff-rest.ts'
+import { createBffRest, type BffRest } from './bff-rest.ts'
 import { type DshChatAdapter } from './chat-adapter.ts'
 import { type CloudflaredTunnelManager } from './cloudflared.ts'
 import { type WorkspaceDatabase } from './database.ts'
@@ -88,11 +88,6 @@ export interface RouterOptions {
    * `speech/unavailable`、`schedule/unavailable` 是**同一个**判据。
    */
   hostRemote?: HostRemoteHandle
-  /**
-   * 宿主 `ctx.schedule` 服务：只有它有 `create`（远程面没注册，见
-   * `bff-schedule.ts` 文件头）。可选，缺席时 `POST /chat/schedules` 回 503。
-   */
-  schedule?: ScheduleCreatePort
 }
 
 /**
@@ -147,7 +142,6 @@ export class ApiRouter {
         isSessionAuthorized: (principal, sessionId) => options.chat.isSessionAuthorized(principal, sessionId),
       },
       hostRemote: options.hostRemote,
-      schedule: options.schedule,
       io: { readJson, readBytes, sendJson },
     })
   }

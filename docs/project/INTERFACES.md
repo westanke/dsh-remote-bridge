@@ -99,7 +99,7 @@
 | POST | `/api/v1/trash/{trashId}/restore` | `scope:files.delete` | 恢复 | `router.ts` dispatch restore 分支 |
 | GET | `/api/v1/image-handoff?sessionId=&name=` | `scope:files.read` | 取交接图片字节（`name` 为裸文件名，哈希+扩展白名单） | `router.ts` dispatch image-handoff 分支 |
 | GET | `/api/v1/attachments/{attachmentId}?sessionId=` | `scope:files.read` | 取会话附件字节。attachmentId 通常是 `sha256:<hex>`，冒号必须 percent-encode（`sha256%3A…`） | `router.ts` dispatch attachment 分支 |
-| POST | `/api/v1/chat/sessions/{sessionId}/attachments` | `scope:chat.write` | 上传附件：body `{data: base64, name?}`（≤24 MiB），回 `{receiptId,name}` | `router.ts` dispatch attachments 分支 |
+| POST | `/api/v1/chat/sessions/{sessionId}/attachments` | `scope:chat.write` | 上传附件：body `{data: base64, name?}`（≤24 MiB），回 `{receiptId,name, attachment?}`（0.2.2 起 `attachment` 在内核回出 `file` 元数据时透出，P2-D） | `router.ts` dispatch attachments 分支 |
 | GET | `/api/v1/chat/workspaces` | `scope:chat.read` | 工作区列表（按设备可见范围） | `router.ts` dispatch workspaces 分支 |
 | POST | `/api/v1/chat/workspaces` | `scope:chat.write` | 新建工作区 `{rootId, path}` | 同上 |
 | PATCH | `/api/v1/chat/workspaces/{workspaceId}` | `scope:chat.write` | 改名 `{title}` | `router.ts` workspaceRoute 块 |
@@ -111,6 +111,7 @@
 | PATCH | `/api/v1/chat/sessions/{sessionId}` | `scope:chat.write` | 改名 `{title}` | `router.ts` sessionRoute 块 |
 | POST | `/api/v1/chat/sessions/{sessionId}/fork` | `scope:chat.write` | 从 `atSeq` 分叉 | `router.ts` fork 分支 |
 | POST | `/api/v1/chat/sessions/{sessionId}/archive` | `scope:chat.write` | 归档 | `router.ts` archive 分支 |
+| POST | `/api/v1/chat/sessions/{sessionId}/wait` | `scope:chat.read` | 长轮询会话状态（0.2.2 `session/wait`，P2-C）：`{timeoutMs?, afterSeq?, maxMessages?}` → `{wait:{reason,state,output}}`；timeoutMs 钳 1–120000（缺省 30000）、maxMessages 1–200；内核无该方法 503 | `router.ts` chatSessionWaitRoute 块 → `chat-adapter.ts` |
 | GET | `/api/v1/chat/sessions/{sessionId}/jobs` | `scope:chat.read` | 后台任务 roster | `matchJobRoute` 消费处 |
 | GET | `/api/v1/chat/sessions/{sessionId}/jobs/{jobId}/output` | `scope:chat.read` | 任务输出（增量） | 同上 |
 | POST | `/api/v1/chat/sessions/{sessionId}/jobs/{jobId}/kill` | `scope:chat.write` | 人类取消 | 同上 |
@@ -142,9 +143,9 @@
 | PUT | `/api/v1/chat/sessions/{sessionId}/attachments/uploads/{uploadId}/chunks/{index}` | `scope:chat.write` | 写一块（`application/octet-stream`，≤`chunkSize`；重复 PUT 幂等；长度不符 400、超块 413、index 越界 400） | 同上 |
 | POST | `/api/v1/chat/sessions/{sessionId}/attachments/uploads/{uploadId}/complete` | `scope:chat.write` | 合并落库成附件 → 201（缺块 409 + `details.missing`；成功后票据作废） | 同上 |
 | DELETE | `/api/v1/chat/sessions/{sessionId}/attachments/uploads/{uploadId}` | `scope:chat.write` | 丢弃票据与 spool → 204 | 同上 |
-| GET | `/api/v1/chat/schedules?sessionId=` | `scope:chat.read` | 定时任务列表（cron 视图，`createdAt` 恒 null；内核无 schedule 服务 → 503） | `router.ts` bff schedules 分支 → `bff-rest.ts` |
-| POST | `/api/v1/chat/schedules` | `scope:chat.write` | 新建 cron 定时任务（五段 Vixie + IANA 时区；走宿主 `ctx.schedule.create`，取不到 503） | 同上 |
-| PATCH | `/api/v1/chat/schedules/{id}` | `scope:chat.write` | 只改传入字段；`enabled:false` 不支持（400 `ENABLED_UNSUPPORTED`） | 同上 |
+| GET | `/api/v1/chat/schedules?sessionId=` | `scope:chat.read` | 定时任务列表（P2-E 起全 kind 回：`kind` 必带，daily/weekly 折算 cron，其余 `cron:null`+规则字段；0.2.2 起 `createdAt` 为真实 epoch；内核无 schedule Remote → 503） | `router.ts` bff schedules 分支 → `bff-rest.ts` |
+| POST | `/api/v1/chat/schedules` | `scope:chat.write` | 新建：经典 `{sessionId,text,cron,timezone}` 或 P2-E 新形态 `{text,timing,target?}`（timing 七种原样，target new_once/new 内核建会话；两组互斥 400；0.2.2 起走远程 `schedule/create`，网关缺席 503） | 同上 |
+| PATCH | `/api/v1/chat/schedules/{id}` | `scope:chat.write` | 只改传入字段（`enabled`/`text`/`cron`/`timezone`/`timing`）；`enabled:false` 暂停 / `true` 恢复（0.2.2 起 `patch.active`）；`timing` 与 `cron`/`timezone` 互斥 400；ended 恢复 409 `SCHEDULE_ENDED` | 同上 |
 | DELETE | `/api/v1/chat/schedules/{id}` | `scope:chat.write` | 删除 → 204（未知 id 404） | 同上 |
 | GET | `/api/v1/chat/speech/catalog` | `scope:chat.read` | 官方语音目录；内核无 speech 服务 → **200** `{available:false,providers:[],reason}`（不是 404） | `router.ts` bff speech 分支 → `bff-rest.ts` |
 | POST | `/api/v1/chat/speech/transcriptions` | `scope:chat.write` | 转写 `{audio:base64,language?,providerId?}`：解码 ≤4 MiB（超限 413）、180 s 超时、空识别 200 `{text:''}` | 同上 |
@@ -242,8 +243,8 @@
 - 端点：`/ws/mobile`（双向请求/响应，挂主 HTTP server upgrade），与 `/api/v1/events` 并存；端口默认 `3090`。
 - 子协议（`Sec-WebSocket-Protocol`）：`dsh-mobile-v1, dsh-pair.<code>`（首次配对，随请求带 `X-DSH-Device-ID`；成功后推 `paired` 再推 `hello`）；`dsh-mobile-v1, dsh-auth.<token>` 或 HTTP 头 `Authorization: Bearer <token>`（后续连接）。不允许 URL query 带 token。
 - 连接即推 `hello`：`{kind:'hello', protocol:3, capabilities, authenticated, device, port, clients}`；能力位与 §3.4 同源（`src/host/capabilities.ts`）。
-- 客户端帧 `{type:…}`：`ping` / `subscribe` / `unsubscribe` / `message` / `workspaces` / `sessions` / `history` / `attachment` / `file-download-open/read/cancel` / `search` / `host` / `default-model` / `save-default-model` / `models` / `providers` / `commands` / `command-execute` / `command-options` / `command-select` / `select-model` / `permission-options` / `permission` / `context-usage` / `session-stats` / `tasks` / `goal` / `goal-edit` / `goal-pause` / `goal-resume` / `goal-clear` / `plugin-catalog/inspect/install/settings` / `agent-presets` / `defaults` / `set-default` / `question-answer` / `question-cancel` / `approval-response`。
-- 服务端帧 `{kind:…}`：`hello` / `pong` / `subscribed` / `sent` / `workspaces` / `sessions` / `history` / `search` / `commands` / `command-options` / `command-executed` / `command-selected` / `attachment` / `file-list` / `file-download-opened/chunk/cancelled` / `session-cancelled` / `queue-item-updated` / `session-queues` / `session-queue` / `session-archived` / `session-renamed` / `session-archives` / `session-title-changed` / `error` / `event` / `tasks` / `goal` / `goal-edit` / `goal-pause` / `goal-resume` / `goal-clear` / `tasks-updated` / `goal-updated` / `question-requested/response/resolved` / `approval-requested/response/resolved`。
+- 客户端帧 `{type:…}`：`ping` / `subscribe` / `unsubscribe` / `message` / `workspaces` / `sessions` / `history` / `attachment` / `file-download-open/read/cancel` / `search` / `host` / `default-model` / `save-default-model` / `models` / `providers` / `commands` / `command-execute` / `command-options` / `command-select` / `select-model` / `permission-options` / `permission` / `context-usage` / `session-stats` / `tasks` / `goal` / `goal-edit` / `goal-pause` / `goal-resume` / `goal-clear` / `plugin-catalog/inspect/install/settings` / `agent-presets` / `defaults` / `set-default` / `question-answer` / `question-cancel` / `approval-response` / `session-wait`。
+- 服务端帧 `{kind:…}`：`hello` / `pong` / `subscribed` / `sent` / `workspaces` / `sessions` / `history` / `search` / `commands` / `command-options` / `command-executed` / `command-selected` / `attachment` / `file-list` / `file-download-opened/chunk/cancelled` / `session-cancelled` / `queue-item-updated` / `session-queues` / `session-queue` / `session-archived` / `session-renamed` / `session-waited` / `session-archives` / `session-title-changed` / `error` / `event` / `tasks` / `goal` / `goal-edit` / `goal-pause` / `goal-resume` / `goal-clear` / `tasks-updated` / `goal-updated` / `question-requested/response/resolved` / `approval-requested/response/resolved`。
 - `message` 帧：`sessionId` 可选（省略自动建会话）、`mode:'queue'|'steer'`、`content`（PromptContentPart[]，图片 Base64 无 `data:` 前缀）、`clientTimeZone`、`workspaceId`/`cwd`。
 - `history` 帧：`beforeSeq`/`maxMessages`/`maxBytes`（默认 4 MiB）、`view:'conversation'`；响应带 `hasMore`+`nextBeforeSeq`。
 - HITL：`question-answer`/`approval-response` 双向；server→client `question-requested`/`approval-requested`（`outcome: 'allowed-once'|'rejected'`，**不支持始终允许**）；重放待处理项 `replayed=true`，客户端按 `approvalId`/`callId` 去重。

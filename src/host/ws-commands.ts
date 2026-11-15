@@ -10,6 +10,7 @@
 import { Buffer } from 'node:buffer'
 import type { Principal } from '../shared/contracts.ts'
 import type { DshChatAdapter } from './chat-adapter.ts'
+import { BUILTIN_COMMAND_TOKENS } from './chat-adapter.ts'
 import { ApiError } from './errors.ts'
 import {
   type ClientFrame,
@@ -66,7 +67,16 @@ export class CommandsHandler {
         kind: 'commands',
         data: {
           sessionId: frame.sessionId,
-          commands: descriptors.map(d => ({ name: d.name, description: d.description, ...(d.input === undefined ? {} : { input: d.input }) })),
+          commands: descriptors.map(d => ({
+            name: d.name,
+            description: d.description,
+            ...(d.input === undefined ? {} : { input: d.input }),
+            ...(d.definitionId === undefined ? {} : { definitionId: d.definitionId }),
+            ...(d.builtin === undefined ? {} : { builtin: d.builtin }),
+          })),
+          // DSH 0.2.2 first-party command spellings (en/zh) for panel grouping
+          // and localized slash suggestions (P2-B).
+          builtinTokens: BUILTIN_COMMAND_TOKENS,
         },
       })
       return true

@@ -153,7 +153,7 @@ curl "http://192.168.1.20:3090/api/v1/roots/resolve?path=%2Fmedia%2Fdata%2Fproje
 
 所以这条端点**容错读取**：服务不可用时返回**内核默认档位**（`workspace-write` / `danger-full-access`，取值依据是内核 `Config` 的 `.default({...})`），客户端菜单因此仍可用；且**服务缺席不会让端点报错**（一个可选能力缺席不该毁掉整个权限入口）。**代价**：真部署若自定义过 `presets`，这份降级清单就不全 —— 它只是兜底，权威来源永远是 `permissionPresets.catalog()`。`read-only` 虽然合法（在 `SANDBOX_MODES` 里），但内核**没有为它配 preset**，而 `/permission <preset>` 切的是 preset 名，故**不**放进降级清单（放进去等于给客户端一个点下去必然失败的选项）。
 
-`GET /chat/sessions/{sessionId}/commands` 列出 DSH host 为当前会话实际注册的斜杠命令、说明和可选参数提示；`POST` 同一路径以 `{ "line": "/permission workspace-write" }` 执行命令。执行要求 `chat.write` 及对应 session/root 授权，命令必须存在于当前列表中，并直接进入 DSH command registry，不会退化为普通模型消息。审计仅记录命令名，不记录可能敏感的参数。
+`GET /chat/sessions/{sessionId}/commands` 列出 DSH host 为当前会话实际注册的斜杠命令、说明和可选参数提示；`POST` 同一路径以 `{ "line": "/permission workspace-write" }` 执行命令。执行要求 `chat.write` 及对应 session/root 授权，命令必须存在于当前列表中，并直接进入 DSH command registry，不会退化为普通模型消息。审计仅记录命令名，不记录可能敏感的参数。响应自 P2-B（0.2.2）起另带 `builtinTokens`（一方命令 en/zh 词条，goal/plan/feedback/compact/permission/export），WS `commands` 帧同字段，条目另带 `definitionId`/`builtin` 供面板分组。
 
 会话历史响应的 `projections.values.todos` 与 `projections.values.permissions` 分别提供 DSH 当前 TODO 列表和权限档位**当前值**。移动端据此展示任务进度，并使用公开命令接口切换 `read-only`、`workspace-write` 或 `danger-full-access`；完整访问仍应由客户端二次确认。
 
@@ -171,6 +171,8 @@ curl "http://192.168.1.20:3090/api/v1/roots/resolve?path=%2Fmedia%2Fdata%2Fproje
 `PATCH /chat/workspaces/{workspaceId}` 重命名可见工作区，`DELETE` 只移除 DSH 工作区登记，不删除目录、文件或会话日志。两者都要求 `chat.write`，并在调用宿主前重新验证工作区仍位于设备授权根内。
 
 `PATCH /chat/sessions/{sessionId}` 重命名会话；`POST .../fork` 在 DSH 完成的事件边界分叉并继承历史、工作目录和配置；`POST .../archive` 把会话加入 DSH 归档集合。归档会话从默认 `GET /chat/sessions` 结果中隐藏，但日志保留。所有操作同时执行 `chat.write` 与 session/root 授权检查。
+
+`POST /chat/sessions/{sessionId}/wait` 长轮询会话状态（0.2.2 `session/wait`，P2-C，需 `chat.read`）：`{timeoutMs?, afterSeq?, maxMessages?}`，阻塞直到会话静止（`reason:'idle'`）、有待输入（`'input-required'`）或超时（`'timeout'`），响应 `{wait:{reason,state,output}}` 原样透传内核结果（`state.queue`/`state.pendingInput` 可驱动输入框提示）。桥钳制 `timeoutMs` 1–120000（缺省 30000）、`maxMessages` 1–200，并把 RPC 超时放宽为等待时长 + 余量——调多久就等多久，不要当心跳用。内核无该远程方法（更早内核）回 **503** `UPSTREAM_UNAVAILABLE`。
 
 ## 模型与供应商
 
@@ -350,7 +352,7 @@ Content-Type: application/json
 ```
 
 - 要求 `chat.write` 与会话归属；请求体上限 24 MiB；`data` 必填（非空字符串，标准 base64），`name` 可选。
-- `201` 返回 `{ "receiptId": "…", "name": "photo.jpg" | null }`；随后把回执放进消息内容的 `file` 部件。**只有图片可以直接内联**（`image` 部件传 base64），其它文件类型必须先拿回执。
+- `201` 返回 `{ "receiptId": "…", "name": "photo.jpg" | null, "attachment"?: {attachmentId, name, bytes} }`；`attachment` 自 0.2.2 起在内核回出 `file` 元数据时透出（P2-D，additive），可据此直接拼 `GET /attachments/{attachmentId}` 而不必再等消息落库。随后把回执放进消息内容的 `file` 部件。**只有图片可以直接内联**（`image` 部件传 base64），其它文件类型必须先拿回执。
 - 取附件字节（注意：这条要求的是 **`files.read`**，不是 `chat.read` —— 与「取图」同一档位）：
 
 ```http
@@ -587,7 +589,7 @@ WebSocket 地址为 `ws://HOST:PORT/api/v1/events` 或 `wss://...`。OkHttp 等�
 
 `file.*` 事件要求实时 `files.read` scope，`chat.*` 事件要求实时 `chat.read` scope，并继续检查对应 root/session 授权。授权更新或撤销无需重连即可对后续事件生效；断线后客户端通过 REST 刷新状态，不依赖无限事件回放。
 
-DSH 的 `assistant/chunk` 不直接泄漏为私有 wire。插件将文本和思考 token 规范化为 `chat.message.delta`，载荷包含 `sessionId`、`turn`、`step`、`index`、`kind` 和 `text`；完成的用户/助手消息发送 `chat.message.committed`，客户端随后读取 REST 历史收口。运行状态、Agent 切换和审批变化分别使用 `chat.session.status`、`chat.agent-preset.selected` 与 `chat.approval.*`。
+DSH 的 `assistant/chunk` 不直接泄漏为私有 wire。插件将文本和思考 token 规范化为 `chat.message.delta`，载荷包含 `sessionId`、`turn`、`step`、`index`、`kind` 和 `text`；完成的用户/助手消息发送 `chat.message.committed`，客户端随后读取 REST 历史收口。运行状态、Agent 切换、模型目录变化和审批变化分别使用 `chat.session.status`、`chat.agent-preset.selected`、`chat.models.updated`（0.2.2 `llm/models-updated`，载荷 `{provider}`，P2-A）与 `chat.approval.*`。
 
 ### 一轮怎么结束的（`chat.turn.end` 的 `reason`）
 
@@ -655,7 +657,7 @@ DSH 的 `assistant/chunk` 不直接泄漏为私有 wire。插件将文本和思�
 | 能力位 | 契约依据 | 运行时降级 |
 | --- | --- | --- |
 | `attachment-chunked-upload-v1` | `POST /chat/sessions/{sessionId}/attachments/uploads` | 不降级（只依赖本进程的会话与 spool） |
-| `chat-schedules-v1` | `GET /chat/schedules`、`POST /chat/schedules` | 宿主 `ctx.schedule` 缺席时**不发位**（端点只会 503，发位等于挂一个必然失败的入口） |
+| `chat-schedules-v1` | `GET /chat/schedules`、`POST /chat/schedules` | 内核 typertGateway（schedule Remote）缺席时**不发位**（端点只会 503，发位等于挂一个必然失败的入口） |
 | `speech-transcription-v1` | `POST /chat/speech/transcriptions` | **只在 typert Gateway 整体缺席时不发位**；内核没装语音包时仍发位，`GET /chat/speech/catalog` 回 `200 {available:false,reason}` |
 
 最后一行是有意为之：客户端必须能区分「桥支持语音、但本机没配」（位在、目录
@@ -786,11 +788,12 @@ v2.8 新增。独立于现有 `/api/v1/events`（单向广播，保留不动）�
 | `approval-response` | HITL 审批回应 | `approvalId`, `outcome: 'allowed-once'|'rejected'` |
 | `session-create` | 提前建空会话（不发消息） | 两种寻址，与 REST `POST /chat/sessions` 同语义：① `workspaceId`（只认工作区，推荐 —— 客户端不必知道「哪个根 + 相对路径」）；② `rootId?`（缺省取首个授权根）+ `cwd?`（相对根）。另带 `agentPreset?` 与 `reuseBlank?`：`reuseBlank !== false` 时优先复用同路径的空白会话，`false` 则强制新建。响应 `session-created` 带 `{sessionId, rootId \| workspaceId, agentPreset?}`，`agentPreset` 是内核落定后的值（可能被改写），客户端应据此刷新而不是假定自己选的那个生效 |
 | `session-cancel` / `session-archive` / `session-rename` / `fork` | 会话生命周期 | `sessionId` |
+| `session-wait` | 长轮询会话状态（DSH 0.2.2 `session/wait`，P2-C） | `sessionId`, `timeoutMs?`（1–120000，缺省 30000）, `afterSeq?`, `maxMessages?`（1–200）；应答 `session-waited` 带 `{sessionId, wait:{reason:'idle'\|'input-required'\|'timeout', state, output}}` 原样透传内核结果 |
 | `queue-update` | 队列编辑（edit/remove/steer） | 当前内核 sessions 面只有 `prompt(mode:queue\|steer)`，无按 `itemId` 编辑/删除队列项的 RPC：回 `NOT_IMPLEMENTED`；插队 steer 可直接发 `message` 帧 `mode:'steer'` |
 | `directories` / `directory-create` / `workspace-create` | 目录/工作区操作 | `directory-create`/`workspace-create`：`rootId?`,`path`（`directory-create` 还可带 `name`），均限授权根内。`directories`（上游列宿主任意绝对路径）与本桥「仅授权根可见」安全模型冲突，回 `NOT_IMPLEMENTED`，授权根内浏览请用 `file-list` |
 | `agent-team` / `subagents` | 智能体团队/子会话目录（只读会话投影） | `sessionId`, `requestId?`（应答回显，见上）；回 `projectionState:'ready'|'unavailable'|'migration-required'` |
 | `speech-catalog` / `speech-subscribe` / `speech-unsubscribe` / `speech-configure` / `speech-prepare` / `speech-cancel-preparation` / `speech-transcribe` / `speech-cancel` | 官方语音输入（纯代理内核 speech Remote） | `requestId?`（应答回显；`speech-state` 等推送帧自带的是订阅上下文里那个 id，不跟随本次请求），transcribe 带 `audioBase64`（16k PCM16 WAV，≤4 MiB）、`providerId?`、`language?` |
-| `schedule-catalog` / `schedule-list` / `schedule-history` / `schedule-update` / `schedule-delete` | 定时任务（代理内核 schedule Remote） | catalog 无会话；其余带 `sessionId`；update 带完整 `expected`+`change` |
+| `schedule-catalog` / `schedule-list` / `schedule-history` / `schedule-update` / `schedule-delete` | 定时任务（代理内核 schedule Remote，DSH 0.2.2 记录面） | catalog 无会话；其余带 `sessionId`；update 带完整 `expected`+`change`（桥只取 `expected.updatedAt` 做 `expectedUpdatedAt` 乐观并发，`change` 即 `patch.timing`）；回程记录按旧形状呈现（`sessionId` 从内核 `target` 派生，`paused`/`ended` → `inactive`，新字段原样透传） |
 
 ### 服务端→客户端帧（{kind: …}）
 
@@ -801,7 +804,7 @@ v2.8 新增。独立于现有 `/api/v1/events`（单向广播，保留不动）�
 | `subscribed` | 订阅确认 |
 | `sent` | 消息已发（应答帧，回显 `requestId`） |
 | `workspaces` / `sessions` / `history` / `search` | 查询响应 |
-| `commands` / `command-options` / `command-executed` / `command-selected` | 命令响应 |
+| `commands` / `command-options` / `command-executed` / `command-selected` | 命令响应；`commands` 另带 `builtinTokens`（0.2.2 一方命令 en/zh 六条）与每条目的 `definitionId`/`builtin`（P2-B） |
 | `attachment` / `file-list` / `directory-create` / `file-download-opened/chunk/cancelled` | 附件、目录浏览/建目录（需 `files.write`）与文件下载（chunk 末块带 `sha256`） |
 | `file-upload-opened/chunk-accepted/completed/cancelled` | 分片上传（completed 带 `receiptId` 与 `sha256`） |
 | `session-cancelled` / `queue-item-updated` / `session-queues` / `session-queue` | 会话与队列状态 |
@@ -831,7 +834,7 @@ v2.8 新增。独立于现有 `/api/v1/events`（单向广播，保留不动）�
 
 ### 内核可选服务与 REST 兜底
 
-`agent-team`/`subagents` 只读内核会话投影（`sessionController.projections` 的 `agentTeam`/`subagentCatalog` 键）；`speech-*` 与 `schedule-*` 不自带能力，全部代理内核通过 Typert Remote 发布的 `speech`/`schedule` 服务（插件以宿主 owner peer 代发）。这些服务只在较新内核（DSH 0.2.1-rc.2+）提供；老内核缺服务时：
+`agent-team`/`subagents` 只读内核会话投影（`sessionController.projections` 的 `agentTeam`/`subagentCatalog` 键）；`speech-*` 与 `schedule-*` 不自带能力，全部代理内核通过 Typert Remote 发布的 `speech`/`schedule` 服务（插件以宿主 owner peer 代发）。这些服务只在较新内核（DSH 0.2.1-rc.2+ 提供 Gateway；schedule 的 create/edit 自 0.2.2 起才在远程面上）提供；老内核缺服务时：
 
 - `speech-catalog` 回 `{kind:'speech-catalog', available:false, providers:[], code:'speech/unavailable'}`，其余 `speech-*` 回 `error code:'speech/unavailable'`；
 - `schedule-*` 回 `error code:'schedule/unavailable'`。
@@ -895,26 +898,32 @@ curl -X POST http://192.168.1.20:3090/api/v1/chat/sessions/S1/attachments/upload
 | 方法 | 路径 | scope | 说明 |
 | --- | --- | --- | --- |
 | GET | `/chat/schedules?sessionId=` | `chat.read` | 列表 `{items:[Schedule]}`；不带 `sessionId` 列全部 |
-| POST | `/chat/schedules` | `chat.write` | 新建 `{sessionId,text,cron,timezone}` → 201 |
-| PATCH | `/chat/schedules/{id}` | `chat.write` | 只改传入字段（`enabled`/`text`/`cron`/`timezone`） |
+| POST | `/chat/schedules` | `chat.write` | 新建 → 201。经典形态 `{sessionId,text,cron,timezone}`；P2-E 新形态 `{text,timing,target?}`（timing 七种内核原样，`target:{kind:'new_once'\|'new',create?}` 由内核建会话；两组互斥） |
+| PATCH | `/chat/schedules/{id}` | `chat.write` | 只改传入字段（`enabled`/`text`/`cron`/`timezone`/`timing`）；`enabled` 走内核暂停/恢复（0.2.2），`timing` 与 `cron`/`timezone` 互斥 |
 | DELETE | `/chat/schedules/{id}` | `chat.write` | 删除 → 204 |
 
-`Schedule` = `{id,sessionId,text,cron,timezone,enabled,createdAt,lastRunAt,nextRunAt}`。
+`Schedule` = `{id,sessionId,text,cron,timezone,enabled,createdAt,lastRunAt,nextRunAt,kind,rrule?,everySeconds?,afterSeconds?}`。
 `cron` 是**五段 Vixie**（`minute hour day-of-month month day-of-week`，不支持秒与 `@daily`
 之类别名），`timezone` 是 `UTC` 或真实 IANA `Area/Location`；两者不合法都是 **400**
 `BODY_INVALID`。会话不存在 404。
 
 与内核的差异（**必须知道**，否则 UI 会撒谎）：
 
-- `createdAt` 恒为 `null`——内核提醒记录没有创建时间，客户端不要按它排序。
-- 列表是「cron 投影」：内核的 `daily`/`weekly` 提醒会折算成等价 cron；**一次性（`at`）与
-  固定间隔（`every`）提醒无法用 cron 表达，因此不在此列表出现**，它们是 `schedule_create`
-  工具/WS 的产物，不是本 REST 面创建的。
-- 内核没有「暂停」操作：`PATCH {enabled:false}` 回 **400** + `details.reason:'ENABLED_UNSUPPORTED'`，
-  要停就删。对已结束的提醒发 `enabled:true` 回 **409** + `SCHEDULE_ENDED`。
-- 新建走宿主服务而**不是**内核 Remote（Remote 面没有 create 方法）：内核没提供该服务时回
-  **503** `UPSTREAM_UNAVAILABLE`，`details.reason` 说明缺的是 `gateway/invocation-unavailable`
-  还是 `schedule/create-unavailable`。客户端应隐藏新建入口，不要重试。
+- `createdAt` 自 DSH 0.2.2 起是真实 epoch 毫秒（更早的内核记录面没有该字段 → `null`），
+  客户端不要假设它恒为 `null`。
+- `kind` 自 P2-E 起必回，取值 `after|at|every|daily|weekly|cron|rrule`：内核的
+  `daily`/`weekly` 提醒仍折算成等价 cron 返回；**其余 kind 不再隐藏**——`cron:null`
+  + 规则字段（`rrule`/`everySeconds`/`afterSeconds`）原样透出，按真值过滤 `cron` 的
+  旧客户端看到的行为不变。`POST`/`PATCH` 也可直接传 `timing`（七种内核原样，P2-E），
+  `POST` 可带 `target:{kind:'new_once'|'new',create?}` 让内核在首次投递时建会话
+  （此时不查会话可见性，item 的 `sessionId` 为空串）。
+- 暂停与恢复（DSH 0.2.2 起）：`PATCH {enabled:false}` 暂停、`{enabled:true}` 恢复
+  （从下一个未来发生开始），都回 200 与最新 item。更早的内核没有暂停操作，回 **400** +
+  `details.reason:'ENABLED_UNSUPPORTED'`。对已结束的提醒发 `enabled:true` 回 **409** +
+  `SCHEDULE_ENDED`（两代内核一致）；目标会话已归档回 **409** + `SCHEDULE_TARGET_ARCHIVED`。
+- 新建/修改/删除自 0.2.2 起全部走内核 Remote（`schedule/create`/`schedule/edit`，
+  乐观并发用 `expectedUpdatedAt`）；网关缺席仍回 **503** `UPSTREAM_UNAVAILABLE`
+  （`details.reason:'gateway/invocation-unavailable'`）。
 
 ### 官方语音
 
@@ -950,7 +959,7 @@ reason,maxAudioBytes,maxDurationSeconds}`。
 | 能力 | REST 状态 | 说明 |
 | --- | --- | --- |
 | 分块上传（大附件） | **已对等** | `…/attachments/uploads` 六条端点；1 MiB 切片、断点续传 `alreadyReceived`、缺块 409 |
-| 定时任务（cron） | **已对等（限 cron 形态）** | 创建/列表/局部改/删除；一次性与固定间隔提醒不可表达，不在列表出现 |
+| 定时任务（cron） | **已对等（限 cron 形态）** | 创建/列表/局部改/删除/暂停恢复（0.2.2 起）；一次性、固定间隔与 rrule 提醒不可表达，不在列表出现 |
 | 官方语音输入 | **已对等** | 目录/转写/配置；内核无服务时为 200 `available:false` 而非 404 |
 
 以下 DSH WebUI 能力尚未进入稳定外部契约：会话搜索、消息队列、通用问题回答、工作区自定义排序、归档恢复、目标、子代理、技能和后台任务。

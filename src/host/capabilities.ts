@@ -145,7 +145,7 @@ export const HISTORY_FORMAT_VERSION = 1
 /** 运行时能力开关。缺省（不传键）一律当作可用，见 {@link availableCapabilities}。 */
 export interface CapabilityFlags {
   jobs?: boolean
-  /** 宿主 cordis 服务 `ctx.schedule` 在不在（`dsh-schedule` 插件未装时为 false）。 */
+  /** 内核 typert Gateway 在不在（schedule Remote 的 catalog/create/edit 都走它）。 */
   schedule?: boolean
   /** 内核 typert Gateway 在不在（`speech` 目录与转写都要经它）。 */
   speech?: boolean
@@ -155,9 +155,9 @@ const CAPABILITY_REQUIREMENTS: Readonly<Partial<Record<string, keyof CapabilityF
   'job-list-v1': 'jobs',
   'job-output-v1': 'jobs',
   'job-kill-v1': 'jobs',
-  // 定时任务：**列表与新建同生死**。`dsh-schedule` 未装时既没有 Remote 命名空间
-  // 也没有 `ctx.schedule.create`，两个端点只会回 503 —— 那种情况下发位等于让客户端
-  // 打开一个必然失败的入口，所以按宿主服务是否存在剔除。
+  // 定时任务：随 typertGateway Remote 同生死。DSH 0.2.2 起 catalog/create/edit
+  // 都注册在远程面上（宿主 ctx.schedule 端口不再需要）；网关缺席时三个端点
+  // 只会回 503 —— 那种情况下发位等于让客户端打开一个必然失败的入口，所以剔除。
   'chat-schedules-v1': 'schedule',
   // 语音：**故意只在「网关整体缺失」时剔除，不因「内核没装语音包」而剔除**。
   // 判据的差别在于端点还能不能给出有意义的答复：没有语音包时 `GET …/catalog`

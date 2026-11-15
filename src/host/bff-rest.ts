@@ -240,11 +240,6 @@ export class BffRest {
 /** 语音转写的读取上限：`bff-speech.ts` 的 8 MiB（base64 膨胀后仍能装下 4 MiB 音频）。 */
 const SPEECH_BODY_MAX_BYTES = 8 * 1024 * 1024
 
-/** 宿主 `ctx.schedule` 服务在本层只需要 `create`（远程面没有新建，见 `bff-schedule.ts` 文件头）。 */
-export interface ScheduleCreatePort {
-  create: (sessionId: string, request: Record<string, unknown>) => Promise<unknown>
-}
-
 /** `createBffRest` 的入参：全部来自 `RouterOptions` 与 `index.ts` 的 reflect 结果。 */
 export interface BffRestOptions {
   /** spool 根目录（`<dataDir>/uploads-rest`）。 */
@@ -260,8 +255,6 @@ export interface BffRestOptions {
   }
   /** 内核 typert Gateway 句柄；`undefined` = 语音/定时任务读面回 unavailable/503。 */
   hostRemote?: HostRemoteHandle | undefined
-  /** 宿主 `ctx.schedule` 服务（可选：老内核没有）。 */
-  schedule?: ScheduleCreatePort | undefined
   io: RestIo
 }
 
@@ -284,18 +277,11 @@ export function createBffRest(options: BffRestOptions): BffRest {
     io: options.io,
     scheduleFor: principal => new BffSchedule({
       catalog: () => invokeRemote(options.hostRemote, 'schedule', 'catalog', {}),
-      update: request => invokeRemote(options.hostRemote, 'schedule', 'update', { request }),
-      remove: request => invokeRemote(options.hostRemote, 'schedule', 'delete', { request }),
-      create: (sessionId, request) => options.schedule === undefined
-        // 新建没有远程面（内核只注册了 catalog/changed/delete/history/list/update），
-        // 宿主服务也没注入时只能明说「这一版做不到」，而不是给个假的 201。
-        ? Promise.reject(new ApiError(
-          503,
-          'UPSTREAM_UNAVAILABLE',
-          'This kernel does not expose schedule creation to the bridge.',
-          { reason: 'schedule/create-unavailable' },
-        ))
-        : options.schedule.create(sessionId, request),
+      // 0.2.2 起 create 与 edit（update+delete 合并）都在远程面上；
+      // 老内核（<0.2.2）没有这两个方法，内核会回 remote/method-missing，
+      // 由 BffSchedule.scheduleError 兜底成 503 —— 不在本层假装成功。
+      edit: request => invokeRemote(options.hostRemote, 'schedule', 'edit', { request }),
+      create: request => invokeRemote(options.hostRemote, 'schedule', 'create', { request }),
       sessionVisible: sessionId => options.chat.isSessionAuthorized(principal, sessionId),
     }),
   })

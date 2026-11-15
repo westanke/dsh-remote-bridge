@@ -1046,7 +1046,7 @@ describe('mobile gateway WebSocket (/ws/mobile) — schedule & speech remote fal
     const handle: HostRemoteHandle = {
       invoke: async (namespace, method) => {
         calls.push({ namespace, method })
-        if (namespace === 'schedule') return { items: [] }
+        if (namespace === 'schedule') return []
         if (namespace === 'speech' && method === 'catalog') {
           return { providers: [{ id: 'p1' }], selection: { providerId: 'p1' }, maxAudioBytes: 1_000_000, maxDurationSeconds: 30 }
         }
@@ -1798,6 +1798,17 @@ describe('mobile gateway WebSocket (/ws/mobile) — requestId echo', () => {
             rpcId: request.rpcId,
             result: { ok: true, value: { accepted: true } },
           }),
+          wait: async (request: { rpcId: string; payload: { sessionId: string; timeoutMs?: number } }) => ({
+            rpcId: request.rpcId,
+            result: {
+              ok: true,
+              value: {
+                reason: 'idle',
+                state: { cursor: 3, active: false, running: false, queue: null, pendingInput: [] },
+                output: { records: [], truncated: false },
+              },
+            },
+          }),
         },
         workspace: {
           ...api.workspace,
@@ -1845,6 +1856,11 @@ describe('mobile gateway WebSocket (/ws/mobile) — requestId echo', () => {
     { label: 'session-archive', replyKind: 'session-archived', frame: { type: 'session-archive', sessionId: 'sess-1' } },
     { label: 'session-cancel', replyKind: 'session-cancelled', frame: { type: 'session-cancel', sessionId: 'sess-1' } },
     {
+      label: 'session-wait',
+      replyKind: 'session-waited',
+      frame: { type: 'session-wait', sessionId: 'sess-1', timeoutMs: 500 },
+    },
+    {
       label: 'message',
       replyKind: 'sent',
       frame: { type: 'message', sessionId: 'sess-1', content: [{ type: 'text', text: 'hello' }] },
@@ -1877,6 +1893,43 @@ describe('mobile gateway WebSocket (/ws/mobile) — requestId echo', () => {
       socket.close()
     })
   }
+
+  // P2-C：session-wait 长轮询的应答体（reason/state/output）按内核结果原样透传。
+  it('answers session-wait with the kernel wait result body', async () => {
+    const { database, root, url } = await echoHarness()
+    const { socket, frames } = await connectWithScopes(database, root.id, url)
+    socket.send(JSON.stringify({ type: 'session-wait', sessionId: 'sess-1', timeoutMs: 500 }))
+    await nextKind(frames, 'session-waited')
+    const reply = frames.find(frame => frame.kind === 'session-waited')?.data as {
+      sessionId?: string
+      wait?: { reason?: string; state?: Record<string, unknown>; output?: Record<string, unknown> }
+    }
+    expect(reply.sessionId).toBe('sess-1')
+    expect(reply.wait?.reason).toBe('idle')
+    expect(reply.wait?.state).toMatchObject({ cursor: 3, queue: null, pendingInput: [] })
+    expect(reply.wait?.output).toMatchObject({ records: [], truncated: false })
+    socket.close()
+  })
+
+  // P2-B：commands 帧带 builtinTokens + 内置命令的 builtin/definitionId。
+  it('includes builtinTokens and builtin/definitionId on the commands frame', async () => {
+    const { database, root, url } = await echoHarness()
+    const { socket, frames } = await connectWithScopes(database, root.id, url)
+    socket.send(JSON.stringify({ type: 'commands', sessionId: 'sess-1' }))
+    await nextKind(frames, 'commands')
+    const reply = frames.find(frame => frame.kind === 'commands')?.data as {
+      commands?: Array<Record<string, unknown>>
+      builtinTokens?: Record<string, unknown>
+    }
+    // 内核 commands/list 返回的 descriptor 由 chat.listCommands 决定；这里只断
+    // 桥侧 additive 字段：builtinTokens 恒在（en/zh 六条），commands 数组在。
+    expect(Array.isArray(reply.commands)).toBe(true)
+    expect(reply.builtinTokens).toMatchObject({
+      goal: { en: 'goal', zh: '目标' },
+      compact: { en: 'compact', zh: '压缩' },
+    })
+    socket.close()
+  })
 
   // 判据 2：流式/主动推送帧确实不回显。
   it('never echoes requestId on pong, event or subscribed frames', async () => {

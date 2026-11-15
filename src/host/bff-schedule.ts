@@ -1,25 +1,27 @@
 /**
  * REST 定时任务对等面（`docs/project/BFF-REST-CONTRACT.md` §2）。
  *
- * 与 `/ws/mobile` 的 `schedule-*` 帧对齐的部分：目录、改、删都走**同一条**
+ * 与 `/ws/mobile` 的 `schedule-*` 帧对齐的部分：目录、改、删、建都走**同一条**
  * 内核 `schedule` Remote（同样的 `{request}` 信封、同样的 unavailable 判据）。
  *
- * 不对齐的部分（必须显式记下来，因为它是内核面的缺口而不是本层的偷懒）：
- * 1. **新建没有远程方法**。`dsh-schedule` 的 Remote 只注册了
- *    catalog / changed / delete / history / list / update —— `create` 只在宿主
- *    cordis 服务 `ctx.schedule` 上。所以 `POST /chat/schedules` 走宿主服务
- *    （`index.ts` 用 `reflect.get('schedule', false)` 取），取不到就 503。
- *    REST 这边**不能**假装新建成功 —— 那会让 App 显示一个永远不会跑的提醒。
- * 2. **视图只表达 cron**。契约 §2 的 item 只有 `cron` 一个时间字段，而内核有
- *    after / at / every / daily / weekly / cron 六种。这里把 daily/weekly 折算成
- *    等价五段 cron 后正常返回；`after` / `at` / `every`（一次性/固定间隔）**无法**
- *    用 cron 忠实表达，故从视图里省略 —— 折算成一条会重复的 cron 是更坏的错。
- * 3. **`createdAt` 不可得**：内核 `ScheduleRecord` 没有创建时间字段，只有
- *    `scheduledAt`（下次触发）与 `lastDelivery`（上次投递）。契约要求 epoch 毫秒，
- *    于是这个字段回 `null` —— 不编一个假的。
- * 4. **`enabled:false`（暂停）内核没有对应操作**：`update` 不接 status，
- *    `ScheduleUpdateResult` 也没有 pause 分支。显式暂停回 400 并在
- *    `details.reason` 说明（`ENABLED_UNSUPPORTED`），而不是静默当成功。
+ * DSH 0.2.2 换方法面（catalog/create/deleteInactive/deliveryLimits/edit/history/
+ * list/run/view），桥按 0.2.1 的行为面翻译，App 契约不变：
+ * - `create` 有了远程方法（0.2.1 只在宿主 `ctx.schedule` 上）→ `POST /chat/schedules`
+ *   改走 `schedule/create`（title 显式必填，桥继续从 text 首行派生）。
+ * - `update`/`delete` 合并成 `schedule/edit`（action:'update'|'delete'），乐观并发
+ *   从完整 expected 记录改成 `expectedUpdatedAt`。
+ * - **暂停有了**：`patch.active:false`；恢复 `active:true`（ended 任务仍拒绝）。
+ * - `createdAt` 记录面可得了 → item 回真实 epoch（不再是恒 null）。
+ *
+ * 仍然不对齐的部分（内核面的缺口，不是本层的偷懒）：
+ * 1. **create 视图仍以 cron 为主形态**。契约 §2 的经典形态只有 `cron` 一个时间
+ *    字段；P2-E（0.2.2）起 additive 打通：item 加 `kind`，非 cron 条目不再隐藏
+ *    （`cron:null` + `rrule`/`everySeconds`/`afterSeconds` 规则字段），create/patch
+ *    收 `timing` 原样透传（七种 kind），create 可带 `target`（new_once/new，
+ *    内核建会话）——但 App 的经典 cron 形态仍是主路径，daily/weekly 也继续
+ *    折算成等价五段 cron 返回。
+ * 2. 目录条目不再带顶层 `sessionId`（0.2.2 改由 `target` 携带；`new` 目标没有
+ *    稳定会话）→ item 的 `sessionId` 从 target 派生，`new` 任务回空串。
  */
 import { ApiError } from './errors.ts'
 
@@ -33,12 +35,25 @@ export interface ScheduleItem {
   id: string
   sessionId: string
   text: string
-  cron: string
-  timezone: string
+  /**
+   * cron/daily/weekly 条目的五段表达式（daily/weekly 折算）；其余 kind 为
+   * **null**（0.2.2 起，P2-E：at/every/after/rrule 条目不再从视图里隐藏，
+   * 用 `kind` + 下列规则字段表达）。旧客户端按真值过滤 cron 时行为不变。
+   */
+  cron: string | null
+  timezone: string | null
   enabled: boolean
   createdAt: number | null
   lastRunAt: number | null
   nextRunAt: number | null
+  /** 内核规则判别式（after/at/every/daily/weekly/cron/rrule），0.2.2 起必回。 */
+  kind: string
+  /** kind==='rrule' 时的 DTSTART+RRULE 两行串（additive）。 */
+  rrule?: string
+  /** kind==='every' 时的固定间隔秒数（additive）。 */
+  everySeconds?: number
+  /** kind==='after' 时的延迟秒数（additive）。 */
+  afterSeconds?: number
 }
 
 /** 内核目录里的一条（只保留 REST 用得上的字段，其余忽略）。 */
@@ -48,15 +63,20 @@ interface RawEntry {
   title: string
   prompt: string
   scheduledAt: string
+  /** 从 `target` 派生（0.2.2 记录面没有顶层 sessionId；`new` 目标 → 空串）。 */
   sessionId: string
+  /** 0.2.2：active | paused | ended。 */
   status: string
   lastDelivery?: { deliveredAt?: unknown }
+  createdAt?: string
+  updatedAt?: string
   expression?: string
   timeZone?: string
   time?: string
   weekdays?: number[]
   everySeconds?: number
   afterSeconds?: number
+  rrule?: string
 }
 
 /** 内核不可用的判据码（与 `ws-schedule.ts` 的 `isUnavailable` 同一组）。 */
@@ -69,12 +89,10 @@ const GATEWAY_UNAVAILABLE_CODES = new Set([
 export interface BffScheduleDeps {
   /** 读目录：`remote.invoke('schedule','catalog',{})` 的原始返回值。 */
   catalog: () => Promise<unknown>
-  /** 改：`remote.invoke('schedule','update',{request})`。 */
-  update: (request: Record<string, unknown>) => Promise<unknown>
-  /** 删：`remote.invoke('schedule','delete',{request})`。 */
-  remove: (request: Record<string, unknown>) => Promise<unknown>
-  /** 新建：宿主 `ctx.schedule.create(sessionId, request)`（远程面没有）。 */
-  create: (sessionId: string, request: Record<string, unknown>) => Promise<unknown>
+  /** 改/删：`remote.invoke('schedule','edit',{request})`（0.2.2 起 update+delete 合并）。 */
+  edit: (request: Record<string, unknown>) => Promise<unknown>
+  /** 新建：`remote.invoke('schedule','create',{request})`（0.2.2 起远程面有了）。 */
+  create: (request: Record<string, unknown>) => Promise<unknown>
   /** 会话可见性；false 一律当 404（不区分「不存在」与「无权」，避免泄露）。 */
   sessionVisible: (sessionId: string) => Promise<boolean>
   /** 时间源（测试可注入）。 */
@@ -102,40 +120,60 @@ export class BffSchedule {
     const items: ScheduleItem[] = []
     for (const entry of entries) {
       if (sessionId !== undefined && entry.sessionId !== sessionId) continue
-      const item = itemOf(entry)
-      if (item !== null) items.push(item)
+      items.push(itemOf(entry))
     }
     return items
   }
 
-  /** 新建（cron 形态）：会话必须存在 → 内核 create → 回 item。 */
+  /**
+   * 新建：会话目标（老形态）或 `target`/`timing` 透传（0.2.2 P2-E 新形态）。
+   *
+   * 老形态 `{sessionId, text, cron, timezone?}` 行为不变；新形态允许
+   * `timing`（内核七种 ScheduleTiming 原样，kind 白名单校验）与
+   * `target`（`{kind:'new_once'|'new', create?}` —— 由内核在首次投递时建会话，
+   * `sessionId` 此时必须缺席，也没有可见性可查）。内核对 timing/target 的
+   * 内部字段自己校验，不合法回 `schedule/input-invalid` → 400。
+   */
   async create(body: Record<string, unknown>): Promise<ScheduleItem> {
-    const sessionId = requireIdentifier(body.sessionId, 'sessionId')
     const text = requireText(body.text)
-    const expression = validateCron(body.cron)
-    const timezone = validateTimeZone(body.timezone)
-    if (!await this.deps.sessionVisible(sessionId)) {
-      throw new ApiError(404, 'NOT_FOUND', 'The session does not exist.')
+    const timing = body.timing !== undefined ? validateTiming(body.timing) : undefined
+    const target = body.target !== undefined ? validateTarget(body.target) : undefined
+    if (timing !== undefined && (body.cron !== undefined || body.timezone !== undefined)) {
+      throw new ApiError(400, 'BODY_INVALID', 'timing and cron/timezone are mutually exclusive.')
     }
-    const record = await this.call(() => this.deps.create(sessionId, {
-      prompt: text,
-      title: titleOf(text),
-      cron: { expression, time_zone: timezone },
-    }))
-    const created = entryFromRecord(record, sessionId)
-    if (created === null) {
-      throw new ApiError(503, 'UPSTREAM_UNAVAILABLE', 'The kernel returned an unexpected schedule record.', {
-        reason: 'invalid-response',
-      })
+    if (target !== undefined && body.sessionId !== undefined) {
+      throw new ApiError(400, 'BODY_INVALID', 'target and sessionId are mutually exclusive.')
     }
-    return created
+    let request: Record<string, unknown>
+    if (target !== undefined) {
+      // new_once/new：内核自己建会话，桥这边既查不了可见性也不用查。
+      if (timing === undefined) throw new ApiError(400, 'BODY_INVALID', 'timing is required when target is given.')
+      request = { title: titleOf(text), prompt: text, timing, target }
+    } else {
+      const sessionId = requireIdentifier(body.sessionId, 'sessionId')
+      const expression = validateCron(body.cron)
+      const timezone = validateTimeZone(body.timezone)
+      if (!await this.deps.sessionVisible(sessionId)) {
+        throw new ApiError(404, 'NOT_FOUND', 'The session does not exist.')
+      }
+      request = {
+        title: titleOf(text),
+        prompt: text,
+        timing: timing ?? { kind: 'cron', cron: { expression, time_zone: timezone } },
+        target: { kind: 'session', sessionId },
+      }
+    }
+    const record = await this.call(() => this.deps.create(request))
+    return entryFromRecord(record)
   }
 
   /**
    * 改：**只改传入的字段**（契约 §2）。
    *
-   * `expected` 必须带内核记录的原始快照（Remote 用它做乐观并发），
-   * 所以先读目录定位，再只把改动写进 `change`。
+   * 0.2.2 的 edit 用 `expectedUpdatedAt` 做乐观并发（不再是完整 expected 记录）：
+   * 先读目录定位拿 `updatedAt`，再把改动折进一个 patch（一次 edit 带全部字段）。
+   * `enabled` 映射 `patch.active`：暂停（0.2.2 新增）与恢复都支持；
+   * 已 ended 的任务恢复仍按契约回 409 `SCHEDULE_ENDED`。
    */
   async patch(id: unknown, body: Record<string, unknown>): Promise<ScheduleItem> {
     const scheduleId = requireIdentifier(id, 'id')
@@ -144,48 +182,22 @@ export class BffSchedule {
     const entry = entries.find(candidate => candidate.id === scheduleId)
     if (entry === undefined) throw new ApiError(404, 'NOT_FOUND', 'The schedule does not exist.')
 
-    const hasTiming = patch.cron !== undefined || patch.timezone !== undefined
-    const hasText = patch.text !== undefined
-    const wantsUpdate = hasTiming || hasText
-    const active = entry.status === 'active'
-    if (patch.enabled !== undefined) {
-      if (patch.enabled && !active) {
-        throw new ApiError(409, 'CONFLICT', 'The schedule has already ended and cannot be resumed.', {
-          reason: 'SCHEDULE_ENDED',
-        })
-      }
-      if (!patch.enabled && active) {
-        throw new ApiError(
-          400,
-          'BODY_INVALID',
-          'This kernel has no pause operation for a schedule; delete it instead.',
-          { reason: 'ENABLED_UNSUPPORTED' },
-        )
-      }
-    }
-    if (!wantsUpdate) {
-      // 只传了 enabled 且状态确实没变：契约要求 200 + item，而不是 204。
-      const unchanged = itemOf(entry)
-      if (unchanged === null) {
-        throw new ApiError(409, 'CONFLICT', 'The schedule is not representable as a cron schedule.', {
-          reason: 'SCHEDULE_UNREPRESENTABLE',
-        })
-      }
-      return unchanged
-    }
-
-    const request: Record<string, unknown> = {
-      sessionId: entry.sessionId,
-      id: entry.id,
-      expected: recordOf(entry),
-    }
+    const request: Record<string, unknown> = { id: entry.id, action: 'update', patch: {} }
+    const editPatch = request['patch'] as Record<string, unknown>
     if (patch.text !== undefined) {
-      request.prompt = patch.text
-      request.title = titleOf(patch.text)
+      editPatch['prompt'] = patch.text
+      editPatch['title'] = titleOf(patch.text)
     }
-    if (hasTiming) {
+    if (patch.timing !== undefined) {
+      // P2-E：timing 整体透传（七种 kind 原样）。与 cron/timezone 半改互斥——
+      // cron 那条路依赖「当前条目可折算」，timing 是全量替换，语义不混用。
+      if (patch.cron !== undefined || patch.timezone !== undefined) {
+        throw new ApiError(400, 'BODY_INVALID', 'timing and cron/timezone are mutually exclusive.')
+      }
+      editPatch['timing'] = patch.timing
+    } else if (patch.cron !== undefined || patch.timezone !== undefined) {
       const current = currentTiming(entry)
-      request.change = {
+      editPatch['timing'] = {
         kind: 'cron',
         cron: {
           expression: patch.cron ?? current.expression,
@@ -193,22 +205,45 @@ export class BffSchedule {
         },
       }
     }
+    if (patch.enabled !== undefined && patch.enabled !== (entry.status === 'active')) {
+      if (patch.enabled && entry.status === 'ended') {
+        throw new ApiError(409, 'CONFLICT', 'The schedule has already ended and cannot be resumed.', {
+          reason: 'SCHEDULE_ENDED',
+        })
+      }
+      // active→paused（暂停）与 paused→active（恢复）都走 0.2.2 的 patch.active；ended 不动。
+      editPatch['active'] = patch.enabled
+    }
 
-    const result = await this.call(() => this.deps.update(request))
-    return itemFromUpdate(result, entry)
+    if (Object.keys(editPatch).length === 0) {
+      // 只传了 enabled 且状态确实没变：契约要求 200 + item，而不是 204。
+      const unchanged = itemOf(entry)
+      return unchanged
+    }
+
+    if (typeof entry.updatedAt === 'string') request['expectedUpdatedAt'] = entry.updatedAt
+    const result = await this.call(() => this.deps.edit(request))
+    return itemFromEdit(result)
   }
 
-  /** 删：先靠目录找 `sessionId`（契约的 DELETE 路径只有 id），删掉回 void（204）。 */
+  /** 删：目录定位 404 后走 `schedule/edit`（action:'delete'），删掉回 void（204）。 */
   async remove(id: unknown): Promise<void> {
     const scheduleId = requireIdentifier(id, 'id')
     const entries = await this.entries()
     const entry = entries.find(candidate => candidate.id === scheduleId)
     if (entry === undefined) throw new ApiError(404, 'NOT_FOUND', 'The schedule does not exist.')
-    const result = await this.call(() => this.deps.remove({ sessionId: entry.sessionId, id: entry.id }))
+    const request: Record<string, unknown> = { id: entry.id, action: 'delete' }
+    if (typeof entry.updatedAt === 'string') request['expectedUpdatedAt'] = entry.updatedAt
+    const result = await this.call(() => this.deps.edit(request))
     const record = asRecord(result)
     if (record?.['deleted'] === true) return
     if (record?.['code'] === 'schedule_not_found') {
       throw new ApiError(404, 'NOT_FOUND', 'The schedule does not exist.')
+    }
+    if (record?.['code'] === 'schedule_conflict') {
+      throw new ApiError(409, 'CONFLICT', 'The schedule changed while deleting; re-read and retry.', {
+        reason: 'SCHEDULE_CONFLICT',
+      })
     }
     throw new ApiError(503, 'UPSTREAM_UNAVAILABLE', 'The kernel returned an unexpected delete result.', {
       reason: 'invalid-response',
@@ -240,51 +275,66 @@ export class BffSchedule {
 
 // ───────────────────────── 视图 / 记录映射 ─────────────────────────
 
-/** 内核记录 → REST item；无法用 cron 表达的返回 null（由调用方省略）。 */
-function itemOf(entry: RawEntry): ScheduleItem | null {
+/**
+ * 内核记录 → REST item。
+ *
+ * 0.2.2 P2-E 起所有 kind 都回（不再因「无法用 cron 表达」省略）：
+ * cron/daily/weekly 给折算/原样的 `cron`；其余 kind 回 `cron:null` + 规则字段
+ * （`rrule`/`everySeconds`/`afterSeconds`）—— 折算成一条会重复的 cron 是更坏的错，
+ * 宁可让旧客户端按真值过滤掉这些条目（与「看不见」等效，且不会误解含义）。
+ */
+function itemOf(entry: RawEntry): ScheduleItem {
   const cron = cronOf(entry)
-  if (cron === null) return null
   const scheduledAt = Date.parse(entry.scheduledAt)
   const deliveredAt = entry.lastDelivery?.deliveredAt
   const lastRunAt = typeof deliveredAt === 'string' ? Date.parse(deliveredAt) : Number.NaN
+  // 0.2.2 记录面带了 createdAt：给真实 epoch；缺字段时回 null，不拿 scheduledAt 冒充。
+  const createdAt = typeof entry.createdAt === 'string' ? Date.parse(entry.createdAt) : Number.NaN
   return {
     id: entry.id,
     sessionId: entry.sessionId,
     text: entry.prompt,
     cron,
-    timezone: entry.timeZone ?? 'UTC',
+    timezone: cron === null ? null : entry.timeZone ?? 'UTC',
     enabled: entry.status === 'active',
-    // 内核没有创建时间：给 null，而不是拿 scheduledAt 冒充。
-    createdAt: null,
+    createdAt: Number.isFinite(createdAt) ? createdAt : null,
     lastRunAt: Number.isFinite(lastRunAt) ? lastRunAt : null,
     nextRunAt: Number.isFinite(scheduledAt) ? scheduledAt : null,
+    kind: entry.kind,
+    ...(typeof entry.rrule === 'string' ? { rrule: entry.rrule } : {}),
+    ...(typeof entry.everySeconds === 'number' ? { everySeconds: entry.everySeconds } : {}),
+    ...(typeof entry.afterSeconds === 'number' ? { afterSeconds: entry.afterSeconds } : {}),
   }
 }
 
-/** 新建返回的 `ScheduleRecord` → item（此时状态必然是 active、没有投递历史）。 */
-function entryFromRecord(value: unknown, sessionId: string): ScheduleItem | null {
-  const record = asRecord(value)
-  if (record === null) return null
-  const entry = asEntry(record, sessionId, 'active')
-  return entry === null ? null : itemOf(entry)
-}
-
-/** `ScheduleUpdateResult` → item；失败分支按契约给 404/409/400。 */
-function itemFromUpdate(value: unknown, entry: RawEntry): ScheduleItem {
-  const result = asRecord(value)
-  const code = typeof result?.['code'] === 'string' ? result['code'] : undefined
-  if (result?.['updated'] === true) {
-    const recordEntry = asEntry(asRecord(result['record']), entry.sessionId, entry.status)
-    const item = recordEntry === null ? null : itemOf(recordEntry)
-    if (item !== null) return item
+/** 新建返回的目录条目 → item（此时状态必然是 active、没有投递历史）。 */
+function entryFromRecord(value: unknown): ScheduleItem {
+  const entry = asEntry(value)
+  if (entry === null) {
     throw new ApiError(503, 'UPSTREAM_UNAVAILABLE', 'The kernel returned an unexpected schedule record.', {
       reason: 'invalid-response',
     })
   }
-  if (code === 'schedule_not_found') throw new ApiError(404, 'NOT_FOUND', 'The schedule does not exist.')
-  if (code === 'schedule_ended') {
-    throw new ApiError(409, 'CONFLICT', 'The schedule has already ended.', { reason: 'SCHEDULE_ENDED' })
+  return itemOf(entry)
+}
+
+/**
+ * `schedule/edit` 结果 → item。内核把 update 与 delete 合并成了一个方法：
+ * update 语义下成功回完整条目；`{deleted:true}` 是 delete 语义的形状，
+ * 不该出现在这里，按 404 兜底。
+ */
+function itemFromEdit(value: unknown): ScheduleItem {
+  const result = asRecord(value)
+  if (result !== null && result['id'] !== undefined && result['deleted'] !== true
+    && result['code'] === undefined) {
+    const entry = asEntry(result)
+    if (entry !== null) return itemOf(entry)
+    throw new ApiError(503, 'UPSTREAM_UNAVAILABLE', 'The kernel returned an unexpected schedule record.', {
+      reason: 'invalid-response',
+    })
   }
+  const code = typeof result?.['code'] === 'string' ? result['code'] : undefined
+  if (code === 'schedule_not_found') throw new ApiError(404, 'NOT_FOUND', 'The schedule does not exist.')
   if (code === 'schedule_conflict') {
     throw new ApiError(409, 'CONFLICT', 'The schedule changed while updating; re-read and retry.', {
       reason: 'SCHEDULE_CONFLICT',
@@ -334,22 +384,8 @@ function currentTiming(entry: RawEntry): { expression: string; timeZone: string 
   return { expression: cron, timeZone: entry.timeZone ?? 'UTC' }
 }
 
-/** 内核 `ScheduleRecord` 的**精确**字段快照（`expected` 必须只带内核认识的键）。 */
-function recordOf(entry: RawEntry): Record<string, unknown> {
-  const base: Record<string, unknown> = {
-    id: entry.id,
-    kind: entry.kind,
-    title: entry.title,
-    prompt: entry.prompt,
-    scheduledAt: entry.scheduledAt,
-  }
-  if (entry.kind === 'cron') return { ...base, expression: entry.expression, timeZone: entry.timeZone }
-  if (entry.kind === 'daily') return { ...base, time: entry.time, timeZone: entry.timeZone }
-  if (entry.kind === 'weekly') return { ...base, time: entry.time, timeZone: entry.timeZone, weekdays: entry.weekdays }
-  if (entry.kind === 'every') return { ...base, everySeconds: entry.everySeconds }
-  if (entry.kind === 'after') return { ...base, afterSeconds: entry.afterSeconds }
-  return base
-}
+// 0.2.2 的 edit 改用 expectedUpdatedAt 做乐观并发，不再需要完整记录快照；
+// 旧 recordOf()（expected 构造）随之删除。
 
 // ───────────────────────── 入参校验 ─────────────────────────
 
@@ -358,6 +394,8 @@ interface SchedulePatch {
   text?: string
   cron?: string
   timezone?: string
+  /** 内核七种 ScheduleTiming 原样（kind 白名单校验，内部字段由内核校验）。 */
+  timing?: Record<string, unknown>
 }
 
 /** PATCH 的入参：**允许部分字段**，但至少要有一个。 */
@@ -370,10 +408,47 @@ function parsePatch(body: Record<string, unknown>): SchedulePatch {
   if (body.text !== undefined) patch.text = requireText(body.text)
   if (body.cron !== undefined) patch.cron = validateCron(body.cron)
   if (body.timezone !== undefined) patch.timezone = validateTimeZone(body.timezone)
+  if (body.timing !== undefined) patch.timing = validateTiming(body.timing)
   if (Object.keys(patch).length === 0) {
-    throw new ApiError(400, 'BODY_INVALID', 'Provide at least one of enabled, text, cron, timezone.')
+    throw new ApiError(400, 'BODY_INVALID', 'Provide at least one of enabled, text, cron, timezone, timing.')
   }
   return patch
+}
+
+/** 内核 ScheduleTiming 的七种 kind（`schedule/create` wire schema，0.2.2）。 */
+const TIMING_KINDS = new Set(['after', 'at', 'every', 'daily', 'weekly', 'cron', 'rrule'])
+
+/**
+ * timing 透传校验（P2-E）：只验「是对象且 kind 在七种之内」，内部字段
+ * （`after_seconds`/`at`/`every_seconds`/`daily.time`/`weekly.weekdays`/
+ * `cron.expression`/`rrule` 串……）由内核自己校验——重复实现七种形状的
+ * 逐字段校验只会漂移，内核拒绝时回 `schedule/input-invalid` → 400。
+ */
+function validateTiming(value: unknown): Record<string, unknown> {
+  const timing = asRecordLocal(value)
+  if (timing === null || typeof timing['kind'] !== 'string' || !TIMING_KINDS.has(timing['kind'])) {
+    throw new ApiError(400, 'BODY_INVALID', 'timing.kind must be one of after, at, every, daily, weekly, cron, rrule.')
+  }
+  return timing
+}
+
+/**
+ * target 透传校验（P2-E）：只收 `new_once`/`new`（`session` 目标走 `sessionId`
+ * 字段，不在这条路径）。`create`（cwd/agentPreset）内部字段由内核校验。
+ */
+function validateTarget(value: unknown): Record<string, unknown> {
+  const target = asRecordLocal(value)
+  if (target === null || (target['kind'] !== 'new_once' && target['kind'] !== 'new')) {
+    throw new ApiError(400, 'BODY_INVALID', 'target.kind must be new_once or new (use sessionId for an existing session).')
+  }
+  return target
+}
+
+/** asRecord 的本地别名（避免与下方导出的工具重名时漂移）。 */
+function asRecordLocal(value: unknown): Record<string, unknown> | null {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null
 }
 
 function requireText(value: unknown): string {
@@ -515,7 +590,7 @@ function asRecord(value: unknown): Record<string, unknown> | null {
 
 /** 内核条目归一；形状不对 → 503（目录本身不可信，不能只跳过坏的那条）。 */
 function parseEntry(raw: unknown): RawEntry {
-  const entry = asEntry(raw, undefined, undefined)
+  const entry = asEntry(raw)
   if (entry === null) {
     throw new ApiError(503, 'UPSTREAM_UNAVAILABLE', 'The kernel returned an unexpected schedule entry.', {
       reason: 'invalid-response',
@@ -524,7 +599,14 @@ function parseEntry(raw: unknown): RawEntry {
   return entry
 }
 
-function asEntry(raw: unknown, sessionId: string | undefined, status: string | undefined): RawEntry | null {
+/**
+ * 内核目录条目归一。
+ *
+ * 0.2.2 起记录面没有顶层 `sessionId`，会话归属由 `target` 携带：
+ * `session`/`new_once` 取 `target.sessionId`（new_once 是预留 id），`new` 没有
+ * 稳定会话 → 空串。`record.sessionId` 只做兜底（0.2.1 记录兼容）。
+ */
+function asEntry(raw: unknown): RawEntry | null {
   const record = asRecord(raw)
   if (record === null) return null
   const id = record['id']
@@ -532,12 +614,19 @@ function asEntry(raw: unknown, sessionId: string | undefined, status: string | u
   const title = record['title']
   const prompt = record['prompt']
   const scheduledAt = record['scheduledAt']
-  const entrySession = sessionId ?? record['sessionId']
-  const entryStatus = status ?? record['status']
+  const status = record['status']
   if (typeof id !== 'string' || typeof kind !== 'string' || typeof title !== 'string'
-    || typeof prompt !== 'string' || typeof scheduledAt !== 'string'
-    || typeof entrySession !== 'string' || typeof entryStatus !== 'string') {
+    || typeof prompt !== 'string' || typeof scheduledAt !== 'string' || typeof status !== 'string') {
     return null
+  }
+  const target = asRecord(record['target'])
+  const targetSessionId = target?.['sessionId']
+  let sessionId = ''
+  if (typeof target?.['kind'] === 'string' && (target['kind'] === 'session' || target['kind'] === 'new_once')
+    && typeof targetSessionId === 'string') {
+    sessionId = targetSessionId
+  } else if (typeof record['sessionId'] === 'string') {
+    sessionId = record['sessionId']
   }
   const lastDelivery = asRecord(record['lastDelivery'])
   return {
@@ -546,15 +635,18 @@ function asEntry(raw: unknown, sessionId: string | undefined, status: string | u
     title,
     prompt,
     scheduledAt,
-    sessionId: entrySession,
-    status: entryStatus,
+    sessionId,
+    status,
     ...(lastDelivery === null ? {} : { lastDelivery }),
+    ...(typeof record['createdAt'] === 'string' ? { createdAt: record['createdAt'] } : {}),
+    ...(typeof record['updatedAt'] === 'string' ? { updatedAt: record['updatedAt'] } : {}),
     ...(typeof record['expression'] === 'string' ? { expression: record['expression'] } : {}),
     ...(typeof record['timeZone'] === 'string' ? { timeZone: record['timeZone'] } : {}),
     ...(typeof record['time'] === 'string' ? { time: record['time'] } : {}),
     ...(Array.isArray(record['weekdays']) ? { weekdays: record['weekdays'] as number[] } : {}),
     ...(typeof record['everySeconds'] === 'number' ? { everySeconds: record['everySeconds'] } : {}),
     ...(typeof record['afterSeconds'] === 'number' ? { afterSeconds: record['afterSeconds'] } : {}),
+    ...(typeof record['rrule'] === 'string' ? { rrule: record['rrule'] } : {}),
   }
 }
 
@@ -566,6 +658,18 @@ function scheduleError(error: unknown): ApiError {
     if (GATEWAY_UNAVAILABLE_CODES.has(code)) {
       return new ApiError(503, 'UPSTREAM_UNAVAILABLE', 'The kernel schedule service is unavailable.', {
         reason: 'schedule/unavailable',
+      })
+    }
+    // 0.2.2 的结构化 schedule 错误（details 携带具体 input code / 归属会话）。
+    if (code === 'schedule/input-invalid') {
+      const detail = (error as { details?: { code?: unknown } }).details?.code
+      return new ApiError(400, 'BODY_INVALID', 'The kernel rejected the schedule input.', {
+        reason: typeof detail === 'string' ? detail : 'schedule/input-invalid',
+      })
+    }
+    if (code === 'schedule/target-archived') {
+      return new ApiError(409, 'CONFLICT', 'The schedule targets an archived session.', {
+        reason: 'SCHEDULE_TARGET_ARCHIVED',
       })
     }
     if (code.startsWith('invalid_') || code === 'not_future' || code === 'time_out_of_range'

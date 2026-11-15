@@ -9,11 +9,12 @@ import { mkdir, readFile, stat, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { join, sep } from 'node:path'
 import type { PromptContentPart, RpcResponse, UserQuestionAnswer, UserQuestionView } from '../chat-adapter.ts'
+import { ApiError } from '../errors.ts'
 import { DEFAULT_HANDOFF_SUBDIR, HANDOFF_FILE_NAME, HANDOFF_MEDIA_TYPES } from '../image-handoff.ts'
 import { recordFrameHubDropped, recordRpc } from '../metrics.ts'
 import { wireRelative } from '../path-policy.ts'
 import type { SettingsApiProxy } from '../settings-adapter.ts'
-import type { Dsh02HostServices } from './kernel-services.ts'
+import type { Dsh02HostServices, ImageAttachmentRefLike, SessionAddressLike } from './kernel-services.ts'
 import type { PromptContentPartLike } from './kernel-services.ts'
 import { timeoutSignal, SESSION_DIR_LOOKUP_TIMEOUT_MS } from './rpc.ts'
 
@@ -358,4 +359,155 @@ export async function handoffImagesForTextOnlyModel(
   } catch {
     return content
   }
+}
+
+// ── 历史图片 ref 解析（0.2.2：内核不再代查引用，@patch attachment-ref-resolve） ──
+
+/**
+ * 0.2.1 时代 `sessionController.attachment({sessionId, attachmentId})` 会自己
+ * 翻会话事件找那张图的真实 ref；0.2.2 起 schema 只认**完整 ref**（五必填：
+ * attachmentId / mediaType / bytes / width / height），sessionId 仅作权限闸
+ *（"neither Session existence nor its image references are checked"）。
+ *
+ * 而 App 契约不变 —— 手机端历史里只有 `{type:'image', attachment:{attachmentId}}`
+ * 这样的引用，只有 id。补上的这一步：从会话历史 records 里把**完整 ref** 摘出来。
+ * 0.2.2 的 `AdmittedPromptContentPart` image 变体自带全字段，历史 records 里就有；
+ * snapshot 窗口扫不到就按页往旧消息回走（有界），再没有就只能如实报 404 ——
+ * 0.2.1 时代「只有 id、元数据散落在别处」的旧图本来就无处可查。
+ */
+
+/** ref 记忆化上限：每条 key 是 `sessionId + attachmentId`，命中即免扫历史。 */
+const REF_CACHE_LIMIT = 512
+const refCache = new Map<string, ImageAttachmentRefLike>()
+
+/** 起步回走页数上限：4 页 × 200 条 ≈ 800 条旧消息，够覆盖「图在很久以前」的场景。 */
+const REF_PAGE_WALKS = 4
+const REF_PAGE_SIZE = 200
+
+function refCacheKey(sessionId: string, attachmentId: string): string {
+  return `${sessionId}\u0000${attachmentId}`
+}
+
+function rememberImageRef(sessionId: string, ref: ImageAttachmentRefLike): void {
+  const key = refCacheKey(sessionId, ref.attachmentId)
+  // LRU 用插入序淘汰：先删后插，让刚命中的条目「最新」。
+  refCache.delete(key)
+  refCache.set(key, ref)
+  if (refCache.size > REF_CACHE_LIMIT) {
+    const oldest = refCache.keys().next().value
+    if (oldest !== undefined) refCache.delete(oldest)
+  }
+}
+
+/** records 的 JSON 里摘完整 ref（五必填齐才收；递归有深度上限，脏数据不炸）。 */
+function collectImageRefs(node: unknown, out: ImageAttachmentRefLike[], depth = 0): void {
+  if (depth > 12 || node === null || typeof node !== 'object') return
+  if (Array.isArray(node)) {
+    for (const item of node) collectImageRefs(item, out, depth + 1)
+    return
+  }
+  const record = node as Record<string, unknown>
+  if (record.type === 'image' && record.attachment !== null && typeof record.attachment === 'object') {
+    const a = record.attachment as Record<string, unknown>
+    if (
+      typeof a.attachmentId === 'string' && typeof a.mediaType === 'string'
+      && typeof a.bytes === 'number' && typeof a.width === 'number' && typeof a.height === 'number'
+    ) {
+      const ref: ImageAttachmentRefLike = {
+        attachmentId: a.attachmentId,
+        mediaType: a.mediaType,
+        bytes: a.bytes,
+        width: a.width,
+        height: a.height,
+      }
+      if (typeof a.name === 'string') ref.name = a.name
+      if (a.originalDimensions !== null && typeof a.originalDimensions === 'object') {
+        const od = a.originalDimensions as Record<string, unknown>
+        if (typeof od.width === 'number' && typeof od.height === 'number') {
+          ref.originalDimensions = { width: od.width, height: od.height }
+        }
+      }
+      out.push(ref)
+    }
+  }
+  for (const value of Object.values(record)) collectImageRefs(value, out, depth + 1)
+}
+
+function scanForRef(records: readonly unknown[], attachmentId: string): ImageAttachmentRefLike | undefined {
+  const found: ImageAttachmentRefLike[] = []
+  for (const record of records) collectImageRefs(record, found)
+  return found.find((ref) => ref.attachmentId === attachmentId)
+}
+
+/** records 是 `{type, seq, time, data}` 事件条目；取最小 seq 当作下一页的 beforeSeq 边界。 */
+function lowestSeq(records: readonly unknown[], fallback: number): number {
+  let lowest = fallback
+  for (const record of records) {
+    const seq = (record as { seq?: unknown } | null)?.seq
+    if (typeof seq === 'number' && seq < lowest) lowest = seq
+  }
+  return lowest
+}
+
+/**
+ * 从会话历史里解析一张图的完整 ref。
+ *
+ * 三步：记忆化命中直接回；follow 首帧 snapshot 的窗口里扫；扫不到就
+ * `page()` 往旧消息回走（有界 4 轮；`throughSeq` 锚定 snapshot 的 cursor——
+ * 0.2.2 起虽可省略（=日志末端），但页窗口是 `(beforeSeq, throughSeq]`，
+ * 锚定旧游标保证回走窗口贴着已扫边界，不被 follow 打开后的新流量挤占）。
+ * 都没有 → 404。
+ *
+ * 注意：只按 `{kind:'session', sessionId}` 找。子会话图片走的是另一条
+ * 子会话历史路由，这里不碰 subagent 地址形状。
+ */
+export async function resolveImageRef(
+  host: Dsh02HostServices,
+  sessionId: string,
+  attachmentId: string,
+  signal?: AbortSignal,
+): Promise<ImageAttachmentRefLike> {
+  const cached = refCache.get(refCacheKey(sessionId, attachmentId))
+  if (cached !== undefined) return cached
+
+  const address: SessionAddressLike = { kind: 'session', sessionId }
+  const stream = host.sessionController.follow({ address }, signal ?? new AbortController().signal)
+  const iterator = stream[Symbol.asyncIterator]()
+  const first = await iterator.next()
+  const snapshot = (first.value ?? {}) as { type?: string; cursor?: number; records?: readonly unknown[]; hasMore?: boolean }
+  const records = snapshot.records ?? []
+  const found = scanForRef(records, attachmentId)
+  if (found !== undefined) {
+    rememberImageRef(sessionId, found)
+    return found
+  }
+
+  // snapshot 窗口没有：按页往旧消息回走。
+  let boundary = lowestSeq(records, snapshot.cursor ?? 0)
+  let throughSeq = snapshot.cursor
+  for (let round = 0; round < REF_PAGE_WALKS; round += 1) {
+    if (typeof throughSeq !== 'number' || snapshot.hasMore === false) break
+    if (boundary <= 0) break
+    const page = await host.sessionController.page(
+      { address, throughSeq, beforeSeq: boundary, maxMessages: REF_PAGE_SIZE },
+      signal ?? new AbortController().signal,
+    )
+    const pageRecords = page.records ?? []
+    const pageFound = scanForRef(pageRecords, attachmentId)
+    if (pageFound !== undefined) {
+      rememberImageRef(sessionId, pageFound)
+      return pageFound
+    }
+    const nextBoundary = lowestSeq(pageRecords, Number.POSITIVE_INFINITY)
+    // 边界没有继续变旧 → 这一页是重扫或已到底，别再空转。
+    if (!Number.isFinite(nextBoundary) || nextBoundary >= boundary) break
+    boundary = nextBoundary
+    if (page.hasMore === false) break
+  }
+
+  throw new ApiError(
+    404,
+    'ATTACHMENT_NOT_FOUND',
+    'The attachment is not referenced by any image message in this session\'s recent history.',
+  )
 }

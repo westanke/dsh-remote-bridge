@@ -1,5 +1,95 @@
 # 开发日志
 
+## v2.11.0 · DSH 0.2.2-rc.1 适配：附件引用解析 + schedule 面翻新 + P2 能力五件套（2026-11-15）
+
+**这一版三件事**（按 [DSH-0.2.2-ADAPTATION.md](DSH-0.2.2-ADAPTATION.md) §六顺序实施，
+issue 后补——Gitee token 缺 issues scope）：①P0-1 历史图片读取；②P0-2 定时任务全链路；
+③P2 机会清单 A–E（用户指令「现在做」）：模型目录推送、内置命令词条、`session/wait`
+长轮询、附件元数据透出、schedule timing/target 透传。
+**App 可见 wire schema 均未变**（桥双向翻译），但 **engines.dsh 收窄为 `>=0.2.2-rc.1 <0.3.0`**
+（schedule 的 create/edit 0.2.2 起才在远程面上；附件 0.2.2 语义）。
+
+### 一、P0-1：`session/attachment` 请求形状破坏
+
+0.2.2 内核不再代查附件引用，`session/attachment` 请求从 `{sessionId, attachmentId}`
+改为 `{sessionId, attachment: ImageAttachmentRef}`（attachmentId/mediaType/bytes/width/height
+五必填 + name?/originalDimensions?），引用只能从历史 records 里的
+`{type:'image', attachment: ImageAttachmentRef}` 自取。
+
+**做法**（App 契约不变，仍只传 attachmentId）：`bridge/attachments.ts` 新增
+`resolveImageRef(host, sessionId, attachmentId, signal)` —— 模块级 LRU（512 条）记忆化 →
+`follow` 首帧快照 records 递归摘 ref（depth≤12）→ `hasMore` 时按 `beforeSeq=已知最低 seq`
+用 `page` 回走（有界 4 轮 × 200 条，边界不推进即停）→ 未找到抛 404 `ATTACHMENT_NOT_FOUND`。
+只走 `{kind:'session'}` 地址（子会话历史不经此路径）；0.2.1 时代的旧图元数据无处可查，
+如实 404。`kernel-services.ts` 新增 `ImageAttachmentRefLike` 类型并改
+`SessionControllerLike.attachment` 签名；`dsh-0.2-bridge.ts` 调用点、`chat-adapter.ts`
+注释同步。测试：`dsh-0.2-bridge.spec.ts` mock 改新签名 + 新增快照命中/回走命中/404/LRU 四条。
+
+### 二、P0-2：schedule Remote 换方法面
+
+0.2.2 schedule Remote 从 `catalog/changed/delete/history/list/update` 换成
+`catalog/create/deleteInactive/deliveryLimits/edit/history/list/run/view`：
+catalog 返回裸数组；**远程 create 有了**（0.2.1 只在宿主 `ctx.schedule` 上）；
+`edit` 合并 update+delete，乐观并发从完整 expected 记录改成 `expectedUpdatedAt`；
+`patch.active` 让**暂停/恢复第一次成为可能**（0.2.1 显式回 400 `ENABLED_UNSUPPORTED`）；
+记录面 `sessionId` 移入 `target`（`new` 目标没有稳定会话）、`status` 扩成
+`active|paused|ended`、新增 `createdAt/updatedAt/involvedSessionIds`。
+
+**做法**：`ws-schedule.ts` 重写为双向翻译 —— App 帧契约不变（记录仍
+`sessionId` + `active|inactive`；`sessionId` 从 `target` 派生、`new`→空串；
+paused/ended→`inactive`；`createdAt/updatedAt/target/involvedSessionIds` 等新字段原样透传，
+App 对未知字段宽容；update 的 `expected` 只取 `updatedAt`、无则 view 补取；delete 无条件删）。
+`bff-schedule.ts` 改走远程：`BffScheduleDeps` 变 `catalog/edit/create/sessionVisible`（删宿主端口
+`ScheduleCreatePort` 与 `update/remove`），create 请求 `{title,prompt,timing:{kind:'cron',...},
+target:{kind:'session',sessionId}}`；patch 把 `enabled` 映射 `patch.active`（active↔paused 均 200，
+ended+恢复仍 409 `SCHEDULE_ENDED`；状态没变的 enabled 是空操作不打内核）；`createdAt` 回真实
+epoch（更早内核缺字段仍 null）。错误映射新增 `schedule/input-invalid`→400（details 带内核
+结构化 code）、`schedule/target-archived`→409 `SCHEDULE_TARGET_ARCHIVED`。
+接线清理：`index.ts` 删宿主 schedule 读取、`capabilities.schedule` 改随 typertGateway 同生死、
+`router.ts`/`bff-rest.ts` 删 `schedule` 选项；README 双语 + API.md + BFF-REST-CONTRACT +
+INTERFACES 同步（openapi/asyncapi 的 schedule 帧 payload 开放无需改、kotlin-sdk 无 schedule 帧
+模型）。测试：`bff-rest.spec.ts` schedule 块按 0.2.2 形状重写并新增暂停/恢复/ended-409/空操作
+断言；`mobile-gateway-ws.spec.ts` 假桩改裸数组；`capabilities-filtering.spec.ts` 注释更新。
+
+**怎么验**：`pnpm check` 全绿（typecheck + 849 用例 + docs:check + build；docs:check 首跑逮到
+README 引擎范围未同步，已修）。**真机复验未做**（清单见 DSH-0.2.2-ADAPTATION.md §五）。
+
+### 二点五、P1-3/P1-4：inject 死引用 + throughSeq 类型对齐
+
+- **P1-3**：`package.json` `dsh.client.inject` 删 `@deepseek-ai/dsh-client-runtime`
+  ——npm/实装树两代都没有这个包；内核 loader（`arriveGraphRow`）对缺 graph row 的包
+  静默跳过，桥 client bundle 自包含，删掉只是把谎言变成真话。
+- **P1-4**：`SessionControllerLike.page` 的 `throughSeq` 对齐 0.2.2 可选签名，
+  桥**行为刻意不变**（继续锚定 follow 首帧 cursor——页窗口 `(beforeSeq, throughSeq]`
+  省略锚点会被新流量挤占）；`session/events` 新别名暂不切换（少一次重命名，回滚面小）。
+
+### 三、P2 机会清单 A–E（DSH 0.2.2 新能力打通，均 additive）
+
+- **A 模型目录推送**：`frame-hub.ts` 把内核 `llm/models-updated(provider)` 事件中继成
+  host 帧，`chat-adapter.ts` 规范化为 `chat.models.updated {provider}`；
+  `ModelCatalogModel.badge` 经既有 `api.sessions.models` spread 自然透出（无需改码）。
+- **B 内置命令词条**：`chat-adapter.ts` 导出 `BUILTIN_COMMAND_IDS`（0.2.2 六个一方命令包 id）、
+  `BUILTIN_COMMAND_TOKENS`（en/zh：goal/plan/feedback/compact/permission/export）；
+  `commands` REST 响应与 WS `commands` 帧加 `builtinTokens`，条目加 `definitionId`/`builtin`。
+- **C `session/wait` 长轮询**：REST `POST /chat/sessions/{sessionId}/wait`（`chat.read`，
+  timeoutMs 钳 1–120000 缺省 30000、maxMessages 1–200、afterSeq≥0；RPC 超时按请求放宽为
+  等待时长 + 5s 余量）+ WS `session-wait`/`session-waited` 帧对；内核结果原样透传
+  （`reason:'idle'|'input-required'|'timeout'` + `state`/`output`）。openapi/asyncapi/INTERFACES 同步。
+- **D 附件元数据透出**：0.2.2 `fileUploads/upload` 结果带 `file:{attachmentId,name,bytes}`；
+  `POST /attachments` 响应 additive 加 `attachment` 字段（旧两步流不变，新客户端可直拼
+  `GET /attachments/{id}`）。uploadImageStream 是 AsyncIterable 仅进程内、网关不可达，跳过。
+- **E schedule timing/target 透传**：item 恒回 `kind`（七种），非 cron kind 回 `cron:null`
+  + `rrule`/`everySeconds`/`afterSeconds`（不再隐藏，按真值过滤 `cron` 的旧客户端行为不变）；
+  `POST`/`PATCH` 收 `timing`（七种原样，`kind` 白名单 + 内核校验 → `schedule/input-invalid`
+  → 400），`POST` 可带 `target:{kind:'new_once'|'new',create?}`（内核建会话，无 sessionVisible）。
+  openapi 的 Schedule/ScheduleCreateRequest/SchedulePatch 与三条路径描述、API.md、
+  BFF-REST-CONTRACT §2、INTERFACES 同步；asyncapi 加 `session-wait`/`session-waited`
+  枚举 + `chat.models.updated` 事件示例。
+- 测试：`bff-rest.spec.ts` schedule 块新增「全 kind 列表」「timing/target create」「timing
+  patch」三条；`mobile-gateway-ws.spec.ts` 新增 `session-waited` 应答体、`commands`
+  `builtinTokens` 两条 + echo 矩阵加 `session-wait`；`chat-adapter.spec.ts` /
+  `dsh-0.2-bridge.spec.ts` 各加 `llm/models-updated` 一条。
+
 ## v2.10.1 · 审批改为进入即委托，电脑端审批卡不再等 10 分钟超时 + 隧道并发竞态（2026-11-11）
 
 **这一版两件事**：①审批侧从「接管 = 否决下游」改成「进入即委托 + 竞速」，

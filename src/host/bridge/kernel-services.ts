@@ -39,7 +39,15 @@ export interface FileUploadsLike {
     agent: unknown,
     request: { data: string; name?: string },
     signal: AbortSignal,
-  ): Promise<{ receiptId: string }>
+  ): Promise<{
+    receiptId: string
+    /**
+     * Kernel `FileAttachmentRef` (`{attachmentId, name, bytes}`). Present on
+     * 0.2.1-rc.5 and 0.2.2-rc.1 alike; typed optional so an unexpected host
+     * shape degrades to the receipt-only view instead of crashing the upload.
+     */
+    file?: { attachmentId: string; name: string; bytes: number }
+  }>
   /**
    * 把凭证绑定到某次 prompt。返回值不 commit 的话凭证会被回收 ——
    * 所以调用方必须在 prompt **成功之后** commit()。
@@ -87,15 +95,34 @@ export type SessionAddressLike =
     mode: 'one-shot' | 'continuable' | 'unknown'
   }
 
+/**
+ * 内核的 `ImageAttachmentRef`（`dsh-attachment` types.d.ts:7-27）。
+ *
+ * 0.2.2 起 `session/attachment` 的请求必须携带**完整 ref**（五必填：
+ * `attachmentId` / `mediaType` / `bytes` / `width` / `height`；可选
+ * `name` / `originalDimensions`）—— 内核 schema 明说 sessionId
+ * 「Gateway permission scope only; neither Session existence nor its
+ * image references are checked」，**不再代查引用**（0.2.1 会拿会话事件
+ * 里的真实 ref 做完整性校验，语义变了，见 @patch attachment-ref-resolve）。
+ */
+export interface ImageAttachmentRefLike {
+  attachmentId: string
+  mediaType: string
+  bytes: number
+  width: number
+  height: number
+  name?: string
+  originalDimensions?: { width: number; height: number }
+}
+
 export interface SessionControllerLike {
   list(request: { cursor?: string }, signal: AbortSignal): Promise<{ items: readonly unknown[] }>
   create(request: { workspaceId?: string; cwd?: string; sessionId?: string; agentPreset?: string }): Promise<{ sessionId: string; agentPreset?: string }>
   /**
    * Live follow stream. Its first frame is always a `snapshot` carrying the
-   * opening window (`cursor`, `records`, `hasMore`), and that is the only
-   * reliable way to read history: `page()` demands a `throughSeq` "obtained from
-   * the corresponding follow opening frame", so guessing one (e.g. `-1`) returns
-   * a well-formed but *empty* page — a silent failure, not an error.
+   * opening window (`cursor`, `records`, `hasMore`). Since DSH 0.2.2 `page()`
+   * accepts an omitted `throughSeq` (observed log end), but the bridge still
+   * anchors every `page()` to this snapshot `cursor` — see `page` below.
    */
   follow(request: {
     address: SessionAddressLike
@@ -119,35 +146,48 @@ export interface SessionControllerLike {
   /**
    * Read one message-aligned history page without activating an Agent.
    *
-   * `throughSeq` must be obtained from the corresponding follow opening frame's
-   * `cursor`; hard-coding one returns a well-formed but empty page.
-   * `beforeSeq` is optional and acts as an earlier boundary.
+   * DSH 0.2.2 made `throughSeq` optional (omitted = the observed log end);
+   * the bridge still anchors it to the follow opening frame's `cursor` because
+   * the page window is `(beforeSeq, throughSeq]` — anchoring keeps the returned
+   * slice adjacent to the caller's oldest known record no matter how much
+   * traffic arrived since the follow opened (omitting it would let fresh
+   * records occupy the window and shift the slice away from `beforeSeq`).
+   * 0.2.2 renames this method `session/events` and keeps `page` as a
+   * deprecated alias — the alias is used here on purpose (identical wire
+   * shape, one less rename to roll back).
    */
   page(request: {
     address: SessionAddressLike
-    throughSeq: number
+    throughSeq?: number
     beforeSeq?: number
     maxMessages?: number
   }, signal: AbortSignal): Promise<{ records: readonly unknown[]; hasMore: boolean }>
   /**
-   * 取一张**被这个会话引用过**的图片字节（内核主机端方法，名字就叫 `attachment`）。
+   * 取一张**历史图片**的字节（内核主机端方法，名字就叫 `attachment`）。
    *
-   * 这是取历史图片的**正路**，它内部一次做完三件事：校验会话确实引用了这张图、
-   * 调 `ctx.attachments.readImage`、用**会话事件里那条真实 ref**做完整性校验
-   *（`mediaType` / `bytes` / `width` / `height` 四项逐项比对）。
+   * 0.2.1 语义：请求只带 `{sessionId, attachmentId}`，内核内部一次做完三件事
+   *（校验会话引用、调 `ctx.attachments.readImage`、用会话事件里的真实 ref
+   * 做完整性校验）——内核代查引用。
    *
-   * 为什么必须走它、不能自己调 `ctx.attachments`：实测本机这条 profile 里
+   * **0.2.2 起语义变了**：请求必须携带**完整 ref**
+   * `{sessionId, attachment: ImageAttachmentRefLike}`，schema 明说 sessionId
+   * 「Gateway permission scope only; neither Session existence nor its image
+   * references are checked」——内核不再代查引用，五必填字段（attachmentId /
+   * mediaType / bytes / width / height）齐才放行。桥侧要从会话历史 records 里
+   * 把 ref 摘出来（见 bridge/attachments.ts 的 `resolveImageRef`，
+   * @patch attachment-ref-resolve）。
+   *
+   * 为什么字节仍要走它、不能自己调 `ctx.attachments`：实测本机这条 profile 里
    * `ctx.attachments` 是 **MISSING**（诊断日志
    * `ctx.attachments MISSING（所以改走内核 sessionController.readAttachment）`），
-   * 自己拼 ref 那条路根本走不通；而且绕开内核就得把它内部三件事全复刻一遍，
-   * 早先正是只传了 id、缺四项元数据，导致 `ATTACHMENT_CORRUPT`。
+   * 自己拼 ref 那条路根本走不通。
    *
    * 注意方法名：**主机端叫 `attachment`**，客户端契约里才叫 `readAttachment`
    *（`dsh-api-session-controller/lib/types/client/contract/session.d.ts`）。
    * `data` 是 **base64 字符串**（主机端实现里 `Buffer.from(stored.data).toString("base64")`），
    * 不是 Uint8Array —— 调用方要自己解码。
    */
-  attachment(request: { sessionId: string; attachmentId: string }): Promise<{ attachment: { mediaType: string }; data: string }>
+  attachment(request: { sessionId: string; attachment: ImageAttachmentRefLike }): Promise<{ attachment: { mediaType: string }; data: string }>
   selectModel(request: { sessionId: string; provider: string; model: string; reasoningEffort?: string }): Promise<{ selected: unknown }>
   /**
    * Host model catalog. 0.2.x reports `default`, the routable route list, and
@@ -169,6 +209,16 @@ export interface SessionControllerLike {
   projections(request: { sessionId: string }, signal: AbortSignal): Promise<
     { asOfSeq?: number; values?: Record<string, unknown> } | null
   >
+  /**
+   * Block until session quiescence, pending input, or timeout (DSH 0.2.2
+   * `session/wait`; P2-C). The value is passed through opaquely — the shape is
+   * `{reason:'idle'|'input-required'|'timeout', state:{cursor,active,running,queue,pendingInput}, output:{records,truncated}}`
+   * and the bridge does not interpret it beyond the adapter's field clamps.
+   */
+  wait(
+    request: { sessionId: string; timeoutMs?: number; afterSeq?: number; maxMessages?: number },
+    signal: AbortSignal,
+  ): Promise<unknown>
   resolveAgent(sessionId: string): Promise<unknown>
 }
 

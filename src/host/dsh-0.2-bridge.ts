@@ -38,7 +38,7 @@ import { FrameHub, SessionEventRelay, wireSessionRegistryRelay } from './bridge/
 import { ApprovalBridge, QuestionBridge, SESSION_RELAY_LIMIT } from './bridge/chat.ts'
 import { createAgentResolver, readArchivedSessionIds } from './bridge/host-reads.ts'
 import { optionalService, userQuestionsOf, toUserQuestionView } from './bridge/kernel-services.ts'
-import { DEFAULT_IMAGE_HANDOFF_DIR, readHandoffImageFile, handoffImagesForTextOnlyModel } from './bridge/attachments.ts'
+import { DEFAULT_IMAGE_HANDOFF_DIR, readHandoffImageFile, handoffImagesForTextOnlyModel, resolveImageRef } from './bridge/attachments.ts'
 import { normalizePermissionCatalog, FALLBACK_PERMISSION_CATALOG } from './bridge/permissions.ts'
 import { projectionsOf, readSessionProjections } from './bridge/projections.ts'
 import { enrichModelGroups } from './bridge/models.ts'
@@ -203,8 +203,11 @@ export function createDsh02ApiProxy(
             }) as never
           }
           // When beforeSeq is provided, use page() to get older messages.
-          // throughSeq must come from the follow snapshot's cursor — hard-coding
-          // one returns a well-formed but empty page (a silent failure).
+          // throughSeq is optional since DSH 0.2.2 (omitted = observed log
+          // end), but we still anchor it to the snapshot cursor: the page
+          // window is (beforeSeq, throughSeq], and anchoring keeps the slice
+          // adjacent to the caller's oldest record even if traffic arrived
+          // while the follow was opening.
           const page = await host.sessionController.page({
             address,
             throughSeq: snapshot.cursor,
@@ -270,7 +273,14 @@ export function createDsh02ApiProxy(
           name === undefined || name === '' ? { data } : { data, name },
           signal,
         )
-        return { receiptId: value.receiptId, name: name ?? null }
+        // 0.2.2（P2-D）：`FileUploadValue.file`（FileAttachmentRef：attachmentId/
+        // name/bytes）一并透出 —— App 由此拿到内容寻址 id 做展示，无需再问内核。
+        // 两代内核形状一致（0.2.1-rc.5 与 0.2.2-rc.1 的 FileUploadValue 同型）。
+        return {
+          receiptId: value.receiptId,
+          name: name ?? null,
+          ...(value.file === undefined ? {} : { attachment: value.file }),
+        }
       }),
       readAttachment: request => call('sessions.readAttachment', async (signal) => {
         // 走**内核的 sessionController.attachment()**，不自己碰 `ctx.attachments`。
@@ -280,13 +290,17 @@ export function createDsh02ApiProxy(
         // 期间误判过两次：先说「存储没数据」（实测 35/35 命中，错的），
         // 再说「缺四项元数据」（真因是服务压根拿不到）。教训是先看真进程日志再下结论。
         //
-        // 内核这个方法一次做完三件事：校验会话确实引用了这张图、读字节、
-        // 用**会话事件里那条真实 ref**做完整性校验。绕开它自己拼 ref，
-        // 等于把这三件事全漏掉 —— 完整性校验恰恰就是先前 ATTACHMENT_CORRUPT 的来源。
+        // 0.2.1：内核这个方法一次做完三件事（校验引用、读字节、拿会话事件里
+        // 的真实 ref 做完整性校验），请求只带 id。
+        // **0.2.2 起它不再代查引用**：schema 要求完整 ref（五必填元数据），
+        // sessionId 只当权限闸。桥侧先从会话历史 records 里把 ref 摘出来
+        //（resolveImageRef：记忆化 + snapshot 窗口 + 有界回走）再调内核 ——
+        // App 契约不变，手机端历史里依旧只有 id（见 @patch attachment-ref-resolve）。
         //
         // 返回的 `data` 是 **base64 字符串**，必须解码后才能当字节用。
         const { sessionId, attachmentId } = request.payload
-        const value = await host.sessionController.attachment({ sessionId, attachmentId })
+        const ref = await resolveImageRef(host, sessionId, attachmentId, signal)
+        const value = await host.sessionController.attachment({ sessionId, attachment: ref })
         const bytes = new Uint8Array(Buffer.from(value.data, 'base64'))
         return { bytes, mediaType: value.attachment.mediaType }
       }),
@@ -352,6 +366,15 @@ export function createDsh02ApiProxy(
         // 读取其中的 agentTeam / subagentCatalog 键；形状由 WS 层按 PROTOCOL 校验。
         return (await host.sessionController.projections({ sessionId: request.payload.sessionId }, signal)) as never
       }),
+      wait: request => {
+        // DSH 0.2.2 `session/wait`（P2-C）：长轮询语义。RPC 统一超时（10 s）会
+        // 掐断等待，所以这里按请求的 timeoutMs 放宽（+5 s 余量给内核收尾），
+        // 由 chat-adapter 侧钳制上限，不能放宽到无限。
+        const timeoutMs = request.payload.timeoutMs
+        return call('sessions.wait', signal => host.sessionController.wait(request.payload, signal), {
+          timeoutMs: (typeof timeoutMs === 'number' && timeoutMs > 0 ? timeoutMs : 30_000) + 5_000,
+        }) as never
+      },
     },
 
     workspace: {

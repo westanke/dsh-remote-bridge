@@ -80,6 +80,12 @@ export interface DshApiProxy {
     models(request: { rpcId: string; payload: { sessionId: string } }): Promise<RpcResponse<SessionModelsView>>
     selectModel(request: { rpcId: string; payload: { sessionId: string; provider: string; model: string; reasoningEffort?: string } }): Promise<RpcResponse<{ selected: ModelSelectionView }>>
     /**
+     * 阻塞等待会话静止 / 待输入 / 超时（DSH 0.2.2 `session/wait`，P2-C）。
+     * 返回值原样透传：`{reason, state:{cursor,active,running,queue,pendingInput}, output:{records,truncated}}`。
+     * RPC 层按 `timeoutMs + 5s` 放宽统一超时；上限钳制在本适配层做。
+     */
+    wait(request: { rpcId: string; payload: { sessionId: string; timeoutMs?: number; afterSeq?: number; maxMessages?: number } }): Promise<RpcResponse<unknown>>
+    /**
      * 读会话投影基线（内核 `sessionController.projections`）。
      *
      * 供 agent-team / subagents 等只读投影的 WS 帧使用：投影里的 `agentTeam` /
@@ -187,6 +193,51 @@ export interface CommandDescriptorView {
   name: string
   description: string
   input?: { hint: string }
+  /** Kernel-side definition identity (0.2.2 `CommandDescriptor.definitionId`). */
+  definitionId?: string
+  /**
+   * First-party capability name when `definitionId` matches a kernel builtin
+   * (DSH 0.2.2 `BUILTINS`); absent for third-party commands. Lets the App
+   * localize/group the command panel without knowing kernel package ids.
+   */
+  builtin?: BuiltinCommandName
+}
+
+/** 0.2.2 内核 `BUILTINS`（dsh-commands/lib/types/builtin.d.ts）的桥侧镜像。 */
+export const BUILTIN_COMMAND_IDS = {
+  goal: '@deepseek-ai/dsh-command-goal',
+  plan: '@deepseek-ai/dsh-plan-mode',
+  feedback: '@deepseek-ai/dsh-command-feedback',
+  compact: '@deepseek-ai/dsh-command-compact',
+  permission: '@deepseek-ai/dsh-permission-presets',
+  export: '@deepseek-ai/dsh-session-log-export',
+} as const satisfies Record<string, string>
+
+export type BuiltinCommandName = keyof typeof BUILTIN_COMMAND_IDS
+
+/** 0.2.2 内核 `builtinCommandTokens`（en/zh 拼写）的桥侧镜像。 */
+export const BUILTIN_COMMAND_TOKENS: Record<BuiltinCommandName, { en: string; zh: string }> = {
+  goal: { en: 'goal', zh: '目标' },
+  plan: { en: 'plan', zh: '计划' },
+  feedback: { en: 'feedback', zh: '反馈' },
+  compact: { en: 'compact', zh: '压缩' },
+  permission: { en: 'permission', zh: '权限' },
+  export: { en: 'export', zh: '导出' },
+}
+
+const DEFINITION_TO_BUILTIN: Record<string, BuiltinCommandName> = Object.fromEntries(
+  Object.entries(BUILTIN_COMMAND_IDS).map(([name, id]) => [id, name]),
+) as Record<string, BuiltinCommandName>
+
+/**
+ * JSON body 的可选整数钳制：非数字/浮点/NaN 一律 undefined（body 级错误由路由层
+ * 的字段校验兜），落在范围内才返回值。比 `optionalInteger()`（查询串、抛
+ * NUMBER_INVALID）宽松——等待参数缺省即默认值，脏值不该炸整个请求。
+ */
+function clampInt(value: unknown, min: number, max: number): number | undefined {
+  if (typeof value !== 'number' || !Number.isSafeInteger(value)) return undefined
+  if (value < min || value > max) return undefined
+  return value
 }
 
 export interface CommandExecutionView {
@@ -882,7 +933,7 @@ export class DshChatAdapter {
     sessionId: string,
     data: string,
     name?: string,
-  ): Promise<{ receiptId: string; name: string | null }> {
+  ): Promise<{ receiptId: string; name: string | null; attachment?: { attachmentId: string; name: string; bytes: number } }> {
     await this.requireSession(principal, sessionId)
     return unwrapDsh(await this.api.sessions.uploadAttachment({
       rpcId: randomUUID(),
@@ -896,15 +947,17 @@ export class DshChatAdapter {
    * **为什么会走内核的 `sessionController.attachment()`，而不自己调
    * `ctx.attachments.readImage()`**：
    * 1. 实测本机 profile 里 `ctx.attachments` 是 **MISSING**（拿不到注入属性）——
-   *    自己拼 ref 那条路根本走不通；
-   * 2. 内核那个方法内部一次做完三件事：校验该会话确实引用了这张图、
-   *    读出字节、用**会话事件里那条真实 ref** 做完整性校验
-   *    （`mediaType` / `bytes` / `width` / `height` 四项逐项比对）。
-   *    绕开它就得把这三件事全复刻 —— 先前正是漏了第三件，于是每张图
-   *    `ATTACHMENT_CORRUPT`：「字节读到了，却被校验拒之门外」。
+   *    自己读存储那条路根本走不通。
    *
-   * 因此 **sessionId 是必需参数**（内核要拿它读会话事件、找到那张图的真实 ref）；
-   * 早先设计的「客户端把四项元数据带上来」是多余的 —— 内核手里本来就有。
+   * 0.2.1 时它还替桥代查引用（拿会话事件里的真实 ref 做完整性校验）；
+   * **0.2.2 起语义变了**：schema 要求请求自带完整 ref（五必填元数据），
+   * sessionId 只当权限闸（"neither Session existence nor its image references
+   * are checked"）。代查这步移到了桥侧 —— `resolveImageRef`（bridge/attachments.ts，
+   * @patch attachment-ref-resolve）从会话历史 records 里摘 ref，本方法的
+   * App 契约不变（仍然只传 attachmentId）。
+   *
+   * 因此 **sessionId 是必需参数**：它既是归属校验的闸，也是内核权限域
+   * 和 ref 解析的搜索范围。
    */
   async readAttachment(
     principal: Principal,
@@ -918,7 +971,9 @@ export class DshChatAdapter {
       throw new ApiError(400, 'BODY_INVALID', 'sessionId is required.')
     }
     // 会话归属照旧校验：附件按内容哈希寻址，但「取字节」是**会话语境**里的动作，
-    // 客户端应证明自己有权读那个会话 —— 与内核的引用校验是两道互补的闸。
+    // 客户端应证明自己有权读那个会话。0.2.2 起内核不再校验「这个会话引用过这张图」
+    //（引用校验由桥的 resolveImageRef 完成：只搜这个会话的历史），这层归属闸
+    // 恰好把两者圈进同一个 sessionId —— 权限语义与 0.2.1 相当。
     await this.requireSession(principal, sessionId)
     return unwrapDsh(await this.api.sessions.readAttachment({
       rpcId: randomUUID(),
@@ -1175,6 +1230,29 @@ export class DshChatAdapter {
    * 会话不存在（内核返回 null）映射成 404 SESSION_NOT_FOUND；取不到投影不打 500，
    * 由调用方按 PROTOCOL 回 projectionState:'unavailable'。这里只做鉴权 + 透传。
    */
+  /**
+   * 阻塞等待会话静止 / 待输入 / 超时（DSH 0.2.2 `session/wait`，P2-C）。
+   *
+   * 上限口径：`timeoutMs` 1..120_000（缺省 30_000）、`maxMessages` 1..200、
+   * `afterSeq` ≥ 0。内核对越界值的态度未知，钳在桥侧就不赌它。
+   * 返回值原样透传（queue/pendingInput/records 都不解释）。
+   */
+  async sessionWait(
+    principal: Principal,
+    sessionId: string,
+    body: { timeoutMs?: unknown; afterSeq?: unknown; maxMessages?: unknown },
+  ): Promise<unknown> {
+    await this.requireSession(principal, sessionId)
+    const payload: { sessionId: string; timeoutMs?: number; afterSeq?: number; maxMessages?: number } = { sessionId }
+    const timeoutMs = clampInt(body.timeoutMs, 1, 120_000)
+    payload.timeoutMs = timeoutMs ?? 30_000
+    const afterSeq = clampInt(body.afterSeq, 0, Number.MAX_SAFE_INTEGER)
+    if (afterSeq !== undefined) payload.afterSeq = afterSeq
+    const maxMessages = clampInt(body.maxMessages, 1, 200)
+    if (maxMessages !== undefined) payload.maxMessages = maxMessages
+    return unwrapDsh(await this.api.sessions.wait({ rpcId: randomUUID(), payload }))
+  }
+
   async sessionProjections(
     principal: Principal,
     sessionId: string,
@@ -1193,11 +1271,18 @@ export class DshChatAdapter {
     // exposes no commands. Reporting an error here would surface as a failure on
     // a session the client can otherwise open and read.
     if (agent === undefined) return []
-    return this.commandServices!.commands.list(agent).map(command => ({
-      name: command.name,
-      description: command.description,
-      ...(command.input === undefined ? {} : { input: { hint: command.input.hint } }),
-    }))
+    return this.commandServices!.commands.list(agent).map(command => {
+      const descriptor = command as CommandDescriptorView & { definitionId?: unknown }
+      const definitionId = typeof descriptor.definitionId === 'string' ? descriptor.definitionId : undefined
+      const builtin = definitionId !== undefined ? DEFINITION_TO_BUILTIN[definitionId] : undefined
+      return {
+        name: command.name,
+        description: command.description,
+        ...(command.input === undefined ? {} : { input: { hint: command.input.hint } }),
+        ...(definitionId === undefined ? {} : { definitionId }),
+        ...(builtin === undefined ? {} : { builtin }),
+      }
+    })
   }
 
   async executeCommand(principal: Principal, sessionId: string, line: string): Promise<CommandExecutionView> {
@@ -1654,6 +1739,19 @@ export function normalizeDshEvent(
         type: 'chat.agent-preset.selected',
         time,
         data: { sessionId, agentPreset },
+      }
+    }
+  }
+  // DSH 0.2.2: provider model catalogs changed (P2-A hot update). A dedicated
+  // event type keeps clients from treating it as a generic remote-event blob.
+  if (payloadType === 'host/remote-event' && payload.event === 'llm/models-updated' && Array.isArray(payload.args)) {
+    const [provider] = payload.args
+    if (typeof provider === 'string') {
+      return {
+        id: frame.rpcId,
+        type: 'chat.models.updated',
+        time,
+        data: { provider },
       }
     }
   }

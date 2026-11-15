@@ -33,6 +33,7 @@ function makeHost() {
       follow: vi.fn(() => (async function* () {
         yield { type: 'snapshot', cursor: 0, records: [], hasMore: false }
       })()),
+      page: vi.fn(async () => ({ records: [], hasMore: false })),
       prompt: vi.fn(async () => ({ accepted: true as const })),
       cancel: vi.fn(() => ({ accepted: true as const })),
       rename: vi.fn(async () => ({ title: 't', seq: 1 })),
@@ -47,9 +48,10 @@ function makeHost() {
       projections: vi.fn(async () => ({ asOfSeq: 0, values: {} })),
       resolveAgent: vi.fn(async () => ({ sessionId: 'session-1' })),
       // 主机端取附件的正路（名字就是 attachment，不是客户端契约里的 readAttachment）。
+      // 0.2.2 起请求必须带**完整 ref**（内核不再代查引用）；桥侧先从历史里摘 ref。
       // 返回 base64 —— 桥负责解码成 Uint8Array。
-      attachment: vi.fn(async (request: { sessionId: string; attachmentId: string }) => ({
-        attachment: { mediaType: 'image/jpeg', bytes: 3, width: 768, height: 512 },
+      attachment: vi.fn(async (request: { sessionId: string; attachment: { attachmentId: string; mediaType: string; bytes: number; width: number; height: number } }) => ({
+        attachment: { mediaType: request.attachment.mediaType, bytes: request.attachment.bytes, width: request.attachment.width, height: request.attachment.height },
         data: Buffer.from([1, 2, 3]).toString('base64'),
       })),
     },
@@ -330,20 +332,38 @@ describe('dsh 0.2.x bridge: user question answerer', () => {
 
 describe('dsh 0.2.x bridge: attachments', () => {
   it('asks the kernel session controller for the bytes and decodes base64', async () => {
-    // 这条钉的是「历史图片永远显示不出来」那个 bug 的最终修法。
+    // 这条钉的是「历史图片永远显示不出来」那个 bug 的最终修法，以及 0.2.2 的改形。
     //
-    // 走了两段弯路：
+    // 走过的弯路（0.2.1 时代）：
     //   1. 只传 { attachmentId } 自己调 ctx.attachments.readImage ——
     //      内核读完字节会做完整性校验（mediaType/bytes/width/height 逐项比对），
     //      缺四项 → ATTACHMENT_CORRUPT；
     //   2. 改成客户端把四项元数据带上来 —— 结果真进程里 ctx.attachments 是
     //      **MISSING**（诊断日志实测），这条路在本机 profile 根本不存在。
     //
-    // 正路是内核主机端自己的 `sessionController.attachment({sessionId, attachmentId})`：
-    // 它内部做会话引用校验 + 读字节 + 用**会话事件里那条真实 ref**做完整性校验，
+    // 0.2.1 的正路是内核主机端自己的 `sessionController.attachment({sessionId, attachmentId})`，
+    // 它内部做会话引用校验 + 读字节 + 完整性校验。**0.2.2 起它不再代查引用**：
+    // 请求必须带完整 ref（五必填元数据），sessionId 只当权限闸 ——
+    // 桥侧先从历史 records 里摘 ref（resolveImageRef），再调内核。
     // 返回 base64。插件只该调它、再把 base64 解码成字节 —— 不自己碰 ctx.attachments。
     const { host } = makeHost()
     const api = createDsh02ApiProxy(host)
+    const ref = {
+      attachmentId: 'sha256:9759b45815c74eb5289a46074ad655a0',
+      mediaType: 'image/jpeg',
+      bytes: 3,
+      width: 768,
+      height: 512,
+    }
+    // 历史事件里图片长这样：完整 ref 进 AdmittedPromptContentPart 的 image 变体。
+    vi.mocked(host.sessionController.follow).mockImplementation(() => (async function* () {
+      yield {
+        type: 'snapshot',
+        cursor: 42,
+        records: [{ type: 'message/user', seq: 42, time: 't', data: { content: [{ type: 'image', attachment: ref }] } }],
+        hasMore: false,
+      }
+    })())
 
     const response = await api.sessions.readAttachment({
       rpcId: 'r',
@@ -354,19 +374,34 @@ describe('dsh 0.2.x bridge: attachments', () => {
     expect(response.result.ok && response.result.value.mediaType).toBe('image/jpeg')
     // base64 必须被解码回原始字节。
     expect(response.result.ok && Array.from(response.result.value.bytes)).toEqual([1, 2, 3])
-    // 内核要拿到会话 id 与附件 id —— 缺 sessionId 它无法定位真实 ref。
+    // 0.2.2 wire：内核拿到会话 id 与**完整 ref**（五必填），不再是裸 id。
     expect(vi.mocked(host.sessionController.attachment)).toHaveBeenCalledWith({
       sessionId: 'session-1',
-      attachmentId: 'sha256:9759b45815c74eb5289a46074ad655a0',
+      attachment: ref,
     })
   })
 
-  it('does not read ctx.attachments itself — the kernel owns the integrity check', async () => {
+  it('does not read ctx.attachments itself — the bridge resolves the ref, the kernel owns the bytes', async () => {
     // 关键：正路上插件**不该再自己调** ctx.attachments.readImage。
-    // 那条注入属性在本机 profile 是 MISSING；就算在，绕开内核也得自己复刻
-    // 会话引用校验与完整性校验两件事，而后者正是先前 ATTACHMENT_CORRUPT 的来源。
+    // 那条注入属性在本机 profile 是 MISSING；就算在，读存储也得自己补元数据，
+    // 而缺元数据正是先前 ATTACHMENT_CORRUPT 的来源。0.2.2 起桥的分工：
+    // resolveImageRef 从历史摘 ref（这层在 sessionController 的 follow/page 上），
+    // 字节仍走内核 attachment()。
     const { host } = makeHost()
     const api = createDsh02ApiProxy(host)
+    vi.mocked(host.sessionController.follow).mockImplementation(() => (async function* () {
+      yield {
+        type: 'snapshot',
+        cursor: 7,
+        records: [{
+          type: 'message/user',
+          seq: 7,
+          time: 't',
+          data: { content: [{ type: 'image', attachment: { attachmentId: 'sha256:abc', mediaType: 'image/png', bytes: 1, width: 2, height: 3 } }] },
+        }],
+        hasMore: false,
+      }
+    })())
 
     await api.sessions.readAttachment({
       rpcId: 'r',
@@ -375,6 +410,82 @@ describe('dsh 0.2.x bridge: attachments', () => {
 
     expect(host.sessionController.attachment).toHaveBeenCalledTimes(1)
     expect(host.attachments?.readImage).not.toHaveBeenCalled()
+  })
+
+  it('walks older history pages when the follow snapshot window misses the image', async () => {
+    // 图在很久以前：snapshot 窗口扫不到 → page() 往旧消息回走（throughSeq 必须用
+    // snapshot 的 cursor，beforeSeq 从窗口里最小 seq 起步，逐页推进）。
+    const { host } = makeHost()
+    const api = createDsh02ApiProxy(host)
+    const ref = { attachmentId: 'sha256:old', mediaType: 'image/webp', bytes: 9, width: 64, height: 64 }
+    vi.mocked(host.sessionController.follow).mockImplementation(() => (async function* () {
+      yield {
+        type: 'snapshot',
+        cursor: 100,
+        records: [{ type: 'message/user', seq: 95, time: 't', data: { content: [{ type: 'text', text: 'no image here' }] } }],
+        hasMore: true,
+      }
+    })())
+    vi.mocked(host.sessionController.page).mockResolvedValue({
+      records: [{ type: 'message/user', seq: 10, time: 't', data: { content: [{ type: 'image', attachment: ref }] } }],
+      hasMore: false,
+    })
+
+    const response = await api.sessions.readAttachment({
+      rpcId: 'r',
+      payload: { sessionId: 'session-1', attachmentId: 'sha256:old' },
+    })
+
+    expect(response.result.ok).toBe(true)
+    expect(vi.mocked(host.sessionController.page)).toHaveBeenCalledWith(
+      { address: { kind: 'session', sessionId: 'session-1' }, throughSeq: 100, beforeSeq: 95, maxMessages: 200 },
+      expect.anything(),
+    )
+    expect(vi.mocked(host.sessionController.attachment)).toHaveBeenCalledWith({
+      sessionId: 'session-1',
+      attachment: ref,
+    })
+  })
+
+  it('answers ATTACHMENT_NOT_FOUND when neither snapshot nor pages reference the image', async () => {
+    // 0.2.1 时代「只有 id、元数据在内核手里」的旧图，0.2.2 起无处可查 ——
+    // 如实报错，而不是拿一个编造的 ref 去碰运气（内核五必填 schema 也会拒）。
+    const { host } = makeHost()
+    const api = createDsh02ApiProxy(host)
+
+    const response = await api.sessions.readAttachment({
+      rpcId: 'r',
+      payload: { sessionId: 'session-1', attachmentId: 'sha256:never-existed' },
+    })
+
+    expect(response.result.ok).toBe(false)
+    expect(response.result.ok === false && response.result.error.code).toBe('ATTACHMENT_NOT_FOUND')
+    expect(vi.mocked(host.sessionController.attachment)).not.toHaveBeenCalled()
+  })
+
+  it('memoizes resolved refs per session+attachment across calls', async () => {
+    // ref 解析要开 follow 流扫历史，记忆化让它一图只扫一次（模块级 LRU，512 条）。
+    const { host } = makeHost()
+    const api = createDsh02ApiProxy(host)
+    const ref = { attachmentId: 'sha256:lru', mediaType: 'image/jpeg', bytes: 1, width: 1, height: 1 }
+    vi.mocked(host.sessionController.follow).mockImplementation(() => (async function* () {
+      yield {
+        type: 'snapshot',
+        cursor: 5,
+        records: [{ type: 'message/user', seq: 5, time: 't', data: { content: [{ type: 'image', attachment: ref }] } }],
+        hasMore: false,
+      }
+    })())
+
+    for (let i = 0; i < 2; i += 1) {
+      const response = await api.sessions.readAttachment({
+        rpcId: 'r',
+        payload: { sessionId: 'session-1', attachmentId: 'sha256:lru' },
+      })
+      expect(response.result.ok).toBe(true)
+    }
+    expect(vi.mocked(host.sessionController.follow)).toHaveBeenCalledTimes(1)
+    expect(vi.mocked(host.sessionController.attachment)).toHaveBeenCalledTimes(2)
   })
 
   it('reads optional services through ctx.reflect.get (the 0.2.0 shape)', async () => {
@@ -1006,6 +1117,22 @@ describe('dsh 0.2.x bridge: contract shapes', () => {
       type: 'host/remote-event',
       event: 'agent-preset/selected',
       args: ['session-5', 'standard'],
+    })
+    controller.abort()
+  })
+
+  it('relays llm/models-updated (0.2.2) onto the host stream', async () => {
+    const { host, emit } = makeHost()
+    const api = createDsh02ApiProxy(host)
+    const controller = new AbortController()
+    const stream = api.events.host({ rpcId: 'r', payload: {} }, controller.signal)
+
+    emit('llm/models-updated', 'deepseek')
+    const frame = await nextFrame(stream)
+    expect(frame).toMatchObject({
+      type: 'host/remote-event',
+      event: 'llm/models-updated',
+      args: ['deepseek'],
     })
     controller.abort()
   })

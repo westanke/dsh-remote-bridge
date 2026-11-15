@@ -113,6 +113,7 @@ export type ClientFrameType =
   | 'session-cancel'
   | 'session-archive'
   | 'session-rename'
+  | 'session-wait'
   | 'session-agent-preset'
   | 'queue-update'
   | 'select-agent-preset'
@@ -184,6 +185,7 @@ export type ServerFrameKind =
   | 'session-queue'
   | 'session-archived'
   | 'session-renamed'
+  | 'session-waited'
   | 'session-archives'
   | 'session-title-changed'
   | 'error'
@@ -319,6 +321,18 @@ export interface SessionRenameFrame extends ClientFrame {
   type: 'session-rename'
   sessionId: string
   title: string
+}
+
+/**
+ * 会话等待客户端帧（DSH 0.2.2 `session/wait`，P2-C）：阻塞直到会话静止 /
+ * 有待输入 / 超时。长轮询语义——网关层不设额外超时，等待时长就是 `timeoutMs`。
+ */
+export interface SessionWaitFrame extends ClientFrame {
+  type: 'session-wait'
+  sessionId: string
+  timeoutMs?: number
+  afterSeq?: number
+  maxMessages?: number
 }
 
 /** 会话 agent-preset 锁定客户端帧。 */

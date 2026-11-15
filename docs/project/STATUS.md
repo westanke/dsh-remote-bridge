@@ -1,6 +1,39 @@
 # 当前状态
 
-- 日期：2026-11-11（**已发版 v2.10.1**，#11 + #13 两处修复已合入并发布）
+- 日期：2026-11-15（**进行中：DSH 0.2.2-rc.1 适配**）
+- **进行中（2026-11-15）· DSH 0.2.2-rc.1 适配（调研报告 [DSH-0.2.2-ADAPTATION.md](DSH-0.2.2-ADAPTATION.md) → 按报告 §六顺序改码）**：
+  - **P0-1 已完成**：`session/attachment` 0.2.2 不再代查引用且请求改收完整 `ImageAttachmentRef`
+    （五必填字段）——桥 `bridge/attachments.ts` 新增 `resolveImageRef`（历史 records 递归摘 ref +
+    模块级 LRU 512 条 + `page` 回走有界 4 轮，未找到 404 `ATTACHMENT_NOT_FOUND`），
+    `dsh-0.2-bridge.ts` 调用点与 `kernel-services.ts` 类型同步改；App 契约不变（仍只传 attachmentId）。
+  - **P0-2 已完成**：schedule Remote 换方法面（catalog 裸数组/create/edit 替代 update+delete/
+    `expectedUpdatedAt` 乐观并发/`patch.active` 暂停恢复/记录面 sessionId 移入 `target`）——
+    `ws-schedule.ts` 重写（双向翻译，App 帧契约不变：记录仍 `sessionId`+`active|inactive`，
+    paused/ended→inactive，新字段透传）；`bff-schedule.ts` 改走远程 create/edit（宿主 `ctx.schedule`
+    端口与 `ScheduleCreatePort` 删除），暂停/恢复可用（ended 恢复仍 409 `SCHEDULE_ENDED`），
+    `createdAt` 回真实 epoch；`index.ts`/`router.ts`/`capabilities.ts` 接线同步（`chat-schedules-v1`
+    改随 typertGateway 同生死）；**engines.dsh 升 `>=0.2.2-rc.1 <0.3.0`**（schedule 面只认 0.2.2+）。
+    五处契约面：API.md/BFF-REST-CONTRACT/INTERFACES 已同步（openapi/asyncapi 的 schedule 帧
+    payload 开放、无需改；kotlin-sdk 无 schedule 帧模型）。
+  - **P1-3 已完成**：`dsh.client.inject` 死引用清理——0.2.2 内核 loader 对缺失 graph row 的
+    inject 项静默跳过（`dsh-client-modules/lib/client.js` `arriveGraphRow`），桥 client bundle
+    自包含（仅 external react），`package.json` inject 只留三个实装的 client-ui 包。
+  - **P1-4 已完成**：`page().throughSeq` 0.2.2 可选化——`SessionControllerLike` 类型对齐内核真值，
+    桥**保留锚定** follow 首帧 cursor（页窗口 `(beforeSeq, throughSeq]`，省略会被新流量挤占窗口）；
+    `session/events` 别名暂不切换。
+  - **P2 A–E 已完成（2026-11-15，用户指令「现在做」，均 additive）**：
+    A `llm/models-updated`→`chat.models.updated {provider}` 推送（frame-hub 中继 + chat-adapter
+    规范化，badge 经 models 接口自然透出）；B 内置命令词条 `BUILTIN_COMMAND_IDS`/`BUILTIN_COMMAND_TOKENS`
+    （en/zh 六条）透出到 commands REST 响应与 WS 帧（`definitionId`/`builtin`/`builtinTokens`）；
+    C `session/wait` 长轮询——REST `POST /chat/sessions/{sessionId}/wait`（timeoutMs 钳
+    1–120000 缺省 30000、RPC 超时按请求放宽）+ WS `session-wait`/`session-waited` 帧对；
+    D `POST /attachments` 响应 additive `attachment:{attachmentId,name,bytes}`（0.2.2 upload
+    结果的 file 元数据）；E schedule timing/target 透传——item 恒回 `kind`，非 cron kind
+    回 `cron:null`+规则字段（不再隐藏），`POST`/`PATCH` 收 `timing` 七种原样，`POST` 可带
+    `target`（new_once/new 内核建会话）。五处契约面同步（API.md/openapi/asyncapi/
+    BFF-REST-CONTRACT/INTERFACES + CHANGELOG-DEV）。
+  - issue 后补（用户已同意先改码——Gitee token 缺 issues scope，POST 回 Not Found Project）。
+  - 真机验证清单见调研报告 §五（bridge 未装回实装目录前全部未验）。
 - **进行中 REL-006（2026-11-11）· npm 可信发布者（OIDC）自动发布**：
   `.github/workflows/publish.yml` 已写好（tag `v*` 触发、`id-token: write`、OIDC 换短时效令牌、
   仓库里不存任何 npm 凭据），配套文档已同步（`RELEASE.md` §2.1、`STRUCTURE.md` §3.6/§5、
