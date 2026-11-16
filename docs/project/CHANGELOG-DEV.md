@@ -1,5 +1,33 @@
 # 开发日志
 
+## v2.11.1 · 挂起提问寿命随桌面走 —— 终结「电脑端有、手机端没有」（2026-11-16）
+
+**现象**（Gitee issue IKVP1Q，真机复现）：`ask_user_question` 提问挂起 10 分钟后，手机端提问卡
+自动消失、抽屉「待回答」角标清零，但桌面 WebUI 的提问卡仍在、agent 也还在等答案。两端生命周期
+不一致：用户按手机端的状态会以为提问没了、没人答。
+
+**根因**：真实 `ask_user_question` 不进内核投影，手机端可见性**完全由桥的挂起表决定**；而表里
+每一条都挂着**无条件的 10 分钟超时定时器**（`QUESTION_PENDING_TIMEOUT_MS`），到点按 `dismissed`
+结算并摘表。桌面端卡片自持、无超时 —— 同一条提问在桌面活着、在手机端被桥单方面摘掉，正是
+「电脑端有待回答、手机端看不见」的根源。
+
+**修法**（`src/host/bridge/chat.ts`，56aa14c）：挂起寿命的定盘星改为 `delegate`（电脑端的远端
+answerer）状态——
+
+- `PendingQuestion.requestedAt` 换成 `deadline: number | null`：**delegate 未决（桌面那张卡还能
+  答）→ `deadline=null`，不设超时，两端同寿命**；
+- delegate **rejected**（典型 NO_PROVIDER：这条 profile 上没有远端客户端，App 是唯一界面）→
+  从拒绝那一刻起挂 10 分钟**自愈线**，超时仍按 `dismissed` 结算 —— 与「电脑端先答了」同一条
+  收尾路径（摘挂起项 + 推 `userQuestions/dismissed` + 把 delegate 交给调用方）；`askTimed` 接住
+  落到 continued、非 timed ask 直接失败，agent 不至永久卡死；
+- `sweepExpired` 只扫 deadline 已到期的条目，`null` 永不清扫；
+- 审批侧 `APPROVAL_PENDING_TIMEOUT_MS` 不变（等待承诺必须有超时）。
+
+**验证**：`tests/approval-timeout.spec.ts` 三个用例按新语义改写，81 文件 / 851 用例全绿；
+真机（vivo V2080A + dsh-Chat 1.0.17）实测——REST 驱动提问挂起 **11 分钟仍在**（旧代码 10 分钟
+摘）、手机冷启动后抽屉角标与会话内提问卡经 WS replay 自动出现、REST 答题后 `tool/result` 结算、
+agent 继续跑完无悬挂。
+
 ## v2.11.0 · DSH 0.2.2-rc.1 适配：附件引用解析 + schedule 面翻新 + P2 能力五件套（2026-11-15）
 
 **这一版三件事**（按 [DSH-0.2.2-ADAPTATION.md](DSH-0.2.2-ADAPTATION.md) §六顺序实施，

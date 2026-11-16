@@ -17,7 +17,7 @@
 
 <p align="center">
   <a href="./README.md">中文</a> ·
-  <img alt="Version" src="https://img.shields.io/badge/version-v2.11.0-087f8c">
+  <img alt="Version" src="https://img.shields.io/badge/version-v2.11.1-087f8c">
   <img alt="DSH plugin" src="https://img.shields.io/badge/DeepSeek_Harness-plugin-1f2328">
   <img alt="Platforms" src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-586069">
   <img alt="License" src="https://img.shields.io/badge/license-AGPL--3.0-2da44e">
@@ -92,10 +92,10 @@ dsh plugin --profile web add dsh-remote-bridge
 dsh plugin --profile web add dsh-remote-bridge --registry https://registry.npmmirror.com
 
 # 2. tarball from the GitHub release
-dsh plugin --profile web add https://github.com/westanke/dsh-remote-bridge/releases/download/v2.11.0/dsh-remote-bridge-v2.11.0.tgz
+dsh plugin --profile web add https://github.com/westanke/dsh-remote-bridge/releases/download/v2.11.1/dsh-remote-bridge-v2.11.1.tgz
 
 # 3. tarball from the Gitee release (faster from mainland China)
-dsh plugin --profile web add https://gitee.com/westanke/dsh-remote-bridge/releases/download/v2.11.0/dsh-remote-bridge-v2.11.0.tgz
+dsh plugin --profile web add https://gitee.com/westanke/dsh-remote-bridge/releases/download/v2.11.1/dsh-remote-bridge-v2.11.1.tgz
 
 npx @deepseek-ai/dsh web
 ```
@@ -112,7 +112,7 @@ Restart DSH after installation, then open settings — The section is titled **�
 To install a downloaded release archive:
 
 ```sh
-dsh plugin --profile web add ./dsh-remote-bridge-v2.11.0.tgz
+dsh plugin --profile web add ./dsh-remote-bridge-v2.11.1.tgz
 ```
 
 ## First connection
@@ -376,6 +376,16 @@ pnpm pack
 
 v2.5.0 was verified on DSH **0.2.1-rc.2** on real hardware: all 14/14 host services injected, the three jobs endpoints exercised, and the permission catalog returned the kernel's real three presets. The development baseline is upstream `dsh-v0.2.1-rc.2` (commit `687f282e8625c6b8d11ff58211a90524be2e4317`); see `engines.dsh` above for the supported range. CI covers Windows, Ubuntu, and macOS.
 
+**v2.11.1 verification status**: 81 test files / **851 cases** green; `typecheck`, `docs:check`, and
+the build all pass. This release changes only the pending-question lifetime semantics
+(issue IKVP1Q): `PendingQuestion.deadline` now follows the delegate state — no timeout while the
+delegate is pending (both ends share one lifetime, ending "visible on desktop but not on the
+phone"), and the 10-minute self-heal timer starts only once the delegate rejects; the approval
+timeout is unchanged. Verified on real hardware: a question driven over REST stayed pending for
+11 minutes (the old code dismissed it at 10), the phone's drawer badge and question card
+reappeared via WS replay after a cold start, and answering over REST settled the tool result so
+the agent resumed.
+
 **v2.11.0 verification status**: 81 test files / **851 cases** green; `typecheck`, `docs:check`, and
 the build all pass. This release completes the DSH 0.2.2-rc.1 adaptation (#15–#19): explicit
 `session/attachment` reference resolution (P0-1), the schedule overhaul (remote
@@ -406,7 +416,7 @@ inside the zero-change set, and 4 slots retained with 0 removed.
 
 ## Project
 
-- Version: `v2.11.0`
+- Version: `v2.11.1`
 - **v2.9.0 makes teammates (sub-sessions) readable**: the phone's team panel could list members and
   sub-sessions but could not open a single one, because `sessions.list` filters out every row with
   `origin === 'subagent'` (the bridge's own `dsh-0.2-bridge.ts:2327`, with a comment explaining that

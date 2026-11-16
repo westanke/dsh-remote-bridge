@@ -17,7 +17,7 @@
 
 <p align="center">
   <a href="./README.en.md">English</a> ·
-  <img alt="Version" src="https://img.shields.io/badge/version-v2.11.0-087f8c">
+  <img alt="Version" src="https://img.shields.io/badge/version-v2.11.1-087f8c">
   <img alt="DSH plugin" src="https://img.shields.io/badge/DeepSeek_Harness-plugin-1f2328">
   <img alt="Platforms" src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-586069">
   <img alt="License" src="https://img.shields.io/badge/license-AGPL--3.0-2da44e">
@@ -86,10 +86,10 @@ dsh plugin --profile web add dsh-remote-bridge
 dsh plugin --profile web add dsh-remote-bridge --registry https://registry.npmmirror.com
 
 # ② GitHub Release 的 tarball
-dsh plugin --profile web add https://github.com/westanke/dsh-remote-bridge/releases/download/v2.11.0/dsh-remote-bridge-v2.11.0.tgz
+dsh plugin --profile web add https://github.com/westanke/dsh-remote-bridge/releases/download/v2.11.1/dsh-remote-bridge-v2.11.1.tgz
 
 # ③ Gitee Release 的 tarball（国内访问更快）
-dsh plugin --profile web add https://gitee.com/westanke/dsh-remote-bridge/releases/download/v2.11.0/dsh-remote-bridge-v2.11.0.tgz
+dsh plugin --profile web add https://gitee.com/westanke/dsh-remote-bridge/releases/download/v2.11.1/dsh-remote-bridge-v2.11.1.tgz
 
 npx @deepseek-ai/dsh web
 ```
@@ -105,7 +105,7 @@ npx @deepseek-ai/dsh web
 从 GitHub Release 下载离线安装包时，可直接安装 tarball：
 
 ```sh
-dsh plugin --profile web add ./dsh-remote-bridge-v2.11.0.tgz
+dsh plugin --profile web add ./dsh-remote-bridge-v2.11.1.tgz
 ```
 
 ## 第一次使用
@@ -435,6 +435,12 @@ v2.5.0 在 DSH **0.2.1-rc.2** 上完成真机验证：14/14 宿主服务全部�
 权限档位目录返回内核真实三档。开发基线为上游 `dsh-v0.2.1-rc.2`（commit `687f282e8625c6b8d11ff58211a90524be2e4317`），
 兼容范围见上文 `engines.dsh`。CI 覆盖 Windows、Ubuntu 和 macOS。
 
+**v2.11.1 的验证状态**：81 个测试文件 / **851 个用例**全绿、`typecheck`/`docs:check`/构建通过。
+这一版只改挂起提问的寿命语义（issue IKVP1Q）：`PendingQuestion.deadline` 随 delegate 状态走 ——
+delegate 未决不设超时（两端同寿命，终结「电脑端有、手机端没有」），delegate rejected 才挂
+10 分钟自愈线；审批侧超时不变。真机实测：REST 驱动提问挂起 11 分钟仍在（旧代码 10 分钟摘）、
+手机冷启动后抽屉角标与会话内提问卡经 WS replay 自动出现、REST 答题后 agent 继续跑完。
+
 **v2.11.0 的验证状态**：81 个测试文件 / **851 个用例**全绿、`typecheck`/`docs:check`/构建通过。
 这一版完成 DSH 0.2.2-rc.1 适配（#15–#19）：`session/attachment` 显式引用解析（P0-1）、
 schedule 面翻新（远程 create/edit/`expectedUpdatedAt`/暂停恢复，P0-2）、inject 死引用清理
@@ -460,7 +466,7 @@ DSH **0.2.1-rc.3** 隔离实例上**实跑验过**，不是静态推断：插件
 
 ## 项目信息
 
-- 当前版本：`v2.11.0`
+- 当前版本：`v2.11.1`
 - **v2.9.0 是团队成员（子会话）可读版**：手机端的团队面板此前只能看到成员与子会话的名字，点开读不到
   任何内容 —— 因为 `sessions.list` 会把 `origin === 'subagent'` 的行整批滤掉（桥自己的
   `dsh-0.2-bridge.ts:2327`，注释写明「暴露出来只会得到点开就崩的行」），子会话 id 打 `/messages`
