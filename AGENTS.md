@@ -260,6 +260,7 @@ docs/api/            ← OpenAPI + AsyncAPI（wire schema 的权威）
 - `抢答与 next() 委托`
 - `waterfall 不 prepend 就等于没注册`
 - `审批否决下游：电脑端审批卡要等 10 分钟才出现`
+- `挂起提问寿命：桌面卡片无超时，手机端不得单方面摘卡`
 - `wait.callId 判据过严`
 - `npm pack 与 pnpm pack`
 - `Gitee Release 死链`

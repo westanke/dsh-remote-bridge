@@ -965,3 +965,26 @@ Windows Hello，或 Yubikey / Thetis / Feitian 硬件钥匙）** 与 **TOTP 认�
 3. 工作流里必须写 `permissions: id-token: write`，否则 npm 跳过 OIDC 直接报 `ENEEDAUTH`；
    只能用 GitHub 托管 runner，自托管不支持。
 4. 配置与排查细节见 `docs/project/RELEASE.md` §2.1。
+
+### 挂起提问寿命：桌面卡片无超时，手机端不得单方面摘卡
+
+**踩坑**（2026-11-16，用户报障「电脑端列表有待回答、点进去能看到提问卡；手机端两个都看不见」）：
+`QuestionBridge.attach` 给挂起提问挂的是**无条件 10 分钟定时器**（`QUESTION_PENDING_TIMEOUT_MS`）。
+到点只把挂起项摘表 + 推 `userQuestions/dismissed` —— 但 `delegate`（桌面远端 answerer）**还挂着**，
+桌面那张卡是客户端自持、无超时。结果：桌面照旧显示可答，手机端的卡被单方面推掉；
+提问若发生在手机连接之前且已过 10 分钟，重放也补不回来（`replayPendingQuestions` 只用 `pendingAll`）。
+
+**根因**：真实 `ask_user_question` 参数只有 `questions`（无 `timeout`）→ 不进内核投影、
+`GET /questions` 查不到，只走 Cordis waterfall —— 手机端的可见性**完全**由本插件的挂起表决定，
+摘表 = 手机端永久失明，而内核/桌面的这次提问还活着。
+
+**现在怎么办**：挂起寿命随 `delegate` 状态走 —— 未决（桌面还能答）→ 不设超时，两端同寿命；
+rejected（NO_PROVIDER，手机是唯一界面）→ 自拒起 10 分钟自愈线，超时按 `dismissed` 收尾。
+`PendingQuestion.deadline === null` 的条目 `sweepExpired` 永不清扫。审批侧（`APPROVAL_PENDING_TIMEOUT_MS`）
+**不受影响** —— 审批是等待承诺，无人答内核永久阻塞，必须有超时。
+
+**铁律**：
+
+1. 给手机端摘卡之前，先问「这次提问在桌面/内核侧还活着吗」—— 活着就不许摘（两端一致性 > 自愈洁癖）。
+2. 自愈线只该保护「唯一界面也答不了」的场景（delegate rejected），不是统一寿命。
+3. 回归锚：`tests/approval-timeout.spec.ts` 的 `question pending timeout` 三个用例。

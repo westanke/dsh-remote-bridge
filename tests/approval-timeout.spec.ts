@@ -31,7 +31,9 @@ import { createDsh02ApiProxy } from '../src/host/dsh-0.2-bridge.ts'
  * 3. 重复 `respond()` 不二次结算；
  * 4. 定时器被清掉（不泄漏）—— 包括**电脑端先赢**那条路；
  * 5. 进入即委托（电脑端立刻拿到卡），下游的 `'unavailable'` 不算答复；
- * 6. 提问侧同口径，且 `sweepExpired` 能把漏网条目扫掉。
+ * 6. 提问侧（2026-11-16 待回答修复）：挂起寿命随 delegate 走 —— 桌面未拒
+ *    （卡片还能答）→ 永不过期、与桌面同寿命；桌面拒绝（NO_PROVIDER）→
+ *    自拒起 10 分钟自愈线，超时 dismissed + 推 `userQuestions/dismissed`。
  */
 
 const TIMEOUT_MS = 10 * 60_000
@@ -92,6 +94,26 @@ function pendingDownstream(): { run: () => Promise<unknown>; resolve: (value: un
   return {
     run: () => promise,
     resolve: (value: unknown) => release(value),
+  }
+}
+
+/**
+ * 可拒绝版下游：模拟「这条 profile 上根本没有远端客户端」（NO_PROVIDER）。
+ * 2026-11-16 待回答修复后，提问挂起项只有在 delegate **rejected** 之后才挂
+ * 10 分钟自愈线 —— delegate 未决时与桌面卡片同寿命、不过期。
+ */
+function rejectableDownstream(): {
+  run: () => Promise<unknown>
+  resolve: (value: unknown) => void
+  reject: (reason?: unknown) => void
+} {
+  let release: (value: unknown) => void = () => undefined
+  let fail: (reason?: unknown) => void = () => undefined
+  const promise = new Promise<unknown>((resolve, reject) => { release = resolve; fail = reject })
+  return {
+    run: () => promise,
+    resolve: (value: unknown) => release(value),
+    reject: (reason?: unknown) => fail(reason),
   }
 }
 
@@ -353,57 +375,71 @@ describe('approval delegates on entry (#13)', () => {
 })
 
 describe('question pending timeout', () => {
-  it('dismisses a question nobody answers and delegates downstream', async () => {
+  // 2026-11-16 待回答修复：挂起寿命随 delegate 走（与桌面卡片同寿命），
+  // 自愈线只在 delegate **rejected**（桌面答不了）之后才启动。
+  it('keeps the card pending while the desktop answerer is alive (no unilateral expiry)', async () => {
     const { host, fire } = fakeHost()
     const proxy = createDsh02ApiProxy(host, { imageHandoff: false })
     const mux = collectFrames(proxy)
 
     const downstream = pendingDownstream()
-    let settled = false
     const hook = fire('user-questions/request', {
       agent,
       questions: [{ id: 'q1', question: 'which one?' }],
-    }, downstream.run).then((value) => {
-      settled = true
-      return value
-    })
+    }, downstream.run)
 
     await vi.advanceTimersByTimeAsync(0)
     expect(mux.frames.some(frame => frame.type === 'userQuestions/requested')).toBe(true)
+    expect(proxy.userQuestions.pendingAll?.() ?? []).toHaveLength(1)
 
-    await vi.advanceTimersByTimeAsync(TIMEOUT_MS - 1_000)
-    expect(settled).toBe(false)
+    // 旧实现在这里就 dismissed 了（无条件 10 分钟定时器）；新实现必须与桌面
+    // 卡片同寿命 —— 桌面还挂着（未拒），手机端这张卡就不过期。
+    await vi.advanceTimersByTimeAsync(TIMEOUT_MS * 2)
+    expect(proxy.userQuestions.pendingAll?.() ?? []).toHaveLength(1)
+    expect(mux.frames.some(frame => frame.type === 'userQuestions/dismissed')).toBe(false)
 
-    await vi.advanceTimersByTimeAsync(1_000)
-    // 超时按 dismissed 收尾后，钩子会把 `delegate` 原样交出去 —— 所以在断言它之前
-    // 得先让下游有个结果（真实世界里那是「人终于点了」或窗口关闭）。
+    // 桌面终于答了 → 走 delegated 收尾（摘表 + 推 dismissed + 交还 delegate）。
     downstream.resolve('downstream-delegate')
     await expect(hook).resolves.toBe('downstream-delegate')
-    // 手机端那张卡才能消失（否则它变成一张点不动的陈旧卡片）。
+    expect(proxy.userQuestions.pendingAll?.() ?? []).toHaveLength(0)
     expect(mux.frames.some(frame => frame.type === 'userQuestions/dismissed')).toBe(true)
 
     await mux.settle()
   })
 
-  it('lists a pending question until it expires, then stops listing it', async () => {
+  it('dismisses after the self-heal window once the desktop is gone (downstream rejected)', async () => {
     const { host, fire } = fakeHost()
     const proxy = createDsh02ApiProxy(host, { imageHandoff: false })
     const mux = collectFrames(proxy)
 
-    const downstream = pendingDownstream()
+    const downstream = rejectableDownstream()
     const hook = fire('user-questions/request', {
       agent,
       questions: [{ id: 'q1', question: 'pick' }],
     }, downstream.run)
+    // 先把 hook 的结局落成已处理的派生 promise：超时 dismiss 发生在
+    // `advanceTimersByTimeAsync` 窗口内，hook 会在那时拒绝 —— 事后再挂
+    // `expect(...).rejects` 会被 vitest 记一笔 unhandled rejection。
+    const hookOutcome = hook.then(
+      () => 'resolved' as const,
+      (err: unknown) => `rejected:${(err as Error).message}` as const,
+    )
 
     await vi.advanceTimersByTimeAsync(0)
     // 挂起表里能查到它（`pendingAll` 是连接重放的入口）。
     expect(proxy.userQuestions.pendingAll?.() ?? []).toHaveLength(1)
 
-    await vi.advanceTimersByTimeAsync(TIMEOUT_MS)
-    downstream.resolve('done')
-    await hook
-    // 超时后被摘掉 —— 重放不该再把一条已作废的提问推给新连接。
+    // 下游拒绝（NO_PROVIDER）= 桌面答不了了，App 是唯一界面 → 自愈线启动。
+    downstream.reject(new Error('downstream-gone'))
+    await vi.advanceTimersByTimeAsync(TIMEOUT_MS - 1_000)
+    expect(proxy.userQuestions.pendingAll?.() ?? []).toHaveLength(1)
+
+    await vi.advanceTimersByTimeAsync(1_000)
+    // 自愈按 dismissed 收尾后，钩子会把 `delegate` 原样交出去 —— 这里已拒绝，
+    // 所以 hook 以同一个错误失败（`askTimed` 会接住落到 continued）。
+    expect(await hookOutcome).toBe('rejected:downstream-gone')
+    // 手机端那张卡才能消失（否则它变成一张点不动的陈旧卡片）。
+    expect(mux.frames.some(frame => frame.type === 'userQuestions/dismissed')).toBe(true)
     expect(proxy.userQuestions.pendingAll?.() ?? []).toHaveLength(0)
 
     await mux.settle()
@@ -427,10 +463,11 @@ describe('question pending timeout', () => {
     // 33 条里只有 32 条进得了挂起表；第 33 条**立刻**被交给下游。
     expect(proxy.userQuestions.pendingAll?.() ?? []).toHaveLength(32)
 
-    // 让挂起的那 32 条超时退出，避免收尾时留下未结算的 Promise。
-    await vi.advanceTimersByTimeAsync(TIMEOUT_MS)
+    // 新语义下挂起项不再随时间 dismissed（delegate 未决同寿命）：收尾改为让
+    // 下游 resolve，32 条全部走 delegated 出口。
     downstream.resolve('downstream')
     await Promise.all(hooks)
+    expect(proxy.userQuestions.pendingAll?.() ?? []).toHaveLength(0)
     await mux.settle()
   })
 })

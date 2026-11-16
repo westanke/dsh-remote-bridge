@@ -278,10 +278,14 @@ interface PendingQuestion {
   callId: string
   questions: unknown[]
   settle: (outcome: QuestionBridgeOutcome) => void
-  /** 挂起超时定时器；结算时必须清掉（见 [QUESTION_PENDING_TIMEOUT_MS]）。 */
+  /** 自愈定时器（下游拒绝后才挂上，见 [QUESTION_PENDING_TIMEOUT_MS]）；结算时必须清掉。 */
   timer: NodeJS.Timeout
-  /** 进入挂起表的时间；按它做批量清扫（表本身也随定时器逐条退出）。 */
-  requestedAt: number
+  /**
+   * 自愈线（epoch ms）；`null` = 下游仍未决，与桌面卡片同寿命、**不设超时**
+   * （2026-11-16 待回答修复：旧的无条件 10 分钟定时器只摘手机端的卡，
+   * 桌面照旧显示，正是「电脑端有、手机端没有」的根源）。
+   */
+  deadline: number | null
 }
 
 /**
@@ -331,11 +335,18 @@ export const SESSION_RELAY_LIMIT = 8
 export const APPROVAL_PENDING_TIMEOUT_MS = 10 * 60_000
 
 /**
- * 一条前台提问**最多挂起多久**（10 分钟，与审批同口径）。
+ * 下游拒绝后，一条前台提问的**自愈窗口**（10 分钟，与审批同口径）。
  *
- * 提问不阻塞内核（Agent 已经继续跑），但它一样会吊着一个 Promise 与一条挂起表条目。
- * 超时按 `dismissed` 结算：推 `userQuestions/dismissed` 让手机端那张卡片消失，
- * 同时把 `delegate` 交给调用方 —— 与「用户点了电脑端」同一条收尾路径。
+ * 挂起寿命的定盘星是 `delegate`（电脑端的远端 answerer）：它未决 = 桌面那张卡还
+ * 能答（桌面卡片无超时，见 #13），此时手机端这张卡**不设超时** —— 两端同寿命，
+ * 不会出现「电脑端还挂着『待回答』、手机端却先消失」（2026-11-16 待回答修复，
+ * 旧的无条件 10 分钟定时器只摘手机端的卡，正是两端不一致的根源）。
+ *
+ * `delegate` **rejected**（典型 NO_PROVIDER：这条 profile 上没有远端客户端）=
+ * 桌面答不了了，App 是唯一界面。这时才有「两端都不答、signal 也不 abort」的
+ * 永挂风险 —— 从拒绝那一刻起再等本窗口，超时按 `dismissed` 结算：推
+ * `userQuestions/dismissed` 让手机端那张卡片消失，同时把 `delegate` 交给调用方
+ * （`askTimed` 会把它接住落到 continued；非 timed ask 直接失败）。
  */
 export const QUESTION_PENDING_TIMEOUT_MS = 10 * 60_000
 
@@ -465,20 +476,27 @@ export class QuestionBridge {
           settle,
           // 占位，下一行立刻覆盖（`settle` 需要 `entry.timer`，只能这样打破循环）。
           timer: setTimeout(() => undefined, 0),
-          requestedAt: Date.now(),
+          // delegate 未决 = 电脑端那张卡还能答（桌面卡片无超时）→ 不设自愈线，
+          // 两端同寿命；`delegate` rejected 后才挂上 10 分钟自愈定时器。
+          deadline: null,
         }
         clearTimeout(entry.timer)
-        // **挂起超时**：两端都不答、signal 也不 abort 时，此前这个 Promise 永不结算，
-        // 手机端那张卡永远点不动（它还在表里，所以既不能答、也不会消失）。
-        //
-        // 结算成 `dismissed`：与「电脑端先答了」走同一条收尾路径（摘挂起项 +
-        // 推 `userQuestions/dismissed` + 把 delegate 交给调用方）。
-        // `unref()`：最长挂 10 分钟，不该拦住进程退出；正常路径会 clearTimeout。
-        entry.timer = setTimeout(() => {
-          bridge.pending.delete(rpcId)
-          settle({ kind: 'dismissed' })
-        }, QUESTION_PENDING_TIMEOUT_MS)
-        entry.timer.unref?.()
+        // **自愈线只在下游拒绝后启动**：`delegate` reject（典型 NO_PROVIDER，这条
+        // profile 上没有远端客户端）= 桌面答不了了，App 是唯一界面。那时才有
+        // 「两端都不答、signal 也不 abort」的永挂风险，10 分钟后按 `dismissed`
+        // 结算 —— 与「电脑端先答了」同一条收尾路径（摘挂起项 + 推
+        // `userQuestions/dismissed` + 把 delegate 交给调用方；`askTimed` 会把它
+        // 接住落到 continued / 非 timed ask 直接失败，agent 不至永久卡死）。
+        // `unref()`：最长再挂 10 分钟，不该拦住进程退出；正常路径会 clearTimeout。
+        void delegate.then(undefined, () => {
+          if (entry.deadline !== null) return // 已挂过（拒绝回调只应触发一次）
+          entry.deadline = Date.now() + QUESTION_PENDING_TIMEOUT_MS
+          entry.timer = setTimeout(() => {
+            bridge.pending.delete(rpcId)
+            settle({ kind: 'dismissed' })
+          }, QUESTION_PENDING_TIMEOUT_MS)
+          entry.timer.unref?.()
+        })
         bridge.pending.set(rpcId, entry)
         // 中止 = 限时窗口到期或整轮被取消 → 让这张卡作废，然后把 delegate 原样交给调用方
         // （与 task-18 相同：下游没人接就 reject，askTimed 会把它接住并落到 continued）。
@@ -571,22 +589,25 @@ export class QuestionBridge {
   }
 
   /**
-   * 清扫**已经超期**的挂起项。
+   * 清扫**已经超过自愈线**的挂起项。
    *
    * 为什么还需要这个「批量清扫」，既然每条都有自己的定时器：
    * 定时器是**正常**路径；清扫是**兜底**。两者都存在的理由与 `pending` 表的最小不变式
-   * 有关 —— 表里的每一条都必须「要么会被用户结算、要么会被超时结算、要么会被这里扫掉」。
+   * 有关 —— 表里的每一条都必须「要么会被用户结算、要么会被 delegate 结算
+   * （先答 = delegated；拒绝 = 挂自愈线，到期结算）、要么会被这里扫掉」。
    * 少任何一条都会留下永久条目（那正是修复前的状态：只有用户结算这一条路）。
    *
-   * 它按 `requestedAt` 判断而不是再挂一个计时器：调用方（适配层）可以在任意时机
+   * 它按 `deadline` 判断而不是再挂一个计时器：调用方（适配层）可以在任意时机
    * 顺手调一次，代价是 O(表中条目数)，而这个表被 `MAX_PENDING_QUESTIONS` 封在 32。
+   * `deadline === null`（下游未决）**永不清扫** —— 桌面卡片无超时，两端必须同寿命。
    *
    * @returns 被清掉多少条（供日志/测试断言）。
    */
   sweepExpired(now = Date.now()): number {
     let swept = 0
     for (const [rpcId, entry] of this.pending) {
-      if (now - entry.requestedAt < QUESTION_PENDING_TIMEOUT_MS) continue
+      if (entry.deadline === null) continue
+      if (now < entry.deadline) continue
       this.pending.delete(rpcId)
       clearTimeout(entry.timer)
       entry.settle({ kind: 'dismissed' })
