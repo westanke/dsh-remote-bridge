@@ -988,3 +988,22 @@ rejected（NO_PROVIDER，手机是唯一界面）→ 自拒起 10 分钟自愈�
 1. 给手机端摘卡之前，先问「这次提问在桌面/内核侧还活着吗」—— 活着就不许摘（两端一致性 > 自愈洁癖）。
 2. 自愈线只该保护「唯一界面也答不了」的场景（delegate rejected），不是统一寿命。
 3. 回归锚：`tests/approval-timeout.spec.ts` 的 `question pending timeout` 三个用例。
+
+### Gitee issue 写 API 路径不含 repo 段（PATCH 404 Not Found Project）
+
+**踩坑**（2026-11-16，v2.11.1 发版当天关 issue IKVP1Q）：按官方 swagger 的
+`PATCH /repos/{owner}/{repo}/issues/{number}` 关 issue —— GET 能查到，PATCH 恒 404
+`{"message":"Not Found Project"}`；换 urlencoded 表单、form 字段、`PUT` 全试一遍
+（PUT 直接 405），无一幸免。
+
+**根因**：Gitee OpenAPI v5 的 issue **写**端点实际路径是 `/repos/{owner}/issues/{number}`
+（**没有 repo 段**），`repo` 是 body 字段；**读**端点才是 `/repos/{owner}/{repo}/issues/{number}`。
+两套路径形近致错（imjoey/ge PR !45 修的就是这个）。
+
+**现在怎么办**：
+
+1. 关闭/编辑：`PATCH /repos/{owner}/issues/{number}?access_token=…`，body
+   `{"repo":"<repo>","number":"<编号>","state":"closed"}`（JSON body 可用）。
+2. 评论走 `POST /repos/{owner}/{repo}/issues/{number}/comments`（读同款路径）；
+   token 统一放 query 或 header，`-F` 与 `-d @file` 混用会静默失败（multipart 混 urlencoded）。
+3. 项目管理型（project 型）issue 的写 API 未公开，仍只能网页操作。
