@@ -17,7 +17,7 @@
 
 <p align="center">
   <a href="./README.en.md">English</a> ·
-  <img alt="Version" src="https://img.shields.io/badge/version-v2.11.1-087f8c">
+  <img alt="Version" src="https://img.shields.io/badge/version-v2.12.0-087f8c">
   <img alt="DSH plugin" src="https://img.shields.io/badge/DeepSeek_Harness-plugin-1f2328">
   <img alt="Platforms" src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-586069">
   <img alt="License" src="https://img.shields.io/badge/license-AGPL--3.0-2da44e">
@@ -86,10 +86,10 @@ dsh plugin --profile web add dsh-remote-bridge
 dsh plugin --profile web add dsh-remote-bridge --registry https://registry.npmmirror.com
 
 # ② GitHub Release 的 tarball
-dsh plugin --profile web add https://github.com/westanke/dsh-remote-bridge/releases/download/v2.11.1/dsh-remote-bridge-v2.11.1.tgz
+dsh plugin --profile web add https://github.com/westanke/dsh-remote-bridge/releases/download/v2.12.0/dsh-remote-bridge-v2.12.0.tgz
 
 # ③ Gitee Release 的 tarball（国内访问更快）
-dsh plugin --profile web add https://gitee.com/westanke/dsh-remote-bridge/releases/download/v2.11.1/dsh-remote-bridge-v2.11.1.tgz
+dsh plugin --profile web add https://gitee.com/westanke/dsh-remote-bridge/releases/download/v2.12.0/dsh-remote-bridge-v2.12.0.tgz
 
 npx @deepseek-ai/dsh web
 ```
@@ -105,7 +105,7 @@ npx @deepseek-ai/dsh web
 从 GitHub Release 下载离线安装包时，可直接安装 tarball：
 
 ```sh
-dsh plugin --profile web add ./dsh-remote-bridge-v2.11.1.tgz
+dsh plugin --profile web add ./dsh-remote-bridge-v2.12.0.tgz
 ```
 
 ## 第一次使用
@@ -435,6 +435,20 @@ v2.5.0 在 DSH **0.2.1-rc.2** 上完成真机验证：14/14 宿主服务全部�
 权限档位目录返回内核真实三档。开发基线为上游 `dsh-v0.2.1-rc.2`（commit `687f282e8625c6b8d11ff58211a90524be2e4317`），
 兼容范围见上文 `engines.dsh`。CI 覆盖 Windows、Ubuntu 和 macOS。
 
+**v2.12.0 的验证状态**：81 个测试文件 / **854 个用例**全绿、`typecheck`/`docs:check`/构建通过。
+这一版让**工具调用在实时路径上可见**：`assistant/chunk` 的 `tool-call-delta`（参数流式生成，
+官方 preparing 态的数据源）与 `block-end` 的 tool-call 边界此前落进兜底分支被整帧丢弃，
+`tool/call` / `tool/result` 两类会话事件同样丢 `event.data` —— 手机端工具行没有「准备调用」
+阶段、失败没有内核错误分类（`ASK_CANCELLED` 被当普通失败）、结果只能靠防抖重拉历史才出现。
+现在 delta 扩出 `kind:'tool-call'` / `kind:'tool-call-end'`（`callId`/`name`/`argumentsDelta`
+宽容透传），新增 `chat.tool.call` / `chat.tool.result` 两类帧且 `event.data` 原样透传
+（含 `error.code`）；exit code 不是协议字段（官方客户端从结果文本尾部标记解析，桥不动）。
+同一开发线还补了 `chat.message.committed` 的 `hasReplyContent`：内核在工具执行**之前**就落库
+只含 tool-call 块的 assistant 消息，一次带工具的回合会提交多条、只有最后那条带正文，客户端
+据此区分「中途提交」与「最终回答」（判据与官方 `hasAssistantReplyContent` 逐字同义）。
+五处契约面同步（API.md / asyncapi / INTERFACES / kotlin-sdk 注释 / CHANGELOG-DEV）。
+「始终允许」键不做 —— 内核 `OUTCOMES` 无 `always`，官方 WebUI 也未接线。
+
 **v2.11.1 的验证状态**：81 个测试文件 / **851 个用例**全绿、`typecheck`/`docs:check`/构建通过。
 这一版只改挂起提问的寿命语义（issue IKVP1Q）：`PendingQuestion.deadline` 随 delegate 状态走 ——
 delegate 未决不设超时（两端同寿命，终结「电脑端有、手机端没有」），delegate rejected 才挂
@@ -466,7 +480,7 @@ DSH **0.2.1-rc.3** 隔离实例上**实跑验过**，不是静态推断：插件
 
 ## 项目信息
 
-- 当前版本：`v2.11.1`
+- 当前版本：`v2.12.0`
 - **v2.9.0 是团队成员（子会话）可读版**：手机端的团队面板此前只能看到成员与子会话的名字，点开读不到
   任何内容 —— 因为 `sessions.list` 会把 `origin === 'subagent'` 的行整批滤掉（桥自己的
   `dsh-0.2-bridge.ts:2327`，注释写明「暴露出来只会得到点开就崩的行」），子会话 id 打 `/messages`

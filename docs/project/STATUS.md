@@ -1,22 +1,22 @@
 # 当前状态
 
-- 日期：2026-11-17（**进行中：DSH 0.2.2-rc.1 适配 + 工具调用实时事件透传**）
-- **进行中（2026-11-17）· 工具调用实时事件透传（`chat.tool.call` / `chat.tool.result` / delta kind 扩展）**：
+- 日期：2026-11-17（**已发版 v2.12.0：工具调用实时事件透传 + hasReplyContent**）
+- **已完成（v2.12.0，2026-11-17）· 工具调用实时事件透传（`chat.tool.call` / `chat.tool.result` / delta kind 扩展）**：
   `normalizeDshEvent` 此前把 `tool-call-delta` 与 `tool/call`/`tool/result` 全部落兜底分支丢
   `event.data`——App 工具行无 preparing 态、失败无内核错误分类、结果靠防抖重拉历史。已改：
   delta 扩 `tool-call`/`tool-call-end` 两种 kind（宽容透传），tool 两类事件 `data` 原样透传；
   exit code 不做协议字段（官方从结果文本尾部标记解析）；「始终允许」键不做（内核 OUTCOMES 无
   always、官方未接线）。五处契约面同步（API.md/asyncapi/INTERFACES/kotlin-sdk 注释 +
-  chat-adapter.spec 新 2 组用例）；详见 CHANGELOG-DEV v2.12.0 段。**未发版、未推送**；
-  dsh-Chat 两端客户端消费另行改造（同日另一仓库线）。
-- **进行中（2026-11-17）· `chat.message.committed` 补 `hasReplyContent`**：
+  chat-adapter.spec 新 2 组用例）；详见 CHANGELOG-DEV v2.12.0 段。**已随 v2.12.0 发版并推送**
+  （Git + npm 双渠道）；dsh-Chat 两端客户端消费见另一仓库同日提交。
+- **已完成（v2.12.0，2026-11-17）· `chat.message.committed` 补 `hasReplyContent`**：
   内核在工具执行前就把只含 `tool-call` 块的 assistant 消息 settle 落库，一次带工具的回合提交
   **多条** assistant 消息、只有最后那条带正文；桥此前只送 `role`，客户端收到第一条就清流
   + 收起过程组 + 停掉工具行刷新（而工具还没开始跑）。新增 `hasReplyContent` 布尔字段，判据与
   官方 WebUI 的 `hasAssistantReplyContent` 逐字同义（reasoning/tool-call 不算、text 按 trim
   判空、其余算正文），`user/message` 不带。老客户端忽略即退回原行为。契约面：asyncapi
   `ChatMessageCommitted` + API.md 新段 + CHANGELOG-DEV v2.12.0 段追加 + spec 新 1 组用例。
-  **未发版、未推送**。
+  **已随 v2.12.0 发版并推送**。
 - **进行中（2026-11-15）· DSH 0.2.2-rc.1 适配（调研报告 [DSH-0.2.2-ADAPTATION.md](DSH-0.2.2-ADAPTATION.md) → 按报告 §六顺序改码）**：
   - **P0-1 已完成**：`session/attachment` 0.2.2 不再代查引用且请求改收完整 `ImageAttachmentRef`
     （五必填字段）——桥 `bridge/attachments.ts` 新增 `resolveImageRef`（历史 records 递归摘 ref +

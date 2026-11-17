@@ -17,7 +17,7 @@
 
 <p align="center">
   <a href="./README.md">中文</a> ·
-  <img alt="Version" src="https://img.shields.io/badge/version-v2.11.1-087f8c">
+  <img alt="Version" src="https://img.shields.io/badge/version-v2.12.0-087f8c">
   <img alt="DSH plugin" src="https://img.shields.io/badge/DeepSeek_Harness-plugin-1f2328">
   <img alt="Platforms" src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-586069">
   <img alt="License" src="https://img.shields.io/badge/license-AGPL--3.0-2da44e">
@@ -92,10 +92,10 @@ dsh plugin --profile web add dsh-remote-bridge
 dsh plugin --profile web add dsh-remote-bridge --registry https://registry.npmmirror.com
 
 # 2. tarball from the GitHub release
-dsh plugin --profile web add https://github.com/westanke/dsh-remote-bridge/releases/download/v2.11.1/dsh-remote-bridge-v2.11.1.tgz
+dsh plugin --profile web add https://github.com/westanke/dsh-remote-bridge/releases/download/v2.12.0/dsh-remote-bridge-v2.12.0.tgz
 
 # 3. tarball from the Gitee release (faster from mainland China)
-dsh plugin --profile web add https://gitee.com/westanke/dsh-remote-bridge/releases/download/v2.11.1/dsh-remote-bridge-v2.11.1.tgz
+dsh plugin --profile web add https://gitee.com/westanke/dsh-remote-bridge/releases/download/v2.12.0/dsh-remote-bridge-v2.12.0.tgz
 
 npx @deepseek-ai/dsh web
 ```
@@ -112,7 +112,7 @@ Restart DSH after installation, then open settings — The section is titled **�
 To install a downloaded release archive:
 
 ```sh
-dsh plugin --profile web add ./dsh-remote-bridge-v2.11.1.tgz
+dsh plugin --profile web add ./dsh-remote-bridge-v2.12.0.tgz
 ```
 
 ## First connection
@@ -376,6 +376,25 @@ pnpm pack
 
 v2.5.0 was verified on DSH **0.2.1-rc.2** on real hardware: all 14/14 host services injected, the three jobs endpoints exercised, and the permission catalog returned the kernel's real three presets. The development baseline is upstream `dsh-v0.2.1-rc.2` (commit `687f282e8625c6b8d11ff58211a90524be2e4317`); see `engines.dsh` above for the supported range. CI covers Windows, Ubuntu, and macOS.
 
+**v2.12.0 verification status**: 81 test files / **854 cases** green; `typecheck`, `docs:check`, and
+the build all pass. This release makes **tool calls visible on the realtime path**: the
+`tool-call-delta` chunks of `assistant/chunk` (streamed arguments — the data source for the
+official "preparing" state) and the tool-call boundary at `block-end` used to fall into the
+catch-all branch and were dropped whole, and `tool/call` / `tool/result` session events likewise
+lost `event.data` — so the phone's tool row had no "preparing" phase, failures carried no kernel
+error classification (`ASK_CANCELLED` looked like an ordinary failure), and results only appeared
+after a debounced history reload. The deltas now emit `kind:'tool-call'` / `kind:'tool-call-end'`
+(`callId`/`name`/`argumentsDelta` passed through leniently), and two new frames
+`chat.tool.call` / `chat.tool.result` carry `event.data` **verbatim** (including `error.code`);
+exit codes are not a protocol field (the official client parses the trailing marker in the result
+text, so the bridge leaves it alone). The same line added `hasReplyContent` to
+`chat.message.committed`: the kernel persists a tool-call-only assistant message **before** the
+tools run, so one tool-using turn commits several messages of which only the last carries reply
+text; clients use the flag to tell a mid-turn commit from a finished answer (same test as the
+official `hasAssistantReplyContent`, verbatim). Five contract surfaces were updated (API.md,
+asyncapi, INTERFACES, the kotlin-sdk comment, CHANGELOG-DEV). No "always allow" button: the
+kernel `OUTCOMES` has no `always` and the official WebUI never wires it.
+
 **v2.11.1 verification status**: 81 test files / **851 cases** green; `typecheck`, `docs:check`, and
 the build all pass. This release changes only the pending-question lifetime semantics
 (issue IKVP1Q): `PendingQuestion.deadline` now follows the delegate state — no timeout while the
@@ -416,7 +435,7 @@ inside the zero-change set, and 4 slots retained with 0 removed.
 
 ## Project
 
-- Version: `v2.11.1`
+- Version: `v2.12.0`
 - **v2.9.0 makes teammates (sub-sessions) readable**: the phone's team panel could list members and
   sub-sessions but could not open a single one, because `sessions.list` filters out every row with
   `origin === 'subagent'` (the bridge's own `dsh-0.2-bridge.ts:2327`, with a comment explaining that
