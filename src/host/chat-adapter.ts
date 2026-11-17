@@ -1622,6 +1622,11 @@ export function normalizeDshEvent(
     if (eventType === 'assistant/chunk' && isRecord(assistantData)) {
       const rawChunk = assistantData.chunk
       if (isRecord(rawChunk)) {
+        // turn / step **始终带上**（缺失兜底 0）—— 见 dsh-0.2-bridge.ts 里
+        // assistant-stream start 帧的同类兜底：这两个字段只用于分段，客户端曾
+        // 因为它们缺失而把整个 delta 帧静默丢掉。
+        const turn = typeof assistantData.turn === 'number' ? assistantData.turn : 0
+        const step = typeof assistantData.step === 'number' ? assistantData.step : 0
         const kind = rawChunk.type === 'text-delta' ? 'text' : rawChunk.type === 'reasoning-delta' ? 'reasoning' : undefined
         if (kind !== undefined && typeof rawChunk.text === 'string' && typeof rawChunk.index === 'number') {
           return {
@@ -1633,14 +1638,74 @@ export function normalizeDshEvent(
               kind,
               text: rawChunk.text,
               index: rawChunk.index,
-              // turn / step **始终带上**（缺失兜底 0）—— 见 dsh-0.2-bridge.ts 里
-              // assistant-stream start 帧的同类兜底：这两个字段只用于分段，客户端曾
-              // 因为它们缺失而把整个 delta 帧静默丢掉。
-              turn: typeof assistantData.turn === 'number' ? assistantData.turn : 0,
-              step: typeof assistantData.step === 'number' ? assistantData.step : 0,
+              turn,
+              step,
             },
           }
         }
+        // 工具调用仍处在「参数流式生成」阶段（官方 WebUI 的 preparing 态）：内核在
+        // assistant/chunk 里发 `tool-call-delta`（id/name 首包、argumentsDelta 增量），
+        // 直到 block-end 才定稿。此前这里只认 text/reasoning 两种 delta，tool-call
+        // delta 落进末尾默认分支被整帧丢弃 —— 客户端只能等 tool/call 事件（参数已定）
+        // 才知道有工具在跑，「正在准备工具调用」这个阶段在 App 里不存在。
+        //
+        // 字段全部宽容透传（缺就不带）：官方客户端拿 callId 关联同一次调用、拿
+        // argumentsDelta 增量拼 argsRaw（官方语义见 dsh-client-ui-chat 的
+        // PartialArguments.append），缺哪个字段客户端都能安全降级成 running 态。
+        if (rawChunk.type === 'tool-call-delta' && typeof rawChunk.index === 'number') {
+          return {
+            id: frame.rpcId,
+            type: 'chat.message.delta',
+            time,
+            data: {
+              ...base,
+              kind: 'tool-call',
+              index: rawChunk.index,
+              turn,
+              step,
+              ...(rawChunk.id === undefined || rawChunk.id === '' ? {} : { callId: String(rawChunk.id) }),
+              ...(typeof rawChunk.name === 'string' ? { name: rawChunk.name } : {}),
+              ...(typeof rawChunk.argumentsDelta === 'string' ? { argumentsDelta: rawChunk.argumentsDelta } : {}),
+            },
+          }
+        }
+        // `block-end`（tool-call 块收尾）：参数定稿（官方 preparing→running 的边界信号）。
+        // block 里带 id（= callId）/name/arguments，原样透传给客户端做 args settle。
+        if (rawChunk.type === 'block-end' && isRecord(rawChunk.block) && rawChunk.block.type === 'tool-call') {
+          return {
+            id: frame.rpcId,
+            type: 'chat.message.delta',
+            time,
+            data: {
+              ...base,
+              kind: 'tool-call-end',
+              ...(typeof rawChunk.index === 'number' ? { index: rawChunk.index } : {}),
+              turn,
+              step,
+              ...(rawChunk.block.id === undefined ? {} : { callId: String(rawChunk.block.id) }),
+              ...(typeof rawChunk.block.name === 'string' ? { name: rawChunk.block.name } : {}),
+              ...(typeof rawChunk.block.arguments === 'string' ? { arguments: rawChunk.block.arguments } : {}),
+            },
+          }
+        }
+      }
+    }
+    if (eventType === 'tool/call' || eventType === 'tool/result') {
+      // 工具调用的实时事件。此前这两个类型落进末尾默认分支，`event.data` 整段被丢
+      // （只剩 sessionId/eventType/seq）—— 实时路径上客户端拿不到工具名、参数与结果，
+      // 只能靠防抖重拉历史来刷新工具行；「结果失败 + error.code」（内核在
+      // tool/result 的 `data.error.code` 里带 TOOL_OUTCOME_UNKNOWN / TOOL_NOT_STARTED /
+      // ASK_CANCELLED 等，见 dsh-session results() 与 plan-mode UserQuestionError）
+      // 更是永远到不了客户端。
+      //
+      // data **原样透传**（与 deliverables 的 files 同思路）：内核以后往工具结果里加
+      // 字段不需要改这里。dedupe 由客户端按 callId/seq 做。
+      const eventData = isRecord(event.data) ? event.data : {}
+      return {
+        id: frame.rpcId,
+        type: eventType === 'tool/call' ? 'chat.tool.call' : 'chat.tool.result',
+        time,
+        data: { ...base, ...eventData },
       }
     }
     if (eventType === 'user/message' || eventType === 'assistant/message') {

@@ -1,5 +1,30 @@
 # 开发日志
 
+## v2.12.0（开发中）· 工具调用实时事件透传 —— preparing 态与 error.code 到客户端
+
+**现象**（dsh-Chat 会话页对齐官方 Web 的装机走查遗留）：App 里工具行的「准备工具调用」阶段不存在、
+失败只有红字没有内核错误分类（ASK_CANCELLED 被当普通失败）、工具行结果靠 800ms 防抖重拉历史才出现。
+
+**根因**（`src/host/chat-adapter.ts` 的 `normalizeDshEvent`）：①`assistant/chunk` 只认
+`text-delta` / `reasoning-delta` 两种，内核的 `tool-call-delta`（参数流式生成，官方 preparing 态的
+数据源）落进兜底分支整帧丢弃；②`tool/call` / `tool/result` 两类会话事件同样落兜底分支，
+`event.data` 整段被丢（只剩 sessionId/eventType/seq）——实时路径上客户端拿不到工具名/参数/结果
+与 `error.code`，只能重拉历史。
+
+**修法**（同一提交）：
+
+- `assistant/chunk` 扩展两种 delta：`kind:'tool-call'`（`callId`/`name`/`argumentsDelta` 宽容透传，
+  缺字段客户端降级成 running）与 `kind:'tool-call-end'`（block-end 参数定稿边界）；
+- 新增 `tool/call` → `chat.tool.call`、`tool/result` → `chat.tool.result` 专属分支，`event.data`
+  **原样透传**（内核加字段不改桥，与 deliverables 的 files 同思路）；`error.code`
+  （`TOOL_OUTCOME_UNKNOWN` / `TOOL_NOT_STARTED` / `ASK_CANCELLED` 等）随帧到达客户端；
+- exit code **不是协议字段**：官方客户端从结果文本尾部 `[exit code: N]` 标记解析，桥不动；
+- 「始终允许」键**不做**：内核 `dsh-user-approval` 的 `OUTCOMES = ['allowed-once','rejected',
+  'cancelled','unavailable']` 无 always，官方 WebUI 的 `onAlways` 也未接线——官方行为即如此。
+
+**验证**：`tests/chat-adapter.spec.ts` 新增 2 组用例（tool-call delta 两种 + tool/call +
+tool/result 带 error.code 逐字段断言），全文件 18 用例绿；`pnpm check` 四道门全绿。
+
 ## v2.11.1 · 挂起提问寿命随桌面走 —— 终结「电脑端有、手机端没有」（2026-11-16）
 
 **现象**（Gitee issue IKVP1Q，真机复现）：`ask_user_question` 提问挂起 10 分钟后，手机端提问卡

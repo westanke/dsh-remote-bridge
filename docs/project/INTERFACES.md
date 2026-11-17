@@ -199,10 +199,15 @@
 - 帧形状：`{ id, type, time, data }`（`WorkspaceEvent`，见 `src/shared/contracts.ts:62`）。
 - 事件类型（`type`）：
   `file.changed` · `file.trashed` · `chat.message.delta` · `chat.message.committed` ·
+  `chat.tool.call` · `chat.tool.result` ·
   `chat.session.status` · `chat.session.snapshot` · `chat.deliverables.presented` ·
   `chat.approval.requested` · `chat.approval.resolved` · `chat.turn.failed` ·
   `connection.ready`（首帧）· `connection.resyncRequired`（背压丢帧后补发）·
   `chat.userQuestions/requested`。
+  `chat.tool.call` / `chat.tool.result`（bridge ≥ tool-stream）：内核 `tool/call` /
+  `tool/result` 会话事件的 `data` 原样透传（此前落兜底分支整段被丢）；`chat.message.delta`
+  的 `kind` 扩展 `tool-call`（参数流式生成中）/ `tool-call-end`（参数定稿边界）——
+  语义见 `docs/project/API.md` §工具调用的实时事件。
 - 授权过滤在 `server.ts` 的 `eventAllowed`：按 scope（`files.read` / `chat.read`）、
   设备 root 范围、会话归属三层判；设备被撤销时该连接以 `4001` 关闭。
 - `seq` 只表示**会话持久事件序号**；流式 delta 不输出它（ADR-0008）。

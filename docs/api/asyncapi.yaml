@@ -244,12 +244,14 @@ components:
           id: { type: string }
           type:
             type: string
-            examples: [file.changed, file.trashed, chat.message.delta, chat.message.committed, chat.session.status, chat.session.snapshot, chat.deliverables.presented, chat.approval.requested, chat.approval.resolved, chat.turn.failed, chat.agent-preset.selected, chat.models.updated, connection.ready, connection.resyncRequired]
+            examples: [file.changed, file.trashed, chat.message.delta, chat.message.committed, chat.tool.call, chat.tool.result, chat.session.status, chat.session.snapshot, chat.deliverables.presented, chat.approval.requested, chat.approval.resolved, chat.turn.failed, chat.agent-preset.selected, chat.models.updated, connection.ready, connection.resyncRequired]
           time: { type: integer }
           data:
             oneOf:
               - $ref: '#/components/schemas/ChatMessageDelta'
               - $ref: '#/components/schemas/ChatMessageCommitted'
+              - $ref: '#/components/schemas/ChatToolCall'
+              - $ref: '#/components/schemas/ChatToolResult'
               - $ref: '#/components/schemas/ChatApprovalRequested'
               - $ref: '#/components/schemas/ChatApprovalResolved'
               - $ref: '#/components/schemas/ChatTurnFailed'
@@ -277,7 +279,14 @@ components:
         Streaming deltas have **no durable position** -- `index` is the chunk index within the
         current stream (it restarts at 0 every turn), so this message carries no `seq`. See
         ADR-0008: `seq` means one thing only, the durable session event sequence.
-      required: [sessionId, eventType, turn, step, index, kind, text]
+
+        `kind: tool-call` (bridge ≥ the tool-stream release) carries a tool call whose
+        arguments are still streaming in (`callId` / `name` / `argumentsDelta` are all
+        optional and tolerant — absent fields mean the client degrades to a plain running
+        row). `kind: tool-call-end` carries the `block-end` boundary for a tool-call block
+        (`callId` / `name` / `arguments` settled). Older clients that only know
+        `text` / `reasoning` must ignore unknown kinds, never treat them as text.
+      required: [sessionId, eventType, turn, step, kind]
       properties:
         sessionId: { type: string }
         eventType: { type: string, const: assistant/chunk }
@@ -291,9 +300,52 @@ components:
             third-party implementations are not judged invalid; it was optional either way.
         turn: { type: integer }
         step: { type: integer }
-        index: { type: integer }
-        kind: { type: string, enum: [text, reasoning] }
-        text: { type: string }
+        index: { type: integer, description: "Chunk index within the current stream; present on every kind except tool-call-end, where it is optional." }
+        kind: { type: string, enum: [text, reasoning, tool-call, tool-call-end] }
+        text: { type: string, description: "Present when kind is text or reasoning." }
+        callId: { type: string, description: "Kernel tool-call id; present when kind is tool-call (first delta) or tool-call-end." }
+        name: { type: string, description: "Tool name; first tool-call delta or tool-call-end." }
+        argumentsDelta: { type: string, description: "Incremental JSON text; kind tool-call only." }
+        arguments: { type: string, description: "Settled JSON text; kind tool-call-end only." }
+    ChatToolCall:
+      type: object
+      description: |
+        Realtime `tool/call` kernel event, `data` passed through **verbatim** (`callId`,
+        `name`, `arguments`, `turn`, `step` today; the kernel may add fields without a
+        bridge release). Marks the moment a tool call starts executing with settled
+        arguments — the counterpart of `kind: tool-call-end` on `ChatMessageDelta`.
+        Deduplicate by `callId` (a `chat.tool.call` supersedes any preparing state for
+        the same id). Clients on older bridges never receive this type and must ignore
+        unknown event types safely.
+      required: [sessionId, eventType, callId]
+      properties:
+        sessionId: { type: string }
+        eventType: { type: string, const: tool/call }
+        seq: { type: integer }
+        callId: { type: string }
+        name: { type: string }
+        arguments: { type: string }
+        turn: { type: integer }
+        step: { type: integer }
+    ChatToolResult:
+      type: object
+      description: |
+        Realtime `tool/result` kernel event, `data` passed through **verbatim**. The
+        kernel shape is `{ turn, step, message, error? }` where `message` is the durable
+        tool message (`role: tool`, `toolCallId`, `isError`, `content[{type,text}]`) and
+        `error.code` carries the failure taxonomy (`TOOL_OUTCOME_UNKNOWN`,
+        `TOOL_NOT_STARTED`, `ASK_CANCELLED`, ... — kernel-owned, not a bridge enum).
+        Exit codes are **not** a protocol field: official clients parse the
+        `[exit code: N]` / `[killed by signal: X]` markers at the tail of the result text.
+      required: [sessionId, eventType]
+      properties:
+        sessionId: { type: string }
+        eventType: { type: string, const: tool/result }
+        seq: { type: integer }
+        turn: { type: integer }
+        step: { type: integer }
+        message: { type: object, additionalProperties: true }
+        error: { type: object, additionalProperties: true }
     ChatMessageCommitted:
       type: object
       description: Signals that REST history contains a committed user or assistant message.

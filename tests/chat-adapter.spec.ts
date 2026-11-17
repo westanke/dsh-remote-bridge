@@ -403,6 +403,161 @@ describe('DSH chat choices', () => {
     })
   })
 
+  it('passes tool-call streaming deltas through so clients can show the preparing stage', () => {
+    // tool-call-delta（参数还在流式生成，官方 preparing 态）：kind=tool-call，
+    // callId/name/argumentsDelta 宽容透传 —— 缺哪个客户端都安全降级成 running。
+    expect(normalizeDshEvent({
+      rpcId: 'delta-tool-1',
+      payload: {
+        type: 'session/event',
+        sessionId: 'session-1',
+        event: {
+          type: 'assistant/chunk',
+          seq: 20,
+          data: { turn: 3, step: 2, chunk: { type: 'tool-call-delta', index: 1, id: 'call-1', name: 'bash', argumentsDelta: '{"co' } },
+        },
+      },
+    }, 'mux', 200)).toEqual({
+      id: 'delta-tool-1',
+      type: 'chat.message.delta',
+      time: 200,
+      data: {
+        sessionId: 'session-1',
+        eventType: 'assistant/chunk',
+        seq: 20,
+        kind: 'tool-call',
+        index: 1,
+        turn: 3,
+        step: 2,
+        callId: 'call-1',
+        name: 'bash',
+        argumentsDelta: '{"co',
+      },
+    })
+    // 无 id 的后续 delta（name/argumentsDelta 续包）也不丢帧。
+    expect(normalizeDshEvent({
+      rpcId: 'delta-tool-2',
+      payload: {
+        type: 'session/event',
+        sessionId: 'session-1',
+        event: {
+          type: 'assistant/chunk',
+          seq: 21,
+          data: { turn: 3, step: 2, chunk: { type: 'tool-call-delta', index: 1, argumentsDelta: 'mmand": "ls"}' } },
+        },
+      },
+    }, 'mux', 201)).toMatchObject({
+      type: 'chat.message.delta',
+      data: { kind: 'tool-call', index: 1, argumentsDelta: 'mmand": "ls"}' },
+    })
+    // block-end（tool-call 块收尾）：参数定稿边界，block 的 id/name/arguments 透传。
+    expect(normalizeDshEvent({
+      rpcId: 'delta-tool-3',
+      payload: {
+        type: 'session/event',
+        sessionId: 'session-1',
+        event: {
+          type: 'assistant/chunk',
+          seq: 22,
+          data: { turn: 3, step: 2, chunk: { type: 'block-end', index: 1, block: { type: 'tool-call', id: 'call-1', name: 'bash', arguments: '{"command": "ls"}' } } },
+        },
+      },
+    }, 'mux', 202)).toEqual({
+      id: 'delta-tool-3',
+      type: 'chat.message.delta',
+      time: 202,
+      data: {
+        sessionId: 'session-1',
+        eventType: 'assistant/chunk',
+        seq: 22,
+        kind: 'tool-call-end',
+        index: 1,
+        turn: 3,
+        step: 2,
+        callId: 'call-1',
+        name: 'bash',
+        arguments: '{"command": "ls"}',
+      },
+    })
+  })
+
+  it('passes tool/call and tool/result realtime events with their full data', () => {
+    // 此前这两类落默认分支、event.data 整段被丢：实时路径上客户端拿不到工具名/参数/结果
+    // 与 error.code，只能防抖重拉历史。现在原样透传（内核加字段不用改桥）。
+    expect(normalizeDshEvent({
+      rpcId: 'tool-call-1',
+      payload: {
+        type: 'session/event',
+        sessionId: 'session-1',
+        event: {
+          type: 'tool/call',
+          seq: 30,
+          data: { turn: 3, step: 2, callId: 'call-1', name: 'bash', arguments: '{"command": "ls"}' },
+        },
+      },
+    }, 'mux', 300)).toEqual({
+      id: 'tool-call-1',
+      type: 'chat.tool.call',
+      time: 300,
+      data: {
+        sessionId: 'session-1',
+        eventType: 'tool/call',
+        seq: 30,
+        turn: 3,
+        step: 2,
+        callId: 'call-1',
+        name: 'bash',
+        arguments: '{"command": "ls"}',
+      },
+    })
+    // tool/result 带 error.code（崩溃恢复 TOOL_OUTCOME_UNKNOWN / ask 取消 ASK_CANCELLED
+    // 等都在 data.error.code 上，客户端据此出「失败/已取消」态）。
+    expect(normalizeDshEvent({
+      rpcId: 'tool-result-1',
+      payload: {
+        type: 'session/event',
+        sessionId: 'session-1',
+        event: {
+          type: 'tool/result',
+          seq: 31,
+          data: {
+            turn: 3,
+            step: 2,
+            message: {
+              id: 'm-1',
+              role: 'tool',
+              toolCallId: 'call-1',
+              isError: true,
+              source: { kind: 'tool', callId: 'call-1' },
+              content: [{ type: 'text', text: '[exit code: 2] boom' }],
+            },
+            error: { name: 'ToolOutcomeUnknownError', code: 'TOOL_OUTCOME_UNKNOWN' },
+          },
+        },
+      },
+    }, 'mux', 301)).toEqual({
+      id: 'tool-result-1',
+      type: 'chat.tool.result',
+      time: 301,
+      data: {
+        sessionId: 'session-1',
+        eventType: 'tool/result',
+        seq: 31,
+        turn: 3,
+        step: 2,
+        message: {
+          id: 'm-1',
+          role: 'tool',
+          toolCallId: 'call-1',
+          isError: true,
+          source: { kind: 'tool', callId: 'call-1' },
+          content: [{ type: 'text', text: '[exit code: 2] boom' }],
+        },
+        error: { name: 'ToolOutcomeUnknownError', code: 'TOOL_OUTCOME_UNKNOWN' },
+      },
+    })
+  })
+
   it('forwards turn/end reason so clients can see the max-tokens truncation notice', () => {
     // 输出撞上限：**不是失败**，所以不会发 chat.turn.failed；
     // 而它又必须让客户端知道「回答被截断了」—— 唯一通道就是 turn/end 上的 reason。

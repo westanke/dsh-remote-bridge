@@ -123,7 +123,7 @@ interface MobileGatewayListener {
     /** 每条非 `event` 帧。hello/paired 已单独派发，这里不再重复。 */
     fun onFrame(frame: MobileFrame) {}
 
-    /** `{kind:'event', data:{...}}`。事件本身带 `type`（如 `chat.message.delta`）。 */
+    /** `{kind:'event', data:{...}}`。事件本身带 `type`（如 `chat.message.delta`、`chat.tool.call`、`chat.tool.result`；未知 type 必须安全忽略）。 */
     fun onEvent(event: JsonElement) {}
 
     /** 首帧 hello。`protocol != 3` 时先调这个，再走 [onPermanentFailure]。 */

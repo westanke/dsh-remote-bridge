@@ -591,6 +591,14 @@ WebSocket 地址为 `ws://HOST:PORT/api/v1/events` 或 `wss://...`。OkHttp 等�
 
 DSH 的 `assistant/chunk` 不直接泄漏为私有 wire。插件将文本和思考 token 规范化为 `chat.message.delta`，载荷包含 `sessionId`、`turn`、`step`、`index`、`kind` 和 `text`；完成的用户/助手消息发送 `chat.message.committed`，客户端随后读取 REST 历史收口。运行状态、Agent 切换、模型目录变化和审批变化分别使用 `chat.session.status`、`chat.agent-preset.selected`、`chat.models.updated`（0.2.2 `llm/models-updated`，载荷 `{provider}`，P2-A）与 `chat.approval.*`。
 
+### 工具调用的实时事件（`chat.tool.call` / `chat.tool.result`）
+
+内核的 `tool/call` 与 `tool/result` 会话事件原样透传为 `chat.tool.call` / `chat.tool.result`（`data` = 内核 `event.data` 原文 + `sessionId`/`eventType`/`seq`；内核以后加字段不需要改桥）。此前这两类落进兜底分支、`event.data` 整段被丢，实时路径上客户端拿不到工具名/参数/结果，只能防抖重拉历史。
+
+- `chat.tool.call`：`{callId, name, arguments, turn, step}` —— 工具开始执行（参数已定稿）。按 `callId` 去重，同 id 的后到帧覆盖 preparing/running 态。
+- `chat.tool.result`：`{turn, step, message, error?}` —— `message` 是持久化工具消息（`role:'tool'`、`toolCallId`、`isError`、`content[{type,text}]`）；`error.code` 是内核侧失败分类（`TOOL_OUTCOME_UNKNOWN` / `TOOL_NOT_STARTED` / `ASK_CANCELLED` 等，**不是桥的枚举**，客户端按已知值出「失败/已取消」态、未知值降级为失败）。exit code 不是协议字段：官方客户端从结果文本尾部的 `[exit code: N]` / `[killed by signal: X]` 标记解析。
+- `chat.message.delta` 的 `kind` 扩展：`tool-call`（参数流式生成中，官方 preparing 态，`callId`/`name`/`argumentsDelta` 宽容透传）与 `tool-call-end`（block-end 参数定稿边界）。**老客户端必须忽略未知 kind**，不得当文本渲染。
+
 ### 一轮怎么结束的（`chat.turn.end` 的 `reason`）
 
 `chat.turn.end` 的 `data` 里带 `reason`，**原样透传**自内核，本插件不解读、不写白名单。
