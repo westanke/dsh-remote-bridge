@@ -123,7 +123,14 @@ interface MobileGatewayListener {
     /** 每条非 `event` 帧。hello/paired 已单独派发，这里不再重复。 */
     fun onFrame(frame: MobileFrame) {}
 
-    /** `{kind:'event', data:{...}}`。事件本身带 `type`（如 `chat.message.delta`、`chat.tool.call`、`chat.tool.result`；未知 type 必须安全忽略）。 */
+    /**
+     * `{kind:'event', data:{...}}`。事件本身带 `type`（如 `chat.message.delta`、
+     * `chat.message.committed`、`chat.tool.call`、`chat.tool.result`；未知 type 必须安全忽略）。
+     *
+     * `chat.message.committed` 的 `data.hasReplyContent`（仅 assistant）区分「最终回答」与
+     * 「中途提交」：一次带工具的回合会提交多条 assistant 消息，中途那条只有 tool-call 块
+     * （`false`）。收到 `false` 不要清流式状态、不要收起过程组。
+     */
     fun onEvent(event: JsonElement) {}
 
     /** 首帧 hello。`protocol != 3` 时先调这个，再走 [onPermanentFailure]。 */

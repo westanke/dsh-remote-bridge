@@ -348,7 +348,15 @@ components:
         error: { type: object, additionalProperties: true }
     ChatMessageCommitted:
       type: object
-      description: Signals that REST history contains a committed user or assistant message.
+      description: |
+        Signals that REST history contains a committed user or assistant message.
+        An assistant turn that calls tools commits **several** assistant messages — the kernel
+        settles the tool-call-only message before running the tools. `hasReplyContent` tells a
+        client whether this particular commit carries the reply text (the final one) or is an
+        intermediate commit; without it a client cannot tell "the turn just finished" apart from
+        "a tool is about to run". Same semantics as the official WebUI's
+        `hasAssistantReplyContent` (reasoning/tool-call blocks do not count, text counts when
+        non-blank).
       required: [sessionId, eventType, role]
       properties:
         sessionId: { type: string }
@@ -357,6 +365,12 @@ components:
         role: { type: string, enum: [user, assistant] }
         turn: { type: integer }
         step: { type: integer }
+        hasReplyContent:
+          type: boolean
+          description: |
+            Assistant commits only. `true` when the committed message contains reply text
+            (a non-blank `text` block); `false` for intermediate commits whose content is only
+            reasoning/tool-call blocks. Old clients may ignore it.
     ChatApprovalRequested:
       type: object
       description: |

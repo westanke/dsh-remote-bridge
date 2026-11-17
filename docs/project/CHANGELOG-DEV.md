@@ -25,6 +25,28 @@
 **验证**：`tests/chat-adapter.spec.ts` 新增 2 组用例（tool-call delta 两种 + tool/call +
 tool/result 带 error.code 逐字段断言），全文件 18 用例绿；`pnpm check` 四道门全绿。
 
+**追加（同一开发线）· `chat.message.committed` 补 `hasReplyContent`**：
+
+- **现象**：App 里一个带工具的回合，过程组在工具还**没开始跑**的时候就收起了，流式工具行也被
+  清空 —— 之后要靠防抖重拉历史才重新出现。
+- **根因**：内核 `dsh-agent-loop` 在工具执行**之前**就
+  `live.settle("assistant/message", …)` 落库一条**只含 tool-call 块**的 assistant 消息
+  （之后才 `message.content.filter(type === "tool-call")` 进执行），所以一次带工具的回合会提交
+  **多条** assistant 消息，只有最后那条含正文。桥此前把每条都规范化成 `chat.message.committed`
+  且只送 `role`，客户端无从区分「中途提交」与「最终回答」，只能每条都当结束：
+  清流、按收起时机收起过程组、停掉工具行的实时刷新。
+- **修法**：`assistant/message` 帧新增 `hasReplyContent` 布尔字段，判据与官方 WebUI 的
+  `hasAssistantReplyContent` **逐字同义**（`reasoning`/`tool-call` 块不算正文，`text` 块按
+  `trim()` 判空，其余块类型算正文）；块类型字段 `type`/`kind` 两种写法都认。
+  `user/message` 不带该字段。
+- **向后兼容**：纯新增字段，老客户端忽略它 → 行为退回修复前（每条 assistant 消息都当结束），
+  不会坏。`turn.end` 的 `reason` 仍是「这一轮怎么结束的」唯一权威来源（尤其 `max-tokens`）。
+- **契约面**：asyncapi `ChatMessageCommitted`（描述 + `hasReplyContent` 属性）、
+  `docs/project/API.md` 新段「哪条 `chat.message.committed` 才是「回答写完了」」。
+- **验证**：`tests/chat-adapter.spec.ts` 新增 1 组用例（中途 tool-call-only / 空白正文 /
+  正文 / reasoning-only / 文本与 tool-call 混排 / 形状不全 / `user/message` 不带），
+  全文件 19 用例绿。
+
 ## v2.11.1 · 挂起提问寿命随桌面走 —— 终结「电脑端有、手机端没有」（2026-11-16）
 
 **现象**（Gitee issue IKVP1Q，真机复现）：`ask_user_question` 提问挂起 10 分钟后，手机端提问卡

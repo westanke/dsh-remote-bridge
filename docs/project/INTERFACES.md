@@ -208,6 +208,9 @@
   `tool/result` 会话事件的 `data` 原样透传（此前落兜底分支整段被丢）；`chat.message.delta`
   的 `kind` 扩展 `tool-call`（参数流式生成中）/ `tool-call-end`（参数定稿边界）——
   语义见 `docs/project/API.md` §工具调用的实时事件。
+  `chat.message.committed`（assistant）带 `hasReplyContent`：`false` 表示这是一次
+  **中途提交**（内容只有 reasoning/tool-call 块，工具即将执行），客户端不得据此清流式状态
+  或收起过程组；判据与官方 WebUI 的 `hasAssistantReplyContent` 同义，见同文档同名段。
 - 授权过滤在 `server.ts` 的 `eventAllowed`：按 scope（`files.read` / `chat.read`）、
   设备 root 范围、会话归属三层判；设备被撤销时该连接以 `4001` 关闭。
 - `seq` 只表示**会话持久事件序号**；流式 delta 不输出它（ADR-0008）。

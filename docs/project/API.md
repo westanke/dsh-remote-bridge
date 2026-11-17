@@ -599,9 +599,31 @@ DSH 的 `assistant/chunk` 不直接泄漏为私有 wire。插件将文本和思�
 - `chat.tool.result`：`{turn, step, message, error?}` —— `message` 是持久化工具消息（`role:'tool'`、`toolCallId`、`isError`、`content[{type,text}]`）；`error.code` 是内核侧失败分类（`TOOL_OUTCOME_UNKNOWN` / `TOOL_NOT_STARTED` / `ASK_CANCELLED` 等，**不是桥的枚举**，客户端按已知值出「失败/已取消」态、未知值降级为失败）。exit code 不是协议字段：官方客户端从结果文本尾部的 `[exit code: N]` / `[killed by signal: X]` 标记解析。
 - `chat.message.delta` 的 `kind` 扩展：`tool-call`（参数流式生成中，官方 preparing 态，`callId`/`name`/`argumentsDelta` 宽容透传）与 `tool-call-end`（block-end 参数定稿边界）。**老客户端必须忽略未知 kind**，不得当文本渲染。
 
+### 哪条 `chat.message.committed` 才是「回答写完了」（`hasReplyContent`）
+
+`chat.message.committed` 的 `data` 里，`assistant` 角色**多一个** `hasReplyContent` 布尔字段。
+
+**为什么需要它**：内核在**工具执行之前**就把只含 `tool-call` 块的 assistant 消息 settle 落库
+（`dsh-agent-loop` 的 `live.settle("assistant/message", …)` 之后才
+`message.content.filter(type === "tool-call")` 进执行）—— 一次带工具的回合会提交**多条**
+assistant 消息，只有最后那条含正文。桥此前只送了 `role`，客户端收到第一条就只能当「回答结束」：
+清流、收起过程组、停掉工具行的实时刷新，而此刻工具还没开始跑。
+
+**判据**（与官方 WebUI 的 `hasAssistantReplyContent` 逐字同义）：`reasoning` 与 `tool-call`
+块不算正文，`text` 块按 `trim()` 判空，其余块类型算正文。
+
+- `hasReplyContent: true` —— 最终回答：客户端可以清流式状态、按收起时机收起过程组。
+- `hasReplyContent: false` —— 中途提交（工具即将执行）：**不要**清流、**不要**收起、
+  保持工具行实时刷新。
+- `user/message` 不带该字段（用户消息本来就是一次落库）。
+
+向后兼容：新增字段，老客户端忽略它 → 行为退回修复前（每条 assistant 消息都当结束），不会坏。
+`turn.end` 的 `reason` 仍是「这一轮怎么结束的」的唯一权威来源（尤其 `max-tokens`）。
+
 ### 一轮怎么结束的（`chat.turn.end` 的 `reason`）
 
 `chat.turn.end` 的 `data` 里带 `reason`，**原样透传**自内核，本插件不解读、不写白名单。
+
 已知四种 `kind`（内核 `turn-error.js` / `turn-max-tokens.js` / `retry.js`）：
 
 | `kind` | 含义 | 客户端该怎么显示 |

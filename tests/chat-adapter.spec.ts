@@ -558,6 +558,67 @@ describe('DSH chat choices', () => {
     })
   })
 
+  it('marks whether a committed assistant message actually carries the reply text', () => {
+    // 内核在**工具执行之前**就把只含 tool-call 块的 assistant 消息落库，一次带工具的
+    // 回合因此提交多条 assistant 消息，只有最后那条带正文。客户端收到 committed 时
+    // 必须能分清「这轮还没完」与「回答写完了」，否则会在工具还在跑时清流、收起过程组。
+    const commit = (message: unknown) => normalizeDshEvent({
+      rpcId: 'commit-1',
+      payload: {
+        type: 'session/event',
+        sessionId: 'session-1',
+        event: { type: 'assistant/message', seq: 40, data: { turn: 3, step: 2, message } },
+      },
+    }, 'mux', 400)
+
+    // 中途提交：内容全是 tool-call 块 → hasReplyContent=false。
+    expect(commit({
+      id: 'm-1',
+      role: 'assistant',
+      content: [{ type: 'tool-call', id: 'call-1', name: 'bash', arguments: '{}' }],
+    })).toMatchObject({
+      type: 'chat.message.committed',
+      data: { sessionId: 'session-1', role: 'assistant', turn: 3, step: 2, hasReplyContent: false },
+    })
+
+    // 只有空白正文也不算（官方按 trim 判空：模型输出了换行不等于回答了）。
+    expect(commit({ id: 'm-2', role: 'assistant', content: [{ type: 'text', text: '  \n ' }] }))
+      .toMatchObject({ data: { hasReplyContent: false } })
+
+    // 最终回答：text 块有实义内容 → true。
+    expect(commit({ id: 'm-3', role: 'assistant', content: [{ type: 'text', text: '跑完了' }] }))
+      .toMatchObject({ data: { hasReplyContent: true } })
+
+    // reasoning 块不算正文（思考完还要调工具的那种中间提交）。
+    expect(commit({ id: 'm-4', role: 'assistant', content: [{ type: 'reasoning', text: '我来看看' }] }))
+      .toMatchObject({ data: { hasReplyContent: false } })
+
+    // 文本与 tool-call 混排：有 text 就算真回答（官方 hasAssistantReplyContent 同义）。
+    expect(commit({
+      id: 'm-5',
+      role: 'assistant',
+      content: [{ type: 'text', text: '先看下日志' }, { type: 'tool-call', id: 'call-2', name: 'bash', arguments: '{}' }],
+    })).toMatchObject({ data: { hasReplyContent: true } })
+
+    // 形状不全（没有 message/content）不炸，按「没有正文」处理。
+    expect(commit(undefined)).toMatchObject({ data: { hasReplyContent: false } })
+
+    // user/message 不带这个字段（用户消息本来就是一次落库）。
+    expect(normalizeDshEvent({
+      rpcId: 'commit-user',
+      payload: {
+        type: 'session/event',
+        sessionId: 'session-1',
+        event: { type: 'user/message', seq: 41, data: { message: { role: 'user', content: [] } } },
+      },
+    }, 'mux', 401)).toEqual({
+      id: 'commit-user',
+      type: 'chat.message.committed',
+      time: 401,
+      data: { sessionId: 'session-1', eventType: 'user/message', seq: 41, role: 'user' },
+    })
+  })
+
   it('forwards turn/end reason so clients can see the max-tokens truncation notice', () => {
     // 输出撞上限：**不是失败**，所以不会发 chat.turn.failed；
     // 而它又必须让客户端知道「回答被截断了」—— 唯一通道就是 turn/end 上的 reason。

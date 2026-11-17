@@ -1719,6 +1719,22 @@ export function normalizeDshEvent(
           role: eventType === 'user/message' ? 'user' : 'assistant',
           ...(typeof eventData.turn === 'number' ? { turn: eventData.turn } : {}),
           ...(typeof eventData.step === 'number' ? { step: eventData.step } : {}),
+          // `assistant/message` **不只代表「回答写完了」**：内核在工具执行前就把
+          // 只含 tool-call 块的 assistant 消息 settle 落库
+          // （dsh-agent-loop `live.settle("assistant/message", …)` 之后才
+          // `message.content.filter(type === "tool-call")` 进执行），一次带工具的
+          // 回合因此会提交**多条** assistant 消息，只有最后那条含正文。
+          //
+          // 不区分的话客户端只能把第一条当「回答结束」：清空流式状态、收起过程组、
+          // 停掉工具行的实时刷新 —— 而此刻工具还没开始执行。官方 WebUI 用
+          // `hasAssistantReplyContent(blocks)` 区分（dsh-client-ui-chat，reasoning 与
+          // tool-call 块不算、text 块按 trim 判空、其余类型算正文），桥这一层此前只
+          // 送了 `role`，把「哪条是最终回答」的信息丢掉了 —— 客户端无从判断。
+          //
+          // 这里用**同名同义**的布尔字段补上，判据逐字对齐官方实现。是新增字段：
+          // 老客户端忽略它，行为退回「每条 assistant 消息都当结束」（即修复前的样子），
+          // 不会坏。`user/message` 不带（用户消息本来就是一次落库）。
+          ...(eventType === 'assistant/message' ? { hasReplyContent: hasReplyContentOf(eventData.message) } : {}),
         },
       }
     }
@@ -1865,6 +1881,34 @@ export function turnFailureOf(event: Record<string, unknown>): {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+/**
+ * 这条 assistant 消息里**有没有回复正文**（判断它是不是「最终回答」）。
+ *
+ * 与官方 WebUI 的 `hasAssistantReplyContent` 逐字同义（dsh-client-ui-chat
+ * `lib/client.js`）：reasoning 与 tool-call 块不算正文，text 块按 `trim()` 判空，
+ * 其余块类型算正文。
+ *
+ * 为什么桥要做这个判断而不是让客户端做：客户端只收到 `chat.message.committed`
+ * 的 `role`，正文块要等 REST 历史回来才知道 —— 而「这条消息意味着本轮结束了吗」
+ * 正是客户端在收到帧的**那一刻**要决定的事（清不清流、收不收过程组）。
+ *
+ * 块类型字段两种写法都认（`type` 是内核 `dsh-llm` 的现行形状，`kind` 是官方
+ * 客户端投影后的形状），只为不吃内核里的写法差异。
+ */
+function hasReplyContentOf(message: unknown): boolean {
+  if (!isRecord(message)) return false
+  const content = message.content
+  if (typeof content === 'string') return content.trim() !== ''
+  if (!Array.isArray(content)) return false
+  return content.some(block => {
+    if (!isRecord(block)) return false
+    const kind = typeof block.type === 'string' ? block.type : block.kind
+    if (kind === 'reasoning' || kind === 'tool-call') return false
+    if (kind === 'text') return typeof block.text === 'string' && block.text.trim() !== ''
+    return true
+  })
 }
 
 function matchRoot(roots: StoredRoot[], cwd: string): { root: StoredRoot; relative: string } | undefined {
