@@ -17,7 +17,7 @@
 
 <p align="center">
   <a href="./README.en.md">English</a> ·
-  <img alt="Version" src="https://img.shields.io/badge/version-v2.12.0-087f8c">
+  <img alt="Version" src="https://img.shields.io/badge/version-v2.12.1-087f8c">
   <img alt="DSH plugin" src="https://img.shields.io/badge/DeepSeek_Harness-plugin-1f2328">
   <img alt="Platforms" src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-586069">
   <img alt="License" src="https://img.shields.io/badge/license-AGPL--3.0-2da44e">
@@ -86,10 +86,10 @@ dsh plugin --profile web add dsh-remote-bridge
 dsh plugin --profile web add dsh-remote-bridge --registry https://registry.npmmirror.com
 
 # ② GitHub Release 的 tarball
-dsh plugin --profile web add https://github.com/westanke/dsh-remote-bridge/releases/download/v2.12.0/dsh-remote-bridge-v2.12.0.tgz
+dsh plugin --profile web add https://github.com/westanke/dsh-remote-bridge/releases/download/v2.12.1/dsh-remote-bridge-v2.12.1.tgz
 
 # ③ Gitee Release 的 tarball（国内访问更快）
-dsh plugin --profile web add https://gitee.com/westanke/dsh-remote-bridge/releases/download/v2.12.0/dsh-remote-bridge-v2.12.0.tgz
+dsh plugin --profile web add https://gitee.com/westanke/dsh-remote-bridge/releases/download/v2.12.1/dsh-remote-bridge-v2.12.1.tgz
 
 npx @deepseek-ai/dsh web
 ```
@@ -105,7 +105,7 @@ npx @deepseek-ai/dsh web
 从 GitHub Release 下载离线安装包时，可直接安装 tarball：
 
 ```sh
-dsh plugin --profile web add ./dsh-remote-bridge-v2.12.0.tgz
+dsh plugin --profile web add ./dsh-remote-bridge-v2.12.1.tgz
 ```
 
 ## 第一次使用
@@ -427,13 +427,43 @@ pnpm check
 pnpm pack
 ```
 
-`pnpm check` 覆盖类型检查、文档一致性与测试；当前 **81 个测试文件 / 851 个用例**，外加 **9 个浏览器层用例**（Playwright 实测量出的计算样式，含 375px 窄屏契约），全部通过。
+`pnpm check` 覆盖类型检查、文档一致性与测试；当前 **82 个测试文件 / 858 个用例**，外加 **9 个浏览器层用例**（Playwright 实测量出的计算样式，含 375px 窄屏契约），全部通过。
 
 `npm pack` 的产物约 **0.64 MB**（v2.6.1 实测 669,434 字节，SHA-256 `9bf0189b…2cd35`）：2.2.0 删除独立页及其编辑器依赖、并关闭 source map 之后从 1.72 MB 降下来，之后随投影透传、权限 BFF 与五维加固小幅增长。
 
 v2.5.0 在 DSH **0.2.1-rc.2** 上完成真机验证：14/14 宿主服务全部可注入、三个 jobs 端点实测通过、
 权限档位目录返回内核真实三档。开发基线为上游 `dsh-v0.2.1-rc.2`（commit `687f282e8625c6b8d11ff58211a90524be2e4317`），
 兼容范围见上文 `engines.dsh`。CI 覆盖 Windows、Ubuntu 和 macOS。
+
+**v2.12.1 的验证状态**：82 个测试文件 / **858 个用例**全绿、`typecheck`/`docs:check`/构建通过。
+这一版修两处**实测出来的缺陷**，对外契约（wire schema / REST / Kotlin SDK）**零变更**，App 零改动。
+
+**① 大文件上传不再把宿主内存吃爆（issue #23）**：给手机传一个 100 MiB 文件，桥所在进程
+（= 宿主进程）的内存峰值实测涨到 **5.67 倍**（100 MiB → 567 MiB）—— 不报错、不掉连接、不留日志，
+只是安静地把内存吃掉然后 OOM。根因是两处「全量化」：`src/host/ws-file-transfer.ts` 的
+`uploadFinish` 校验完 SHA-256 后 `readFile(spoolPath).toString('base64')`，`src/host/bff-upload.ts`
+的 `complete` 把每块 `readFile` 出来 `Buffer.concat` 再 `toString('base64')` —— 结构下限 ≈4.67N
+（spool Buffer(N) + base64(1.33N) + 内核解码(N) + 校验用的第二份 base64(1.33N) + Uint8Array 拷贝(N)）。
+内核其实早有**流式**入口 `ctx.fileUploads.uploadStream({ sessionId, data, signal?, name? })`
+（底层 `attachments.saveFileStream` → 逐块写临时文件，内存有界），只是桥一直走 base64。
+现在两个入口都改成「**先试流式、不能流式才回落 base64**」：100 MiB 实测峰值超基线
+WS **327.1 MiB → 2.5 MiB**、REST **435.2 MiB → 46.6 MiB**。回落由**还握着字节的那一层**做
+（WS 的 spool 文件、REST 的分块文件都能重读）；内核适配层拿到的是一次性 `AsyncIterable`，
+读一次就没了，所以它只能报稳定 code `FILE_UPLOAD_STREAM_UNSUPPORTED`，不能自己回落。
+流式 RPC 超时放宽到 10 分钟（默认 10 s 对大文件不够，但**不能**设成无限）。App 侧零改动：
+`file-upload-completed` 帧字段与 `receiptId` / `attachmentId` / `bytes` 全部照旧。
+
+**② 隧道工具不再静默消失（issue #22）**：IM 里让 agent「开个隧道」，工具在**模型可见列表里根本没有**，
+插件日志里只有一行 warn。根因是 `src/host/im-command.ts` 的 `createTunnelTool` 把 `required: true`
+（布尔）写在**属性节点**上，而内核 `ToolsService.register` 无条件调 `assertSupportedJsonSchema` ——
+它只接受一个很小的子集，且 `required` **只能**出现在 `type:'object'` 节点上、顶层 `required` 必须是
+**属性名字符串数组**。两条都违反 → 注册抛错 → 插件侧把失败吞成 warn → 工具消失。
+现在属性节点去掉 `required`、顶层改成 `required: ['url','text','deviceName']`（三个返回值字段仍全必填），
+形状落回内核接受的子集。
+
+**真机复验未做**（两端都缺宿主环境）：内存实测走的是本仓真实上传链路 + 照实模拟内核落盘
+（量 `/proc/self/status` 的 `VmHWM` 单调峰值，两条路各起独立进程、payload 分片读）；
+隧道工具未在真机 IM 里调过一次。
 
 **v2.12.0 的验证状态**：81 个测试文件 / **854 个用例**全绿、`typecheck`/`docs:check`/构建通过。
 这一版让**工具调用在实时路径上可见**：`assistant/chunk` 的 `tool-call-delta`（参数流式生成，
@@ -480,7 +510,7 @@ DSH **0.2.1-rc.3** 隔离实例上**实跑验过**，不是静态推断：插件
 
 ## 项目信息
 
-- 当前版本：`v2.12.0`
+- 当前版本：`v2.12.1`
 - **v2.9.0 是团队成员（子会话）可读版**：手机端的团队面板此前只能看到成员与子会话的名字，点开读不到
   任何内容 —— 因为 `sessions.list` 会把 `origin === 'subagent'` 的行整批滤掉（桥自己的
   `dsh-0.2-bridge.ts:2327`，注释写明「暴露出来只会得到点开就崩的行」），子会话 id 打 `/messages`

@@ -1,6 +1,29 @@
 # 当前状态
 
-- 日期：2026-11-17（**已发版 v2.12.0：工具调用实时事件透传 + hasReplyContent**）
+- 日期：2026-11-19（**已发版 v2.12.1：大文件上传流式化 + 隧道工具 schema 修形**）
+- **已完成（v2.12.1，2026-11-19）· 大文件上传改走内核流式附件通道（issue #23）**：
+  100 MiB 上传把桥所在进程（= 宿主进程）的内存峰值推到 **5.67 倍**（100 MiB → 567 MiB）——
+  不报错、不掉连接、不留日志，只是安静吃内存然后 OOM。根因两处「全量化」：
+  `ws-file-transfer.ts` 的 `uploadFinish` 校验 SHA-256 后 `readFile(spool).toString('base64')`，
+  `bff-upload.ts` 的 `complete` 逐块 `readFile` → `Buffer.concat` → `toString('base64')`
+  （结构下限 ≈4.67N）。内核早有流式入口 `ctx.fileUploads.uploadStream(...)`
+  （`attachments.saveFileStream` 逐块写临时文件、内存有界），桥一直没用。已改：两个入口都
+  「先试流式、不能流式才回落 base64」，回落由**还握着字节的那一层**做（WS spool / REST 分块文件
+  可重读），内核适配层拿到一次性 `AsyncIterable` 只能报稳定 code
+  `FILE_UPLOAD_STREAM_UNSUPPORTED`；流式 RPC 超时放宽到 10 分钟（不能设无限）。
+  100 MiB 实测峰值超基线 WS **327.1 → 2.5 MiB**、REST **435.2 → 46.6 MiB**（量 `VmHWM`）。
+  **App 零改动**（`file-upload-completed` 帧字段与 `receiptId`/`attachmentId`/`bytes` 照旧）；
+  回归用例 `tests/ws-file-transfer.spec.ts` 2 条 + `tests/bff-rest.spec.ts` 1 条。
+  **真机端到端未做。**
+- **已完成（v2.12.1，2026-11-19）· 隧道工具的 `output.schema` 回到内核接受的子集（issue #22）**：
+  IM 里让 agent「开个隧道」，工具在**模型可见列表里根本没有**，插件日志只有一行 warn。
+  根因：`im-command.ts` 的 `createTunnelTool` 把 `required: true`（布尔）写在**属性节点**上，
+  而内核 `ToolsService.register` 无条件调 `assertSupportedJsonSchema` —— `required` 只能出现在
+  `type:'object'` 节点上、顶层 `required` 必须是属性名字符串数组，两条都违反 → 注册抛错 →
+  插件侧吞成 warn → 工具静默消失。已改：属性节点去掉 `required`、顶层改成
+  `required: ['url','text','deviceName']`（三个返回值字段仍全必填）。
+  回归用例 `tests/im-tunnel-command.spec.ts` 新 1 条（内联最小判据，不 import `@deepseek-ai/*`）。
+  **真机 IM 调用未做。**
 - **已完成（v2.12.0，2026-11-17）· 工具调用实时事件透传（`chat.tool.call` / `chat.tool.result` / delta kind 扩展）**：
   `normalizeDshEvent` 此前把 `tool-call-delta` 与 `tool/call`/`tool/result` 全部落兜底分支丢
   `event.data`——App 工具行无 preparing 态、失败无内核错误分类、结果靠防抖重拉历史。已改：

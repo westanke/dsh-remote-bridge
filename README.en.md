@@ -17,7 +17,7 @@
 
 <p align="center">
   <a href="./README.md">中文</a> ·
-  <img alt="Version" src="https://img.shields.io/badge/version-v2.12.0-087f8c">
+  <img alt="Version" src="https://img.shields.io/badge/version-v2.12.1-087f8c">
   <img alt="DSH plugin" src="https://img.shields.io/badge/DeepSeek_Harness-plugin-1f2328">
   <img alt="Platforms" src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-586069">
   <img alt="License" src="https://img.shields.io/badge/license-AGPL--3.0-2da44e">
@@ -92,10 +92,10 @@ dsh plugin --profile web add dsh-remote-bridge
 dsh plugin --profile web add dsh-remote-bridge --registry https://registry.npmmirror.com
 
 # 2. tarball from the GitHub release
-dsh plugin --profile web add https://github.com/westanke/dsh-remote-bridge/releases/download/v2.12.0/dsh-remote-bridge-v2.12.0.tgz
+dsh plugin --profile web add https://github.com/westanke/dsh-remote-bridge/releases/download/v2.12.1/dsh-remote-bridge-v2.12.1.tgz
 
 # 3. tarball from the Gitee release (faster from mainland China)
-dsh plugin --profile web add https://gitee.com/westanke/dsh-remote-bridge/releases/download/v2.12.0/dsh-remote-bridge-v2.12.0.tgz
+dsh plugin --profile web add https://gitee.com/westanke/dsh-remote-bridge/releases/download/v2.12.1/dsh-remote-bridge-v2.12.1.tgz
 
 npx @deepseek-ai/dsh web
 ```
@@ -112,7 +112,7 @@ Restart DSH after installation, then open settings — The section is titled **�
 To install a downloaded release archive:
 
 ```sh
-dsh plugin --profile web add ./dsh-remote-bridge-v2.12.0.tgz
+dsh plugin --profile web add ./dsh-remote-bridge-v2.12.1.tgz
 ```
 
 ## First connection
@@ -370,11 +370,54 @@ pnpm check
 pnpm pack
 ```
 
-`pnpm check` covers type-checking, documentation consistency, and tests. It currently passes **81 test files / 851 cases**, plus **9 browser-layer cases** (Playwright measuring real computed styles, including the 375px narrow-viewport contract).
+`pnpm check` covers type-checking, documentation consistency, and tests. It currently passes **82 test files / 858 cases**, plus **9 browser-layer cases** (Playwright measuring real computed styles, including the 375px narrow-viewport contract).
 
 `npm pack` produces roughly a **0.64 MB** archive (v2.6.1 measured 669,434 bytes, SHA-256 `9bf0189b…2cd35`): 2.2.0 dropped the standalone page and its editor dependencies and turned source maps off, down from 1.72 MB; it has since grown slightly with projection passthrough, the permission BFF, and the five-dimension hardening.
 
 v2.5.0 was verified on DSH **0.2.1-rc.2** on real hardware: all 14/14 host services injected, the three jobs endpoints exercised, and the permission catalog returned the kernel's real three presets. The development baseline is upstream `dsh-v0.2.1-rc.2` (commit `687f282e8625c6b8d11ff58211a90524be2e4317`); see `engines.dsh` above for the supported range. CI covers Windows, Ubuntu, and macOS.
+
+**v2.12.1 verification status**: 82 test files / **858 cases** green; `typecheck`, `docs:check`, and
+the build all pass. This release fixes two **measured defects**. The external contracts
+(wire schema / REST / Kotlin SDK) are **unchanged**, and the App needs no change.
+
+**① Large uploads no longer blow up the host's memory (issue #23)**: uploading a 100 MiB file
+to a phone pushed the bridge process (which *is* the host process) peak memory to **5.67×**
+(100 MiB → 567 MiB) — no error, no dropped connection, no log line, just a quiet OOM.
+Two "fully materialize" spots were the cause: `src/host/ws-file-transfer.ts`'s `uploadFinish`
+does `readFile(spoolPath).toString('base64')` after the SHA-256 check, and
+`src/host/bff-upload.ts`'s `complete` `readFile`s every chunk, `Buffer.concat`s them, and
+`toString('base64')`s the whole thing — a structural floor of ≈4.67N (spool Buffer(N) +
+base64(1.33N) + kernel decode(N) + a second base64(1.33N) for verification + a Uint8Array
+copy(N)). The kernel already exposes a **streaming** entry point,
+`ctx.fileUploads.uploadStream({ sessionId, data, signal?, name? })` (backed by
+`attachments.saveFileStream` → chunk-by-chunk writes with bounded memory), but the bridge
+always used base64. Both entry points now **try the stream first and fall back to base64 only
+when streaming is unavailable**: measured peak over baseline for a 100 MiB upload drops from
+**327.1 MiB → 2.5 MiB** (WebSocket) and **435.2 MiB → 46.6 MiB** (REST). The fallback is done by
+**the layer that still holds the bytes** (the WS spool file and the REST chunk files can be
+re-read); the kernel adapter receives a one-shot `AsyncIterable`, so it can only report the
+stable code `FILE_UPLOAD_STREAM_UNSUPPORTED` rather than falling back itself. The streaming RPC
+timeout is widened to 10 minutes (the 10 s default is too short for big files, but it must
+**not** be infinite). The App needs no change: the `file-upload-completed` frame and its
+`receiptId` / `attachmentId` / `bytes` are all unchanged.
+
+**② The tunnel tool no longer vanishes silently (issue #22)**: asking the agent to "open a
+tunnel" over IM produced a tool that was **not in the model's visible tool list at all**, with
+a single warn line in the plugin log. The cause: `src/host/im-command.ts`'s `createTunnelTool`
+put a boolean `required: true` on an **attribute node**, while the kernel's
+`ToolsService.register` unconditionally calls `assertSupportedJsonSchema` — which accepts
+only a small subset, and `required` may appear **only** on a `type:'object'` node, with the
+top-level `required` being an **array of property-name strings**. Both rules were broken, so
+registration threw, the plugin swallowed the failure into a warn, and the tool disappeared.
+The attribute node no longer carries `required`, and the top level is now
+`required: ['url','text','deviceName']` (all three returned fields stay mandatory) — back
+inside the subset the kernel accepts.
+
+**Real-hardware re-verification was not performed** (neither path had a host environment
+available): the memory figures come from this repo's real upload path with a faithful
+simulation of the kernel's disk write (measuring `VmHWM`, the monotonic peak, from
+`/proc/self/status`, each path in its own process, payload read in slices); the tunnel tool
+was not exercised once over IM on real hardware.
 
 **v2.12.0 verification status**: 81 test files / **854 cases** green; `typecheck`, `docs:check`, and
 the build all pass. This release makes **tool calls visible on the realtime path**: the
@@ -435,7 +478,7 @@ inside the zero-change set, and 4 slots retained with 0 removed.
 
 ## Project
 
-- Version: `v2.12.0`
+- Version: `v2.12.1`
 - **v2.9.0 makes teammates (sub-sessions) readable**: the phone's team panel could list members and
   sub-sessions but could not open a single one, because `sessions.list` filters out every row with
   `origin === 'subagent'` (the bridge's own `dsh-0.2-bridge.ts:2327`, with a comment explaining that
