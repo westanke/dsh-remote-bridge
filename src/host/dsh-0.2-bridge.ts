@@ -34,6 +34,7 @@ import type { Dsh02HostServices, SessionAddressLike, PermissionPresetsLike, File
 import type { HandoffRoot } from './bridge/attachments.ts'
 import type { CreateDsh02ApiProxyOptions } from './bridge/proxy-options.ts'
 import { call, errorCodeOf } from './bridge/rpc.ts'
+import { uploadAttachmentStreamToKernel, FILE_UPLOAD_STREAM_TIMEOUT_MS } from './bridge/file-upload-stream.ts'
 import { FrameHub, SessionEventRelay, wireSessionRegistryRelay } from './bridge/frame-hub.ts'
 import { ApprovalBridge, QuestionBridge, SESSION_RELAY_LIMIT } from './bridge/chat.ts'
 import { createAgentResolver, readArchivedSessionIds } from './bridge/host-reads.ts'
@@ -282,6 +283,18 @@ export function createDsh02ApiProxy(
           ...(value.file === undefined ? {} : { attachment: value.file }),
         }
       }),
+      // 流式那条路：字节以 AsyncIterable 交给内核，不再先转成 base64 字符串。
+      //
+      // 为什么要有它：base64 那条路把 N 字节放大成 1.33N 的字符串，桥进程峰值
+      // 涨到 5.67 倍（100 MiB → 567 MiB）。桥跑在宿主进程里，涨爆的是宿主。
+      //
+      // 什么时候会没有这条：老内核没有 `uploadStream`；非 local 的附件 provider
+      // 也会拒绝流式。这两种情况统一报 `FILE_UPLOAD_STREAM_UNSUPPORTED`，
+      // 由**还握着字节的那一层**（WS spool / REST 分块文件）回落成 base64。
+      uploadAttachmentStream: request => call('sessions.uploadAttachmentStream', async (signal) => {
+        const { sessionId, data, name } = request.payload
+        return uploadAttachmentStreamToKernel(fileUploadService, { sessionId, data, ...(name === undefined ? {} : { name }) }, signal)
+      }, { timeoutMs: FILE_UPLOAD_STREAM_TIMEOUT_MS }),
       readAttachment: request => call('sessions.readAttachment', async (signal) => {
         // 走**内核的 sessionController.attachment()**，不自己碰 `ctx.attachments`。
         //

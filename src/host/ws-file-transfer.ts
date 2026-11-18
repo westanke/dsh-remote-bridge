@@ -8,9 +8,11 @@
  *   O_NOFOLLOW 打开（防打开瞬间叶子被换成符号链接）+ size 复核 + 串行读。
  * - 上传：`file-upload-open/chunk/finish/cancel`。预检 name/size/sha256，
  *   分块落盘到 `<dataDir>/uploads/<uploadId>`（绝不解释客户端文件名为宿主路径），
- *   全部到齐后校验 SHA-256，再把整份 base64 交给内核附件通道（uploadAttachment）
- *   换 receiptId（内核附件接口只吃 base64 字符串，不分块；spool 已在磁盘上，
- *   只是提交瞬间读入，受 maxBytes 上限约束）。
+ *   全部到齐后校验 SHA-256，再把整份字节交给内核附件通道换 receiptId。
+ *   交给内核的方式有两条：**优先流式**（spool 文件以 read stream 逐块喂给内核，
+ *   内存有界），宿主不支持流式时才回落 base64 字符串 —— base64 那条路会把
+ *   N 字节放大成 1.33N 的字符串，桥进程峰值实测涨到 5.67 倍（100 MiB →
+ *   567 MiB），而桥跑在宿主进程里，涨爆的是宿主。
  * - 传输按连接隔离（transferId/uploadId 带连接归属校验），连接关闭即全部中止清理；
  *   每连接最大 4 个并发，空闲 2 min 由 expire() 回收。
  *
@@ -19,7 +21,7 @@
  */
 import { createHash, randomUUID } from 'node:crypto'
 import { open as fsOpen, mkdir, rm, stat, type FileHandle } from 'node:fs/promises'
-import { constants } from 'node:fs'
+import { constants, createReadStream } from 'node:fs'
 import { basename, extname, join } from 'node:path'
 import type { Principal } from '../shared/contracts.ts'
 import type { StoredRoot, WorkspaceDatabase } from './database.ts'
@@ -33,6 +35,7 @@ import {
   DEFAULT_FILE_UPLOAD_MAX_TRANSFERS,
 } from './ws-protocol.ts'
 import { matchAuthorizedRootResolved } from './root-resolver.ts'
+import { isFileUploadStreamUnsupported } from './bridge/file-upload-stream.ts'
 
 /** 单条连接的发送回调签名（与其它域处理器一致）。 */
 export type TransferSendFrame = (frame: { kind: string; data?: unknown }) => void
@@ -74,6 +77,19 @@ interface ChatAdapterLike {
     principal: Principal,
     sessionId: string,
     data: string,
+    name: string | undefined,
+  ): Promise<{ receiptId: string; name: string | null }>
+  /**
+   * 流式上传：**可选**。宿主没有流式能力时整个方法可以缺席，本层就退回
+   * base64 那条路（内存放大 5.67 倍，但功能不缺）。
+   *
+   * 实现方若在「宿主不能流式」时抛错，必须用
+   * `FILE_UPLOAD_STREAM_UNSUPPORTED` 这个 code，本层据此回落。
+   */
+  uploadAttachmentStream?(
+    principal: Principal,
+    sessionId: string,
+    data: AsyncIterable<Uint8Array>,
     name: string | undefined,
   ): Promise<{ receiptId: string; name: string | null }>
 }
@@ -593,9 +609,40 @@ export class FileTransferHandler {
       return
     }
     await transfer.handle.close().catch(() => undefined)
+    // 优先流式：spool 文件逐块喂给内核，内存有界。
+    // 宿主不支持流式（老内核没有 uploadStream / 附件 provider 拒绝流式）时
+    // 才回落 base64 —— 那条路把 N 字节放大成 1.33N 的字符串，桥进程峰值
+    // 实测涨到 5.67 倍（100 MiB → 567 MiB），涨爆的是宿主进程。
+    if (this.chat.uploadAttachmentStream !== undefined) {
+      try {
+        const receipt = await this.chat.uploadAttachmentStream(
+          principal,
+          transfer.sessionId,
+          createReadStream(transfer.spoolPath),
+          transfer.name,
+        )
+        await this.closeUpload(uploadId)
+        reply({
+          kind: 'file-upload-completed',
+          data: {
+            requestId, uploadId, sessionId: transfer.sessionId, receiptId: receipt.receiptId,
+            file: { attachmentId: receipt.receiptId, name: receipt.name ?? transfer.name, bytes: transfer.size },
+            sha256: transfer.sha256,
+          },
+        })
+        return
+      } catch (error) {
+        if (!isFileUploadStreamUnsupported(error)) {
+          await this.closeUpload(uploadId)
+          throw error
+        }
+        // 流式这条路不可用：往下走 base64 回落（spool 还在盘上，能重读）。
+      }
+    }
     let base64: string
     try {
-      // 内核附件通道吃 base64 字符串；spool 已在磁盘，提交瞬间读入（受 512 MiB 上限约束）。
+      // 回落路径：内核附件通道只吃 base64 字符串（spool 已在磁盘，提交瞬间读入，
+      // 受 512 MiB 上限约束）。内存放大到此为止，这是这条路的固有代价。
       const { readFile } = await import('node:fs/promises')
       base64 = (await readFile(transfer.spoolPath)).toString('base64')
     } catch {

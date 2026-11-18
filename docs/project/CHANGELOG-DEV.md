@@ -1,5 +1,59 @@
 # 开发日志
 
+## v2.12.0 · 大文件上传不再把内存吃爆 —— 流式附件通道 + base64 回落（issue #23）
+
+**现象**：给手机上传一个大文件（100 MiB），桥所在进程（= 宿主进程）的内存峰值实测涨到
+**5.67 倍**（100 MiB → 567 MiB；50 MiB → 284 MiB）。**不报错、不掉连接、不留日志** ——
+只是安静地把内存吃掉，然后 OOM。基线 node RSS ≈43.6 MiB，测的是 `/proc/self/status` 的
+`VmHWM`（单调峰值，不是会抖的 `VmRSS`）。CPU 不是瓶颈（base64 encode ≈1600 MiB/s），
+`V8 MAX_STRING_LENGTH=536870888` 也不构成限制 —— 所以这条路**只会安静地涨**。
+
+**根因**（两处「全量化」）：
+
+- `src/host/ws-file-transfer.ts` 的 `uploadFinish`：校验完 SHA-256 后
+  `readFile(spoolPath).toString('base64')` → 整份文件变成 1.33N 的字符串再交给内核；
+- `src/host/bff-upload.ts` 的 `complete`：`readFile` 每块 → `parts.push` → `Buffer.concat`
+  → `toString('base64')` → 整份拼起来再放大一遍。
+
+结构下限 ≈4.67N（spool Buffer(N) + base64(1.33N) + 内核解码(N) + 校验用的第二份
+base64(1.33N) + Uint8Array 拷贝(N)）。内核的附件入口只有 base64 一种（`admitEncodedFile`
+→ `decodeCanonicalBase64` → `saveFile`），所以桥只能先把字节变成字符串。
+
+**修法**（同一提交）：
+
+- 新增 `src/host/bridge/file-upload-stream.ts`：走内核的**流式**入口
+  `ctx.fileUploads.uploadStream({ sessionId, data, signal?, name? })`
+  （内核 0.2.2-rc.1 已有；底层是 `attachments.saveFileStream` → `stageImmutableObjectStream`，
+  逐块写临时文件，**内存有界**）。桥侧不再先把字节变成字符串；
+- **回落必须由还握着字节的那一层做**：WS 的 spool 文件、REST 的分块文件都能重读；
+  内核适配层拿到的是一次性 `AsyncIterable`，读一次就没了，所以它**只能报错**
+  （稳定 code `FILE_UPLOAD_STREAM_UNSUPPORTED`），不能自己回落。老内核没有 `uploadStream`、
+  非 local 的附件 provider 拒绝流式（`ATTACHMENT_FILES_UNSUPPORTED`）——两种情况都归到这个 code；
+- 两个入口都改成「先试流式、不能流式才回落 base64」，**功能不缺，流式只是优化**；
+- 流式 RPC 超时放宽到 10 分钟（默认 10 s 对大文件不够，但**不能**设成无限）；
+- App 侧**零改动**：`file-upload-completed` 帧字段、`receiptId` / `attachmentId` / `bytes` 全部照旧。
+
+**验证**：
+
+- 新增 `tests/ws-file-transfer.spec.ts`（2 用例）：断言交到内核手上的是**流**不是 base64 字符串、
+  且是**逐块**喂的（1 MiB payload → 多块）；另一条钉住「宿主不能流式时自动回落 base64，
+  字节与完成帧照旧」；
+- `tests/bff-rest.spec.ts` 新增 1 用例（REST 那条路）：同样断言内核收到的是流、base64 路未被走过；
+- 内存实测（`artifacts/fix-20261118/mem-probe.mts` / `mem-probe-rest.mts`，同一台机器、
+  两条路各起独立进程、payload 分片读、量 `VmHWM`）：
+
+  | 入口 | 走法 | 峰值超基线 | 放大倍数 |
+  |---|---|---|---|
+  | WS | base64（修复前） | 327.1 MiB | 3.27× |
+  | WS | 流式（修复后） | **2.5 MiB** | **0.02×** |
+  | REST | base64（修复前） | 435.2 MiB | 4.35× |
+  | REST | 流式（修复后） | **46.6 MiB** | **0.47×** |
+
+  （50 MiB 对照：WS base64 3.40× / 流式 0.11×；REST base64 4.35× / 流式 0.46×。
+  数字与 issue #23 正文里的 5.67× 有出入：正文那个数是**更早一轮**用不同装置测的，
+  这里换了「payload 不整块进内存 + 两条路各起独立进程」的装置，量的是同一条上传的**相对**放大倍数。）
+- `pnpm check` 四道门全绿。
+
 ## v2.12.0 · 隧道工具的 output.schema 回到内核接受的子集 —— 工具不再静默消失（issue #22）
 
 **现象**：IM 里让 agent「开个隧道」，工具在**模型可见列表里根本没有** —— 用户只看到

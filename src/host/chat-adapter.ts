@@ -8,6 +8,7 @@ import { ApiError } from './errors.ts'
 import { HISTORY_FORMAT_VERSION } from './capabilities.ts'
 import { applyHistoryBudget } from './history-budget.ts'
 import { resolveAuthorizedPath, wireRelative } from './path-policy.ts'
+import { FILE_UPLOAD_STREAM_UNSUPPORTED } from './bridge/file-upload-stream.ts'
 
 export interface RpcResponse<T> {
   result: { ok: true; value: T } | { ok: false; error: { code: string; message: string; details?: unknown } }
@@ -56,6 +57,22 @@ export interface DshApiProxy {
      * `data` 是文件字节的**标准 base64**。
      */
     uploadAttachment(request: { rpcId: string; payload: { sessionId: string; data: string; name?: string } }): Promise<RpcResponse<{ receiptId: string; name: string | null }>>
+    /**
+     * 流式上传：字节以**流**的形式交给内核，而不是 base64 字符串。
+     *
+     * 为什么要有第二条路：base64 那条路把 N 字节放大成 1.33N 的字符串，
+     * 加上内核解码与校验的第二份拷贝，桥进程峰值实测涨到 5.67 倍
+     * （100 MiB → 567 MiB）。桥跑在宿主进程里，涨爆的是宿主。
+     *
+     * 契约（与 `uploadAttachment` 完全一致，App 侧零改动）：
+     * - 返回同样的 `receiptId` 与 `name`；
+     * - 宿主不能流式时（老内核没有 `uploadStream`，或附件 provider 拒绝
+     *   流式）报 `FILE_UPLOAD_STREAM_UNSUPPORTED`，由**持有字节的那一层**
+     *   回落成 base64 —— 本层拿到的流是一次性的，读一次就没了。
+     *
+     * 所以这里是**可选**方法：实现方没有流式能力时整个方法可以缺席。
+     */
+    uploadAttachmentStream?(request: { rpcId: string; payload: { sessionId: string; data: AsyncIterable<Uint8Array>; name?: string } }): Promise<RpcResponse<{ receiptId: string; name: string | null; attachment?: { attachmentId: string; name: string; bytes: number } }>>
     /**
      * 按 id 取回附件字节。
      *
@@ -939,6 +956,48 @@ export class DshChatAdapter {
       rpcId: randomUUID(),
       payload: { sessionId, data, ...(name === undefined ? {} : { name }) },
     }))
+  }
+
+  /**
+   * 流式上传：字节以**流**交给内核，不经过 base64 字符串。
+   *
+   * 为什么需要第二条路：base64 那条路把 N 字节放大成 1.33N 的字符串，
+   * 再加内核解码与校验的第二份拷贝，桥进程峰值实测涨到 5.67 倍
+   * （100 MiB → 567 MiB）。桥跑在宿主进程里，涨爆的是宿主。
+   *
+   * 宿主不能流式时（老内核没有 `uploadStream`，或附件 provider 拒绝流式）
+   * 这里抛 `FILE_UPLOAD_STREAM_UNSUPPORTED`，**由持有字节的那一层**
+   * （WS 的 spool 文件 / REST 的分块文件）回落成 base64 —— 本层拿到的
+   * 流是一次性的，读一次就没了，没法自己回落。
+   */
+  async uploadAttachmentStream(
+    principal: Principal,
+    sessionId: string,
+    data: AsyncIterable<Uint8Array>,
+    name?: string,
+  ): Promise<{ receiptId: string; name: string | null; attachment?: { attachmentId: string; name: string; bytes: number } }> {
+    await this.requireSession(principal, sessionId)
+    const upload = this.api.sessions.uploadAttachmentStream
+    if (upload === undefined) {
+      throw Object.assign(
+        new Error('this DSH build cannot stream file uploads'),
+        { code: FILE_UPLOAD_STREAM_UNSUPPORTED },
+      )
+    }
+    const response = await upload.call(this.api.sessions, {
+      rpcId: randomUUID(),
+      payload: { sessionId, data, ...(name === undefined ? {} : { name }) },
+    })
+    // 「不能流式」这个 code 必须**原样**透出去：`unwrapDsh` 会把 code 改写成
+    // `DSH_<大写>`，那就把「宿主不支持流式」变成了「普通 400」，持有字节的
+    // 那一层（WS spool / REST 分块文件）就再也认不出该回落了。
+    if (!response.result.ok && response.result.error.code === FILE_UPLOAD_STREAM_UNSUPPORTED) {
+      throw Object.assign(
+        new Error(response.result.error.message),
+        { code: FILE_UPLOAD_STREAM_UNSUPPORTED },
+      )
+    }
+    return unwrapDsh(response)
   }
 
   /**

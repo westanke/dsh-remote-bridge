@@ -2,9 +2,14 @@
  * REST 分块上传（`docs/project/BFF-REST-CONTRACT.md` §1）。
  *
  * 与 `/ws/mobile` 的 `file-upload-*` 帧同一套语义，但面向只想用 REST 的客户端：
- * 开票 → 逐块 PUT → complete 换 receiptId。转写（把 spool 读成 base64 交内核
- * 附件上传）走**同一个** `chat.uploadAttachment`，因此校验、权限、审计与既有
+ * 开票 → 逐块 PUT → complete 换 receiptId。转写（把 spool 读出来交内核附件上传）
+ * 走**同一个** `chat.uploadAttachment`，因此校验、权限、审计与既有
  * `POST /chat/sessions/{id}/attachments` 完全一致。
+ *
+ * 转写有两条路：**优先流式**（按块顺序把字节喂给内核，内存有界），宿主
+ * 不支持流式时才回落 base64 字符串 —— base64 那条路把 N 字节放大成 1.33N
+ * 的字符串，桥进程峰值实测涨到 5.67 倍（100 MiB → 567 MiB），而桥跑在宿主
+ * 进程里，涨爆的是宿主。
  *
  * 与 WS 的三处刻意差异（都是契约钉死的，不是疏忽）：
  * - 块大小 **1 MiB**（WS 是 256 KiB）：契约 §1 把 `chunkSize` 定为 1048576 且要求
@@ -17,11 +22,13 @@
  * WS 的回收按「空闲 2 分钟」，REST 按「开票后 1 小时」，混在一起会互相扫掉对方。
  */
 import { randomBytes } from 'node:crypto'
-import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
+import { createReadStream } from 'node:fs'
+import { mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import type { Principal } from '../shared/contracts.ts'
 import { ApiError } from './errors.ts'
 import { LEAF_NAME, mediaTypeOf } from './ws-file-transfer.ts'
+import { isFileUploadStreamUnsupported } from './bridge/file-upload-stream.ts'
 
 /** 契约 §1 钉死的块大小：客户端必须按服务端回传的这个值切块。 */
 export const UPLOAD_CHUNK_BYTES = 1024 * 1024
@@ -79,6 +86,21 @@ export interface ChunkedUploadDeps {
     principal: Principal,
     sessionId: string,
     data: string,
+    name: string,
+  ) => Promise<{ receiptId: string; name: string | null }>
+  /**
+   * 流式内核附件上传：**可选**。
+   *
+   * 有它时 complete 按块顺序把字节喂给它（内存有界）；没有它时退回
+   * `upload` 的 base64 那条路（内存放大 5.67 倍，功能不缺）。
+   *
+   * 实现方若在「宿主不能流式」时抛错，必须用
+   * `FILE_UPLOAD_STREAM_UNSUPPORTED` 这个 code，本层据此回落。
+   */
+  uploadStream?: (
+    principal: Principal,
+    sessionId: string,
+    data: AsyncIterable<Uint8Array>,
     name: string,
   ) => Promise<{ receiptId: string; name: string | null }>
   /** 时间源（测试可注入；生产用它算 TTL）。 */
@@ -184,10 +206,14 @@ export class ChunkedUploadStore {
   }
 
   /**
-   * 收尾：拼块 → 交内核附件上传 → 票据作废。
+   * 收尾：交内核附件上传 → 票据作废。
    *
    * 缺块回 409 且 `details.missing` 是**块号数组**（契约 §1）：客户端据此重传，
    * 所以这里不能糊成一句「还没传完」。
+   *
+   * 交给内核的方式有两条：**优先流式**（按块顺序把字节喂给内核，内存有界），
+   * 宿主不支持流式时才回落 base64 —— 那条路把 N 字节放大成 1.33N 的字符串，
+   * 桥进程峰值实测涨到 5.67 倍（100 MiB → 567 MiB），涨爆的是宿主进程。
    */
   async complete(
     principal: Principal,
@@ -203,11 +229,89 @@ export class ChunkedUploadStore {
       throw new ApiError(409, 'CONFLICT', `The upload is missing ${missing.length} chunk(s).`, { missing })
     }
 
+    // 先用 stat 复核每块的长度（不读内容）：磁盘上被人动过时与其把残缺文件
+    // 交出去，不如让客户端重传（票据保留）。
+    let total = 0
+    for (let index = 0; index < count; index += 1) {
+      const info = await stat(join(this.deps.spoolDir, ticket.id, `${index}.chunk`))
+      if (info.size !== expectedLength(ticket, index)) {
+        throw new ApiError(409, 'CONFLICT', 'A stored chunk changed size; re-upload the chunks.', {
+          missing: [],
+          reason: 'chunk-size-changed',
+        })
+      }
+      total += info.size
+    }
+    if (total !== ticket.size) {
+      throw new ApiError(409, 'CONFLICT', 'The stored chunks do not add up to the declared size.', {
+        missing: [],
+        reason: 'size-mismatch',
+      })
+    }
+
+    const receipt = this.deps.uploadStream === undefined
+      ? await this.uploadAsBase64(principal, ticket, count)
+      : await this.uploadAsStream(principal, ticket, count)
+    await this.release(ticket)
+    return {
+      id: receipt.receiptId,
+      receiptId: receipt.receiptId,
+      name: receipt.name ?? ticket.name,
+      size: ticket.size,
+      contentType: ticket.contentType ?? mediaTypeOf(ticket.name),
+      uploadedAt: this.now(),
+    }
+  }
+
+  /**
+   * 流式那路：按块顺序把 spool 里的字节喂给内核，内存有界（与 base64 那路的
+   * 5.67 倍放大相反）。
+   *
+   * 宿主不支持流式时（实现方抛 `FILE_UPLOAD_STREAM_UNSUPPORTED`）回落 base64：
+   * spool 还在盘上，能重读 —— 这就是「回落必须由还握着字节的那一层做」的原因：
+   * 内核适配层拿到的是一次性流，读一次就没了，它自己没法回落。
+   */
+  private async uploadAsStream(
+    principal: Principal,
+    ticket: UploadTicket,
+    count: number,
+  ): Promise<{ receiptId: string; name: string | null }> {
+    const uploadStream = this.deps.uploadStream
+    if (uploadStream === undefined) {
+      return this.uploadAsBase64(principal, ticket, count)
+    }
+    const chunkPath = (index: number): string => join(this.deps.spoolDir, ticket.id, `${index}.chunk`)
+    const data = (async function* streamChunks(): AsyncGenerator<Uint8Array> {
+      for (let index = 0; index < count; index += 1) {
+        for await (const chunk of createReadStream(chunkPath(index))) {
+          yield chunk
+        }
+      }
+    })()
+    try {
+      return await uploadStream(principal, ticket.sessionId, data, ticket.name)
+    } catch (error) {
+      if (!isFileUploadStreamUnsupported(error)) throw error
+      return this.uploadAsBase64(principal, ticket, count)
+    }
+  }
+
+  /**
+   * base64 那路（回落）：把全部块读进内存再转 base64 交给内核。
+   *
+   * 内存放大 5.67 倍（100 MiB → 567 MiB）是这条路的固有代价，所以只在
+   * 宿主不支持流式时才走它。块长再核一遍：stat 复核与这里读出来之间可能
+   * 被人动过磁盘。
+   */
+  private async uploadAsBase64(
+    principal: Principal,
+    ticket: UploadTicket,
+    count: number,
+  ): Promise<{ receiptId: string; name: string | null }> {
     const parts: Buffer[] = []
     for (let index = 0; index < count; index += 1) {
       const bytes = await readFile(join(this.deps.spoolDir, ticket.id, `${index}.chunk`))
       if (bytes.byteLength !== expectedLength(ticket, index)) {
-        // 磁盘上被人动过：与其把残缺文件交出去，不如让客户端重传（票据保留）。
         throw new ApiError(409, 'CONFLICT', 'A stored chunk changed size; re-upload the chunks.', {
           missing: [],
           reason: 'chunk-size-changed',
@@ -222,17 +326,7 @@ export class ChunkedUploadStore {
         reason: 'size-mismatch',
       })
     }
-
-    const receipt = await this.deps.upload(principal, ticket.sessionId, buffer.toString('base64'), ticket.name)
-    await this.release(ticket)
-    return {
-      id: receipt.receiptId,
-      receiptId: receipt.receiptId,
-      name: receipt.name ?? ticket.name,
-      size: ticket.size,
-      contentType: ticket.contentType ?? mediaTypeOf(ticket.name),
-      uploadedAt: this.now(),
-    }
+    return this.deps.upload(principal, ticket.sessionId, buffer.toString('base64'), ticket.name)
   }
 
   /** 查询进度（GET）。缺块数组与 complete 的 `details.missing` 同一口径。 */

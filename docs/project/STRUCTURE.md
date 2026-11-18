@@ -280,6 +280,7 @@ host services 之上重建 0.1.x 的 `apiProxy` 面容，让 `chat-adapter` / `s
 | `src/host/bridge/` | dir | 0.2.x 适配层按链路拆的模块（2026-10-31 自 dsh-0.2-bridge.ts 拆出，issue #2） |
 | `src/host/bridge/attachments.ts` | file | 图片交接与附件读取：handoff 落盘判定（currentModelSelection/modelIsConfirmedTextOnly）、readHandoffImageFile、HandoffLocale |
 | `src/host/bridge/chat.ts` | file | 审批桥 ApprovalBridge 与提问桥 QuestionBridge（挂起态与超时） |
+| `src/host/bridge/file-upload-stream.ts` | file | 流式附件上传接线：uploadAttachmentStreamToKernel（走内核 `ctx.fileUploads.uploadStream`）+ 不可流式时的稳定 code FILE_UPLOAD_STREAM_UNSUPPORTED（issue #23） |
 | `src/host/bridge/frame-hub.ts` | file | FrameHub 帧中枢（背压/重建）+ SessionEventRelay + wireSessionRegistryRelay（原工厂内联接线） |
 | `src/host/bridge/host-reads.ts` | file | 宿主读取助手：sessionIdOfAgent/sessionIdOf/readArchivedSessionIds/createAgentResolver（原工厂内联） |
 | `src/host/bridge/kernel-services.ts` | file | 0.2.x 宿主服务结构视图 + UserQuestionsLike 视图 + optionalService |

@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { type IncomingMessage, type ServerResponse } from 'node:http'
-import { type DeviceScope } from '../shared/contracts.ts'
+import { type DeviceScope, type Principal } from '../shared/contracts.ts'
 import { PLUGIN_VERSION } from '../shared/version.ts'
 import { type AuthService, requestAddress } from './auth.ts'
 import { createBffRest, type BffRest } from './bff-rest.ts'
@@ -139,6 +139,22 @@ export class ApiRouter {
       chat: {
         uploadAttachment: (principal, sessionId, data, name) =>
           options.chat.uploadAttachment(principal, sessionId, data, name),
+        // 流式那条路：**可选**。宿主不支持流式时 `DshChatAdapter` 会报
+        // FILE_UPLOAD_STREAM_UNSUPPORTED，分块上传层据此回落 base64。
+        //
+        // 这里必须查「方法在不在」而不是直接传箭头函数：调用方（测试替身、
+        // 别的装配点）可能给的是一个没有流式方法的 chat，硬调会抛 TypeError
+        // —— 那不是「不支持流式」的信号，回落就不会发生，上传直接失败。
+        ...(typeof options.chat.uploadAttachmentStream === 'function'
+          ? {
+              uploadAttachmentStream: (
+                principal: Principal,
+                sessionId: string,
+                data: AsyncIterable<Uint8Array>,
+                name?: string,
+              ) => options.chat.uploadAttachmentStream(principal, sessionId, data, name),
+            }
+          : {}),
         isSessionAuthorized: (principal, sessionId) => options.chat.isSessionAuthorized(principal, sessionId),
       },
       hostRemote: options.hostRemote,

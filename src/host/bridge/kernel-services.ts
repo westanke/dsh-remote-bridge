@@ -33,6 +33,10 @@ export type PromptContentPartLike = PromptContentPart
  *
  * 由内核的 `@deepseek-ai/dsh-client-file-upload` 以 cordis 服务的形式暴露，
  * 因此插件**不需要**把字节转发到内核的 HTTP 路由（那条路由只绑 loopback，手机也到不了）。
+ *
+ * 两条入口的差别就是**内存放大**：`upload()` 吃 base64 字符串，100 MiB 的文件
+ * 会让桥进程涨到约 567 MiB（实测 5.67 倍，见 issue #23）；`uploadStream()` 吃字节流，
+ * 内核边收边落盘，内存基本不动。桥跑在宿主进程里 —— 涨爆的是宿主。
  */
 export interface FileUploadsLike {
   upload(
@@ -46,6 +50,22 @@ export interface FileUploadsLike {
      * 0.2.1-rc.5 and 0.2.2-rc.1 alike; typed optional so an unexpected host
      * shape degrades to the receipt-only view instead of crashing the upload.
      */
+    file?: { attachmentId: string; name: string; bytes: number }
+  }>
+  /**
+   * 流式上传（0.2.2-rc.1 起内核才有；附件 provider 也要支持流式落盘）。
+   *
+   * **可选**：老内核没有这个方法，桥会回落成 base64 那条路。
+   * 签名与 `upload()` 刻意不同 —— 这里**不需要** agent，内核自己按 sessionId 解析
+   * （session-controller 已注册 resolver，冷会话也能解析出来）。
+   */
+  uploadStream?: (request: {
+    sessionId: string
+    data: AsyncIterable<Uint8Array>
+    name?: string
+    signal?: AbortSignal
+  }) => Promise<{
+    receiptId: string
     file?: { attachmentId: string; name: string; bytes: number }
   }>
   /**

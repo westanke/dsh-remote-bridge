@@ -256,6 +256,59 @@ describe('REST BFF 分块上传', () => {
     }
   })
 
+  it('hands the kernel a byte stream instead of a base64 string', async () => {
+    // 交到内核手上的是**流**，不是 base64 字符串：base64 那条路把 N 字节放大成
+    // 1.33N 的字符串，桥进程峰值实测涨到 5.67 倍（100 MiB → 567 MiB），
+    // 涨爆的是宿主进程（issue #23）。
+    const streamed: Buffer[] = []
+    const base64Calls: string[] = []
+    const app = await harness({
+      chat: {
+        isSessionAuthorized: async () => true,
+        uploadAttachment: async (_principal: unknown, _sessionId: string, data: string) => {
+          base64Calls.push(data)
+          return { receiptId: 'att_base64', name: 'clip.bin' }
+        },
+        uploadAttachmentStream: async (
+          _principal: unknown,
+          _sessionId: string,
+          data: AsyncIterable<Uint8Array>,
+        ) => {
+          for await (const chunk of data) streamed.push(Buffer.from(chunk))
+          return { receiptId: 'att_stream', name: 'clip.bin' }
+        },
+      },
+    })
+    try {
+      const { writer } = await tokens(app)
+      const size = CHUNK * 2 + 11
+      const ticket = await openUpload(app, writer, { size })
+      for (let index = 0; index < ticket.count; index += 1) {
+        const length = index === ticket.count - 1 ? size - index * CHUNK : CHUNK
+        const written = await app.call({
+          method: 'PUT',
+          path: `/chat/sessions/S1/attachments/uploads/${ticket.uploadId}/chunks/${index}`,
+          token: writer,
+          raw: new Uint8Array(length),
+        })
+        expect(written.status).toBe(200)
+      }
+      const completed = await app.call({
+        method: 'POST',
+        path: `/chat/sessions/S1/attachments/uploads/${ticket.uploadId}/complete`,
+        token: writer,
+      })
+      expect(completed.status).toBe(201)
+      const receipt = await completed.json() as Record<string, unknown>
+      expect(receipt['receiptId']).toBe('att_stream')
+      // base64 那条路一次都没被走过；字节原样以流的形式到达内核。
+      expect(base64Calls).toHaveLength(0)
+      expect(Buffer.concat(streamed).byteLength).toBe(size)
+    } finally {
+      await app.close()
+    }
+  })
+
   it('reports the exact missing chunks with 409 instead of a vague failure', async () => {
     const app = await harness()
     try {

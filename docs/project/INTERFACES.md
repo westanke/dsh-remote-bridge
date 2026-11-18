@@ -344,6 +344,7 @@ listAgentPresets()                            listPermissionPresets()        sel
 createSessionInWorkspace(principal, workspaceId, …)  createSession(principal, rootId, …)
 history(principal, sessionId, { beforeSeq, maxMessages })
 prompt(principal, sessionId, parts, mode)     uploadAttachment(principal, sessionId, bytes, name)
+uploadAttachmentStream(principal, sessionId, bytes, name)  // 流式；宿主不支持时抛 FILE_UPLOAD_STREAM_UNSUPPORTED（issue #23）
 readAttachment(principal, sessionId, attachmentId)   readHandoffImage(principal, sessionId, name)
 cancel(principal, sessionId)                  renameSession(principal, sessionId, title)
 forkSession(principal, sessionId, atSeq?)     archiveSession(principal, sessionId)
@@ -410,7 +411,7 @@ export class FileService {  // 构造 (database, emit)
 | `normalizeListenerHost` / `normalizeListenerPort` / `loopbackFor` / `DEFAULT_REMOTE_HOST` | `listener-config.ts` | 监听配置 |
 | `probeHostServices` / `INJECTED_SERVICE_NAMES` / `OPTIONAL_SERVICE_NAMES` / `HostServiceReport` | `host-service-probe.ts` | 注入面探针 |
 | `BffRest` / `createBffRest` / `BffRoute` / `BffRestOptions` / `RestIo` / `ScheduleCreatePort` | `bff-rest.ts` | App 侧 REST BFF 的薄分发层（九条路由 → 三个域模块；JSON 体 32 KiB、chunk 体 1 MiB+4 KiB、speech 体 8 MiB） |
-| `ChunkedUploadStore`（`open` / `writeChunk` / `complete` / `status` / `list` / `cancel` / `dispose`）/ `UPLOAD_CHUNK_BYTES` / `MAX_CHUNKED_UPLOAD_BYTES` / `CHUNKED_UPLOAD_TTL_MS` | `bff-upload.ts` | 分块上传票据与 spool 落盘（1 MiB 切片、1 小时、alreadyReceived 续传、缺块 409） |
+| `ChunkedUploadStore`（`open` / `writeChunk` / `complete` / `status` / `list` / `cancel` / `dispose`）/ `UPLOAD_CHUNK_BYTES` / `MAX_CHUNKED_UPLOAD_BYTES` / `CHUNKED_UPLOAD_TTL_MS` | `bff-upload.ts` | 分块上传票据与 spool 落盘（1 MiB 切片、1 小时、alreadyReceived 续传、缺块 409）；提交优先流式喂内核，不可流式才回落 base64（issue #23） |
 | `BffSchedule`（`list` / `create` / `patch` / `remove`）/ `validateCron` / `validateTimeZone` / `SCHEDULE_TEXT_MAX` / `SCHEDULE_TITLE_MAX` | `bff-schedule.ts` | cron 与时区校验、内核 ScheduleRecord ↔ REST cron 视图映射 |
 | `BffSpeech`（`catalog` / `transcribe` / `configure`）/ `unavailableView` / `SPEECH_UNAVAILABLE_REASON` / `SPEECH_REQUEST_MAX_BYTES` | `bff-speech.ts` | REST 官方语音：复用 ws-speech 的上限归一，缺服务回 200 available:false |
 
@@ -486,6 +487,8 @@ export const PLUGIN_VERSION: string          // shared/version.ts，与 package.
 | `export class DshChatAdapter` | `src/host/chat-adapter.ts` | class |
 | `export function unwrapDsh` | `src/host/chat-adapter.ts` | function |
 | `export function normalizeDshEvent` | `src/host/chat-adapter.ts` | function |
+| `export const FILE_UPLOAD_STREAM_UNSUPPORTED` | `src/host/bridge/file-upload-stream.ts` | const |
+| `export async function uploadAttachmentStreamToKernel` | `src/host/bridge/file-upload-stream.ts` | function |
 | `export class WorkspaceDatabase` | `src/host/database.ts` | class |
 | `export function hashSecret` | `src/host/database.ts` | function |
 | `export class FileService` | `src/host/file-service.ts` | class |

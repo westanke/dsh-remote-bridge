@@ -251,6 +251,18 @@ export interface BffRestOptions {
       data: string,
       name?: string,
     ) => Promise<{ receiptId: string; name: string | null }>
+    /**
+     * 流式上传：**可选**。
+     *
+     * 有它时分块上传按块顺序把字节喂给内核（内存有界）；没有它时退回
+     * `uploadAttachment` 的 base64 那条路（内存放大 5.67 倍，功能不缺）。
+     */
+    uploadAttachmentStream?: (
+      principal: Principal,
+      sessionId: string,
+      data: AsyncIterable<Uint8Array>,
+      name?: string,
+    ) => Promise<{ receiptId: string; name: string | null }>
     isSessionAuthorized: (principal: Principal, sessionId: string) => Promise<boolean>
   }
   /** 内核 typert Gateway 句柄；`undefined` = 语音/定时任务读面回 unavailable/503。 */
@@ -269,6 +281,17 @@ export function createBffRest(options: BffRestOptions): BffRest {
   const uploads = new ChunkedUploadStore({
     spoolDir: join(options.dataDir, 'uploads-rest'),
     upload: (principal, sessionId, data, name) => options.chat.uploadAttachment(principal, sessionId, data, name),
+    // 流式是可选能力：缺席时 `ChunkedUploadStore` 自己退回 base64 那条路。
+    ...(options.chat.uploadAttachmentStream === undefined
+      ? {}
+      : {
+          uploadStream: (
+            principal: Principal,
+            sessionId: string,
+            data: AsyncIterable<Uint8Array>,
+            name: string,
+          ) => options.chat.uploadAttachmentStream!(principal, sessionId, data, name),
+        }),
   })
   const speech = new BffSpeech(options.hostRemote)
   return new BffRest({
