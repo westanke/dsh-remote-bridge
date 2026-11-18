@@ -1,5 +1,27 @@
 # 开发日志
 
+## v2.12.0 · 隧道工具的 output.schema 回到内核接受的子集 —— 工具不再静默消失（issue #22）
+
+**现象**：IM 里让 agent「开个隧道」，工具在**模型可见列表里根本没有** —— 用户只看到
+「工具不存在」，插件日志里只有一行 warn，没有任何报错。
+
+**根因**（`src/host/im-command.ts` 的 `createTunnelTool`）：`output.schema` 写了
+`required: true`（布尔）写在**属性节点**上（`properties.url.required`）。
+内核 `ToolsService.register` 在注册前无条件调 `assertSupportedJsonSchema`，只接受一个很小的
+子集：`type` / `oneOf` / `properties` / `required` / `additionalProperties` / `items` / `enum` /
+`const` + 注解；两条硬规则是 `required` **只能**出现在 `type:'object'` 的节点上，且顶层
+`required` 必须是**属性名字符串数组**。两条都违反 → 注册抛错 → 而插件侧把注册失败吞成一行
+warn → 工具**静默消失**。
+
+**修法**（同一提交）：属性节点去掉 `required`，顶层改成 `required: ['url','text','deviceName']`
+—— 三个返回值字段仍然全是必填（少一个就意味着「隧道开了但模型看不到地址」），但形状落回
+内核接受的那个子集。注释里把两条硬规则写清楚，免得下次又写回去。
+
+**验证**：`tests/im-tunnel-command.spec.ts` 新增 1 条回归（**内联最小判据**，不 import 任何
+`@deepseek-ai/*` 包 —— 本仓宪法如此；内核真值记在 issue #22 的实测里）：逐条断言属性节点上
+没有 `required`、顶层 `required` 是字符串数组且每个名字都在 `properties` 里、三个字段齐全；
+该 spec 14 用例全绿，`pnpm check` 四道门全绿。
+
 ## v2.12.0 · 工具调用实时事件透传 —— preparing 态与 error.code 到客户端（2026-11-17）
 
 **现象**（dsh-Chat 会话页对齐官方 Web 的装机走查遗留）：App 里工具行的「准备工具调用」阶段不存在、

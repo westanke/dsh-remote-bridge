@@ -204,15 +204,24 @@ export function createTunnelTool(deps: TunnelCommandDeps): Parameters<TunnelTool
     // 无参数：这条工具只有一个用途，给它加开关等于给自己加鉴权面。
     parameters: {},
     output: {
+      // 内核的 `assertSupportedJsonSchema` 只接受一个很小的子集：
+      // `type` / `oneOf` / `properties` / `required` / `additionalProperties` /
+      // `items` / `enum` / `const` + 注解。两条硬规则（实测 `dsh-tools`
+      // `lib/types/json-schema.js`）：
+      // 1. `required` **只能**出现在 `type: 'object'` 的节点上 ——
+      //    写在属性节点（`properties.url.required`）上直接被拒；
+      // 2. 顶层 `required` 必须是**属性名字符串数组**，不能是 `true`。
+      // 违反任一条 → `ToolsService.register` 抛错 → 插件侧注册失败，
+      // 工具在模型可见列表里**静默消失**（只有一行 warn）。见 issue #22。
       schema: {
         type: 'object',
         additionalProperties: false,
         properties: {
-          url: { type: 'string', required: true },
-          text: { type: 'string', required: true },
-          deviceName: { type: 'string', required: true },
+          url: { type: 'string' },
+          text: { type: 'string' },
+          deviceName: { type: 'string' },
         },
-        required: true,
+        required: ['url', 'text', 'deviceName'],
       },
       render: (_args, value) => [
         { type: 'text', text: `Tunnel is up at ${value.url}` },

@@ -146,6 +146,42 @@ describe('open_tunnel_config 工具（IM 自然语言入口）', () => {
     expect(value).toEqual({ url: RESULT.url, text: RESULT.text, deviceName: RESULT.deviceName })
   })
 
+  it('output.schema 落在内核接受的 JSON Schema 子集里（否则工具会被内核静默拒注册）', () => {
+    // 内核 `ToolsService.register` 在注册前无条件调 `assertSupportedJsonSchema`，
+    // 不通过就抛错；而插件侧把注册失败吞成一行 warn —— 工具于是**静默消失**，
+    // 模型看不到它，用户只看到「工具不存在」（issue #22）。
+    //
+    // 内核只接受一个很小的子集：type / oneOf / properties / required /
+    // additionalProperties / items / enum / const + 注解。两条硬规则：
+    // 1. `required` 只能出现在 `type: 'object'` 的节点上 —— 写在属性节点
+    //    （`properties.url.required`）上直接被拒；
+    // 2. 顶层 `required` 必须是属性名字符串数组，不能是 `true`。
+    //
+    // 本仓宪法要求插件不 import 任何 `@deepseek-ai/*` 包，所以这里内联一份
+    // 最小判据，而不是引内核的校验器（内核真值由 issue #22 的实测记录）。
+    const schema = createTunnelTool(fakeDeps(async () => RESULT)).output.schema as {
+      type?: unknown
+      additionalProperties?: unknown
+      properties?: Record<string, Record<string, unknown>>
+      required?: unknown
+    }
+    expect(schema.type).toBe('object')
+    expect(typeof schema.additionalProperties).toBe('boolean')
+    expect(schema.properties).toBeDefined()
+    // 规则 1：属性节点上不得出现 `required`。
+    for (const [key, property] of Object.entries(schema.properties ?? {})) {
+      expect(Object.hasOwn(property, 'required'), `properties.${key} 不得带 required`).toBe(false)
+    }
+    // 规则 2：顶层 required 必须是字符串数组，且每个名字都在 properties 里。
+    expect(Array.isArray(schema.required)).toBe(true)
+    for (const key of schema.required as string[]) {
+      expect(typeof key).toBe('string')
+      expect(Object.hasOwn(schema.properties ?? {}, key), `required 里的 "${key}" 必须在 properties 中`).toBe(true)
+    }
+    // 三个返回值字段都得是必填 —— 少一个就意味着「隧道开了但模型看不到地址」。
+    expect([...(schema.required as string[])].sort()).toEqual(['deviceName', 'text', 'url'])
+  })
+
   it('render 只吐两段文本：地址一行 + 配置文本一行（IM 卡片里可直接长按复制）', async () => {
     const tool = createTunnelTool(fakeDeps(async () => RESULT))
     const blocks = tool.output.render({}, { url: RESULT.url, text: RESULT.text, deviceName: RESULT.deviceName })
