@@ -185,10 +185,38 @@ export async function apply(ctx: HostContext, config: Config = {}): Promise<void
   // - `imageHandoffDir`：兜底目录是常量，直接给值。
   const imageHandoffDir = path.join(dataDir, 'image-handoff')
   const handoffRootsOf = () => database.listRoots().map(root => ({ id: root.id, realPath: root.realPath }))
+  let router!: ApiRouter
+  // jobController 是**可选服务**（不在 inject 里 —— inject 是硬依赖，而它只在
+  // 0.2.1 的 web profile 上存在；0.2.0-rc.2 上缺失时把插件整个挂掉是 CI 实锤过的回归）。
+  // 用 reflect.get(name, false) 读：不需要 inject 声明，缺失时返回 undefined。
+  // 缺失时干脆不挂 jobs —— 客户端会收到 404，而不是一个永远空的清单。
+  const reflect = (ctx as { reflect?: { get?: (name: string, strict?: boolean) => unknown } }).reflect
+  const jobControllerAvailable =
+    reflect?.get !== undefined && reflect.get('jobController', false) !== undefined
+  if (!jobControllerAvailable) {
+    ctx.logger.warn(new Error('dsh-remote-bridge: jobController not provided by this kernel, background-job endpoints disabled'))
+  }
+  // 定时任务 / 官方语音走内核 typertGateway Remote（DSH 0.2.1-rc.2+ 才有）。
+  // 同样是可选服务：reflect.get 取不到就不启用，WS 帧回结构化 unavailable 引导 REST。
+  // 提到 RemoteApiServer 之前构造，是因为能力位要在构造时就能如实声明（见下）。
+  const hostRemote = createHostRemoteServices(reflect)
+  // 内核端点目录（issue #26 阶段 2）：登记表读得到什么就抄什么，**只读**。
+  // 放在这里而不是用到时再读，是为了能力位能在构造时如实声明（见下）。
+  // 读不到（老内核没有 typert）时目录为空 —— 能力位随之不发。
+  const kernelCatalog = createKernelEndpointCatalog(readTypertRegistry(reflect))
+  const kernelFlags = kernelCapabilityFlags(kernelCatalog)
+
+  // 换源后的门面（issue #26 阶段 3a）：会话/工作区读侧走内核端点，所以网关必须在
+  // 构造门面**之前**就绪。`services` 为 undefined 时不传 —— 门面退回进程内传输
+  // （同一套端点语义，最后一跳直连宿主方法），会话读取不会因为可选服务缺席而整片 500。
+  const kernelGateway = hostRemote.services === undefined
+    ? undefined
+    : { caller: hostRemote.services, catalog: kernelCatalog }
   const apiProxy = createDsh02ApiProxy(ctx, {
     handoffRoots: handoffRootsOf,
     imageHandoffDir,
     handoffSubdir: () => readHandoffSubdir(database),
+    ...(kernelGateway === undefined ? {} : { kernel: kernelGateway }),
   })
   const chat = new DshChatAdapter(apiProxy, database, { agents: ctx.agents, commands: ctx.commands })
   const settings = new DshSettingsAdapter(apiProxy, {
@@ -215,26 +243,6 @@ export async function apply(ctx: HostContext, config: Config = {}): Promise<void
   } catch (error) {
     ctx.logger.warn(new Error(`dsh-remote-bridge: host service probe failed: ${String(error)}`))
   }
-  let router!: ApiRouter
-  // jobController 是**可选服务**（不在 inject 里 —— inject 是硬依赖，而它只在
-  // 0.2.1 的 web profile 上存在；0.2.0-rc.2 上缺失时把插件整个挂掉是 CI 实锤过的回归）。
-  // 用 reflect.get(name, false) 读：不需要 inject 声明，缺失时返回 undefined。
-  // 缺失时干脆不挂 jobs —— 客户端会收到 404，而不是一个永远空的清单。
-  const reflect = (ctx as { reflect?: { get?: (name: string, strict?: boolean) => unknown } }).reflect
-  const jobControllerAvailable =
-    reflect?.get !== undefined && reflect.get('jobController', false) !== undefined
-  if (!jobControllerAvailable) {
-    ctx.logger.warn(new Error('dsh-remote-bridge: jobController not provided by this kernel, background-job endpoints disabled'))
-  }
-  // 定时任务 / 官方语音走内核 typertGateway Remote（DSH 0.2.1-rc.2+ 才有）。
-  // 同样是可选服务：reflect.get 取不到就不启用，WS 帧回结构化 unavailable 引导 REST。
-  // 提到 RemoteApiServer 之前构造，是因为能力位要在构造时就能如实声明（见下）。
-  const hostRemote = createHostRemoteServices(reflect)
-  // 内核端点目录（issue #26 阶段 2）：登记表读得到什么就抄什么，**只读**。
-  // 放在这里而不是用到时再读，是为了能力位能在构造时如实声明（见下）。
-  // 读不到（老内核没有 typert）时目录为空 —— 能力位随之不发。
-  const kernelCatalog = createKernelEndpointCatalog(readTypertRegistry(reflect))
-  const kernelFlags = kernelCapabilityFlags(kernelCatalog)
   const capabilities = {
     jobs: jobControllerAvailable,
     // `chat-schedules-v1` 随 typertGateway Remote 同生死（DSH 0.2.2 起 create/edit

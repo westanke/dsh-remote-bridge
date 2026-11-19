@@ -1,6 +1,26 @@
 # 当前状态
 
-- 日期：2026-11-19（**已发版 v2.12.1：大文件上传流式化 + 隧道工具 schema 修形**；`main` 上另有未发版的 issue #26 阶段 0 / 阶段 1 / 阶段 2）
+- 日期：2026-11-19（**已发版 v2.12.1：大文件上传流式化 + 隧道工具 schema 修形**；`main` 上另有未发版的 issue #26 阶段 0 / 1 / 2 / 3a）
+- **已完成（未发布，issue #26 阶段 3a / `MOB-004`）· 会话/工作区读侧 10 条换源：桥不再直接调宿主方法**：
+  ①**换源清单**：`sessions.list` → `session/list`（wire 键是 `_request`）、`sessions.create` →
+  `session/create`、`sessions.history` → `session/follow`（流式取首帧 snapshot，带 `beforeSeq` 时改走
+  `session/page`）、`sessions.projections`/`wait`/`selectModel`/`rename`/`fork`/`cancel` → 同名端点、
+  `workspace.list` → `workspace/follow`（流式取首帧 `baseline` 后**立刻 abort**，不挂常驻 follower）。
+  换源点只写端点名，wire 键由描述符给 —— 调用点不再出现 `{ _request: payload }` 这种手抄。
+  ②**保留的 delta**（逐条写在调用点注释里）：`list` 过滤 `origin === 'subagent'`；`history` 的子会话
+  地址构造 + 投影读不到的兜底；`wait` 的 `timeoutMs` 仍 +5 s（外层 RPC 超时必须比内核宽）；`workspace.list`
+  的 `archivedSessionIds` 空集时仍从注册表补一次。
+  ③**新增 `src/host/bridge/kernel-local.ts`（进程内传输）**：`typertGateway` 是可选服务，单测里更是从不存在；
+  缺它时把**同一套端点语义**直连宿主服务（`createLocalKernelGateway(host)`），参数校验/错误归一/取消透传
+  仍走 `kernel-invoke.ts` 一条实现。**两条传输、一套语义** —— 换源点不感知走哪条。没有这条路，既有的
+  62 处 `createDsh02ApiProxy(host)` 就都得改成自己搭假网关（那等于让断言迁就实现）。
+  ④**既有用例一行未改**：`tests/dsh-0.2-bridge.spec.ts` / `approval-timeout` / `frame-hub-backpressure` /
+  `handoff-hardening` 4 个 spec、78 例全绿。这是施工卡的硬验收项 —— 换源不许靠改断言变绿。
+  ⑤**防漂移**：本地表的 wires 是手写的，`tests/kernel-local.spec.ts` 在本机装了内核时逐条比对
+  「本地表 vs `typert.host.js` 描述符」的 wires/stream/cancellation（CI 无内核整段 skip）；首轮就抓出
+  `session/list` 漏写 cancellation。
+  ⑥**未做的验收**：施工卡要求的「该族 REST 响应逐字段快照相等」与「§1.4 的 6 项真机清单」本机无法执行
+  ——**没有真机、也没有上一版本可比对的响应快照**。这两项在开真机前不算通过，不得对外说「换源已验证」。
 - **已完成（未发布，issue #26 阶段 2 / `MOB-003`）· 描述符驱动的统一调用封装（不改任何端点行为）**：
   ①**目录只读**：`src/host/bridge/kernel-endpoints.ts` 从 Typert 登记表（`ctx.typert.local.list()`，
   经 `ctx.reflect.get('typert', false)` 取 —— `inject` 一行没加）抽 `KernelEndpoint`：endpoint /

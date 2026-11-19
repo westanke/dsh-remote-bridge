@@ -561,6 +561,33 @@ base64 膨胀 4/3，所以单条路径的原始文件实际上限约 **17.2 MiB*
 `docs:check` 四段全过（12 文档 / 39 tasks / 9 ADRs / STRUCTURE 84 锚点 / INTERFACES 87 锚点）；
 双产物 build 成功（host `lib/index.js` 628.64 kB、client `lib/client.cjs` 772.91 kB）。
 
+## 未发布 · 内核端点归一（B2 全量换源）阶段 3a：会话/工作区读侧 10 条换源（issue #26，2026-11-19）
+
+> 第一批换源。**手机协议零改动**：REST 路径、响应形状、帧名全部照旧 —— 改的是桥内部
+> 从「调宿主方法」变成「调内核端点名」。
+
+- **10 条换源**：`sessions.list` → `session/list`（wire 键是 `_request`，不是 `request`）、
+  `sessions.create` → `session/create`、`sessions.history` → `session/follow`（流式，取首帧
+  snapshot；带 `beforeSeq` 时改走 `session/page`）、`sessions.projections` / `wait` /
+  `selectModel` / `rename` / `fork` / `cancel` → 同名端点、`workspace.list` →
+  `workspace/follow`（流式，取首帧 `baseline` 即 abort，不挂常驻 follower）。
+- **保留的 delta（都写在调用点注释里）**：`list` 过滤 `origin === 'subagent'`（内核仍会列出
+  内部委派会话，桥不能把它们当可打开的行交出去）；`history` 的子会话地址构造与「投影读不到
+  时的兜底」；`wait` 的 `timeoutMs` 仍 +5 s（外层 RPC 超时必须比内核更宽，否则先断的是桥）；
+  `workspace.list` 的 `archivedSessionIds` 空集时仍从注册表补一次（归档集合读法有回头路）。
+- **新增 `src/host/bridge/kernel-local.ts`（进程内传输）**：`typertGateway` 是可选服务 ——
+  裁剪过的 profile 上可能缺席，单测里更是从来没有。缺它时把同一套端点语义**直连宿主服务**
+  （`createLocalKernelGateway(host)`），参数校验、错误归一、取消透传仍走 `kernel-invoke.ts`
+  那一条实现。**两条传输、一套语义**：换源点只认端点名，不认走哪条路。
+- **既有用例一行未改**：`tests/dsh-0.2-bridge.spec.ts` / `approval-timeout` /
+  `frame-hub-backpressure` / `handoff-hardening` 共 4 个 spec、62 处 `createDsh02ApiProxy(host)`
+  原样通过（78 例）。这是施工卡的硬验收项 —— 换源不许靠改断言变绿。
+- **防漂移**：本地表的 `wires` 是手写的，`tests/kernel-local.spec.ts` 在本机装了内核时
+  逐条比对「本地表 vs `typert.host.js` 描述符」的 wires / stream / cancellation（CI 无内核整段
+  skip）。首轮就抓出一处：`session/list` 声明了 cancellation，我漏写了。
+- **未做的验收**：施工卡里的「该族 REST 响应逐字段快照相等」与「6 项真机清单」本机无法执行
+  （没有真机、没有可比对的上一个版本的响应快照），已在 `STATUS.md` 标注为待真机确认。
+
 ## 未发布 · 内核端点归一（B2 全量换源）阶段 2：描述符驱动的统一调用封装（issue #26，2026-11-19）
 
 - **新增 `src/host/bridge/kernel-endpoints.ts`（230 行）**：把内核 Typert 登记表读成只读目录 ——

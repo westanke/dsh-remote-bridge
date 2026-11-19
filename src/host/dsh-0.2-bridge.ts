@@ -31,6 +31,14 @@ import { wireRelative } from './path-policy.ts'
 import type { SettingsApiProxy } from './settings-adapter.ts'
 
 import type { Dsh02HostServices, SessionAddressLike, PermissionPresetsLike, FileUploadsLike } from './bridge/kernel-services.ts'
+import { createLocalKernelGateway } from './bridge/kernel-local.ts'
+import type { KernelGateway } from './bridge/proxy-options.ts'
+import {
+  invokeBareEndpoint,
+  invokeRequestEndpoint,
+  streamBareEndpoint,
+  streamRequestEndpoint,
+} from './bridge/kernel-invoke.ts'
 import type { HandoffRoot } from './bridge/attachments.ts'
 import type { CreateDsh02ApiProxyOptions } from './bridge/proxy-options.ts'
 import { call, errorCodeOf } from './bridge/rpc.ts'
@@ -82,6 +90,15 @@ export function createDsh02ApiProxy(
 ): SettingsApiProxy {
   const mux = new FrameHub()
   const hostFrames = new FrameHub()
+  // 内核端点网关（issue #26 阶段 3a）。传进来的是真网关（`typertGateway` owner peer +
+  // 登记表目录）；没传时用**进程内传输**——同一套端点语义，直接调宿主服务。
+  //
+  // 为什么允许「没传」：`typertGateway` 是可选服务。裁剪过的 profile 上它可能缺席，
+  // 而会话读取是手机的主路径，不该因为少了调度/语音那套东西就整片 500。缺失时
+  // `src/index.ts` 不传，这里退回直连；行为与换源前逐字一致（同一批宿主方法）。
+  // 两条传输共用一个调用封装（`kernel-invoke.ts`），所以参数校验、错误归一、
+  // 取消透传只有一份实现。
+  const kernel: KernelGateway = options.kernel ?? createLocalKernelGateway(host)
   const imageHandoff = options.imageHandoff !== false
   const handoffRootsOf = (): readonly HandoffRoot[] => {
     const value = options.handoffRoots
@@ -132,9 +149,13 @@ export function createDsh02ApiProxy(
       // mismatch (0.2.x adds `agentAvailable`, drops `agentPreset`) is handled
       // by the adapter's own tolerant reads.
       list: request => call('sessions.list', async (signal) => {
+        // 换源（阶段 3a）：走内核端点 `session/list`，wire 键由描述符给（它是 `_request`，
+        // 而且是**可省**参数 —— 手抄的时候这里写成 `request` 会静默漏参数）。
         // 用 `call` 给的 signal（带 10 s 超时）：修复前是 `new AbortController().signal`，
         // 永不 abort —— 内核卡住时这条会把广播队列永久堵住。
-        const page = await host.sessionController.list(request.payload, signal)
+        const page = await invokeRequestEndpoint<{ items?: unknown[] }>(
+          kernel.caller, kernel.catalog.byName, 'session/list', request.payload, signal,
+        )
         // 0.2.x lists every Session row, subagents included, flagging them with
         // `origin: 'subagent'`. Those are internal delegations that the host
         // refuses to activate as ordinary sessions, so exposing them only yields
@@ -144,7 +165,9 @@ export function createDsh02ApiProxy(
           : page.items
         return { ...page, items } as never
       }),
-      create: request => call('sessions.create', (signal) => host.sessionController.create(request.payload)),
+      create: request => call('sessions.create', (signal) => {
+        return invokeRequestEndpoint(kernel.caller, kernel.catalog.byName, 'session/create', request.payload, signal)
+      }),
       history: request => call('sessions.history', async (signal) => {
         const { sessionId, maxMessages, beforeSeq } = request.payload
         // 子会话历史：内核要的是 `kind:'subagent'` 地址（带父会话 id），
@@ -168,7 +191,13 @@ export function createDsh02ApiProxy(
         if (signal.aborted) controller.abort()
         else signal.addEventListener('abort', () => controller.abort(), { once: true })
         try {
-          const stream = host.sessionController.follow(
+          // 换源（阶段 3a）：`session/follow` 是**流式**端点，描述符声明了 cancellation，
+          // 所以外层超时经 `kernelCallSignal` 原样透传（否则 `call` 的 10 s 只是「我们
+          // 不再等」，内核那边继续读流、继续占资源）。
+          const stream = await streamRequestEndpoint(
+            kernel.caller,
+            kernel.catalog.byName,
+            'session/follow',
             { address, ...(maxMessages === undefined ? {} : { maxMessages }) },
             controller.signal,
           )
@@ -209,12 +238,18 @@ export function createDsh02ApiProxy(
           // window is (beforeSeq, throughSeq], and anchoring keeps the slice
           // adjacent to the caller's oldest record even if traffic arrived
           // while the follow was opening.
-          const page = await host.sessionController.page({
-            address,
-            throughSeq: snapshot.cursor,
-            beforeSeq,
-            ...(maxMessages === undefined ? {} : { maxMessages }),
-          }, controller.signal)
+          const page = await invokeRequestEndpoint<{ records?: unknown[]; hasMore?: boolean }>(
+            kernel.caller,
+            kernel.catalog.byName,
+            'session/page',
+            {
+              address,
+              throughSeq: snapshot.cursor,
+              beforeSeq,
+              ...(maxMessages === undefined ? {} : { maxMessages }),
+            },
+            controller.signal,
+          )
           return withProjections({
             events: Array.isArray(page.records) ? [...page.records] : [],
             hasMore: page.hasMore === true,
@@ -323,9 +358,16 @@ export function createDsh02ApiProxy(
         const { sessionId, name } = request.payload
         return readHandoffImageFile(host, handoffRootsOf(), imageHandoffDir, handoffSubdirOf(), sessionId, name)
       }),
-      cancel: request => call('sessions.cancel', (signal) => host.sessionController.cancel(request.payload)),
-      rename: request => call('sessions.rename', (signal) => host.sessionController.rename(request.payload)),
-      fork: request => call('sessions.fork', (signal) => host.sessionController.fork(request.payload)),
+      // 换源（阶段 3a）：三条都是「一个 request 对象」的单参端点。
+      cancel: request => call('sessions.cancel', (signal) => {
+        return invokeRequestEndpoint(kernel.caller, kernel.catalog.byName, 'session/cancel', request.payload, signal)
+      }),
+      rename: request => call('sessions.rename', (signal) => {
+        return invokeRequestEndpoint(kernel.caller, kernel.catalog.byName, 'session/rename', request.payload, signal)
+      }),
+      fork: request => call('sessions.fork', (signal) => {
+        return invokeRequestEndpoint(kernel.caller, kernel.catalog.byName, 'session/fork', request.payload, signal)
+      }),
       models: request => call('sessions.models', async (signal) => {
         const { sessionId } = request.payload
         // The plugin's cold-session path (chat-adapter's `commandAgent`) reaches
@@ -373,18 +415,32 @@ export function createDsh02ApiProxy(
             : [],
         } as never
       }),
-      selectModel: request => call('sessions.selectModel', (signal) => host.sessionController.selectModel(request.payload) as never),
+      selectModel: request => call('sessions.selectModel', (signal) => {
+        return invokeRequestEndpoint(kernel.caller, kernel.catalog.byName, 'session/selectModel', request.payload, signal) as never
+      }),
       projections: request => call('sessions.projections', async (signal) => {
         // 直接透传内核投影基线（可能为 null=会话不存在）。agent-team/subagents 帧
         // 读取其中的 agentTeam / subagentCatalog 键；形状由 WS 层按 PROTOCOL 校验。
-        return (await host.sessionController.projections({ sessionId: request.payload.sessionId }, signal)) as never
+        // 换源（阶段 3a）：端点只收 `{ sessionId }`，多传 payload 里的其它键会被
+        // 内核按 `unexpected` 拒掉 —— 所以这里显式只取 sessionId。
+        return (await invokeRequestEndpoint(
+          kernel.caller,
+          kernel.catalog.byName,
+          'session/projections',
+          { sessionId: request.payload.sessionId },
+          signal,
+        )) as never
       }),
       wait: request => {
         // DSH 0.2.2 `session/wait`（P2-C）：长轮询语义。RPC 统一超时（10 s）会
         // 掐断等待，所以这里按请求的 timeoutMs 放宽（+5 s 余量给内核收尾），
         // 由 chat-adapter 侧钳制上限，不能放宽到无限。
         const timeoutMs = request.payload.timeoutMs
-        return call('sessions.wait', signal => host.sessionController.wait(request.payload, signal), {
+        // 换源（阶段 3a）：`session/wait` 是 unary 端点，超时放宽仍留在桥（RPC 统一
+        // 10 s 会掐断等待，+5 s 给内核收尾；上限由 chat-adapter 侧钳制）。
+        return call('sessions.wait', signal => {
+          return invokeRequestEndpoint(kernel.caller, kernel.catalog.byName, 'session/wait', request.payload, signal)
+        }, {
           timeoutMs: (typeof timeoutMs === 'number' && timeoutMs > 0 ? timeoutMs : 30_000) + 5_000,
         }) as never
       },
@@ -392,24 +448,43 @@ export function createDsh02ApiProxy(
 
     workspace: {
       list: () => call('workspace.list', async (signal) => {
-        const items = host.workspaceRegistry.list().map(row => ({
-          workspaceId: row.id,
-          path: row.path,
-          title: row.title,
-          sessionIds: [...(row.sessionIds ?? [])],
-          createdAt: row.createdAt,
-          updatedAt: row.updatedAt,
-        }))
-        // 归档集合**必须**来自注册表本身。
+        // 换源（阶段 3a）：`workspace/follow` 是**流式**端点，首帧 `baseline` 就是
+        // `{ items, archivedSessionIds, pinnedSessionIds }`，item 形状与桥今天
+        // 手写的那份逐字段一致（`workspaceView`）—— 读首帧即止，然后 abort。
         //
-        // 这里曾经硬编码 `[]`，理由是「注册表没有插件侧归档的概念」—— 那句话对
-        // 插件自建的归档存储成立，结论却错得离谱：归档压根不是插件侧状态，
-        // 内核 `workspaceController.archiveSession` 写的就是注册表级的
-        // `WorkspaceRegistry.archivedSessionIds`。写死空数组的后果是
-        // chat-adapter 的 `listSessions` 永远拿到一个空过滤集，
-        // 于是「归档」在 REST 层成功、在界面上毫无动静 —— 手机端点完归档，
-        // 会话照旧留在列表里。见 chat-adapter.listSessions 的过滤处。
-        return { items, archivedSessionIds: readArchivedSessionIds(host.workspaceRegistry) }
+        // 为什么不在 `finally` 里 abort 就返回：generator 的 `finally` 只有在返回
+        // 之后被 GC/恢复时才跑，而这里必须**立刻**退订，否则每次列工作区都会在内核
+        // 侧挂一个 follower。abort 会同步把 `signal.throwIfAborted()` 打到生成器里。
+        const controller = new AbortController()
+        if (signal.aborted) controller.abort()
+        else signal.addEventListener('abort', () => controller.abort(), { once: true })
+        try {
+          const stream = await streamBareEndpoint(
+            kernel.caller, kernel.catalog.byName, 'workspace/follow', controller.signal,
+          )
+          const first = await stream[Symbol.asyncIterator]().next()
+          const frame = first.value as {
+            type?: unknown
+            value?: {
+              items?: { workspaceId: string; path: string; title: string; sessionIds: string[]; createdAt: string; updatedAt: string }[]
+              archivedSessionIds?: string[]
+            }
+          } | undefined
+          const baseline = frame?.type === 'baseline' ? frame.value : undefined
+          const items = Array.isArray(baseline?.items) ? baseline.items : []
+          return {
+            items,
+            // 空集合时仍要从注册表补一次：baseline 是快照，而归档集合的读法在
+            // `readArchivedSessionIds` 里有回头路（getter 缺席时读字段），两者一致
+            // 只是正常路径。留这条兜底是为了「端点给了空数组但注册表有值」时
+            // 不会静默把已归档会话放回列表。
+            archivedSessionIds: Array.isArray(baseline?.archivedSessionIds) && baseline.archivedSessionIds.length > 0
+              ? baseline.archivedSessionIds
+              : readArchivedSessionIds(host.workspaceRegistry),
+          }
+        } finally {
+          controller.abort()
+        }
       }),
       create: request => call('workspace.create', (signal) => host.workspaceController.create(request.payload) as Promise<never>),
       rename: request => call('workspace.rename', (signal) => host.workspaceController.rename(request.payload) as Promise<never>),

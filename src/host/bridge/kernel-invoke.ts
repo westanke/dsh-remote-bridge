@@ -121,6 +121,61 @@ export function wrapRequestArgument(endpoint: KernelEndpointShape, payload: unkn
 }
 
 /**
+ * 调一个「单请求参」端点：payload 自动包进它唯一那个 wire 键。
+ *
+ * 换源时最常写的就是这一句 —— `session/list` / `session/create` / `session/rename`
+ * 全是「一个 request 对象」的形状，区别只在键名。键名交给描述符，调用点不再出现
+ * `{ _request: payload }` 这种手写。
+ */
+export async function invokeRequestEndpoint<T = unknown>(
+  caller: KernelCaller,
+  lookup: KernelEndpointLookup,
+  endpoint: string,
+  payload: unknown,
+  signal?: AbortSignal,
+): Promise<T> {
+  const descriptor = requireKernelEndpoint(lookup, endpoint)
+  return await invokeKernelEndpoint<T>(caller, lookup, endpoint, wrapRequestArgument(descriptor, payload), signal)
+}
+
+/** 流式版 {@link invokeRequestEndpoint}：返回内核的帧流（取用方负责中止）。 */
+export async function streamRequestEndpoint(
+  caller: KernelCaller,
+  lookup: KernelEndpointLookup,
+  endpoint: string,
+  payload: unknown,
+  signal?: AbortSignal,
+): Promise<AsyncIterable<unknown>> {
+  const descriptor = requireKernelEndpoint(lookup, endpoint)
+  return await streamKernelEndpoint(caller, lookup, endpoint, wrapRequestArgument(descriptor, payload), signal)
+}
+
+/**
+ * 无参端点（`session/modelCatalog` / `permissionPresets/catalog` / `workspace/follow`）。
+ *
+ * 仍然走 {@link invokeKernelEndpoint}：参数校验在这里不是走过场 —— 描述符若声明了
+ * 参数而我们传空对象，本地就会报 `missing`，比让内核拒收早一步、也好查一步。
+ */
+export async function invokeBareEndpoint<T = unknown>(
+  caller: KernelCaller,
+  lookup: KernelEndpointLookup,
+  endpoint: string,
+  signal?: AbortSignal,
+): Promise<T> {
+  return await invokeKernelEndpoint<T>(caller, lookup, endpoint, {}, signal)
+}
+
+/** 流式版 {@link invokeBareEndpoint}：无参流端点（`workspace/follow`）。 */
+export async function streamBareEndpoint(
+  caller: KernelCaller,
+  lookup: KernelEndpointLookup,
+  endpoint: string,
+  signal?: AbortSignal,
+): Promise<AsyncIterable<unknown>> {
+  return await streamKernelEndpoint(caller, lookup, endpoint, {}, signal)
+}
+
+/**
  * 取消信号：只有描述符声明 `cancellation` 才透传。
  *
  * 传错方向的代价不对称 —— 该传没传只是「取消不了」，不该传却传了会让**每次调用**
