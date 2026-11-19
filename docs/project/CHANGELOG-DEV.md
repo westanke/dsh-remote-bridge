@@ -561,6 +561,55 @@ base64 膨胀 4/3，所以单条路径的原始文件实际上限约 **17.2 MiB*
 `docs:check` 四段全过（12 文档 / 39 tasks / 9 ADRs / STRUCTURE 84 锚点 / INTERFACES 87 锚点）；
 双产物 build 成功（host `lib/index.js` 628.64 kB、client `lib/client.cjs` 772.91 kB）。
 
+## 未发布 · 发版脚本的 tag 推送（issue #25，2026-11-19）
+
+**现象**：一键发版 `bash scripts/release.sh` 跑完，**两站 Release 建好了、npm 也发上去了**，
+但远端**没有** `v<ver>` 这个 tag。第 7 步「全渠道回读」才报 `gitee: tag vX.Y.Z 缺失` ——
+可那已经是 npm 发布**之后**了，而 npm 的版本号不能重发。
+
+**根因**（两个默认值撞在一起，而且两处注释互相矛盾）：
+
+- `scripts/push-all.sh:29` 是 `PUSH_TAGS="${PUSH_TAGS:-0}"` —— **默认不推 tag**
+  （手工推送时这个默认是对的：防止误推历史 tag）；
+- `scripts/release.sh` 第 4 步调用它是**裸调** `bash scripts/push-all.sh` —— **没带 `PUSH_TAGS=1`**；
+- 而 `release.sh` 那段注释曾写着「tag 的推法与 push-all.sh 的默认一致：**只推指向 HEAD 的 tag**」——
+  与实际行为**正好相反**；`push-all.sh` 自己的用法注释倒是对的（`PUSH_TAGS=1 bash scripts/push-all.sh`）。
+  两处注释互相矛盾，正是这个缺陷能活下来的原因。
+
+**为什么没被中途拦住**：第 5 步建 Release 用的是 `tag_name=$TAG`，而 **Gitee / AtomGit 的
+Release 接口不校验远端有没有这个 tag** —— Release 照建、附件照传、npm 照发，一路绿灯。
+唯一会暴露它的是最后一步的回读。
+
+**修法**（同一提交）：
+
+1. **tag 推送是 `release.sh` 的义务，不是调用者的义务** —— 调用改成显式带 `PUSH_TAGS=1`，
+   不再指望人记得配环境变量（v2.12.1 发版时就是这么临时绕过去的：
+   `PUSH_TAGS=1 bash scripts/release.sh` —— 绕法不该成为发版的前提条件）；
+2. `push-all.sh` 的默认**保持 `PUSH_TAGS=0` 不变** —— 缺陷在调用方，不在被调方；
+3. **第 4 步之后加一道硬闸**：对 `gitee`/`atomgit` 各查一次
+   `git ls-remote --tags "$r" "refs/tags/$TAG"`，**tag 不在就直接 `exit 1`** ——
+   宁可不建 Release，也不发一个「有 Release、没 tag」的版本。查的时候**区分两种失败**：
+   ls-remote 本身失败 =「连不上远端」（网络/凭据），与「连上了但没这个 tag」不是一回事，
+   混成一句会把排查方向带偏；
+4. 第 4 步的提示与实际结果对齐（dry-run 行也改成 `PUSH_TAGS=1 bash scripts/push-all.sh`）。
+
+**验证**：
+
+- 新增 `tests/release-tag-push.spec.ts`（6 个用例）：装置是**两个本地 bare 仓库**当
+  `gitee`/`atomgit` 远端（零网络零凭据）+ 一个临时工作仓（`main` 分支、两次提交、
+  HEAD 上一个 annotated tag），跑**真的** `scripts/push-all.sh`：
+  ① 默认不推 tag（远端有分支、无 tag）② 带 `PUSH_TAGS=1` 才推「指向 HEAD 的 tag」
+  ③ 幂等重跑（远端已有同名 tag → 跳过、不算失败）④ `release.sh` 的调用**显式带
+  `PUSH_TAGS=1`** ⑤ `release.sh` 里不再有「与 push-all.sh 的默认一致」这种与行为相反的措辞
+  ⑥ **tag 闸的位置早于第 5 步（Release）与第 6 步（npm）**；
+- `npx vitest run tests/release-tag-push.spec.ts` → **6 passed**；
+- `pnpm check` 四道门全绿。
+
+**已知边界**：本轮**未推任何东西**（用户明确要求「不推」），所以这道闸是在本地与
+真实远端之间用「既有 tag 已就位」实测过的（`git ls-remote --tags gitee "refs/tags/v2.12.1"`
+命中、`"refs/tags/v9.99.9"` 为空），但**没有走一次完整发版**来验证闸门触发路径 ——
+闸门在 tag 缺失时会 `exit 1`，而那正是「不该继续」的场景，不必真造一次失败发版。
+
 ## 未发布 · npm 可信发布者（OIDC）自动发布链路（2026-11-11）
 
 **基于什么**：npm 已在 2025-12-09 吊销全部 classic token，`npm login` 现在只签发 2 小时会话令牌；

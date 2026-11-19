@@ -282,6 +282,7 @@ docs/api/            ← OpenAPI + AsyncAPI（wire schema 的权威）
 - `改 node_modules 里的插件产物不生效（pnpm 硬链接）`
 - `apply 尾部抛错会留下「半死桥」`
 - `产物校验值必须在打 tag 之前提交（否则 tag 里的哈希是上一版的）`
+- `发版脚本不推 tag（默认行为与注释相反）`
 - `把事件信封的外层 rpcId 当成结算句柄（approval 决策恒 409）`
 - `可信发布者只认「2FA 设备」，邮箱验证码不算（403 Please enable 2fa for your account）`
 - `Gitee issue 写 API 路径不含 repo 段（PATCH 404 Not Found Project）`

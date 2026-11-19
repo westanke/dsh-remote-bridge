@@ -94,6 +94,8 @@ CI 在 Windows、Ubuntu 和 macOS 执行相同核心门禁。Playwright 另外�
 | 2026-10-12 | Linux / Node 24 / DSH 0.2.x | `pnpm typecheck && pnpm test && pnpm build` | 通过；**22 个文件 / 163 个 Vitest**（+35：识图设置与只读图片路由、交接句式解析与图集、识图路径改完写读同步），两个 entry（host 200.5 kB / client 680 kB）构建完成 |
 | 2026-10-12 | Linux / DSH 0.2.x 实装 | 同步 `lib/` 到 `~/.dsh/profiles/web/node_modules/dsh-remote-bridge/` | 通过；**本次含 client.cjs**（上一轮只同步 host 产物）。真机核验（重启 + 刷新 → 发图 → 看图与路径同在）**待做** |
 | 2026-10-20 | Linux / Node 24.19.0 / DSH 0.2.1-rc.2 | 隔离 `DSH_HOME` 起 `dsh web --port 43992 --no-open`，分别探裸 `/`、带 token `/` 与插件 `:3090/api/v1/healthz` | 通过；裸 `/` **401**、带 token **303**、插件 healthz **200**（`{"ok":true,"version":"v1","pluginVersion":"2.4.3"}`）——由此证实 CI `profile-install (ubuntu)` 的红是探针把 401 当「没起来」，插件与 tarball 安装均正常；探针改后本地自测 401→PASS、死端口→FAIL，`pnpm check` 42 文件/348 用例全绿 |
+| 2026-11-19 | Linux / Node 24.19.0 / git 2.4x | `npx vitest run tests/release-tag-push.spec.ts` | 通过；**6 个用例**。装置是两个**本地 bare 仓库**当 `gitee`/`atomgit` 远端（零网络零凭据）+ 临时工作仓，跑**真的** `scripts/push-all.sh`：默认不推 tag（远端有分支、无 tag）、带 `PUSH_TAGS=1` 才推「指向 HEAD 的 tag」、幂等重跑跳过同名 tag；另三条静态断言 `release.sh` 的调用显式带 `PUSH_TAGS=1`、注释不再与行为相反、tag 闸早于 Release 与 npm（issue #25） |
+| 2026-11-19 | Linux / Node 24.19.0 / git 2.4x | `pnpm check` | 通过；**83 个文件 / 864 个用例**（新增 `release-tag-push` 6 个），`docs:check` 四段全过（12 文档 / 40 tasks / 9 ADRs / STRUCTURE 116 锚点 / INTERFACES 89 锚点 / 根 README 双站 + CHANGELOG 一致），双产物 build 成功（host `lib/index.js` 682.68 kB + `lib/index.d.ts` 132.54 kB、client `lib/client.cjs` 772.91 kB） |
 
 GitHub Actions 的 `windows-latest`、`ubuntu-latest`、`macos-latest` hosted 矩阵已在 2026-10-20 跑起来。
 run `39413498323` 有唯一红点：`profile-install (ubuntu-latest)` 的 web 冒烟探针把 DSH 0.2.x 的 401

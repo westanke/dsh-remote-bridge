@@ -878,6 +878,43 @@ node /usr/local/nodejs/bin/dsh plugin --profile web add <workspace>/pack/<tgz>
 自检：不一致就 `exit 1`（tag 未推送，`git tag -d` 后重跑即可）。
 姊妹仓 `dsh-companion` 的 `release.sh` 在阶段 B 打 tag 后做同一道闸。
 
+### 发版脚本不推 tag（默认行为与注释相反）
+
+**症状**：一键发版 `bash scripts/release.sh` 跑完，**两站 Release 建好了、npm 也发上去了**，
+但远端**没有** `v<ver>` 这个 tag。第 7 步「全渠道回读」才报 `gitee: tag vX.Y.Z 缺失` ——
+可那已经是 npm 发布**之后**了，而 npm 的版本号不能重发。
+
+**根因**：两个默认值撞在一起，而且**两处注释互相矛盾**，所以谁也没发现：
+
+- `scripts/push-all.sh:29` 是 `PUSH_TAGS="${PUSH_TAGS:-0}"` —— **默认不推 tag**
+  （手工推送时这个默认是对的：防止误推历史 tag）；
+- `scripts/release.sh` 第 4 步调用它是**裸调** `bash scripts/push-all.sh` —— 没带 `PUSH_TAGS=1`；
+- 而 `release.sh` 那段注释曾写着「tag 的推法与 push-all.sh 的默认一致：**只推指向 HEAD 的 tag**」——
+  与实际行为**正好相反**；`push-all.sh` 自己的用法注释倒是对的（`PUSH_TAGS=1 bash scripts/push-all.sh`）。
+
+**为什么没被中途拦住**：第 5 步建 Release 用的是 `tag_name=$TAG`，而 **Gitee / AtomGit 的
+Release 接口不校验远端有没有这个 tag** —— 于是 Release 照建、附件照传、npm 照发，一路绿灯。
+唯一会暴露它的是最后一步的回读，而那时已经不可回滚。
+
+**现在怎么办**：
+
+1. **tag 推送是 `release.sh` 的义务，不是调用者的义务** —— 调用必须显式带 `PUSH_TAGS=1`，
+   不能指望人记得配环境变量（v2.12.1 发版时就是这么临时绕过去的：`PUSH_TAGS=1 bash scripts/release.sh`，
+   绕法不该成为发版的前提条件）；
+2. `push-all.sh` 的默认**保持 `PUSH_TAGS=0` 不变** —— 缺陷在调用方，不在被调方；
+3. **`release.sh` 在进入第 5 步之前加一道硬闸**：对 `gitee`/`atomgit` 各查一次
+   `git ls-remote --tags "$r" "refs/tags/$TAG"`，**tag 不在就直接 `exit 1`**，
+   宁可不发 Release，也不发一个「有 Release、没 tag」的版本；
+4. 查的时候要**区分两种失败**：ls-remote 本身失败 = 「连不上远端」（网络/凭据问题），
+   与「连上了但没这个 tag」是两回事，混成一句会把排查方向带偏。
+
+**铁律**：**发版脚本里凡是「远端可能不存在、但后续步骤照样能跑」的引用（tag、commit、附件名），
+都要在「不可逆的那一步」之前验一次。** Release 建得出来不等于 tag 推得上去 ——
+接口不校验的东西，脚本必须自己校验。
+
+回归锚：`tests/release-tag-push.spec.ts`（6 个用例：默认不推 tag / 带开关才推 / 幂等重跑 /
+`release.sh` 的调用显式带 `PUSH_TAGS=1` / 注释不再与行为相反 / tag 闸早于 Release 与 npm）。
+
 ### 把事件信封的外层 rpcId 当成结算句柄（approval 决策恒 409）
 
 `FrameHub.push(payload)`（`src/host/dsh-0.2-bridge.ts`）给每条帧**新造**一个随机外层

@@ -139,18 +139,48 @@ say ""
 # 拓扑：Gitee 主站 + AtomGit 备站；GitHub 是从站，由 .github/workflows/mirror-sync.yml
 # 从 Gitee 自动同步（本机到 github.com:443 长期被阻断，不手工推）。
 #
-# tag 的推法与 push-all.sh 的默认一致：**只推指向 HEAD 的 tag**。本脚本在第 3 步
-# 刚打完 tag，那正是指向 HEAD 的，所以推得上去；历史 tag 不重推（远端已有同名 tag 时
-# 逐个判断跳过，不会像 `git push --tags` 那样因任意一个旧 tag 冲突而整条被拒）。
-say "4) git 双推（Gitee 主站 + AtomGit 备站）"
+# tag 的推法：**本脚本显式要求推送指向 HEAD 的 tag**，所以调用 push-all.sh 时
+# 必须带 PUSH_TAGS=1。push-all.sh 自己的默认仍是 PUSH_TAGS=0（手工推送时
+# 「默认不推 tag」是对的，防止误推历史 tag）—— 这里的 1 是本脚本的义务，
+# 不是调用者要记得配的环境变量。
+#
+# 为什么曾经漏掉：push-all.sh 早于本脚本，默认值一直关着 tag 推送；而这段注释
+# 曾声称「本脚本沿用 push-all.sh 的默认 tag 推法」—— 而 push-all.sh 的默认
+# 恰恰是**不推 tag**。两处注释互相矛盾（push-all.sh 的用法注释写的是
+# 「PUSH_TAGS=1 才推」），于是 tag 推送静默缺失，直到 v2.12.1 发版才撞上。
+# 教训见 PITFALLS.md §发版脚本不推 tag（默认行为与注释相反）。
+say "4) git 双推（Gitee 主站 + AtomGit 备站，分支 + 指向 HEAD 的 tag）"
 if [ "$DRY_RUN" = "1" ]; then
-  say "  [dry] bash scripts/push-all.sh"
+  say "  [dry] PUSH_TAGS=1 bash scripts/push-all.sh"
 else
-  if bash scripts/push-all.sh; then
+  # 为什么要再钉一道「tag 已就位」的闸：push-all.sh 的 tag 段是
+  # 「逐个推、失败不阻塞分支」，所以它退出码为 0 **不代表 tag 一定推上去了**
+  # （tag 段自己会置 fail=1，但只有 tag 段失败才非零；历史 tag 与远端冲突等
+  # 情况也可能只留下一句 warn）。第 5 步的 Release 引用的是 tag_name，
+  # 远端没有这个 tag 时 Release 照样能建 —— 那就会发出一个「有 Release、
+  # 没有 tag」的版本，且 npm 已发布不可回滚。所以这里在进入第 5 步之前
+  # 把「两站 tag 都在」当成硬前置条件。
+  if PUSH_TAGS=1 bash scripts/push-all.sh; then
     ok "主备两站已推（分支 + 指向 HEAD 的 tag）"
   else
     bad "push-all.sh 报告推送失败 —— 继续走 Release，但代码可能没全部推上去"
   fi
+  for r in gitee atomgit; do
+    # 分两种失败：远端连不上（ls-remote 非零退出）与远端连得上但没这个 tag。
+    # 混成一句「tag 未就位」会把「网络问题」误报成「tag 没推上去」，排查方向就错了。
+    if ! out=$(git ls-remote --tags "$r" "refs/tags/$TAG" 2>/dev/null); then
+      bad "$r: 连不上远端（ls-remote 失败）—— 没法确认 tag 状态"
+      bad "  修法：确认网络/凭据（bash scripts/setup-remotes.sh）后重跑本脚本"
+      exit 1
+    fi
+    if [ -n "$out" ]; then
+      ok "$r: tag $TAG 已就位"
+    else
+      bad "$r: tag $TAG 未就位 —— 后续 Release 会引用一个远端不存在的 tag"
+      bad "  修法：PUSH_TAGS=1 bash scripts/push-all.sh 补推，然后重跑本脚本"
+      exit 1
+    fi
+  done
 fi
 say ""
 

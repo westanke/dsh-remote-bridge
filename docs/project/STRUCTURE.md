@@ -19,7 +19,7 @@ dsh-remote-bridge/
 │   ├── host/                宿主侧：HTTP 服务、路由、各类 adapter、持久层
 │   ├── client/              DSH WebUI 浏览器半边（React 面板 + 图片交接渲染）
 │   └── shared/              双端共享的契约类型与版本号
-├── tests/                   vitest 单元与合约测试（44 个 spec，见 §5）
+├── tests/                   vitest 单元与合约测试（83 个 spec，见 §3.4）
 ├── e2e/                     playwright 样式契约（4 用例，无需服务器）
 ├── scripts/                 发版 / 推送 / 文档门禁 / 探针脚本（不是运行时代码）
 ├── kotlin-sdk/              给 Android 客户端的 Kotlin SDK（随包分发）
@@ -171,7 +171,7 @@ host services 之上重建 0.1.x 的 `apiProxy` 面容，让 `chat-adapter` / `s
 | `contracts.ts` | 共享契约类型：`DeviceScope` / `RootView` / `DeviceView` / `FileEntryView` / `WorkspaceEvent` / `Principal` |
 | `version.ts` | `PLUGIN_VERSION`（随版本号同步的唯一出处） |
 
-### 3.4 `tests/` —— 单元与合约测试（44 个 spec）
+### 3.4 `tests/` —— 单元与合约测试（83 个 spec）
 
 按主题分组，**新增测试按这张表找位置**：
 
@@ -184,6 +184,7 @@ host services 之上重建 0.1.x 的 `apiProxy` 面容，让 `chat-adapter` / `s
 | 图片交接 | `image-handoff`、`client-handoff` |
 | 事件与预算 | `history-budget`、`interaction-replay`、`session-snapshot`、`deliverables`、`wire-json` |
 | 运维脚本与配置 | `config-text`、`listener-config`、`plugin-inventory`、`cloudflared`、`host-service-probe`、`app-qr`、`i18n`、`styles` |
+| 发版与推送链路 | `release-tag-push`（跑真的 `scripts/push-all.sh`，远端用本地 bare 仓库冒充；钉住「tag 推送是发版脚本的义务」这条，issue #25） |
 | 数据迁移演练 | `migration-drill`、`purge-drill` |
 
 共享夹具：`temp-database.ts`（临时库）、`test-cleanup.ts`（清理）。
@@ -192,9 +193,9 @@ host services 之上重建 0.1.x 的 `apiProxy` 面容，让 `chat-adapter` / `s
 
 | 文件 | 用途 |
 | --- | --- |
-| `release.sh` | **一键发版**：门禁 → npm 打包 → tag → 双推 → 两站 Release → npm 发布 → 回读 |
+| `release.sh` | **一键发版**：门禁 → npm 打包 → tag → 双推（**分支 + 指向 HEAD 的 tag**，tag 推送是本脚本的义务）→ 两站 Release → npm 发布 → 回读。第 4 步之后有硬闸：两站 tag 未就位就 `exit 1`，**不建 Release、不发 npm** |
 | `pack-release.sh` / `publish-npm.sh` | 分步打包与 npm 发布 |
-| `push-all.sh` / `setup-remotes.sh` | 三远端推送与命名整理 |
+| `push-all.sh` / `setup-remotes.sh` | 三远端推送与命名整理。`push-all.sh` 的 `PUSH_TAGS` 默认 **0**（手工推送默认不推 tag，防误推历史 tag）；要推 tag 显式写 `PUSH_TAGS=1` |
 | `check-project-docs.ts` | **`pnpm docs:check` 的实现**（必需文档、ROADMAP、ADR 索引、坑位双向、根 README、patch inject、本文锚点） |
 | `generate-app-qr.mjs` | 生成 `src/client/app-qr.ts` |
 | `generate-screenshots.ts` | 生成 `assets/screenshots/`（六张设置面板真实渲染图） |
@@ -253,6 +254,7 @@ host services 之上重建 0.1.x 的 `apiProxy` 面容，让 `chat-adapter` / `s
 | 一个新浏览器组件/slot | `src/client/index.tsx` 注册 | `package.json` 的 `dsh.client.inject`（若需要新 client 依赖） |
 | 一个新 GitHub Actions 工作流 | `.github/workflows/<name>.yml`（沿用 `ci.yml` 的 action 版本风格：checkout@v4 / pnpm/action-setup@v4 / setup-node@v4） | 若与发布链路相关：同步 [RELEASE.md](RELEASE.md) §2.1 的前置清单；`package.json` 的 `repository.url` 必须与 GitHub 仓库完全一致；npm 网页「可信的发布者」里填的**工作流文件名**必须与本文件名一致 |
 | 一个新测试 | `tests/` 按 §3.4 主题分组，命名 `Xxx.spec.ts` | `TESTING.md` 记演进；修 bug 必须带回归用例 |
+| 一个新的发版/推送脚本 | `scripts/`（§3.5），shell 脚本放 `.sh`、需要复用逻辑的放 `.ts` | 脚本里的**默认值与注释必须一致** —— 注释说反过一次（见 `PITFALLS.md` §发版脚本不推 tag）；改 `scripts/` 下的脚本要有回归用例（`tests/release-tag-push.spec.ts` 跑真脚本、远端用本地 bare 仓库冒充） |
 | 一份新文档 | `docs/project/` | 若属必需文档，加到 `scripts/check-project-docs.ts` 的 `requiredDocs`；更新 `docs/project/README.md` 索引 |
 | 一个新 ADR | `docs/project/decisions/ADR-NNNN-*.md` | `docs/project/README.md` 的 ADR 索引（`docs:check` 校验） |
 | 一个新坑位 | `docs/project/PITFALLS.md` 补 `### 同名` | `AGENTS.md` §6 索引同名条目（**双向**校验） |
