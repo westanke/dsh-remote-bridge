@@ -1,6 +1,24 @@
 # 当前状态
 
-- 日期：2026-11-19（**已发版 v2.12.1：大文件上传流式化 + 隧道工具 schema 修形**；`main` 上另有未发版的 issue #26 阶段 0 / 1 / 2 / 3a / 3b / 3c / 3d / 4 / 5 / 6 / 7）
+- 日期：2026-11-19（**已发版 v2.12.1：大文件上传流式化 + 隧道工具 schema 修形**；`main` 上另有未发版的 issue #26 阶段 0 / 1 / 2 / 3a / 3b / 3c / 3d / 4 / 5 / 6 / 7 / 8）
+- **已完成（未发布，issue #26 阶段 8 / `MOB-012`）· 收敛：删掉只回 `NOT_IMPLEMENTED` 的 5 个声明**：
+  ①**删的是声明不是功能**：`search` / `defaults` / `set-default` / `queue-update` / `directories`
+  在词表里活了几个阶段，行为一直是「结构化 `NOT_IMPLEMENTED` + REST 兜底指引」。声明一个永远不工作的帧
+  等于把「能力暂缺」当承诺，客户端会据此生成一个点不动的入口 —— 阶段 8 把它们从 `ClientFrameType`
+  与 AsyncAPI enum 删除，再发送与拼错帧同路，回 `UNKNOWN_TYPE`。`ws-handler.ts` 的
+  `KNOWN_UNSUPPORTED_FRAMES` 随之清空（保留空表与注释：阶段 8 后没有兜底帧；插件族仍可能回
+  `NOT_IMPLEMENTED`，缺的是连接/宿主能力）。
+  ②**帧面（实测）**：客户端 88 → **83**、服务端 **84**（不变）、去重 123 → **118**；union 与 AsyncAPI
+  enum **双向零差异**（解析脚本与 `docs:check` 的帧对账段口径一致）。
+  ③**契约与文档同批**：`asyncapi.yaml`（enum −5、channel 描述改写为「阶段 8 移除」、顺带修正
+  「`error` 帧都带 `requestType`」这处既有过度表述）、`API.md`（删 `search`/`queue-update` 两整行、
+  `agent-presets` 与目录合并行收回说明、服务端表括注同步、表后加「阶段 8 删掉的声明」）、
+  `mobile-gateway-comparison.md` 待办措辞同步；`tests/mobile-gateway-ws.spec.ts` 改成
+  「5 个已删名字断言 `UNKNOWN_TYPE` + `plugin-catalog` 仍断言 `NOT_IMPLEMENTED` 且带 `requestType`」。
+  ④**验收**：`npx tsc --noEmit` exit 0；`npx tsx scripts/check-project-docs.ts` 三段全绿
+  （帧对账 client 83 / server 84 双向零差异）；`npx vitest run tests/mobile-frame-contract.spec.ts
+  tests/mobile-gateway-ws.spec.ts` 122 例全绿（22 + 100）。**未做**：真机（本阶段无行为面）；
+  Kotlin SDK 无改动（`grep` 证明 SDK 本就没有发送这 5 个帧的入口），因此**不得宣称已在手机上验证**。
 - **已完成（未发布，issue #26 阶段 7 / `MOB-011`）· 补齐插件与排程帧**：
   ①**帧词表**：客户端 +11（插件 `plugin-detail`/`plugin-install-status`/`plugin-remove`/
   `plugin-update`/`plugin-versions`/`plugin-registries` + 排程 `schedule-create`/`schedule-edit`/

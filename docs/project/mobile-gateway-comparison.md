@@ -222,7 +222,7 @@ src/host/
 
 仍待办（按优先级）：
 1. gateway mode 状态机、独立 LAN 监听、pairing v2 Base64URL、split-channels（`X-DSH-Device-Name` 设备名头已做，仅校验不落库；hello 的 `port`/`clients`、`pong.at` 已对齐）。
-2. ~~queue 编辑/删除/steer（queue-update）~~ 已结构化回 `NOT_IMPLEMENTED`（内核无按 itemId 编辑 RPC，指引 `mode:'steer'`）；~~search~~ 同兜底；~~directories/directory-create~~ directory-create 已实现（授权根内），directories 因与本桥授权根模型冲突回兜底指引 file-list；session-title-changed 主动推送仍待办。
+2. ~~queue 编辑/删除/steer（queue-update）~~ 内核无按 itemId 编辑 RPC（插队用 `message` 帧 `mode:'steer'`）；~~search~~ 内核无搜索通道；~~directories/directory-create~~ directory-create 已实现（授权根内），directories 因与本桥授权根模型冲突不做（浏览用 file-list）。这三个帧名在**阶段 8（issue #26 / MOB-012）已从词表删除**，再发回 `UNKNOWN_TYPE`；session-title-changed 主动推送仍待办。
 3. tasks-updated/goal-updated/projection-baseline/schedule-changed 主动推送、turn-outline、llm/retry 事件透传。
 4. Cloudflare Tunnel 管理面 WS 化、多网关身份、插件管理 WS 化（plugin-*）。
 5. 跨仓 kotlin-sdk / dsh-companion 消费新 WS 帧（wire schema 五处同步，见 §5 风险 5）。

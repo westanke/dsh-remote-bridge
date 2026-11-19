@@ -982,7 +982,7 @@ describe('mobile gateway WebSocket (/ws/mobile) — host snapshot', () => {
     socket.close()
   })
 
-  it('answers declared-but-unbacked frames with NOT_IMPLEMENTED (REST fallback), not UNKNOWN_TYPE', async () => {
+  it('answers stage-8-removed frame declarations with UNKNOWN_TYPE, keeping NOT_IMPLEMENTED for declared-but-unbacked frames', async () => {
     const { database, root, url } = await startHarness()
     const { socket, frames } = await authed(database, root.id, url)
     // 按 requestType 等「新」错误帧（nextKind 对历史帧立即返回，不能用于连发场景）。
@@ -996,23 +996,36 @@ describe('mobile gateway WebSocket (/ws/mobile) — host snapshot', () => {
       }
       throw new Error(`Timed out waiting for error requestType=${requestType}`)
     }
-    for (const type of ['search', 'defaults', 'set-default', 'plugin-catalog', 'queue-update']) {
+    // UNKNOWN_TYPE 这条兜底走 sendError()，**不带 requestType**（只有处理器异常与域处理器才回显），
+    // 所以按 message 里回显的帧名匹配 —— 顺带钉住「回显的是这个帧，不是另一条」。
+    const waitForUnknownType = async (type: string): Promise<{ code?: string; message?: string }> => {
+      const deadline = Date.now() + 3000
+      while (Date.now() < deadline) {
+        const match = [...frames].reverse().find(frame => {
+          if (frame.kind !== 'error') return false
+          const data = frame.data as { code?: string; message?: string }
+          return data.code === 'UNKNOWN_TYPE' && data.message === `Unknown frame type: ${type}`
+        })
+        if (match !== undefined) return match.data as { code?: string; message?: string }
+        await new Promise(resolve => setTimeout(resolve, 10))
+      }
+      throw new Error(`Timed out waiting for UNKNOWN_TYPE for ${type}`)
+    }
+    // 阶段 8（issue #26 / MOB-012）：这 5 个「只回结构化 NOT_IMPLEMENTED」的声明已从词表删除，
+    // 声明没了 → 「能力暂缺」这个状态不该再存在，现在与拼错的帧同路（UNKNOWN_TYPE）。
+    // 仍然带着旧形状的载荷发，证明处理器也不再按旧形状接它们。
+    for (const type of ['search', 'defaults', 'set-default', 'queue-update', 'directories']) {
       socket.send(JSON.stringify({ type, query: 'x', sessionId: 'sess-1', itemId: 'message-1', action: 'remove' }))
-      const error = await waitForError(type)
-      expect(error.code).toBe('NOT_IMPLEMENTED')
-      expect(error.requestType).toBe(type)
+      const error = await waitForUnknownType(type)
+      expect(error.code).toBe('UNKNOWN_TYPE')
+      expect(error.message).toBe(`Unknown frame type: ${type}`)
     }
-    // 真正拼错的帧仍然回 UNKNOWN_TYPE，区分客户端 bug 与能力暂缺。
-    socket.send(JSON.stringify({ type: 'not-a-real-frame' }))
-    const deadline = Date.now() + 3000
-    let unknown: { code?: string } | undefined
-    while (Date.now() < deadline) {
-      const candidate = [...frames].reverse().find(frame =>
-        frame.kind === 'error' && (frame.data as { code?: string }).code === 'UNKNOWN_TYPE')
-      if (candidate !== undefined) { unknown = candidate.data as { code?: string }; break }
-      await new Promise(resolve => setTimeout(resolve, 10))
-    }
-    expect(unknown?.code).toBe('UNKNOWN_TYPE')
+    // 仍声明、但当前内核没有对应服务的帧（harness 没有 pluginManager 服务）：
+    // 继续回结构化的 NOT_IMPLEMENTED + requestType —— 「能力暂缺」与「帧名不存在」仍可区分。
+    socket.send(JSON.stringify({ type: 'plugin-catalog' }))
+    const unbacked = await waitForError('plugin-catalog')
+    expect(unbacked.code).toBe('NOT_IMPLEMENTED')
+    expect(unbacked.requestType).toBe('plugin-catalog')
     socket.close()
   })
 })

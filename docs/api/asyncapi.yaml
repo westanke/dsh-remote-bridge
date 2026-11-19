@@ -194,10 +194,13 @@ channels:
       - Correlation is per-connection; two connections may reuse the same id.
       - Clients must time out unmatched requests themselves — the server does not
         send a "request expired" frame.
-      - `error` frames carry **both** `data.requestId` and
-        `data.requestType`. `requestId` pins the failure to one in-flight
-        request; `requestType` says which request kind it was. Concurrent
-        requests of the same kind are distinguishable only by `requestId`.
+      - Handler-produced `error` frames carry **both** `data.requestId` and
+        `data.requestType`. Frames rejected before dispatch (`UNKNOWN_TYPE`,
+        `INVALID_FRAME`, `MISSING_TYPE`) carry **no** `requestType` — there is no
+        handler to name the request type. `requestId` pins the failure to one
+        in-flight request; `requestType` says which request kind it was.
+        Concurrent requests of the same kind are distinguishable only by
+        `requestId`.
 
       ## Backpressure and close codes
 
@@ -209,13 +212,15 @@ channels:
       tells the client to re-fetch its baseline over REST; dropped frames are
       never replayed.
 
-      ## Declared but not backed by this kernel build
+      ## Removed in stage 8: frames that only answered `NOT_IMPLEMENTED`
 
-      `search`, `directories`, `defaults`, `set-default`, `queue-update`
-      answer `error` with code `NOT_IMPLEMENTED` and a human-readable `message`
-      pointing at the REST fallback (`requestType` echoes the frame type). They
-      are part of the vocabulary precisely so a client can tell "capability
-      missing" from "unknown frame".
+      `search`, `directories`, `defaults`, `set-default`, `queue-update` used to
+      be declared in the vocabulary while always answering `error` with code
+      `NOT_IMPLEMENTED`: the declaration said "capability missing", but it also
+      promised a frame that never worked. As of issue #26 stage 8 those five
+      declarations were removed (issue #26 / MOB-012). Sending one now answers
+      `UNKNOWN_TYPE` (`Unknown frame type: <type>`) like any misspelled frame —
+      a still-sending client is out of date, not downgraded.
 
       The plugin family (`plugin-catalog`, `plugin-inspect`, `plugin-install`,
       `plugin-settings`) used to be in that list; as of the kernel-call plane
@@ -703,12 +708,9 @@ components:
             # 通用内核调用面（issue #26 阶段 5，仅 dshrb-v1 子协议）
             - kernel-call
             - kernel-call-cancel
-            # 声明但本内核无对应 RPC → NOT_IMPLEMENTED + REST 兜底
-            - search
-            - directories
-            - defaults
-            - set-default
-            - queue-update
+            # 内核能力缺失时回 NOT_IMPLEMENTED + REST 兜底。阶段 8（issue #26 / MOB-012）
+            # 起只剩插件族这几个；曾经「只回兜底」的 search / directories / defaults /
+            # set-default / queue-update 已从词表删除（再发就是 UNKNOWN_TYPE）。
             - plugin-catalog
             - plugin-inspect
             - plugin-install

@@ -177,20 +177,14 @@ function decodeBase64Utf8(value: string): string | undefined {
  * 协议里声明、但本桥当前内核没有对应 RPC / 暂只走 REST 的帧 → 结构化兜底指引。
  * 客户端据此区分「能力暂缺（NOT_IMPLEMENTED，可降级 REST）」与「未知帧（UNKNOWN_TYPE，客户端 bug）」。
  * key 必须是 ClientFrameType 联合成员；新增内核通道后把对应帧挪进域处理器并从这里删除。
+ *
+ * 阶段 8（issue #26 / MOB-012）把最后 5 个「只有兜底」的声明从词表里删掉了
+ * （search / directories / defaults / set-default / queue-update）。表**空着不是漏填**：
+ * 声明都没了，「能力暂缺」这个状态也就不该存在了 —— 这 5 个名字现在与拼错的帧同路，
+ * 一律回 UNKNOWN_TYPE。留着这张空表是为了下一个真的需要兜底的帧：新增时先声明进
+ * ClientFrameType，再在这里写一行降级指引。
  */
-const KNOWN_UNSUPPORTED_FRAMES: Readonly<Record<string, string>> = {
-  // 会话全文搜索：dsh-0.2-bridge 无内核搜索 RPC；客户端暂用 REST/本地检索兜底。
-  search: 'session full-text search is not available over WS on this kernel build.',
-  // 上游 directories 列「宿主任意绝对路径」供选工作区，与本桥「只授权根内可见」安全模型冲突；
-  // 授权根内浏览改用 file-list（rootId + 相对路径），新建工作区用 workspace-create。
-  directories: 'host-wide directory listing is unavailable; use file-list with a rootId for authorized roots.',
-  // 全局默认 Agent 预设 / 默认权限：本桥无 settings.update 全局写通道，REST 也暂无对应端点。
-  defaults: 'global defaults are not available over WS on this kernel build.',
-  'set-default': 'setting a global default preset is not available over WS on this kernel build.',
-  // 编辑/删除排队中的回合或插队 steer：本桥 sessions 面只有 prompt(mode:queue|steer)，
-  // 没有按 itemId 编辑/删除队列项的 RPC；steer 新回合可直接用 message 帧 mode:'steer'。
-  'queue-update': 'editing/removing a queued turn is not supported by this kernel build; send a new message with mode:"steer" to steer the running turn.',
-}
+const KNOWN_UNSUPPORTED_FRAMES: Readonly<Record<string, string>> = {}
 
 // ───────────────────────── 处理器主类 ─────────────────────────
 
@@ -759,6 +753,8 @@ export class MobileGatewayWsHandler {
 
     // 协议里声明、但当前内核没有对应 RPC / 暂只走 REST 的帧：显式回 NOT_IMPLEMENTED +
     // REST 兜底指引，而不是笼统的 UNKNOWN_TYPE（客户端能区分「帧拼错」与「能力暂缺」）。
+    // 阶段 8 之后这张表是空的（见 KNOWN_UNSUPPORTED_FRAMES 注释）：没有兜底帧，
+    // 判定留着是给下一个真的需要降级的帧。
     const unsupported = KNOWN_UNSUPPORTED_FRAMES[type]
     if (unsupported !== undefined) {
       this.sendFrame(webSocket, {

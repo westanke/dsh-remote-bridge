@@ -849,7 +849,6 @@ v2.8 新增。独立于现有 `/api/v1/events`（单向广播，保留不动）�
 | `file-download-open/read/cancel` | 分片下载文件 | open **必带** `requestId`,另带 `sessionId`,`path`（相对会话根，禁 `..`）；read 带 `transferId`,`offset`（严格顺序）；最大 512 MiB，chunk 512 KiB，最大 4 并发，idle 2 min，末块附 `sha256` |
 | `file-upload-open/chunk/finish/cancel` | 分片上传文件 | open **必带** `requestId`,另带 `sessionId`,`name`（叶子名）,`size`,`sha256`；chunk 带 `uploadId`,`offset`,`data`（顺序 base64，块 256 KiB）；finish 校验 SHA-256 后经内核附件通道换 `receiptId`；需 `files.write` scope |
 | `file-resolve` | 文件预览元数据（不取字节） | **必带** `requestId`,另带 `sessionId`,`path`（相对会话根，禁 `..`）；回 `file-resolved` 带 `{path,name,mediaType,size,modifiedAt}`；非普通文件 `file-not-regular`，超下载上限 `file-too-large`；需 `files.read` |
-| `search` | 搜索会话/消息 | `q`, `sessionId?` | 当前内核无搜索 RPC：回 `NOT_IMPLEMENTED` |
 | `host` | 查主机信息 | — | 回 `{version,dshVersion,cwd,attachedSessions,canOpenPath,defaultProvider?,defaultModel?}`；`cwd` 仅 `os.homedir()`，不回显授权根绝对路径；无 `canOpenWorkspacePath` 通道时 `canOpenPath:false` |
 | `default-model` / `save-default-model` | 读/保存默认模型 | `provider`, `model`, `reasoningEffort?` |
 | `models` / `providers` | 模型目录与供应商 | — |
@@ -862,14 +861,13 @@ v2.8 新增。独立于现有 `/api/v1/events`（单向广播，保留不动）�
 | `tasks` / `goal` | 任务列表/当前目标基线（只读会话投影） | `sessionId`；回 `asOfSeq` + `todos`/`goal`，未写入过为 `null` |
 | `goal-edit` / `goal-pause` / `goal-resume` / `goal-clear` | 当前目标写操作（compare-and-set） | `sessionId`, `ref:{id,revision}`，edit 另带 `objective?`/`maxGoalRounds?`；代理内核 goals Remote，老内核回 `unsupported` 走 REST |
 | `plugin-catalog` / `plugin-inspect` / `plugin-install` / `plugin-settings` | 插件管理（paired 控制连接） | — |
-| `agent-presets` / `session-agent-preset` / `select-agent-preset` / `defaults` / `set-default` | Agent 预设 | `agent-presets` 列清单；`session-agent-preset`（`sessionId`+`agentPresetId`，锁定后不可改）与 `select-agent-preset`（`sessionId`+`agentPresetId`，为会话选一个预设）**均已实现**，二者应答都是 `kind:'sent'` + `data.type` 为同名帧（配对应看 `data.type`，别只看 kind）；全局默认 `defaults`/`set-default` 当前内核无写通道，回 `NOT_IMPLEMENTED` |
+| `agent-presets` / `session-agent-preset` / `select-agent-preset` | Agent 预设 | `agent-presets` 列清单；`session-agent-preset`（`sessionId`+`agentPresetId`，锁定后不可改）与 `select-agent-preset`（`sessionId`+`agentPresetId`，为会话选一个预设）**均已实现**，二者应答都是 `kind:'sent'` + `data.type` 为同名帧（配对应看 `data.type`，别只看 kind） |
 | `question-answer` / `question-cancel` | HITL 提问回应 | answer：`callId`/`rpcId`,`answers[]`；cancel：`sessionId`+`rpcId`（上游）或 `callId`（本桥），回 `{kind:'question-response',action:'answer'\|'cancel',accepted}`。cancel 只能作废本桥接管、正阻塞 agent 的前台提问；内核无 continued 提问取消通道 |
 | `approval-response` | HITL 审批回应 | `approvalId`, `outcome: 'allowed-once'|'rejected'` |
 | `session-create` | 提前建空会话（不发消息） | 两种寻址，与 REST `POST /chat/sessions` 同语义：① `workspaceId`（只认工作区，推荐 —— 客户端不必知道「哪个根 + 相对路径」）；② `rootId?`（缺省取首个授权根）+ `cwd?`（相对根）。另带 `agentPreset?` 与 `reuseBlank?`：`reuseBlank !== false` 时优先复用同路径的空白会话，`false` 则强制新建。响应 `session-created` 带 `{sessionId, rootId \| workspaceId, agentPreset?}`，`agentPreset` 是内核落定后的值（可能被改写），客户端应据此刷新而不是假定自己选的那个生效 |
 | `session-cancel` / `session-archive` / `session-rename` / `fork` | 会话生命周期 | `sessionId` |
 | `session-wait` | 长轮询会话状态（DSH 0.2.2 `session/wait`，P2-C） | `sessionId`, `timeoutMs?`（1–120000，缺省 30000）, `afterSeq?`, `maxMessages?`（1–200）；应答 `session-waited` 带 `{sessionId, wait:{reason:'idle'\|'input-required'\|'timeout', state, output}}` 原样透传内核结果 |
-| `queue-update` | 队列编辑（edit/remove/steer） | 当前内核 sessions 面只有 `prompt(mode:queue\|steer)`，无按 `itemId` 编辑/删除队列项的 RPC：回 `NOT_IMPLEMENTED`；插队 steer 可直接发 `message` 帧 `mode:'steer'` |
-| `directories` / `directory-create` / `workspace-create` | 目录/工作区操作 | `directory-create`/`workspace-create`：`rootId?`,`path`（`directory-create` 还可带 `name`），均限授权根内。`directories`（上游列宿主任意绝对路径）与本桥「仅授权根可见」安全模型冲突，回 `NOT_IMPLEMENTED`，授权根内浏览请用 `file-list` |
+| `directory-create` / `workspace-create` | 目录/工作区操作 | `directory-create`/`workspace-create`：`rootId?`,`path`（`directory-create` 还可带 `name`），均限授权根内；授权根内浏览用 `file-list` |
 | `agent-team` / `subagents` | 智能体团队/子会话目录（只读会话投影） | `sessionId`, `requestId?`（应答回显，见上）；回 `projectionState:'ready'|'unavailable'|'migration-required'` |
 | `speech-catalog` / `speech-subscribe` / `speech-unsubscribe` / `speech-configure` / `speech-prepare` / `speech-cancel-preparation` / `speech-transcribe` / `speech-cancel` | 官方语音输入（纯代理内核 speech Remote） | `requestId?`（应答回显；`speech-state` 等推送帧自带的是订阅上下文里那个 id，不跟随本次请求），transcribe 带 `audioBase64`（16k PCM16 WAV，≤4 MiB）、`providerId?`、`language?` |
 | `schedule-catalog` / `schedule-list` / `schedule-history` / `schedule-update` / `schedule-delete` | 定时任务（代理内核 schedule Remote，DSH 0.2.2 记录面） | catalog 无会话；其余带 `sessionId`；update 带完整 `expected`+`change`（桥只取 `expected.updatedAt` 做 `expectedUpdatedAt` 乐观并发，`change` 即 `patch.timing`）；回程记录按旧形状呈现（`sessionId` 从内核 `target` 派生，`paused`/`ended` → `inactive`，新字段原样透传） |
@@ -887,6 +885,13 @@ v2.8 新增。独立于现有 `/api/v1/events`（单向广播，保留不动）�
 | `schedule-run` | 立刻执行一次定时任务（`request` 原样透传内核 `schedule/run`，issue #26 阶段 7） | `{request}`；响应为同 kind 帧，`data` 为 `{ok:true, value}` 或 `{ok:false, error:{code,message}}`（+ `requestId` 回显）；需 `chat.*` scope |
 | `schedule-delete-inactive` | 清理已停用/已结束的定时任务（无参，issue #26 阶段 7） | `{}`（无参）；响应为同 kind 帧，`data` 为 `{ok:true, value}` 或 `{ok:false, error:{code,message}}`（+ `requestId` 回显）；需 `chat.*` scope |
 
+> **阶段 8（issue #26 / MOB-012）删掉的声明**：`search` / `defaults` / `set-default` /
+> `queue-update` / `directories` 曾经声明在词表里，但只会回结构化 `NOT_IMPLEMENTED`
+> （内核没有对应通道，或 `directories` 与「仅授权根可见」的安全模型冲突）。声明一个永远不工作的帧
+> 等于把「能力暂缺」当承诺，所以这 5 个名字已从 `ClientFrameType` 与 AsyncAPI enum 删除；
+> 再发送它们与拼错帧同路，回 `UNKNOWN_TYPE`。仍声明、但当前连接/内核缺能力的帧（插件族在
+> 没协商 `dshrb-v1` 或宿主无 `pluginManager` 时）继续回 `NOT_IMPLEMENTED`。
+
 ### 服务端→客户端帧（{kind: …}）
 
 | kind | 说明 |
@@ -895,13 +900,13 @@ v2.8 新增。独立于现有 `/api/v1/events`（单向广播，保留不动）�
 | `pong` | 心跳应答（`{at,time}`，同一毫秒时间戳） |
 | `subscribed` | 订阅确认 |
 | `sent` | 消息已发（应答帧，回显 `requestId`） |
-| `workspaces` / `sessions` / `history` | 查询响应（`search` 只有客户端帧：内核无搜索通道，回 `NOT_IMPLEMENTED`） |
+| `workspaces` / `sessions` / `history` | 查询响应（会话搜索没有 WS 通道；`search` 帧已在阶段 8 从词表删除，发送即 `UNKNOWN_TYPE`） |
 | `commands` / `command-options` / `command-executed` / `command-selected` | 命令响应；`commands` 另带 `builtinTokens`（0.2.2 一方命令 en/zh 六条）与每条目的 `definitionId`/`builtin`（P2-B） |
 | `attachment` / `file-list` / `directory-create` / `file-download-opened/chunk/cancelled` | 附件、目录浏览/建目录（需 `files.write`）与文件下载（chunk 末块带 `sha256`） |
 | `file-upload-opened/chunk-accepted/completed/cancelled` | 分片上传（completed 带 `receiptId` 与 `sha256`） |
 | `session-cancelled` | 会话取消回执 |
 | `session-created` / `session-archived` / `session-renamed` / `session-waited` / `fork` / `workspace-create` | 会话与工作区生命周期（`session-created` 带 `{sessionId, rootId \| workspaceId, agentPreset?}`） |
-| `error` | 错误（不回显绝对路径）；**带** `data.requestId` 与 `data.requestType`——前者钉到具体在途请求，后者说明是哪类请求 |
+| `error` | 错误（不回显绝对路径）；**带** `data.requestId` 与 `data.requestType`——前者钉到具体在途请求，后者说明是哪类请求。分发**前**的拒绝（`UNKNOWN_TYPE`/`INVALID_FRAME`/`MISSING_TYPE`）没有 `requestType`（没有处理器可署名）；`UNKNOWN_TYPE` 仍带 `requestId`（若请求给了） |
 | `event` | 内部事件透传（与 `/api/v1/events` 同源，受 scope/授权过滤）；推送帧，不带 `requestId` |
 | `tasks` / `goal` / `goal-edit` / `goal-pause` / `goal-resume` / `goal-clear` | 任务/目标投影（tasks/goal 读基线，goal-* 为写应答带新 `ref` 或 `cleared:true`）。**没有** `tasks-updated` / `goal-updated` 推送帧：投影变化要客户端轮询读帧（issue #26 阶段 1 删掉了这两条死声明） |
 | `session-stats` / `context-usage` | 会话统计与上下文占用投影响应 |

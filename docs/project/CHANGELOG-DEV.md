@@ -561,6 +561,43 @@ base64 膨胀 4/3，所以单条路径的原始文件实际上限约 **17.2 MiB*
 `docs:check` 四段全过（12 文档 / 39 tasks / 9 ADRs / STRUCTURE 84 锚点 / INTERFACES 87 锚点）；
 双产物 build 成功（host `lib/index.js` 628.64 kB、client `lib/client.cjs` 772.91 kB）。
 
+## 未发布 · 内核端点归一（B2 全量换源）阶段 8：删掉只回 `NOT_IMPLEMENTED` 的 5 个声明（issue #26，2026-11-19）
+
+> 阶段 1 把所有帧收进类型系统时，有 5 个客户端帧**声明了但没有行为**：`search` / `directories` /
+> `defaults` / `set-default` / `queue-update` —— 它们回结构化 `NOT_IMPLEMENTED` + REST 兜底指引。
+> 阶段 8 删的是**声明**，不是功能（功能本来就没有）。
+
+- **为什么删**：声明一个永远不工作的帧，等于把「能力暂缺」当成承诺 —— 客户端按词表生成入口，
+  用户点到一个只会报错的按钮；而 `NOT_IMPLEMENTED` 与 `UNKNOWN_TYPE` 的区分，只有对「同一个帧
+  既可能暂缺、也可能真的能用」才有意义。这 5 个帧在内核里连通道都没有（`directories` 更是与
+  「仅授权根可见」的安全模型冲突，浏览改用 `file-list`），所以词表里不该有它们。删掉后它们与
+  拼错的帧同路，回 `UNKNOWN_TYPE`（`message` 为 `Unknown frame type: <type>`）。
+- **`src/host/ws-protocol.ts`**：`ClientFrameType` 删 5 个成员（88 → **83**）；`ServerFrameKind`
+  一个不动（**84**）。
+- **`src/host/ws-handler.ts`**：`KNOWN_UNSUPPORTED_FRAMES` 从 5 条变**空表**
+  （`Readonly<Record<string, string>> = {}`）。表保留而不是整段删掉，理由写在注释里：它是
+  「下一个真的需要降级指引的帧」的挂点；查询分支仍在，空表时自然全部落到 `UNKNOWN_TYPE`。
+- **契约**：`docs/api/asyncapi.yaml` 的 `MobileClientFrame.properties.type.enum` 删 5 项
+  （88 → 83，与联合类型双向零差异；去重 123 → **118**）；channel 描述里
+  「Declared but not backed by this kernel build」整段改写为「Removed in stage 8」，并保留插件族
+  那段（它们仍可能回 `NOT_IMPLEMENTED` —— 缺的是连接/宿主能力，不是内核没通道）。顺带修正一处
+  **既有**的过度表述：`error` 帧并非都带 `requestType` —— 分发前的拒绝（`UNKNOWN_TYPE` /
+  `INVALID_FRAME` / `MISSING_TYPE`）没有处理器可署名。这不是本阶段引入的，但本阶段第一次依赖它
+  （测试按 `message` 匹配），所以写进契约。
+- **文档**：`docs/project/API.md` 删 `search` / `queue-update` 两整行，`agent-presets` 合并行收回
+  `defaults`/`set-default`、目录行收回 `directories`（保留 `file-list` 指引），表后加一段
+  「阶段 8 删掉的声明」；服务端表 `workspaces/sessions/history` 括注同步；
+  `docs/project/mobile-gateway-comparison.md` 的待办第 2 条改为「这三个帧名已从词表删除」。
+- **测试**：`tests/mobile-gateway-ws.spec.ts` 原「5 个帧都回 NOT_IMPLEMENTED」用例改写为
+  「5 个已删名字按 `message` 断言 `UNKNOWN_TYPE` + `plugin-catalog` 仍断言 `NOT_IMPLEMENTED` 且带
+  `requestType`」—— 两个方向都钉住：词表真的窄了，而「声明了但缺能力」的语义没被误删。
+- **验收**：`npx tsc --noEmit` exit 0；`npx tsx scripts/check-project-docs.ts` 三段全绿
+  （12 文档 / 53 tasks / 10 ADR；STRUCTURE 127 锚点 / INTERFACES 143 锚点；README 双站 + CHANGELOG），
+  其帧对账段（`ClientFrameType` ↔ AsyncAPI enum 双向）零差异，client **83** / server **84**；
+  `npx vitest run tests/mobile-frame-contract.spec.ts tests/mobile-gateway-ws.spec.ts` **122 例全绿**
+  （22 + 100）。**未做**：真机（本阶段无行为面）；Kotlin SDK 无改动 —— 本仓 `grep` 证明 SDK 里本就
+  没有发送这 5 个帧的入口，删的是服务端词表里从没被 SDK 用过的名字。
+
 ## 未发布 · 内核端点归一（B2 全量换源）阶段 7：补齐插件与排程帧（issue #26，2026-11-19）
 
 - **帧词表**（`src/host/ws-protocol.ts`）：客户端 +11 → **88**（插件六：`plugin-detail` /
