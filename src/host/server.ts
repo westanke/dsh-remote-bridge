@@ -58,6 +58,11 @@ interface RemoteApiServerOptions {
    * 同一进程里可能有多个实例（测试、重绑），用实例参数才不会被互相污染。
    */
   capabilities?: CapabilityFlags
+  /**
+   * 运行时能力位（见 `setCapabilityResolver`）。每次 `connection.ready` 现算并覆盖
+   * `capabilities` 里的同名键 —— 静态快照答不准的位放这里。
+   */
+  capabilityResolver?: () => CapabilityFlags
 }
 
 interface OperationState extends RemoteOperationView {
@@ -241,6 +246,18 @@ export class RemoteApiServer implements RemoteControl {
     catalog?: Parameters<MobileGatewayWsHandler['attachRemoteServices']>[1],
   ): void {
     this.wsMobile.attachRemoteServices(remote, catalog)
+  }
+
+  /**
+   * 运行时能力位补充（issue #26 检修）：`capabilities` 是构造期快照，而内核端点
+   * 目录要到登记表装好（apply 之后）才读得到。能力位随每次 `connection.ready`
+   * 现算，才能如实回答「这台进程**现在**能不能提供」。
+   */
+  setCapabilityResolver(resolver: () => CapabilityFlags): void {
+    this.options.capabilityResolver = resolver
+    // `/ws/mobile` 的 `hello` 由 ws-handler 自己发（data 形状与 `connection.ready`
+    // 不同），所以同一个解析器要同时交给它 —— 否则手机看到的是构造期快照。
+    this.wsMobile.setCapabilityResolver(resolver)
   }
 
   async start(): Promise<void> {
@@ -585,7 +602,10 @@ export class RemoteApiServer implements RemoteControl {
           id: randomUUID(),
           type: 'connection.ready',
           time: Date.now(),
-          data: connectionReadyData(this.options.capabilities ?? {}),
+          data: connectionReadyData({
+            ...(this.options.capabilities ?? {}),
+            ...(this.options.capabilityResolver?.() ?? {}),
+          }),
         }))
         // 连接即重放：把**当前仍待处理**的审批补推给这一条连接。
         // 不 await（见方法注释）：握手不该为一次授权过滤而卡住。

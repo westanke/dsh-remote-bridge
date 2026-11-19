@@ -291,6 +291,7 @@ docs/api/            ← OpenAPI + AsyncAPI（wire schema 的权威）
 - `服务方法 ≠ 内核端点`
 - `agent scope 会隐式 resume 冷会话`
 - `workspace/follow 会被 remoteAccess 过滤`
+- `apply 期读出来的目录，是把「空」钉成事实`
 - `端点缺席 ≠ 服务缺席`
 - `幂等表：键不带端点、失败也落表、窗口只靠清理器`
 

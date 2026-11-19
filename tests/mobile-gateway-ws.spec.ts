@@ -47,6 +47,12 @@ async function startHarness(options: {
    * 「文档承诺的那三条行为」。
    */
   serverOptions?: { maxConnections?: number; heartbeatIntervalMs?: number; socketQueueLimit?: number; maxPayloadBytes?: number }
+  /**
+   * 运行时能力位（issue #26 检修）：`capabilities` 是构造期快照，而内核端点目录要到
+   * 登记表装好才读得到。真机实测过「apply 期读一次 → 能力位永远缺失」，所以这里
+   * 也留一条能按连接现算的口子，并有用例钉住它。
+   */
+  capabilityResolver?: () => Record<string, boolean>
 } = {}) {
   const base = await mkdtemp(path.join(os.tmpdir(), 'daw-mgw-'))
   cleanup.dir(base)
@@ -79,6 +85,7 @@ async function startHarness(options: {
   remote.attachMobileHostServices({ settings, files })
   // 定时任务 / 官方语音的可选内核远程服务；缺省时相关帧回结构化 unavailable。
   remote.attachMobileRemoteServices(options.hostRemote, options.kernelCatalog)
+  if (options.capabilityResolver !== undefined) remote.setCapabilityResolver(options.capabilityResolver)
   await remote.start()
   remotes.push(remote)
   const url = `ws://127.0.0.1:${remote.status().port}/ws/mobile`
@@ -181,6 +188,53 @@ describe('mobile gateway WebSocket (/ws/mobile) — auth', () => {
     })
     const closed = new Promise<number>(resolve => socket.once('close', code => resolve(code)))
     await expect(closed).resolves.toBe(4001)
+  })
+})
+
+/**
+ * 能力位必须**现算**而不是构造期快照（issue #26 检修）。
+ *
+ * 真机实测：DSH 0.2.2-rc.4 上桥的 apply 早于各 `dsh-api-*` 注册 `@Remote` 端点，
+ * apply 期读到的端点目录是空的。旧实现把这份空目录钉进构造期的 `capabilities`，
+ * 于是 `kernel-endpoint-catalog-v1` / `kernel-call-v1` 在真机上**永远缺失** ——
+ * 阶段 5 整条通用调用面对手机不可见，而单测里用假目录全绿（假目录是 apply 之后
+ * 才喂给 server 的，反而不暴露这个时序）。现在目录与能力位都在建连接时再读。
+ */
+describe('mobile gateway WebSocket (/ws/mobile) — capability snapshot', () => {
+  it('answers hello from the runtime resolver instead of the construction snapshot', async () => {
+    let callable = false
+    const { database, root, url } = await startHarness({
+      capabilityResolver: () => ({ kernelCatalog: callable, kernelCall: callable }),
+    })
+    const pairing = database.createPairing([root.id], ['chat.read'])
+    const credentials = database.exchangePairing(pairing.code, 'Mobile device')
+
+    async function capabilitiesOf(): Promise<ReadonlySet<string>> {
+      const socket = connect(url, {
+        protocols: 'dsh-mobile-v1',
+        headers: { Authorization: `Bearer ${credentials.token}` },
+      })
+      const { frames } = collect(socket)
+      await new Promise<void>((resolve, reject) => {
+        socket.once('open', resolve)
+        socket.once('error', reject)
+      })
+      await nextKind(frames, 'hello')
+      const hello = frames.find(frame => frame.kind === 'hello')?.data as { capabilities?: readonly string[] }
+      socket.close()
+      return new Set(hello.capabilities ?? [])
+    }
+
+    // 构造期还没目录：这一条连接不该看到任何内核位。
+    const before = await capabilitiesOf()
+    expect(before.has('kernel-endpoint-catalog-v1')).toBe(false)
+    expect(before.has('kernel-call-v1')).toBe(false)
+
+    // 登记表装好之后（这里用开关模拟）：**下一条**连接就应当看到两位。
+    callable = true
+    const after = await capabilitiesOf()
+    expect(after.has('kernel-endpoint-catalog-v1')).toBe(true)
+    expect(after.has('kernel-call-v1')).toBe(true)
   })
 })
 

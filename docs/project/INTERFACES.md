@@ -330,8 +330,16 @@ export function attachEmbeddedRoutes(webServer, router, remote, extraRoutes?): (
 ```
 
 `RemoteApiServer` 方法：`start()` / `stop()` / `status(operationId?)` /
-`enable(rootIds, scopes)` / `disable()` / `configure(host, port)` —— 全部返回或操作
-`RemoteOperationView`。`attachEmbeddedRoutes` 负责挂 `/dsh-workspace-api` 与图片路由。
+`enable(rootIds, scopes)` / `disable()` / `configure(host, port)` / `setCapabilityResolver(resolver)`
+—— 前六个返回或操作 `RemoteOperationView`。`attachEmbeddedRoutes` 负责挂
+`/dsh-workspace-api` 与图片路由。
+
+`setCapabilityResolver(resolver: () => CapabilityFlags)`（2026-11-19）把「能力位」从**构造期快照**
+改成**每次现算**：它同时登记到 `RemoteApiServerOptions.capabilityResolver` 与
+`MobileHostServices.setCapabilityResolver`。原因见 `PITFALLS.md` §apply 期读出来的目录，是把「空」
+钉成事实 —— `/ws/mobile` 的 `hello` 由 `MobileHostServices` 自己发，所以两侧必须一起注入。
+`attachMobileRemoteServices(remote, catalog?)` 的 `catalog` 现在也接受
+`() => KernelEndpointCatalog`（惰性 provider），值与函数两种写法等价。
 
 `status()` 里另有**可选**字段 `tunnelPort`（issue #26 阶段 0.2）：隧道专用数据端口的实际端口，
 未启动时为 `0`。`start()` 会一并起那个监听，`stop()` 一并停。

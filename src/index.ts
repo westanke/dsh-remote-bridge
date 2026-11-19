@@ -20,7 +20,12 @@ import { createImageRouteHandler, IMAGE_ROUTE, readHandoffSubdir } from './host/
 import { DEFAULT_REMOTE_HOST, normalizeListenerHost, normalizeListenerPort } from './host/listener-config.ts'
 import { ApiRouter } from './host/router.ts'
 import { attachEmbeddedRoutes, RemoteApiServer } from './host/server.ts'
-import { createKernelEndpointCatalog, kernelCapabilityFlags, readTypertRegistry } from './host/bridge/kernel-endpoints.ts'
+import {
+  createKernelEndpointCatalog,
+  kernelCapabilityFlags,
+  readTypertRegistry,
+  type KernelEndpointCatalog,
+} from './host/bridge/kernel-endpoints.ts'
 import { DshSettingsAdapter } from './host/settings-adapter.ts'
 import { createHostRemoteServices } from './host/ws-host-services.ts'
 import { PLUGIN_VERSION } from './shared/version.ts'
@@ -201,21 +206,34 @@ export async function apply(ctx: HostContext, config: Config = {}): Promise<void
   // 提到 RemoteApiServer 之前构造，是因为能力位要在构造时就能如实声明（见下）。
   const hostRemote = createHostRemoteServices(reflect)
   // 内核端点目录（issue #26 阶段 2）：登记表读得到什么就抄什么，**只读**。
-  // 放在这里而不是用到时再读，是为了能力位能在构造时如实声明（见下）。
-  // 读不到（老内核没有 typert）时目录为空 —— 能力位随之不发。
-  const kernelCatalog = createKernelEndpointCatalog(readTypertRegistry(reflect))
-  const kernelFlags = kernelCapabilityFlags(kernelCatalog)
+  //
+  // **必须惰性读**（issue #26 检修，真机实测）：本机 DSH 0.2.2-rc.4 上，桥的 apply
+  // 早于各 `dsh-api-*` 插件注册 `@Remote` 端点，apply 期 `readTypertRegistry(...).local.list()`
+  // 返回**空**。若在这里读一次并缓存，能力位永远不发（`kernel-endpoint-catalog-v1` /
+  // `kernel-call-v1` 缺失）、`kernel/endpoint-unknown` 永远命中 —— 于是阶段 5 的整条
+  // 通用调用面在真机上不可见，而单测里用假目录全绿，测不出来。
+  //
+  // 因此：读到空目录就**不缓存**，下次再读（第一次请求 / 第一条 WS 连接时登记表已就绪）。
+  let kernelCatalogCache: KernelEndpointCatalog | undefined
+  const resolveKernelCatalog = (): KernelEndpointCatalog => {
+    if (kernelCatalogCache === undefined || kernelCatalogCache.endpoints.length === 0) {
+      kernelCatalogCache = createKernelEndpointCatalog(readTypertRegistry(reflect))
+    }
+    return kernelCatalogCache
+  }
 
   // 换源后的门面（issue #26 阶段 3a）：会话/工作区读侧走内核端点，所以网关必须在
   // 构造门面**之前**就绪。`services` 为 undefined 时不传 —— 门面退回进程内传输
   // （同一套端点语义，最后一跳直连宿主方法），会话读取不会因为可选服务缺席而整片 500。
-  // 目录为空时同样回退进程内传输（issue #26 检修，审计 R3）：`readTypertRegistry` 在
-  // apply 期可能还没装好登记表，此时 endpoint 全都不在目录里 —— 若仍把真网关传下去，
-  // 每个换源入口都会得到 `kernel/endpoint-unknown`，整片 500。空目录说明「现在还不知道
-  // 内核有什么」，那就按「没有网关」处理，等下次启动再试。
-  const kernelGateway = hostRemote.services === undefined || kernelCatalog.endpoints.length === 0
+  // 目录用 getter 惰性取（理由同上），门面每次调用时才落在这份目录上。
+  const kernelGateway = hostRemote.services === undefined
     ? undefined
-    : { caller: hostRemote.services, catalog: kernelCatalog }
+    : {
+        caller: hostRemote.services,
+        get catalog(): KernelEndpointCatalog {
+          return resolveKernelCatalog()
+        },
+      }
   const apiProxy = createDsh02ApiProxy(ctx, {
     handoffRoots: handoffRootsOf,
     imageHandoffDir,
@@ -256,10 +274,9 @@ export async function apply(ctx: HostContext, config: Config = {}): Promise<void
     // `GET …/catalog` 仍回 200 `{available:false,reason}`，客户端要能区分
     // 「支持但本机没配」与「不支持」。理由写在 `capabilities.ts`。
     speech: hostRemote.services !== undefined,
-    // 内核端点目录 / 通用调用面：规则只有一条 —— **目录非空才给位**。
-    // `kernelCall` 在阶段 5（端点白名单）落地前恒 false：声明一个没人能服务的
-    // 能力面比不声明更糟。规则本身在 `kernelCapabilityFlags` 里，测试钉着它。
-    ...kernelFlags,
+    // 内核端点目录 / 通用调用面**不在这里**：目录要到登记表装好才读得到，
+    // 放进构造期快照会让这两位永远缺失（真机实测，见 resolveKernelCatalog）。
+    // 它们走 `capabilityResolver`，每次 `connection.ready` 现算。
   }
   const remote = new RemoteApiServer({
     port,
@@ -282,7 +299,8 @@ export async function apply(ctx: HostContext, config: Config = {}): Promise<void
   // /ws/mobile 的全局模型目录 / providers / 文件浏览需要 settings 与 files 适配器，
   // 它们在此刻才构造完成（晚于 RemoteApiServer），通过 setter 注入避免构造顺序环。
   remote.attachMobileHostServices({ settings, files })
-  remote.attachMobileRemoteServices(hostRemote.services, kernelCatalog)
+  remote.attachMobileRemoteServices(hostRemote.services, resolveKernelCatalog)
+  remote.setCapabilityResolver(() => kernelCapabilityFlags(resolveKernelCatalog()))
   router = new ApiRouter({
     database,
     auth,

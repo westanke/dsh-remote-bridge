@@ -1,6 +1,29 @@
 # 当前状态
 
-- 日期：2026-11-19（**已发版 v2.12.1：大文件上传流式化 + 隧道工具 schema 修形**；`main` 上另有未发版的 issue #26 阶段 0 / 1 / 2 / 3a / 3b / 3c / 3d / 4 / 5 / 6 / 7 / 8 / 9，以及完工检修一批）
+- 日期：2026-11-19（**已发版 v2.12.1：大文件上传流式化 + 隧道工具 schema 修形**；`main` 上另有未发版的 issue #26 阶段 0 / 1 / 2 / 3a / 3b / 3c / 3d / 4 / 5 / 6 / 7 / 8 / 9、完工检修一批，以及真机测试期修的两个 bug）
+- **已完成（未发布，2026-11-19 真机测试）· 安卓真机跑通内核调用面，并修掉两个「单测发现不了」的 bug**：
+  ①**桥侧｜apply 期读目录，把「空」钉成事实**：`src/index.ts` 在 apply 期调一次
+  `createKernelEndpointCatalog(...)`，而桥的 apply 早于各 `dsh-api-*` 注册 `@Remote` 端点
+  （实测 0.2.2-rc.4）⇒ 目录读到空，并被钉进构造期 `capabilities` and
+  `attachMobileRemoteServices(remote, catalog)`，`kernel-endpoint-catalog-v1` /
+  `kernel-call-v1` 永远不发、`kernel-endpoints` 永远不推。修法：惰性解析（读到空不缓存）+
+  `setCapabilityResolver`，`hello` 的能力位每次现算；`/ws/mobile` 的 hello 由 ws-handler 自己发，
+  所以 `server.ts` 与 `ws-handler.ts` 两侧都要注入（只改 server 时用例仍红）。
+  ②**伴生仓｜能力位竞态**：客户端能力位只来自 `connection.ready`，而 WS 事件通道一旦接管就关掉
+  REST `/api/v1/events` 流 —— 真机上出现过「WS 先接管，`connection.ready` 永远没送到」的时序，
+  结果是内核调用入口整段不显示（桥明明宣告了）。修法：`MobileWsTransport` 把 `hello.capabilities`
+  也交上去兜底（`onHelloCapabilities`），ViewModel 侧取**并集**。
+  ③**伴生仓｜结果看不见**：内核调用的结果原本渲染在 23 条端点列表末尾（几千像素外），
+  点完以为没反应；改为 args 下方渲染 + 结果到达自动回顶。
+  ④**真机验收（vivo V2080A / Android 11 / 真内核 0.2.2-rc.4）**：hello 含两位能力位 →
+  紧随 `kernel-endpoints`（23 条）→ 设置页出现「内核调用」节 → 调
+  `pluginManager/listBundles` 得到真实 bundles、`pluginManager/registries` 正常回包；
+  旧桥（3090）连接时该节按能力位隐藏（反证有效）。`session/search` 在本机部署被
+  `session-query index openAt "never"` 关闭，如实记录为部署限制而非桥缺陷。
+  ⑤**验收**：`pnpm check` exit 0（92 文件 / **1 002** 用例）；新增
+  `tests/mobile-gateway-ws.spec.ts` ›「answers hello from the runtime resolver instead of the
+  construction snapshot」；伴生仓 `:app:testDebugUnitTest` 全绿（`MobileWsTransportTest`
+  新增「hello 宣告的能力位立刻交给界面兜底」）。
 - **已完成（未发布，issue #26 完工检修，2026-11-19）· 对照竞品与三份审计的缺陷修复**：
   ①**S1 严重｜kernel-call 缺授权根维度**：白名单原来只有 `scope` 一维，桥用 owner peer ⇒
   内核 `remoteAccess.allows()` 对 owner 恒真（`dsh-typert-protocol` 的 `principalOf(owner)` 为

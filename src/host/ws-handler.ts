@@ -213,10 +213,22 @@ export class MobileGatewayWsHandler {
    */
   private hostRemote: HostRemoteHandle | undefined
   /**
-   * 内核端点目录（阶段 2 的只读快照）。与 `hostRemote` 一起注入：有目录才能回答
-   * `kernel-endpoints` 帧，也只有两者都在时 `kernel-call` 才算「可用」。
+   * 内核端点目录的**惰性解析器**（issue #26 检修）。与 `hostRemote` 一起注入：
+   * 有目录才能回答 `kernel-endpoints` 帧，也只有两者都在时 `kernel-call` 才算「可用」。
+   *
+   * 为什么是函数而不是快照：登记表在插件 apply 期可能还没装好（本机实测：桥的
+   * apply 早于各 `dsh-api-*` 注册端点）。apply 期读一次会把空目录永久钉住，
+   * 于是能力位永远不发、`kernel-call` 永远不可用 —— 而内核其实什么都有。
+   * 每次**建连接**时再读，读到的才是这台进程真的注册过什么。
    */
-  private kernelCatalog: KernelEndpointCatalog | undefined
+  private kernelCatalogProvider: (() => KernelEndpointCatalog) | undefined
+  /**
+   * 运行时能力位解析器（issue #26 检修）。`capabilitiesFlags` 是构造期快照，
+   * 而内核端点目录要到登记表装好才读得到；`hello` 每次现算才能如实回答
+   * 「这台进程**现在**能不能提供」。
+   */
+  private capabilityResolver: (() => CapabilityFlags) | undefined
+
   /** 语音管理器：跨连接共享（全局转写并发计数需要进程级单一实例）。 */
   private speech: SpeechHandler
   /** 文件分块下载/上传管理器：跨连接共享（每连接并发计数 + spool 落盘需要进程级状态）。 */
@@ -227,6 +239,14 @@ export class MobileGatewayWsHandler {
    * 它们在 index.ts 里晚于 RemoteApiServer 构造（router 装配期），故用 setter 注入，
    * 而不是塞进构造函数（避免 server↔router 的构造顺序环）。
    */
+  /**
+   * 注入运行时能力位（见 `capabilityResolver`）。返回的键覆盖构造期快照的同名键；
+   * 显式 `false` 表示「这台进程现在提供不了」，对应能力位会被剔除。
+   */
+  setCapabilityResolver(resolver: () => CapabilityFlags): void {
+    this.capabilityResolver = resolver
+  }
+
   attachHostServices(services: {
     settings: MobileGatewayWsHandler['settingsService']
     files: MobileGatewayWsHandler['filesService']
@@ -243,9 +263,15 @@ export class MobileGatewayWsHandler {
    * 装配内核可选远程服务（定时任务 / 官方语音）。在 index.ts apply 期取到
    * typertGateway+connection 后注入；传入 undefined 表示当前内核不提供（优雅降级）。
    */
-  attachRemoteServices(remote: HostRemoteHandle | undefined, catalog?: KernelEndpointCatalog): void {
+  attachRemoteServices(
+    remote: HostRemoteHandle | undefined,
+    catalog?: KernelEndpointCatalog | (() => KernelEndpointCatalog),
+  ): void {
     this.hostRemote = remote
-    this.kernelCatalog = catalog
+    // 允许直接传目录（测试与旧调用点）或传解析器（生产路径，apply 期登记表可能还空）。
+    this.kernelCatalogProvider = typeof catalog === 'function'
+      ? catalog
+      : (catalog === undefined ? undefined : () => catalog)
     // 语音管理器始终存在（这样缺内核服务时也能回 speech-catalog available:false 与
     // 结构化 unavailable），只更新其远程句柄；它是进程级单一实例以维持全局转写并发计数。
     if (this.speech === undefined) {
@@ -486,7 +512,8 @@ export class MobileGatewayWsHandler {
     // 装作没看见只会让客户端把「能力没开」误判成「帧拼错了」。
     // 服务按连接创建 —— 取消与在飞行表天然按连接隔离，A 手机猜不到 B 手机的 callId。
     const kernelRemote = this.hostRemote
-    const kernelCatalog = this.kernelCatalog
+    // 惰性解析：此刻（建连接）登记表已经装好，读到的才是真目录。
+    const kernelCatalog = this.kernelCatalogProvider?.()
     const kernelCallEnabled = kernelRemote !== undefined
       && kernelCatalog !== undefined
       && this.offersKernelSubprotocol(req)
@@ -617,7 +644,10 @@ export class MobileGatewayWsHandler {
 
     const data: HelloData = {
       protocol: 3,
-      capabilities: availableCapabilities(this.capabilitiesFlags),
+      capabilities: availableCapabilities({
+        ...this.capabilitiesFlags,
+        ...(this.capabilityResolver?.() ?? {}),
+      }),
       authenticated: true,
       // 与上游 hello 对齐：port 为本连接实际接入的监听端口，clients 为当前已鉴权连接数。
       ...(state.listenerPort !== undefined ? { port: state.listenerPort } : {}),

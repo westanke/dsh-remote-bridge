@@ -1335,3 +1335,28 @@ unavailable service for question answers。
 回归锚：`tests/kernel-call.spec.ts` › does not replay one endpoint's result for a different
 endpoint with the same callId / does not cache failures — a transient error must be retryable /
 ignores a cache entry older than the 24h window。
+
+### apply 期读出来的目录，是把「空」钉成事实
+
+**症状**：单测全绿、能力位也「实现了」，但真机装上去 `hello.capabilities` 里就是没有
+`kernel-endpoint-catalog-v1` / `kernel-call-v1`，`kernel-endpoints` 帧一次都不推，手机上
+整个「内核调用」入口按设计隐藏 —— 看起来像打包漏了代码，其实是读得太早。
+
+**根因**：桥的 apply 早于各 `dsh-api-*` 注册 `@Remote` 端点。apply 期
+`readTypertRegistry(ctx.reflect.get('typert', false)).local.list()` 返回**空数组**，
+而这份空数组被 `createKernelEndpointCatalog(...)` 包好后塞进构造期 `capabilities` 与
+`attachMobileRemoteServices(remote, catalog)`。构造期快照只算一次 ⇒ 之后登记表装好了，
+桥手里仍是空目录。单测看不出来：测试是先装好假目录再喂给 server 的，时序恰好相反。
+
+**现在怎么办（铁律）**：目录与依赖它的能力位一律**在用到时再读**（第一条 WS 连接 /
+第一次 `connection.ready`），并且**读到空就不缓存** —— 空只代表「现在还不知道」，
+不是「内核什么都没有」。具体：`src/index.ts` 的 `resolveKernelCatalog()` 只在非空时落缓存；
+`kernelGateway` 的 `catalog` 是 getter；`server.ts` / `ws-handler.ts` 各收一个
+`capabilityResolver`，`connection.ready` 与 `hello` 都现算。
+
+**铁律**：凡「运行时才知道」的装配事实（可选服务、登记表、内核目录），构造期只允许
+存**取它的方法**，不允许存**取到的值**。
+
+**回归锚**：`tests/mobile-gateway-ws.spec.ts` › 「answers hello from the runtime resolver
+instead of the construction snapshot」；真机验证见 `STATUS.md` 2026-11-19 条目。
+

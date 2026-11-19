@@ -1,5 +1,38 @@
 # 开发日志
 
+## 未发布 · 安卓真机跑通内核调用面（issue #26，2026-11-19）
+
+**为什么有这一段**：issue #26 九阶段完工后，验收里「真机 6 项」一次都没跑过 —— 单测用的
+端点目录是**假目录**，喂在 `createDsh02ApiProxy` 之前，所以「目录什么时候被读」这件事从来没被测过。
+真机一跑就抓到两个单测发现不了的缺陷。
+
+**缺陷 1（桥侧，严重）**：`src/index.ts` 在 **apply 期**调一次
+`createKernelEndpointCatalog(readTypertRegistry(reflect))`。DSH 0.2.2-rc.4 上桥的 apply
+早于各 `dsh-api-*` 注册 `@Remote` 端点，于是读到**空目录**，并被钉进构造期的 `capabilities`
+与 `attachMobileRemoteServices(remote, catalog)`：`kernel-endpoint-catalog-v1` /
+`kernel-call-v1` 永远不发、`kernel-endpoints` 永远不推，而探针直连内核时端点明明都在。
+修法：`resolveKernelCatalog()` 惰性解析且**读到空目录不缓存**；`capabilities` 不再在构造期算，
+改为 `setCapabilityResolver` 每次现算。注意 `/ws/mobile` 的 `hello` 由 `ws-handler` 自己发
+（不走 `server.ts` 的 `connection.ready`），所以两侧都要注入 —— 只改 server 时用例仍红。
+
+**缺陷 2（伴生仓）**：客户端能力位只取自 `connection.ready` 事件，而「WS 事件通道接管即关掉
+REST `/api/v1/events`」——两条并发，真机上出现过 WS 先接管（间隔 1 ms）、`connection.ready`
+永远没送到的时序，内核调用入口整段不显示。修法：`MobileWsTransport` 把 `hello.capabilities`
+也交上去兜底，ViewModel 侧与事件来源取**并集**。
+顺带修 UX：结果原本渲染在 23 条端点列表末尾（几千像素外），点完以为没反应 ⇒ 结果移到 args
+下方并自动回顶。
+
+**真机验收**（vivo V2080A / Android 11 / 桥 2.12.1 本地包 / 内核 0.2.2-rc.4，独立测试实例
+web 3199 + 桥 3198，不触碰正在服务 Web GUI 的 3090）：`hello` 含两位能力位 → 紧随
+`kernel-endpoints`（23 条，含 `scope`/`stream`/`wires`/`summary`）→ 设置页出现「内核调用」节 →
+`pluginManager/listBundles` 返回真实 bundles、`pluginManager/registries` 正常回包；同一 APK 连旧桥
+（3090）时该节按能力位隐藏 —— 门控反证有效。`session/search` 在本机部署被
+`session-query index openAt "never"` 关闭，如实记为部署限制。
+
+**验收**：`pnpm check` exit 0（92 文件 / **1 002** 用例）；新增
+`tests/mobile-gateway-ws.spec.ts` ›「answers hello from the runtime resolver instead of the
+construction snapshot」。⚠️ REST 逐字段快照仍未做。
+
 ## v2.12.1 · 大文件上传不再把内存吃爆 —— 流式附件通道 + base64 回落（issue #23，2026-11-19）
 
 **现象**：给手机上传一个大文件（100 MiB），桥所在进程（= 宿主进程）的内存峰值实测涨到
