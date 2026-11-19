@@ -286,6 +286,11 @@ docs/api/            ← OpenAPI + AsyncAPI（wire schema 的权威）
 - `把事件信封的外层 rpcId 当成结算句柄（approval 决策恒 409）`
 - `可信发布者只认「2FA 设备」，邮箱验证码不算（403 Please enable 2fa for your account）`
 - `Gitee issue 写 API 路径不含 repo 段（PATCH 404 Not Found Project）`
+- `kernel-call 白名单是唯一执法点`
+- `owner peer 没有设备概念`
+- `服务方法 ≠ 内核端点`
+- `agent scope 会隐式 resume 冷会话`
+- `workspace/follow 会被 remoteAccess 过滤`
 
 > 新坑位：名字加进上面清单 + 原文写进 `PITFALLS.md` 并补 `### 同名` 锚点。
 

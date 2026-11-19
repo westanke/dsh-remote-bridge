@@ -257,8 +257,13 @@
 - **协商与位置无关**（issue #26 阶段 2）：`server.ts` 的 `handleProtocols` 只认 `dsh-mobile-v1`
   （`pickMobileSubprotocol`），客户端把 `dsh-auth.*` 排前面也照样连得上；协商结果恒为
   `dsh-mobile-v1`。清单里一个都没有时仍握手成功，再由 `onConnection` 关 4001（与改动前一致）。
-- 连接即推 `hello`：`{kind:'hello', protocol:3, capabilities, authenticated, device, port, clients}`；能力位与 §3.4 同源（`src/host/capabilities.ts`）。
-- 客户端帧 `{type:…}`：`ping` / `subscribe` / `unsubscribe` / `message` / `workspaces` / `sessions` / `history` / `attachment` / `file-download-open/read/cancel` / `search` / `host` / `default-model` / `save-default-model` / `models` / `providers` / `commands` / `command-execute` / `command-options` / `command-select` / `select-model` / `permission-options` / `permission` / `context-usage` / `session-stats` / `tasks` / `goal` / `goal-edit` / `goal-pause` / `goal-resume` / `goal-clear` / `plugin-catalog/inspect/install/settings` / `agent-presets` / `defaults` / `set-default` / `question-answer` / `question-cancel` / `approval-response` / `session-wait`。
+- **`dshrb-v1`（issue #26 阶段 5）**：客户端清单里提供它时连接启用通用内核调用面
+  （`kernel-call` / `kernel-call-cancel` / `kernel-call-result` / `kernel-endpoints`）。
+  能力面按**客户端声明**判定（`ws-handler.ts` 的 `offersKernelSubprotocol`），握手回执仍是
+  `dsh-mobile-v1`；能力位 `kernel-call-v1` 只在「白名单 ∩ 内核目录 非空」时才发。
+  已发布客户端清单里没有它 ⇒ 帧词表与行为逐字不变（发这两帧只会拿到 `NOT_IMPLEMENTED`）。
+- 连接即推 `hello`：`{kind:'hello', protocol:3, capabilities, authenticated, device, port, clients}`；能力位与 §3.4 同源（`src/host/capabilities.ts`）。协商到 `dshrb-v1` 时，`hello` **之后**再推一帧 `kernel-endpoints`（白名单 ∩ 目录，含每个端点的 `scope`/`stream`/`wires`/`summary`）。
+- 客户端帧 `{type:…}`：`ping` / `subscribe` / `unsubscribe` / `message` / `workspaces` / `sessions` / `history` / `attachment` / `file-download-open/read/cancel` / `search` / `host` / `default-model` / `save-default-model` / `models` / `providers` / `commands` / `command-execute` / `command-options` / `command-select` / `select-model` / `permission-options` / `permission` / `context-usage` / `session-stats` / `tasks` / `goal` / `goal-edit` / `goal-pause` / `goal-resume` / `goal-clear` / `plugin-catalog/inspect/install/settings` / `agent-presets` / `defaults` / `set-default` / `question-answer` / `question-cancel` / `approval-response` / `session-wait` / `kernel-call` / `kernel-call-cancel`（后两个仅 `dshrb-v1`）。
 - 服务端帧 `{kind:…}`：**清单不在此抄第二份**（抄了必漂）—— 权威是
   `src/host/ws-protocol.ts` 的 `ServerFrameKind` 联合类型，逐条说明见 [API.md](API.md) 的
   「服务端→客户端帧」表，两侧一致性由 `docs:check` 的帧对账段与

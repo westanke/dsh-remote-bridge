@@ -1052,3 +1052,221 @@ rejected（NO_PROVIDER，手机是唯一界面）→ 自拒起 10 分钟自愈�
 2. 评论走 `POST /repos/{owner}/{repo}/issues/{number}/comments`（读同款路径）；
    token 统一放 query 或 header，`-F` 与 `-d @file` 混用会静默失败（multipart 混 urlencoded）。
 3. 项目管理型（project 型）issue 的写 API 未公开，仍只能网页操作。
+
+---
+
+### kernel-call 白名单是唯一执法点
+
+**症状**：新加一条手机可达的内核能力时，最省事的写法是「在处理函数里判一下 scope
+就放行」。这类判定一旦散在处理器、校验器、路由三处，总有一条路能绕开其中一处；而
+`kernel-call` 是全桥唯一「客户端按名字指定要执行什么代码」的入口，绕开一次就等于把内核的
+owner 权限交出去。更隐蔽的是**顺序**：先查目录再判白名单，「白名单外但内核有」与
+「白名单外且内核没有」会给出两种不同报错，客户端免费拿到端点存在性探针。
+
+**根因**：内核侧没有第二道设备校验。`PrincipalMap` 只有一条
+`owner: { readonly kind: 'owner' }`（`@deepseek-ai/dsh-typert-protocol` 的
+`lib/types/types.d.ts:363-368`；ADR-0010
+`docs/project/decisions/ADR-0010-kernel-endpoint-unification.md:45` 记了「`PrincipalMap`
+只有一条 `owner`」），peer 的 principal 由宿主进程内代码在创建时固定（同文件 `:380`），
+**没有 wire 字段能改**。桥正是靠这一点复用一个 owner peer 代发全部代理调用
+（`src/host/ws-host-services.ts:70-71`）。于是「能在契约里点名某个内核端点」在内核看来
+就是本机 owner 在调 —— 白名单是唯一能拦住手机的那道门。
+
+**现在怎么办（铁律）**：
+
+1. 能不能调**只问** `src/host/bridge/kernel-allowlist.ts` 的 `authorizeKernelEndpoint`
+   （`:130-139`）：`isKernelEndpointAllowed`（`:113-115`，白名单查表 + 钉死命名空间）
+   不通过就抛 `KernelCallDeniedError`（`:36-43`，文案与「端点不存在」**一字不差**），
+   通过后才 `authorizer.requireScope`（`:137`）。处理器拿到返回值或异常照办，不再自己判。
+2. 默认拒绝必须排在**目录查找之前**、也排在 **scope 判定之前**。执行器的硬顺序：
+   授权（`src/host/bridge/kernel-call.ts:148-151`）→ 幂等回放（`:153-154`）→ 在飞行拒绝
+   （`:157-162`）→ `requireKernelEndpoint`（`:166`）→ `assertKernelArguments`（`:168`）
+   → `invoke` / `collectStream`（`:169-171`）。文件头 `:7-16` 把这顺序与理由写死了。
+3. 高危命名空间 `KERNEL_DENIED_NAMESPACES`（`kernel-allowlist.ts:56-73`，能起进程、读本机
+   文件或碰凭据的那批）的判定在白名单查找**之前**；以后往白名单加条目也放不开它。
+4. 单一路径：白名单不得包含桥已封装的 35 个入口（31 条换源 + 4 条永久留桥）。
+   `BRIDGE_OWNED_ENDPOINTS`（`kernel-allowlist.ts:163-199`）是机器可读副本，
+   `singlePathViolations()`（`:203-205`）做交集，空数组才算合规。
+5. scope 一律走 `AuthService.requireScope`（`src/host/auth.ts:400-402`），与 REST 面同源；
+   **不要**另写一份「内核调用专用」的权限模型。
+6. 新增错误文案/错误码前先问：它能不能区分「没这个端点」与「没被允许」。能，就是白送探针。
+
+**铁律**：白名单是**唯一执法点**；默认拒绝必须排在目录查找与 scope 判定**之前**。
+
+回归锚：`tests/kernel-allowlist.spec.ts`（`:72` 钉死 14 条与各自 scope、`:105` 钉死命名
+空间、`:138`「denies anything outside the allowlist with the same shape as an unknown
+endpoint」、`:224` 与 35 条桥自有入口不相交）；`tests/kernel-call.spec.ts`（`:181`「denies
+an endpoint outside the allowlist before touching the catalog」、`:217` 参数多/漏一个字节
+都不发内核、`:271` scope→403、`:291` 不得触发交互）。
+
+---
+
+### owner peer 没有设备概念
+
+**症状**：给手机新增一条可达路径时，把「这台设备有没有被撤销、有没有这个授权根、这条调用
+该记谁的审计」指望在内核侧落实 —— 内核根本不知道有「设备」这回事，它看到的每个调用都是
+本机 owner。结果要么判定被悄悄跳过（撤销了的手机照样能调），要么审计只记成「owner 调了
+某端点」，出事后查不到是哪台手机。
+
+**根因**：内核的鉴权模型只有身份，没有设备维度。`PrincipalMap` 只有 `owner` 一条
+（ADR-0010 `:45` 明确写「设备授权根…**不能**：`PrincipalMap` 只有一条 `owner`」；源在
+`@deepseek-ai/dsh-typert-protocol` 的 `lib/types/types.d.ts:363-368`），peer 的 principal
+由宿主进程内代码在创建时固定（同文件 `:380`），没有 wire 字段能改。桥因此只建**一个**
+owner peer 贯穿全部代理调用（`src/host/ws-host-services.ts:70-71`，注释：「一个 owner peer
+贯穿全部代理调用，与 mobile-gateway 的单 peer 模型一致」）。
+
+设备维度全部落在桥这一层：
+
+- principal 由 token 解析（`src/host/ws-handler.ts:456-474`），设备视图从 principal 另建
+  （`principalToDeviceView`，`:635-641`）；
+- scope / 授权根：`src/host/auth.ts:400-416` 的 `requireScope` / `requireRoot`；
+- 撤销：`src/host/database.ts:329-331`（删设备行、审计先留痕同事务），审计实现在
+  `src/host/db/audit.ts`；
+- **按连接隔离**：`KernelCallHandler` 每条连接一套（`src/host/ws-handler.ts:492-513` 的
+  构造注释与实参），取消与在飞行表随连接 `dispose()`（`src/host/ws-kernel-call.ts:37-38`、
+  `:78-80`；`tests/ws-kernel-call.spec.ts:108`），幂等键是 `(principal.id, callId)`
+  （`src/host/bridge/kernel-call.ts:153-154`）。
+
+**现在怎么办（铁律）**：
+
+1. 新增/修改任何「手机 → 内核」路径，设备判定只能加在**桥**：授权时的 scope 参数、
+   principal 传参、审计写入，三处都不能因为「内核会管」而省。
+2. 不要试图把 deviceId 塞进内核 principal —— 类型上就做不到。要按设备收紧，就收紧
+   `KERNEL_ALLOWLIST` 条目声明的 `scope`，或在桥侧调用前后加判。
+3. 在飞行 / 取消 / 幂等必须保持「按连接或按 principal」隔离。把 `KernelCallService` 提成
+   全局单例，等于让 A 手机用猜到的 callId 取消 B 手机的调用
+   （`src/host/bridge/kernel-call.ts:25-29` 的注释就是这么写的）。
+4. 动撤销 / 审计 / principal 传参的改动，同时跑
+   `tests/kernel-call.spec.ts:416`「scopes the replay key to the principal」与
+   `tests/device-revocation.spec.ts`。
+
+**铁律**：owner peer 只有一个身份；「哪台设备」只存在于桥，内核永远答不了这个问题。
+
+回归锚：`tests/ws-kernel-call.spec.ts`（`:35-97` 帧族与形状校验、`:108` 连接断开中止在飞行）；
+`tests/kernel-call.spec.ts:416`。
+
+---
+
+### 服务方法 ≠ 内核端点
+
+**症状**：换源时把「桥里直接调的宿主服务方法」当成「还没搬的端点」，往白名单或目录里加
+名字 —— 运行期恒 `kernel/endpoint-unknown`，怎么调都不通；反过来，以为换源后这些调用可以
+删，手机端会**静默**少功能：模型选择器不显示上下文窗口（`llm.resolveModelInfo` 的容量
+字段没了），大附件上传回落 base64（100 MiB 上传的内存峰值从 2.5 MiB 放大 5.67×）。
+
+**根因**：只有带 `@Remote` 的内核方法才会进 `ctx.typert.local.list()` 的描述符目录，才能被
+`namespace/method` 寻址。这四条恰恰**没有端点**（ADR-0010 `:52-53` 逐条核过）：
+`userQuestions.continued`（private，无端点）、`llm.resolveModelInfo`（无 `@Remote`）、
+`fileUploads.uploadStream`、`sessionController.resolveAgent`。它们是 Cordis 服务方法：
+只能进程内 `ctx.get(name)` / `ctx.reflect.get(name, false)` 拿到后直接调，通用调用面的
+`namespace/method` 根本到不了。
+
+**现在怎么办（铁律）**：
+
+1. 判断「能不能走通用调用面」的唯一依据是**描述符里有没有它**
+   （`src/host/bridge/kernel-endpoints.ts:182-184` 读 `ctx.typert.local.list()`；该模块
+   只管登记表现状，不猜服务方法）。目录里没有 ⇒ 必须留桥。
+2. 4 条永久留桥已登记在 `BRIDGE_OWNED_ENDPOINTS`
+   （`src/host/bridge/kernel-allowlist.ts:194-199`）：`approvals.respond` /
+   `userQuestions.cancel` / `sessions.readHandoffImage` /
+   `sessions.uploadAttachmentStream`。每条「内核为什么顶不上」、可证伪断言与认领测试见
+   ADR-0010 `:156-161` 的表（决议前文 `:130-134`）。
+3. 服务方法的容错读取集中在 `src/host/bridge/kernel-services.ts`：`optionalService`
+   （`:52-69`，必须走 `ctx.reflect.get(name, false)` —— 直接读属性会抛
+   `cannot get property "x" without inject`，与「服务不存在」同形）、`userQuestionsOf`
+   （`:88-100`，从 agent scope 取服务）、`toUserQuestionView`（`:109-122`）。
+4. 四条消费点别乱搬：
+   `resolveAgent` → `src/host/bridge/host-reads.ts:95-114`（无 live Agent 抛
+   `session/agent-unavailable`）；
+   `llm.resolveModelInfo` → `src/host/bridge/models.ts:95` 的 `enrichModelGroups`（调用点
+   `src/host/bridge/kernel-views.ts:245`；字段摘取在
+   `src/host/bridge/kernel-deltas.ts:116-125`）；
+   `userQuestions.continued` → `kernel-views.ts:354-375`；
+   `fileUploads.uploadStream` → `src/host/bridge/file-upload-stream.ts:102-111`（服务缺席
+   才回落 base64）。
+5. 新增「内核没有」的能力，先写成一句可证伪断言 + 一个认领测试（照 ADR-0010 的 4 条表），
+   否则它会被下一个做换源的人误当成漏搬端点删掉。
+
+**铁律**：**有 `@Remote` 才有端点**；服务方法是进程内调用，描述符里没有的名字永远不该出现
+在白名单或端点表里。
+
+---
+
+### agent scope 会隐式 resume 冷会话
+
+**症状**：把 agent scope 端点（`agentPresets/select`、`userQuestions/answer`、
+`fileUploads/upload` 这类 `agentId` 装会话 id 的）换源或加白名单后直接调用，冷会话会被
+**隐式唤醒**：手机只是打开设置、拉一次列表、答一条提问，内核侧却把会话跑起来了。它不报错、
+不弹窗，所以没人发现，直到用户看到「没点过的会话自己在跑/在烧额度」。
+
+**根因**：内核端点的 `agentId` 参数走 agent lookup，查不到 live Agent 时会 resume 一个 ——
+这是端点语义，不是 bug。而桥的既有语义是「先要求有 live Agent」：门面 `agentPresets.select`
+显式 `await agentFor(...)`（`src/host/dsh-0.2-bridge.ts:211-222`，`:212-214` 的注释标了
+「保留的 delta 5」）；`agentFor` 拿不到 Agent 就抛 `session/agent-unavailable`
+（`src/host/bridge/host-reads.ts:95-114`），`agentForQuestions` 把「冷会话」当正常情况返回
+null（`:117-130`）。换源时若不保留这层前置判定，行为就从「拒绝/空」变成「唤醒」。
+
+**现在怎么办（铁律）**：
+
+1. 新增 agent scope 端点前先问：**这一步该不该唤醒会话？** 不该 → 保留前置 live 判定；
+   该（如会话模型读，插件命令发现依赖它，见 `src/host/bridge/kernel-views.ts:215-233`）→
+   写成一条具名 delta 并登记到 `docs/project/STATUS.md`。
+2. 前置判定的显式化工具是 `agentScopeSkip`（`src/host/bridge/kernel-deltas.ts:127-137`，
+   delta 5 的表行在 `:17`）：拿不到 Agent 就跳过内核调用、只回桥侧数据。已用在
+   `listQuestions`（`src/host/bridge/kernel-views.ts:365-369`）与 `answerQuestion`
+   （`:391-419`）。
+3. `agentPresets/select` 上这条判定是**刻意保留**的；已知行为差异登记在
+   `docs/project/STATUS.md:64-65`。同批的 `uploadAttachment` 已发生过一次同类变化（错误码
+   从 `session/agent-unavailable` 变内核解析错误，`STATUS.md:51-53`）—— 下次改 agent scope
+   端点，先翻这两段。
+4. 加白名单条目时注意：14 条刻意**不含**任何 agent scope 端点
+   （`src/host/bridge/kernel-allowlist.ts:82-101`）。放行一条前，先确认它能接受隐式 resume，
+   或在桥侧先判 live。
+5. 真机验收要分别看**冷/热**两种路径（`STATUS.md:64-65` 点名了这条）。
+
+**铁律**：agent scope 端点自带 resume 副作用；桥侧的「先 agentFor」是有意的语义，不是没搬完
+的残余。要放开必须单独立项。
+
+回归锚：`tests/kernel-deltas.spec.ts:86`「delta 5 — treats a missing agent as a short
+circuit, not an error」（`agentScopeSkip` 的单测）。⚠️ 门面 `agentPresets.select` 那条
+「先 agentFor」目前**没有专门用例认领**（`grep agentPresets.select tests/` 只有描述符
+固定，没有冷会话不唤醒的断言）—— 动它之前先补一条用 fake host 断言「冷会话不触发
+`invokeKernelEndpoint`」的用例。
+
+---
+
+### workspace/follow 会被 remoteAccess 过滤
+
+**症状**：`workspace.list` 换源到 `workspace/follow` 首帧后，owner peer 下一切照旧；可一旦
+有人（为了「更细的权限」）把桥换成非 owner peer，工作区列表会**静默变短**：返回 200、没有
+错误帧，只是少了会话/工作区。手机端表现为「会话不见了」，用户以为被删了。
+
+**根因**：内核的 list 类方法会逐条过 `remoteAccess.allows(resource)`。`allows()` 的文档写明
+「owner 与 Remote 调用之外一律 true，否则按非 owner principal 的 policy 判」
+（`@deepseek-ai/dsh-api-remote-access` 的 `lib/types/index.d.ts:83-90`；同文件 `:74-82` 说
+list 方法逐条过它）。桥今天唯一 peer 是 owner（`src/host/ws-host-services.ts:70-71`），所以
+这层过滤是**空操作**，可见范围实际上全由桥自己的授权根决定。ADR-0010 的 ⑩ 行已把这条列成
+用户可见后果（`docs/project/decisions/ADR-0010-kernel-endpoint-unification.md:85`）。
+
+**现在怎么办（铁律）**：
+
+1. 保持 owner peer 是**默认**，并把「工作区可见范围 = 桥的 rootIds 判据」当契约；不要在桥侧
+   再叠一层 `remoteAccess`（那会变成第二套权限模型，两套必然分叉）。
+2. 将来若真要把 peer 换成非 owner：先写对账用例，证明同一台设备看到的 workspace/session
+   集合在换 peer 前后**逐项相等**；不等就说明出现了本条坑位。当前 `listWorkspace`
+   （`src/host/bridge/kernel-views.ts:261-295`）把首帧 `baseline.items` 直接透传
+   （`:282-284`），桥侧没有任何补充过滤 —— 过滤只能来自内核。
+3. 别把「列表变短」当成分页或空结果：`baseline` 是快照，只有归档集合为空时才回退注册表
+   （`:285-291`）。
+4. 顺带一条硬约束：`workspace/follow` 是**无参流式**端点，必须走 `streamBareEndpoint`
+   （`kernel-views.ts:270`）；错用 `wrapRequestArgument` 会得到 `unexpected ""`
+   （`docs/project/TESTING.md:16` 记着实锤）。
+5. 列完必须**立刻** abort，否则每次列工作区都会在内核侧挂一个 follower
+   （`kernel-views.ts:256-260` 的注释与 `:292-294` 的 finally）。
+
+**铁律**：owner peer 今天让这层过滤等于空操作；换非 owner peer = 悄悄改变工作区可见范围，
+必须当成一次用户可见的契约变更来做。
+
+回归锚：`tests/kernel-endpoints.spec.ts:249` 固定 `workspace/follow` 的
+`{ wires: [], stream: true, cancellation: true }`；`tests/kernel-invoke.spec.ts:156-161`
+流式与多余参数拒收。

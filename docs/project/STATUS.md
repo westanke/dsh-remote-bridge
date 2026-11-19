@@ -1,6 +1,25 @@
 # 当前状态
 
-- 日期：2026-11-19（**已发版 v2.12.1：大文件上传流式化 + 隧道工具 schema 修形**；`main` 上另有未发版的 issue #26 阶段 0 / 1 / 2 / 3a / 3b / 3c / 3d / 4 / 5）
+- 日期：2026-11-19（**已发版 v2.12.1：大文件上传流式化 + 隧道工具 schema 修形**；`main` 上另有未发版的 issue #26 阶段 0 / 1 / 2 / 3a / 3b / 3c / 3d / 4 / 5 / 6）
+- **已完成（未发布，issue #26 阶段 6 / `MOB-010`）· 契约同步与跨仓**：
+  ①**本仓五处同步**：`docs/api/asyncapi.yaml` 两个 enum 各 +2 成员、4 个帧 schema 与
+  「`dshrb-v1` only」说明；`docs/project/API.md` 四行帧表 + 能力位判据改成「白名单 ∩ 内核目录 非空」
+  + `kernel-call-result` 不回显 `requestId` 的理由；`docs/project/INTERFACES.md` §3.5 补
+  `dshrb-v1` 协商段与 `hello` 后目录帧的时序。**OpenAPI 一行未动**（本阶段不新增 REST 端点）。
+  ②**Kotlin SDK**：`MobileGatewayClient.kt` 444 → 779 行 —— 四帧 + `MOBILE_PROTOCOL_KERNEL`、
+  `supportsKernelCall()`（读 `hello.capabilities`）、`awaitKernelEndpoints()`、`callKernel()` /
+  `cancelKernelCall()`；三个前置条件都在**发帧之前**判（缺能力位抛
+  `IllegalStateException("kernel-call-v1 is not advertised by this bridge")`，不静默挂起），
+  `args` 为空时整段省略。`DshWorkspaceClient.kt`（REST）无改动。
+  ③**姊妹仓 `dsh-companion`**（工作树改动，**未提交**）：`WsFrames.kt` 两进两出四帧 +
+  `WsSubprotocol` 追加 `dshrb-v1`（首项仍是 `dsh-mobile-v1`）、新增 `KernelCallClient`
+  （自建 `callId → Deferred` 配对表）、设置页「内核调用」节（缺 `kernel-call-v1` 时**整节不组合**）、
+  单测 +21 例、计数同步 93 类 / 991 例。
+  ④**坑位**：`PITFALLS.md` +5 条、`AGENTS.md` §6 索引同步（双向机检绿）。第 4 条已如实写明
+  「`agentPresets.select` 的先 `agentFor` 目前无用例认领」这一缺口。
+  ⑤**验收**：`pnpm check` exit 0（90 文件 / 969 用例，无新增 TS 用例）；Kotlin `compileKotlin`
+  BUILD SUCCESSFUL；姊妹仓 `bash scripts/build.sh :app:testDebugUnitTest` BUILD SUCCESSFUL。
+  **未做**：6 项真机清单；姊妹仓改动未提交未推送 —— 未跑之前不得宣称已验证。
 - **已完成（未发布，issue #26 阶段 5 / `MOB-009`）· 通用内核调用面**：
   ①**唯一执法点** `src/host/bridge/kernel-allowlist.ts`（205 行）：14 条 unary 白名单，12 个
   高危命名空间（terminal/sandbox/dynamicCordisRunner/workspaceFiles/fileUploads/settings/

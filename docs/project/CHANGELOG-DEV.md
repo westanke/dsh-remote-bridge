@@ -561,6 +561,39 @@ base64 膨胀 4/3，所以单条路径的原始文件实际上限约 **17.2 MiB*
 `docs:check` 四段全过（12 文档 / 39 tasks / 9 ADRs / STRUCTURE 84 锚点 / INTERFACES 87 锚点）；
 双产物 build 成功（host `lib/index.js` 628.64 kB、client `lib/client.cjs` 772.91 kB）。
 
+## 未发布 · 内核端点归一（B2 全量换源）阶段 6：契约同步与跨仓（issue #26，2026-11-19）
+
+> 阶段 5 把通用调用面做出来，这一阶段把它**在四处说清楚**：本仓契约（AsyncAPI / API.md）、
+> Kotlin SDK、姊妹仓 App、以及坑位索引。**OpenAPI 一行未动** —— 本阶段不新增任何 REST 端点，
+> 通用调用面只存在于 `/ws/mobile` 的 `dshrb-v1` 子协议上。
+
+- **本仓契约**：`docs/api/asyncapi.yaml` 两个 enum 各加两个成员、新增 4 个 `components.schemas`
+  （`KernelCallFrame` / `KernelCallCancelFrame` / `KernelCallResultFrame` / `KernelEndpointsFrame`）
+  与一段「Kernel-call plane (sub-protocol `dshrb-v1` only)」说明；`docs/project/API.md` 帧表补四行、
+  能力位 `kernel-call-v1` 判据改为「白名单 ∩ 内核目录 非空」、并写明 `kernel-call-result`
+  为什么**不回显** `requestId`（它自带客户端铸的 `callId`，再注入会变成两条互相矛盾的配对通道）。
+- **Kotlin SDK**（`kotlin-sdk/…/MobileGatewayClient.kt` 444 → **779 行**）：四帧 + `MOBILE_PROTOCOL_KERNEL
+  = "dshrb-v1"` 进子协议清单（**首项仍是 `dsh-mobile-v1`**，握手回执不变）、`supportsKernelCall()`
+  读 `hello.capabilities`、`awaitKernelEndpoints()`、`callKernel(endpoint, args, callId)` /
+  `cancelKernelCall(callId)`；三个前置条件（收到 hello / 有能力位 / 目录已到）都在**发帧之前**判，
+  缺一抛 `IllegalStateException`，不静默挂起。`args` 为空时**整段省略**该键（序列化成 `null`
+  或 `{}` 会被服务端按形状错误拒）。`MobileGatewayException` 加 `callId` 字段（这组帧不靠 requestId）。
+- **姊妹仓 `dsh-companion`**：`WsFrames.kt` 加两客户端帧两服务端帧、`WsSubprotocol` 追加 `dshrb-v1`、
+  `BridgeCapabilities.supportsKernelCall`、新增 `KernelCallClient`（自建 `callId → Deferred` 配对表，
+  不用既有 router —— 桥不回显 requestId，router 只能按 kind 串行匹配，也支持不了并发取消）、
+  设置页「内核调用」节（缺能力位时**整节不组合**，连标题都不出现）+ 中英文案 20 条、单测 +21 例、
+  测试计数同步为 93 类 / 991 例。
+- **坑位**：`docs/project/PITFALLS.md` 加 5 条（白名单是唯一执法点 / owner peer 没有设备概念 /
+  服务方法 ≠ 内核端点 / agent scope 会隐式 resume 冷会话 / `workspace/follow` 会被 remoteAccess 过滤），
+  `AGENTS.md` §6 索引同步（双向机检）。其中第 4 条**如实写明缺口**：门面 `agentPresets.select`
+  的「先 `agentFor`」目前没有专门用例认领，动它前先补 fake-host 用例。
+- **验收**：`pnpm check` exit 0（90 文件 / 969 用例，无新增 TS 用例 —— 本阶段改的是契约与 SDK）；
+  `docs:check` 12 文档 / 53 tasks / 10 ADR / STRUCTURE 126 锚点 / INTERFACES 139 锚点；
+  Kotlin SDK 侧 `bash ./gradlew --offline compileKotlin` BUILD SUCCESSFUL + 一次性探针实测序列化形状；
+  姊妹仓 `bash scripts/build.sh :app:testDebugUnitTest` BUILD SUCCESSFUL（含 `TestCountsTest`
+  与 `ArchitectureGuardTest`）、`docsCheck` 通过（STRUCTURE 181 / INTERFACES 187 锚点）。
+- **未做**：6 项真机清单（本机无真机）；`dsh-companion` 的改动**未提交、未推送**，留在工作树等用户决定。
+
 ## 未发布 · 内核端点归一（B2 全量换源）阶段 5：通用内核调用面（issue #26，2026-11-19）
 
 > 前四批换源把桥里 31 条内核语义入口改成走内核端点。这一阶段把「以后新增的内核端点
