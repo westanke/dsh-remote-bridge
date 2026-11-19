@@ -296,6 +296,47 @@ describe('dsh 0.2.x bridge: user question answerer', () => {
     controller.abort()
   })
 
+  it('cancels a bridged front-of-house question through userQuestions.cancel', async () => {
+    // 永久留桥 #2（ADR-0010）：内核 `userQuestions` 只有 `answer` / `attachWait`，
+    // **没有 cancel** —— 桥接管的那张前台卡片只能由桥撤销。这条用例是它的认领测试：
+    // 删掉 `userQuestions.cancel` 或把它「换源」到内核，这里就会红。
+    const { host, emit } = makeHost()
+    const api = createDsh02ApiProxy(host)
+
+    const controller = new AbortController()
+    const stream = api.events.mux({ rpcId: 'r', payload: {} }, controller.signal)
+    const next = async (): Promise<unknown> => await new Promise<never>(() => {})
+    const [outcomePromise] = emit('user-questions/request', {
+      agent: { id: 'session-1' },
+      questions: [{ id: 'q1', question: '继续吗？', options: [{ label: '继续' }] }],
+    }, next)
+
+    // 一个迭代器读两帧：`mux` 的每个 `for await` 都是新的一次订阅，重开就丢了队列。
+    const frames = stream[Symbol.asyncIterator]()
+    const first = await frames.next()
+    const frame = first.value.payload as { type: string; callId: string; sessionId: string }
+    const cancelled = await api.userQuestions.cancel({
+      rpcId: 'r2',
+      payload: { sessionId: 'session-1', callId: frame.callId },
+    })
+    // 回执里的 `rpcId` 是**桥内部**那张挂起表的主键（不是请求里的 rpcId，外层信封另有那个），
+    // 语义与 2.x 一致；这里只钉「接受 + 给出句柄」，不钉它是哪一个。
+    const value = cancelled.result.ok ? (cancelled.result.value as { accepted: boolean; rpcId?: string }) : undefined
+    expect(value?.accepted).toBe(true)
+    expect(typeof value?.rpcId).toBe('string')
+    // 撤销的可观测证据是**推给手机的那一帧**：卡片必须消失，而不是变陈旧。
+    // （`outcomePromise` 这里不结算 —— 撤销后桥把下游 delegate 原样交回，测试里
+    // 那个 delegate 是「永远不答」的桩，正是这条路径的设计语义。）
+    const second = await frames.next()
+    const dismissed = second.value.payload as Record<string, unknown>
+    expect(dismissed).toMatchObject({
+      type: 'userQuestions/dismissed',
+      sessionId: 'session-1',
+      callId: frame.callId,
+    })
+    controller.abort()
+  })
+
   it('honours session.header.id when the Agent only exposes a Session', async () => {
     const { host, emit } = makeHost()
     const api = createDsh02ApiProxy(host)

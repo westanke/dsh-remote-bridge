@@ -349,6 +349,39 @@ HTTP 是受支持的连接方式，不会被强制跳转或拒绝。但 Bearer t
 对应的拒绝路径断言在 `tests/bff-rest.spec.ts`：未带凭据 401、缺 scope 403、跨会话 404、
 缺块 409、超限 413、内核缺服务 503/200 两种退化形状。
 
+## 内核端点归一：4 条永久留桥与 5 条可证伪断言（issue #26，2026-11-19）
+
+issue #26 把桥手抄的 31 条内核语义入口换成了「内核端点 + 描述符驱动」（手机协议零改动）。
+换源之后，**桥对手机的安全责任没有变**，但执行点变了：原来每条入口各自判，现在全部经
+`kernel-invoke` 的参数预校验与（阶段 5 起）白名单。这五条是那次改造的验收断言，任何一条
+不再成立都说明「安全面被换掉了一部分」：
+
+1. **白名单之外的内核端点不可达。** 通用调用面只接受白名单里的端点，其余一律
+   `METHOD_NOT_ALLOWED`，且错误码与白名单内**同样形状** —— 不能让客户端靠错误码差异
+   枚举出「内核有这个端点、只是桥没开」。
+2. **设备 scope 不可绕过。** 缺 scope 一律 403；白名单要求的 scope 与 `auth.ts`
+   的 `requireScope` / `requireRoot` 是同一份判据，没有「先查后判」的绕过路径。
+3. **`kernel-call` 路径不产生交互。** owner peer 以 `interactions:'none'` 建立，
+   通用调用面拿不到审批/提问交互入口 —— 一个被脚本化的客户端不能替人点「允许」。
+4. **桥不再持有内核端点的 DTO 副本。** 门面里没有端点名常量表；端点名的唯一来源是
+   内核描述符（wire 键、参数 schema 都从描述符读，不手写）。
+5. **4 条永久留桥仍由桥执行。** `approvals.respond` / `userQuestions.cancel` /
+   `sessions.readHandoffImage` / `sessions.uploadAttachmentStream` 的内核等价物不存在
+   或语义更差（见 [ADR-0010](decisions/ADR-0010-kernel-endpoint-unification.md) 的落地登记表），
+   它们仍在桥里，且流式上传的内存峰值不退化。
+
+**认领**（删掉哪条，红的就是哪条）：
+
+| 断言 | 测试 |
+|---|---|
+| 1 / 2 | 阶段 5 的白名单用例（`tests/kernel-allowlist.spec.ts`） |
+| 3 | 阶段 5 的 `kernel-call` 用例（owner peer `interactions:'none'`） |
+| 4 | `tests/kernel-deltas.spec.ts` › machine check（门面 ≤450 行；门面零端点名常量表） |
+| 5 | `tests/dsh-0.2-bridge.spec.ts` › claims an approval request… / cancels a bridged front-of-house question…；`tests/handoff-hardening.spec.ts` › reads the bytes of an existing handoff file…；`tests/ws-file-transfer.spec.ts` › hands the kernel a byte stream… / falls back to the base64 path… |
+
+> 断言 1~3 属于阶段 5（通用调用面），落地时把上表的「阶段 5」替换成实际用例名 ——
+> 写在这里的每一条都必须是**能跑红的**，不是「已具备」。
+
 ## 路径威胁
 
 wire path 拒绝绝对路径、盘符、UNC、反斜杠、空字节、空段、`.` 和 `..`。服务从已解析的真实根开始逐段 `lstat`；中间 symlink/junction 一律拒绝，末端链接不能读取内容，删除时只处理链接本身。

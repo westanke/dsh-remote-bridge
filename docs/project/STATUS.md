@@ -1,6 +1,22 @@
 # 当前状态
 
-- 日期：2026-11-19（**已发版 v2.12.1：大文件上传流式化 + 隧道工具 schema 修形**；`main` 上另有未发版的 issue #26 阶段 0 / 1 / 2 / 3a / 3b / 3c / 3d）
+- 日期：2026-11-19（**已发版 v2.12.1：大文件上传流式化 + 隧道工具 schema 修形**；`main` 上另有未发版的 issue #26 阶段 0 / 1 / 2 / 3a / 3b / 3c / 3d / 4）
+- **已完成（未发布，issue #26 阶段 4 / `MOB-008`）· delta 收口 + 永久留桥登记 + 门面瘦身**：
+  ①**11 条 delta 逐条命名**：新增 `src/host/bridge/kernel-deltas.ts`（263 行），过滤子会话、补
+  `trust:'system'`、`active` 标记、容量字段、冷会话短路、子会话地址、`beforeSeq` 分页、投影回退、
+  摘 `locale`、图片交接、错误码映射各一个纯函数，`tests/kernel-deltas.spec.ts` 14 例逐条断言。
+  ②**门面瘦身**：端点视图搬进 `src/host/bridge/kernel-views.ts`（429 行），`*Like` 契约搬进
+  `src/host/bridge/kernel-contracts.ts`（474 行），`kernel-services.ts` 592 → **122 行**，
+  门面 `src/host/dsh-0.2-bridge.ts` 775 → **304 行**（目标 ≤450）。`TECH-DEBT.md` 里门面那一行
+  **按「债务消失即删条目」移除**（表 12 → 11 行）。
+  ③**4 条永久留桥登记**：`ADR-0010` 改 `accepted` 并加落地登记表；`SECURITY.md` 新增
+  §内核端点归一（4 条留桥 + 5 条可证伪断言），每条都点名认领测试。`userQuestions.cancel`
+  此前没有专门用例，本阶段补 `tests/dsh-0.2-bridge.spec.ts` ›「cancels a bridged front-of-house
+  question through userQuestions.cancel」（撤销的可观测证据是 `userQuestions/dismissed` 帧）。
+  ④**机检**：TypeScript AST 扫门面 —— 数组字面量或对象属性值里凑出 ≥2 个端点名即红；
+  箭头函数体跳过（端点名作为调用参数出现是正常写法，第一版误判过整个 `bridge` 对象）。
+  ⑤**未做的验收**：REST 逐字段快照与 6 项真机清单本机无法执行，与前几批同样标注，**不算通过**。
+
 - **已完成（未发布，issue #26 阶段 3d / `MOB-007`）· 附件/prompt/models/userQuestions 换源**：
   ①**换源**：`sessions.uploadAttachment` → `fileUploads/upload`、`sessions.readAttachment` →
   `session/attachment`、`sessions.prompt` → `session/prompt`、`sessions.models` 的两读 →

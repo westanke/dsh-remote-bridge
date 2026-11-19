@@ -1,6 +1,6 @@
 # ADR-0010：内核端点归一 —— 桥不再持有内核端点的 DTO 副本，内核没有的语义永久留桥
 
-- 状态：proposed（2026-11-19 拟；随 issue #26 一同提交评审 —— 状态行不带 markdown 标记，与其它 ADR 一致，`docs:check` 按纯文本匹配）
+- 状态：accepted（2026-11-19 拟并采纳；施工中 —— 状态行不带 markdown 标记，与其它 ADR 一致，`docs:check` 按纯文本匹配）
 - 日期：2026-11-19
 
 > 这条 ADR 记的是**一个方向**，不是一份施工图。方案全文与逐阶段施工卡在
@@ -122,7 +122,7 @@ DEBT 台账在册）里重建了 0.1.x 的 `apiProxy` 门面 —— `sessions` /
 
 ## 决议
 
-**采纳选项 B2**（待评审拍板后改 `accepted`）。
+**采纳选项 B2**（2026-11-19 定稿为 `accepted`，随 issue #26 分阶段落地）。
 
 三条不可动的约束：
 
@@ -146,6 +146,22 @@ DEBT 台账在册）里重建了 0.1.x 的 `apiProxy` 门面 —— `sessions` /
 0.2.2-rc.1 + 0.2.2-rc.4 两档），再收紧帧联合类型（收口 DEBT-005），
 然后上描述符驱动的统一调用封装、分 4 批把 31 条存量换源、
 把 4 条永久语义登记成不可上移清单，最后才上通用调用面。
+
+## 永久留桥的 4 条（落地登记，2026-11-19 阶段 4）
+
+上面第 1 条约束点名的 4 条，在阶段 3a~3d 把 31 条存量换成内核端点之后**仍然留在桥里**。
+每条都给一条可证伪的断言与一个认领它的测试 —— 断言写进
+[SECURITY.md](../SECURITY.md) §内核端点归一，测试名字在这里点名：
+
+| 留桥入口 | 内核为什么顶不上 | 可证伪断言 | 认领测试 |
+|---|---|---|---|
+| `approvals.respond` | 内核审批**零方法端点**（`dsh-user-approval` 只有 `approval/request` 瀑布与事件）；桥 `prepend` 注册且进入即 `next()`，多答者竞速搬不成一次方法调用 | 审批应答仍由桥的挂起表结算，且不出现第二条结算路径 | `tests/dsh-0.2-bridge.spec.ts` › claims an approval request, republishes it, and settles from respond() |
+| `userQuestions.cancel` | 内核 `userQuestions` 只有 `answer` / `attachWait`，没有 cancel | 取消后手机端收到 `userQuestions/dismissed` 帧，卡片消失而不是变陈旧 | `tests/dsh-0.2-bridge.spec.ts` › cancels a bridged front-of-house question through userQuestions.cancel |
+| `sessions.readHandoffImage` | `workspaceFiles/readBytes` 语义不同、够不到图片交接目录；6 条守门条件（Host 回环、跨站 403、文件名正则、魔术字节一致、体积上限、扩展名一致）留桥 | 交接地读取仍逐条过守门条件，越界一律拒绝 | `tests/handoff-hardening.spec.ts` › reads the bytes of an existing handoff file and reports the sniffed-compatible media type |
+| `sessions.uploadAttachmentStream` | `fileUploads/upload` 只吃 base64；流式把 100 MiB 上传的内存峰值压在 2.5 MiB，回落 base64 会放大 5.67× | 宿主持有 `uploadStream` 时走字节流，缺席时才回落 base64 | `tests/ws-file-transfer.spec.ts` › hands the kernel a byte stream instead of a base64 string / falls back to the base64 path when the host cannot stream file uploads |
+
+第四条断言（「桥不再持有内核端点的 DTO 副本」）由机检认领：`tests/kernel-deltas.spec.ts`
+› machine check 两例（门面 ≤450 行；门面里没有任何数组/对象常量把两个以上端点名收在一起）。
 
 ## 相关
 

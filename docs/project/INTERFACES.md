@@ -543,6 +543,21 @@ export const PLUGIN_VERSION: string          // shared/version.ts，与 package.
 | `export interface KernelGateway` | `src/host/bridge/proxy-options.ts` | interface |
 | `export function createLocalKernelGateway` | `src/host/bridge/kernel-local.ts` | function |
 | `export function localEndpointDescriptors` | `src/host/bridge/kernel-local.ts` | function |
+| `export function visibleSessionItems` | `src/host/bridge/kernel-deltas.ts` | function |
+| `export function withSystemTrust` | `src/host/bridge/kernel-deltas.ts` | function |
+| `export function providerActivity` | `src/host/bridge/kernel-deltas.ts` | function |
+| `export function markProvidersActive` | `src/host/bridge/kernel-deltas.ts` | function |
+| `export function capacityPatch` | `src/host/bridge/kernel-deltas.ts` | function |
+| `export function agentScopeSkip` | `src/host/bridge/kernel-deltas.ts` | function |
+| `export function historyAddress` | `src/host/bridge/kernel-deltas.ts` | function |
+| `export function historyPageQuery` | `src/host/bridge/kernel-deltas.ts` | function |
+| `export function pickProjections` | `src/host/bridge/kernel-deltas.ts` | function |
+| `export function stripKernelUnsupportedFields` | `src/host/bridge/kernel-deltas.ts` | function |
+| `export function handoffKeepsMessageDeliverable` | `src/host/bridge/kernel-deltas.ts` | function |
+| `export function questionAnswerOutcome` | `src/host/bridge/kernel-deltas.ts` | function |
+| `export function questionAnswerTerminal` | `src/host/bridge/kernel-deltas.ts` | function |
+| `export type { Dsh02HostServices }` | `src/host/bridge/kernel-contracts.ts` | type |
+| `export interface Dsh02HostServices` | `src/host/bridge/kernel-contracts.ts` | interface |
 | `export function pickMobileSubprotocol` | `src/host/ws-protocol.ts` | function |
 | `export async function uploadAttachmentStreamToKernel` | `src/host/bridge/file-upload-stream.ts` | function |
 | `export class WorkspaceDatabase` | `src/host/database.ts` | class |

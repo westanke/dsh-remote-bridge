@@ -561,6 +561,40 @@ base64 膨胀 4/3，所以单条路径的原始文件实际上限约 **17.2 MiB*
 `docs:check` 四段全过（12 文档 / 39 tasks / 9 ADRs / STRUCTURE 84 锚点 / INTERFACES 87 锚点）；
 双产物 build 成功（host `lib/index.js` 628.64 kB、client `lib/client.cjs` 772.91 kB）。
 
+## 未发布 · 内核端点归一（B2 全量换源）阶段 4：delta 收口 + 永久留桥登记 + 门面瘦身（issue #26，2026-11-19）
+
+> 换源四批（3a~3d）做完之后，桥里剩下的每一行都应该有理由。这一阶段把那 11 条理由
+> 逐条**命名**、把 4 条永久留桥**登记**、把门面**瘦到预算内**。手机协议仍然零改动。
+
+- **新增 `src/host/bridge/kernel-deltas.ts`（263 行）**：11 条 delta 各一个纯函数 ——
+  `visibleSessionItems`（过滤 `origin==='subagent'`）、`withSystemTrust`（补 `trust:'system'`，
+  Android 严格解码缺字段就整份列表开不了）、`providerActivity`/`markProvidersActive`（`active` 标记）、
+  `capacityPatch`（容量字段，来自 `llm.resolveModelInfo` 而非端点）、`agentScopeSkip`（冷会话短路）、
+  `historyAddress`（子会话地址）、`historyPageQuery`（`beforeSeq` → `session/page`）、
+  `pickProjections`（投影回退兜底）、`stripKernelUnsupportedFields`（摘 `locale`）、
+  `handoffKeepsMessageDeliverable`（纯文本模型的图片交接）、`questionAnswerOutcome`/`questionAnswerTerminal`
+  （四种错误码映射）。逐条断言在 `tests/kernel-deltas.spec.ts`（14 例）。
+- **新增 `src/host/bridge/kernel-views.ts`（429 行）**：换源后的端点视图整体搬出门面
+  （`listSessions` / `readSessionHistory` / `promptSession` / `uploadAttachment` / `readAttachment` /
+  `readSessionModels` / `listWorkspace` / `listAgentPresets` / `readLlmProviders` / `readLlmModels` /
+  `readPermissionCatalog` / `listQuestions` / `answerQuestion`），语义逐条照搬。
+- **新增 `src/host/bridge/kernel-contracts.ts`（474 行）**：`kernel-services.ts` 里那 16 个 `*Like`
+  结构类型与 `Dsh02HostServices` 整体搬过去 —— **只放类型不放行为**。`kernel-services.ts`
+  592 → **122 行**，只剩 `optionalService` / `userQuestionsOf` / `toUserQuestionView`
+  （即 4 条永久留桥的支撑函数），并 `export type { … } from './kernel-contracts.ts'` 保持旧 import 路径可用。
+- **门面 775 → 304 行**（目标是 ≤450）：只剩路由表 + `call()` 超时信封 + 4 条永久留桥
+  （`respond` / `userQuestions.cancel` / `readHandoffImage` / `uploadAttachmentStream`）。
+  `TECH-DEBT.md` 里 `dsh-0.2-bridge.ts` 这一行进预算内后**按「债务消失即删条目」移除**（表从 12 → 11 行）。
+- **4 条永久留桥登记**：`ADR-0010` 状态改 `accepted` 并加落地登记表（每条：内核为什么顶不上 /
+  可证伪断言 / 认领测试）；`SECURITY.md` 新增 §内核端点归一 —— 4 条永久留桥与 5 条可证伪断言。
+  新增认领测试 `tests/dsh-0.2-bridge.spec.ts` ›「cancels a bridged front-of-house question through
+  userQuestions.cancel」（此前 `userQuestions.cancel` 没有专门用例）。
+- **机检「门面不持有端点名常量表」**：`tests/kernel-deltas.spec.ts` 用 TypeScript AST 扫门面 ——
+  数组字面量里直接写端点名、或对象属性值直接是端点名，凑出 ≥2 个就算违规；箭头函数体跳过
+  （端点名作为**调用参数**出现是正常写法，被误判过一次）。
+- **验收**：`pnpm check` 全绿（87 文件 / 930 用例）。**未做**：REST 逐字段快照相等与 6 项真机清单
+  （本机无真机、无内核 CLI 会话），与 3a~3d 同样标注为未完成，不作为「已验证」宣称。
+
 ## 未发布 · 内核端点归一（B2 全量换源）阶段 3d：附件/prompt/models/userQuestions 换源（issue #26，2026-11-19）
 
 > 第四批换源，也是 3a~3d 里语义最重的一批。**手机协议零改动**。
