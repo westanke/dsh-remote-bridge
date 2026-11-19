@@ -27,6 +27,7 @@ import { availableCapabilities, type CapabilityFlags } from './capabilities.ts'
 import {
   WS_PATH,
   WS_PROTOCOL,
+  WS_PROTOCOL_DSHRB,
   PROTOCOL_PAIR_PREFIX,
   PROTOCOL_AUTH_PREFIX,
   type ClientFrame,
@@ -52,6 +53,9 @@ import { SettingsHandler } from './ws-settings.ts'
 import { HostHandler } from './ws-host.ts'
 import { TeamHandler } from './ws-team.ts'
 import { ScheduleHandler } from './ws-schedule.ts'
+import { KernelCallHandler } from './ws-kernel-call.ts'
+import { createKernelCallService } from './bridge/kernel-call.ts'
+import type { KernelEndpointCatalog } from './bridge/kernel-endpoints.ts'
 import { SpeechHandler } from './ws-speech.ts'
 import { MobileBasicFrames, type MobileDeviceView } from './ws-basic.ts'
 import { MobileConnectionPolicy } from './ws-connection-policy.ts'
@@ -124,6 +128,8 @@ interface MobileSocketState {
     settings?: SettingsHandler
     host: HostHandler
     schedule: ScheduleHandler
+    /** 通用内核调用面：只有协商到 `dshrb-v1` 且内核服务齐全时才存在。 */
+    kernelCall?: KernelCallHandler
   }
 }
 
@@ -214,6 +220,11 @@ export class MobileGatewayWsHandler {
    * 缺失（老内核）时对应帧回结构化 unavailable，引导 REST 兜底。
    */
   private hostRemote: HostRemoteHandle | undefined
+  /**
+   * 内核端点目录（阶段 2 的只读快照）。与 `hostRemote` 一起注入：有目录才能回答
+   * `kernel-endpoints` 帧，也只有两者都在时 `kernel-call` 才算「可用」。
+   */
+  private kernelCatalog: KernelEndpointCatalog | undefined
   /** 语音管理器：跨连接共享（全局转写并发计数需要进程级单一实例）。 */
   private speech: SpeechHandler
   /** 文件分块下载/上传管理器：跨连接共享（每连接并发计数 + spool 落盘需要进程级状态）。 */
@@ -240,8 +251,9 @@ export class MobileGatewayWsHandler {
    * 装配内核可选远程服务（定时任务 / 官方语音）。在 index.ts apply 期取到
    * typertGateway+connection 后注入；传入 undefined 表示当前内核不提供（优雅降级）。
    */
-  attachRemoteServices(remote: HostRemoteHandle | undefined): void {
+  attachRemoteServices(remote: HostRemoteHandle | undefined, catalog?: KernelEndpointCatalog): void {
     this.hostRemote = remote
+    this.kernelCatalog = catalog
     // 语音管理器始终存在（这样缺内核服务时也能回 speech-catalog available:false 与
     // 结构化 unavailable），只更新其远程句柄；它是进程级单一实例以维持全局转写并发计数。
     if (this.speech === undefined) {
@@ -308,6 +320,20 @@ export class MobileGatewayWsHandler {
   ownsPath(req: IncomingMessage): boolean {
     const url = new URL(req.url ?? '/', 'http://workspace.local')
     return url.pathname === WS_PATH
+  }
+
+  /**
+   * 这次 upgrade 是否提供了 `dshrb-v1` 子协议（阶段 5 的通用内核调用面）。
+   *
+   * 只看请求头清单，不看 `webSocket.protocol`：`ws` 的协商结果由 server.ts 的
+   * `handleProtocols` 给出，选中的可能是清单里的第一项（老 App 是 `dsh-mobile-v1`）。
+   * 能力面要按**客户端声明**决定，按协商结果决定会把「同时提供两个子协议」的客户端
+   * 误判成老协议。
+   */
+  private offersKernelSubprotocol(req: IncomingMessage): boolean {
+    const header = req.headers['sec-websocket-protocol']
+    const joined = Array.isArray(header) ? header.join(',') : header ?? ''
+    return joined.split(',').map(part => part.trim()).includes(WS_PROTOCOL_DSHRB)
   }
 
   // ───────────────────────── 已升级连接的鉴权与分发 ─────────────────────────
@@ -420,6 +446,8 @@ export class MobileGatewayWsHandler {
       data: { token: pairingToken, device: { id: device.id, name: device.name } },
     })
     this.sendHello(webSocket, principal)
+    // 协商到 dshrb-v1：hello 之后补一帧能力目录（顺序不能反，客户端按首帧判协议版本）。
+    this.sockets.get(webSocket)?.handlers.kernelCall?.announce()
     return true
   }
 
@@ -444,6 +472,8 @@ export class MobileGatewayWsHandler {
     const device = this.principalToDeviceView(principal)
     this.acceptSocket(webSocket, principal, req, device)
     this.sendHello(webSocket, principal)
+    // 协商到 dshrb-v1：hello 之后补一帧能力目录（顺序不能反，客户端按首帧判协议版本）。
+    this.sockets.get(webSocket)?.handlers.kernelCall?.announce()
     // 与 /api/v1/events 同一服务端保证：新连接立刻补推仍待处理的审批/提问，
     // App 重连不会漏掉待办 HITL（重放事件带 replayed:true，客户端按 id/callId 去重）。
     void this.replayPendingInteractions(webSocket, principal)
@@ -459,6 +489,28 @@ export class MobileGatewayWsHandler {
       scopes: device.scopes,
       rootIds: device.rootIds,
     }
+    // 通用内核调用面：**总是**建处理器，只有内核服务、目录都在 **且** 客户端声明了
+    // dshrb-v1 时才启用。两者缺一就回 NOT_IMPLEMENTED —— 帧名已经在协议里，
+    // 装作没看见只会让客户端把「能力没开」误判成「帧拼错了」。
+    // 服务按连接创建 —— 取消与在飞行表天然按连接隔离，A 手机猜不到 B 手机的 callId。
+    const kernelRemote = this.hostRemote
+    const kernelCatalog = this.kernelCatalog
+    const kernelCallEnabled = kernelRemote !== undefined
+      && kernelCatalog !== undefined
+      && this.offersKernelSubprotocol(req)
+    const kernelCall = new KernelCallHandler(
+      kernelCallEnabled ? createKernelCallService({
+        caller: kernelRemote,
+        catalog: kernelCatalog,
+        authorizer: this.auth,
+        idempotency: {
+          read: (deviceId, key) => this.database.readIdempotent(deviceId, key),
+          save: (deviceId, key, status, body) => this.database.saveIdempotent(deviceId, key, status, body),
+        },
+      }) : undefined,
+      frame => this.sendFrame(webSocket, frame),
+      { enabled: kernelCallEnabled },
+    )
     const state: MobileSocketState = {
       principal,
       device: deviceView,
@@ -494,6 +546,7 @@ export class MobileGatewayWsHandler {
           (frame) => this.sendFrame(webSocket, frame),
           this.settingsService === undefined ? undefined : () => this.settingsService!.catalog(),
         ),
+        kernelCall,
       },
     }
 
@@ -514,6 +567,8 @@ export class MobileGatewayWsHandler {
       this.speech?.closeClient(webSocket)
       // 文件传输归属该连接的全部下载/上传随连接关闭中止并清理 spool。
       void this.fileTransfer?.closeConnection(state.connectionKey)
+      // 通用内核调用：中止该连接上在飞行中的调用（不要让它们挂到超时）。
+      state.handlers.kernelCall?.dispose()
     }
     webSocket.on('close', teardown)
     webSocket.on('error', teardown)
@@ -662,6 +717,9 @@ export class MobileGatewayWsHandler {
 
     // 委托域处理器。
     const { handlers } = state
+    // 通用内核调用面先判：它的帧类型与其它域不重叠，但先判能让「未协商 dshrb-v1」
+    // 的连接拿到明确的 NOT_IMPLEMENTED，而不是落到后面的 UNKNOWN_TYPE。
+    if (handlers.kernelCall !== undefined && await handlers.kernelCall.handle(state.principal, clientFrame)) return
     if (await handlers.sessions.handle(state.principal, clientFrame)) return
     if (await handlers.hitl.handle(state.principal, clientFrame)) return
     // 全局目录（无会话 default-model/providers/permission-options）先于会话模型处理器。

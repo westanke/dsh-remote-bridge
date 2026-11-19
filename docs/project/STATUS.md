@@ -1,6 +1,24 @@
 # 当前状态
 
-- 日期：2026-11-19（**已发版 v2.12.1：大文件上传流式化 + 隧道工具 schema 修形**；`main` 上另有未发版的 issue #26 阶段 0 / 1 / 2 / 3a / 3b / 3c / 3d / 4）
+- 日期：2026-11-19（**已发版 v2.12.1：大文件上传流式化 + 隧道工具 schema 修形**；`main` 上另有未发版的 issue #26 阶段 0 / 1 / 2 / 3a / 3b / 3c / 3d / 4 / 5）
+- **已完成（未发布，issue #26 阶段 5 / `MOB-009`）· 通用内核调用面**：
+  ①**唯一执法点** `src/host/bridge/kernel-allowlist.ts`（205 行）：14 条 unary 白名单，12 个
+  高危命名空间（terminal/sandbox/dynamicCordisRunner/workspaceFiles/fileUploads/settings/
+  credentials/account/liveshareShares/cuaAccess/forgePanel/agentTeams）钉死在内核里调不到；
+  `authorizeKernelEndpoint` **先默认拒绝、再查 scope** —— 顺序反过来就等于送一个免费的存在性探针。
+  ②**执行器** `src/host/bridge/kernel-call.ts`（262 行）：授权 → 幂等回放 → 同 `callId` 在飞行拒绝
+  → 目录查找 → 本地参数校验 → `invoke`/`stream` → 归一错误；流式端点收集到 64 帧（`truncated`），
+  取消/中止结算为 `call/cancelled`（**不进幂等**，重试应真重试）。
+  ③**四个新帧** `kernel-call` / `kernel-call-cancel` / `kernel-call-result` / `kernel-endpoints`
+  （`ws-protocol.ts` 客户端 75→77、服务端 67→69），**只在 `dshrb-v1` 子协议下启用**：
+  `ws-kernel-call.ts`（131 行）按连接一套（取消与在飞行表天然隔离），`hello` 之后推一帧目录；
+  清单里没有 `dshrb-v1` 的连接发这两帧只会拿到 `NOT_IMPLEMENTED`，能力面与行为与今天逐字相同。
+  ④**能力位 `kernel-call-v1` 开始发**：内核网关与连接服务都在**且**白名单里至少一条在内核目录中；
+  只是目录非空不发位（「能调但每次被拒」比不声明更糟）。
+  ⑤**验收**：`tests/kernel-allowlist.spec.ts` 10 例 / `tests/kernel-call.spec.ts` 14 例 /
+  `tests/ws-kernel-call.spec.ts` 11 例 / `tests/mobile-gateway-ws.spec.ts` 新增 3 例端到端
+  （hello→目录顺序、白名单拒、老连接 `NOT_IMPLEMENTED`）；`pnpm check` exit 0。
+  **未做**：REST 响应逐字段快照（本阶段没有 REST 变更）与 §1.4 的 6 项真机清单 —— 未跑之前不得宣称已验证。
 - **已完成（未发布，issue #26 阶段 4 / `MOB-008`）· delta 收口 + 永久留桥登记 + 门面瘦身**：
   ①**11 条 delta 逐条命名**：新增 `src/host/bridge/kernel-deltas.ts`（263 行），过滤子会话、补
   `trust:'system'`、`active` 标记、容量字段、冷会话短路、子会话地址、`beforeSeq` 分页、投影回退、

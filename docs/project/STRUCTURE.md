@@ -287,6 +287,8 @@ host services 之上重建 0.1.x 的 `apiProxy` 面容，让 `chat-adapter` / `s
 | `src/host/bridge/frame-hub.ts` | file | FrameHub 帧中枢（背压/重建）+ SessionEventRelay + wireSessionRegistryRelay（原工厂内联接线） |
 | `src/host/bridge/host-reads.ts` | file | 宿主读取助手：sessionIdOfAgent/sessionIdOf/readArchivedSessionIds/createAgentResolver（原工厂内联） |
 | `src/host/bridge/kernel-endpoints.ts` | file | 内核端点目录（issue #26 阶段 2）：describeKernelEndpoint/readKernelEndpoints/createKernelEndpointCatalog/readTypertRegistry/kernelCapabilityFlags —— 从 Typert 登记表抄 wire 键与描述，只读、永不抛 |
+| `src/host/bridge/kernel-allowlist.ts` | file | 通用内核调用面的**唯一执法点**（issue #26 阶段 5）：KERNEL_ALLOWLIST（14 条 unary）/ KERNEL_DENIED_NAMESPACES（terminal·sandbox·dynamicCordisRunner·workspaceFiles·fileUploads·settings·credentials·account·liveshareShares·cuaAccess·forgePanel·agentTeams 永不外放）/ authorizeKernelEndpoint（默认拒绝先于 scope 判定，文案不区分「没这个端点」与「没被允许」）/ isKernelEndpointAllowed / kernelAllowlistIndex / BRIDGE_OWNED_ENDPOINTS（35 条）/ singlePathViolations —— 单一路径原则的机检入口 |
+| `src/host/bridge/kernel-call.ts` | file | 通用内核调用面的执行器（issue #26 阶段 5）：createKernelCallService —— 授权 → 幂等回放 → 同 callId 在飞行拒绝 → 目录查找 → 本地参数校验 → invoke/stream → 归一错误；流式端点收集到 streamFrameLimit（默认 64）帧并带 truncated，取消按连接内的 AbortController 结算为 call/cancelled；endpoints() 只报「白名单 ∩ 目录」 |
 | `src/host/bridge/kernel-invoke.ts` | file | 内核端点调用封装（issue #26 阶段 2）：assertKernelArguments/wrapRequestArgument/kernelCallSignal/requireKernelEndpoint/invokeKernelEndpoint/streamKernelEndpoint/kernelRpcError —— 参数校验文案与内核逐字一致 |
 | `src/host/bridge/kernel-local.ts` | file | 进程内传输（issue #26 阶段 3a / 3b）：createLocalKernelGateway —— 没有 typertGateway 时（单测 / 缺席的可选服务）把同一套端点语义接到宿主服务上，表从 11 条增到 31 条（3b 起承载 workspace 写侧 / settings / credentials，3c 起承载 llm / agentPresets / permissionPresets，3d 起承载 fileUploads / session attachment·prompt / userQuestions.answer，并支持多顶层参与 agent lookup）；`assertWires` 补上与内核同一条「拒多余键」判定；wires 手写，由 tests/kernel-local.spec.ts 在装了内核的机器上与真实描述符比对防漂 |
 | `src/host/bridge/kernel-contracts.ts` | file | 0.2.x 宿主服务的**结构视图**（issue #26 阶段 4 从 kernel-services.ts 拆出，474 行）：全部 `*Like` 类型 + Dsh02HostServices。只放类型不放行为 —— 「内核长什么样」与「桥的补丁」分开后，改签名与改语义不会混在一个 diff 里 |
@@ -358,6 +360,7 @@ host services 之上重建 0.1.x 的 `apiProxy` 面容，让 `chat-adapter` / `s
 | `src/host/ws-models.ts` | file | 移动端网关 WS 会话模型域（models/select-model，无会话全局目录交 ws-settings，/ws/mobile） |
 | `src/host/ws-presets.ts` | file | 移动端网关 WS agent 预设域（agent-presets/select-agent-preset，/ws/mobile） |
 | `src/host/ws-protocol.ts` | file | WS 线路协议常量、帧类型与编解码（/ws/mobile） |
+| `src/host/ws-kernel-call.ts` | file | 通用内核调用面 WS 处理器（issue #26 阶段 5）：KernelCallHandler —— 只认 kernel-call / kernel-call-cancel，仅在协商到 dshrb-v1 时启用（否则回 NOT_IMPLEMENTED），连接建立即推一帧 kernel-endpoints（白名单 ∩ 目录），连接关闭 dispose 掉在飞行调用；权限与参数判定不在这里（在 kernel-allowlist / kernel-call） |
 | `src/host/ws-schedule.ts` | file | 移动端网关 WS 定时任务域（schedule-*，代理内核 schedule Remote，缺失回 unavailable） |
 | `src/host/ws-sessions.ts` | file | 移动端网关 WS 会话生命周期域（session-create/cancel/archive/rename，/ws/mobile） |
 | `src/host/ws-speech.ts` | file | 移动端网关 WS 官方语音域（speech-*，纯代理内核 speech Remote，4MiB/4并发/180s，缺失回 unavailable） |

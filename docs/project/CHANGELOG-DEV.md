@@ -561,6 +561,43 @@ base64 膨胀 4/3，所以单条路径的原始文件实际上限约 **17.2 MiB*
 `docs:check` 四段全过（12 文档 / 39 tasks / 9 ADRs / STRUCTURE 84 锚点 / INTERFACES 87 锚点）；
 双产物 build 成功（host `lib/index.js` 628.64 kB、client `lib/client.cjs` 772.91 kB）。
 
+## 未发布 · 内核端点归一（B2 全量换源）阶段 5：通用内核调用面（issue #26，2026-11-19）
+
+> 前四批换源把桥里 31 条内核语义入口改成走内核端点。这一阶段把「以后新增的内核端点
+> 怎么被手机调用」一次做对：**白名单 + 描述符**，而不是再造 35 个手抄入口。
+> 手机协议仍然零改动 —— 新能力靠 `dshrb-v1` 子协议协商，老 App 的连接上这四个帧名不存在。
+
+- **`src/host/bridge/kernel-allowlist.ts`（205 行，唯一执法点）**：`KERNEL_ALLOWLIST` 14 条
+  unary 端点（`session/search`、`session/state`、`session/canOpenWorkspacePath`、
+  `session/workspacePathApplications`、`messageFeedback/list|put|delete`、`workspace/pinSession|unpinSession`、
+  `session/initializeDefaultModel`、`productAnalytics/enabled`、`pluginMarket/search|listIndexes|readEntryDetail`），
+  每条带设备 scope；`KERNEL_DENIED_NAMESPACES` 钉死 terminal / sandbox / dynamicCordisRunner /
+  workspaceFiles / fileUploads / settings / credentials / account / liveshareShares / cuaAccess /
+  forgePanel / agentTeams；`authorizeKernelEndpoint` **先默认拒绝、再查 scope**，且拒绝对
+  「内核有这个端点」与「内核根本没这个端点」输出**同一条**错误（`METHOD_NOT_ALLOWED`）；
+  `singlePathViolations()` 兑现「白名单 ∩ 已有 35 入口 = ∅」的机检。
+- **`src/host/bridge/kernel-call.ts`（262 行，执行器）**：授权 → 幂等回放（键
+  `kernel-call:${principal.id}:${callId}`，24 h）→ 同 `callId` 在飞行拒绝（`call/in-flight`）→
+  目录查找（`kernel/endpoint-unknown`）→ 本地参数校验（`gateway/arguments-invalid`，一个字节都不发给内核）
+  → `invoke` / `stream` → 归一错误。流式端点收集到 64 帧并带 `truncated`；取消与中止结算为
+  `call/cancelled` 且**不进幂等**（重试应真的重试）。
+- **四个新帧**：`kernel-call` / `kernel-call-cancel`（客户端 75 → 77）、`kernel-call-result` /
+  `kernel-endpoints`（服务端 67 → 69）；`kernel-call-result` 与 `kernel-endpoints` 加进
+  `REQUEST_ID_ECHO_EXCLUDED`（结果帧按客户端自铸的 `callId` 关联，再注入 `requestId` 会变成两条
+  互相矛盾的配对通道）。`asyncapi.yaml` 补四个 schema 与一个 channel 段，`API.md` 补两表四行。
+- **子协议门控**：`WS_PROTOCOL_DSHRB = 'dshrb-v1'`；服务端按**客户端声明**的清单判定
+  （`ws-handler.ts` 的 `offersKernelSubprotocol`），握手回执仍是 `dsh-mobile-v1`。
+  `ws-kernel-call.ts`（131 行）每连接一套（取消与在飞行表天然隔离），`hello` **之后**推一帧
+  `kernel-endpoints`（白名单 ∩ 目录）—— 顺序不能反，客户端按首帧判协议版本。
+  未声明 `dshrb-v1` 的连接发这两个帧只会拿到 `NOT_IMPLEMENTED`（不装作没看见，也不改能力面）。
+- **能力位 `kernel-call-v1` 开始发**：内核网关与连接服务都在**且**白名单里至少一条在内核目录中；
+  只是目录非空**不发**（「能调但每次被拒」比不声明更糟）。
+- **测试**：`tests/kernel-allowlist.spec.ts` 10 例、`tests/kernel-call.spec.ts` 14 例、
+  `tests/ws-kernel-call.spec.ts` 11 例、`tests/mobile-gateway-ws.spec.ts` 新增 3 例端到端
+  （hello→目录顺序、白名单外的端点、老连接 `NOT_IMPLEMENTED`）、`tests/kernel-endpoints.spec.ts` +1；
+  `SECURITY.md` 的断言 1/2/3 各换成能跑红的具体用例名。
+- **未做**：REST 响应逐字段快照（本阶段无 REST 改动）与 §1.4 的 6 项真机清单。
+
 ## 未发布 · 内核端点归一（B2 全量换源）阶段 4：delta 收口 + 永久留桥登记 + 门面瘦身（issue #26，2026-11-19）
 
 > 换源四批（3a~3d）做完之后，桥里剩下的每一行都应该有理由。这一阶段把那 11 条理由

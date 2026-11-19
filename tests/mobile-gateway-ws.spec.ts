@@ -15,6 +15,7 @@ import { ApiRouter } from '../src/host/router.ts'
 import { RemoteApiServer } from '../src/host/server.ts'
 import { DshSettingsAdapter } from '../src/host/settings-adapter.ts'
 import type { HostRemoteHandle } from '../src/host/ws-host-services.ts'
+import { createKernelEndpointCatalog, type TypertRegistryLike } from '../src/host/bridge/kernel-endpoints.ts'
 import { PLUGIN_VERSION } from '../src/shared/version.ts'
 
 const cleanup = new TestCleanup()
@@ -33,6 +34,8 @@ afterEach(async () => {
 async function startHarness(options: {
   initialMuxFrames?: unknown[]
   hostRemote?: HostRemoteHandle | undefined
+  /** 内核端点目录（阶段 5 通用调用面）：给了才能验 kernel-call 这条通路。 */
+  kernelCatalog?: ReturnType<typeof createKernelEndpointCatalog> | undefined
   projection?: 'sequenced' | 'migration' | 'null'
   commandServices?: DshCommandServices
   // 故意放宽：override 只替换个别方法，各方法签名与 fakeApi 不必逐字段一致（测试夹具）。
@@ -75,7 +78,7 @@ async function startHarness(options: {
   // 与 src/index.ts 装配一致：注入全局模型目录与文件浏览依赖。
   remote.attachMobileHostServices({ settings, files })
   // 定时任务 / 官方语音的可选内核远程服务；缺省时相关帧回结构化 unavailable。
-  remote.attachMobileRemoteServices(options.hostRemote)
+  remote.attachMobileRemoteServices(options.hostRemote, options.kernelCatalog)
   await remote.start()
   remotes.push(remote)
   const url = `ws://127.0.0.1:${remote.status().port}/ws/mobile`
@@ -2383,6 +2386,119 @@ describe('/ws/mobile 与 REST 对齐的两个参数（session-create / history�
     const paged = await awaitNewFrame(frames, before, frame => frame.kind === 'history', 'history (paged)')
     const pagedData = paged.data as { projections?: unknown }
     expect('projections' in pagedData).toBe(false)
+    socket.close()
+  })
+})
+
+// ─────────────────── 通用内核调用面（issue #26 阶段 5，dshrb-v1）───────────────────
+
+/** 一个只认识白名单条目的内核目录：`session/search` 够用来验通路，其余照旧不可见。 */
+function kernelCatalogForTests(): ReturnType<typeof createKernelEndpointCatalog> {
+  const registry: TypertRegistryLike = {
+    local: {
+      list: () => [{
+        id: 'test#session/search',
+        service: 'session',
+        namespace: 'session',
+        method: 'search',
+        invocation: { kind: 'direct' },
+        parameters: [{ name: 'request', wire: 'request', source: 'json', codec: { mode: 'strict' } }],
+        result: { mode: 'json' },
+      } as never],
+      get: () => undefined,
+      hasSeen: () => false,
+    },
+  }
+  return createKernelEndpointCatalog(registry)
+}
+
+describe('mobile gateway WebSocket (/ws/mobile) — kernel-call plane', () => {
+  async function ticket(database: WorkspaceDatabase, rootId: string) {
+    const pairing = database.createPairing([rootId], ['chat.read'] as never)
+    return database.exchangePairing(pairing.code, 'Mobile device')
+  }
+
+  it('announces the allowlist right after hello and forwards one call', async () => {
+    const calls: Array<{ namespace: string; method: string; args: unknown }> = []
+    const handle: HostRemoteHandle = {
+      invoke: async (namespace, method, args) => {
+        calls.push({ namespace, method, args })
+        return { items: [] }
+      },
+      stream: async () => (async function* () { /* 本用例只用 unary 端点 */ })(),
+    }
+    const { database, root, url } = await startHarness({ hostRemote: handle, kernelCatalog: kernelCatalogForTests() })
+    const credentials = await ticket(database, root.id)
+    const socket = connect(url, {
+      protocols: ['dshrb-v1', 'dsh-mobile-v1'],
+      headers: { Authorization: `Bearer ${credentials.token}` },
+    })
+    const { frames } = collect(socket)
+    await new Promise<void>((resolve, reject) => {
+      socket.once('open', resolve)
+      socket.once('error', reject)
+    })
+    await nextKind(frames, 'hello')
+    await nextKind(frames, 'kernel-endpoints')
+
+    // 目录帧必须在 hello **之后** —— 客户端按首帧判协议版本。
+    expect(frames.findIndex(frame => frame.kind === 'kernel-endpoints')).toBeGreaterThan(frames.findIndex(frame => frame.kind === 'hello'))
+    const endpoints = (frames.find(frame => frame.kind === 'kernel-endpoints')?.data as { endpoints?: Array<{ endpoint: string; scope: string; wires: string[] }> }).endpoints ?? []
+    expect(endpoints.map(entry => entry.endpoint)).toEqual(['session/search'])
+    expect(endpoints[0]?.scope).toBe('chat.read')
+    expect(endpoints[0]?.wires).toEqual(['request'])
+
+    socket.send(JSON.stringify({ type: 'kernel-call', callId: 'k1', endpoint: 'session/search', args: { request: { query: 'x' } } }))
+    await nextKind(frames, 'kernel-call-result')
+    expect(frames.find(frame => frame.kind === 'kernel-call-result')?.data).toEqual({ callId: 'k1', ok: true, value: { items: [] } })
+    expect(calls).toEqual([{ namespace: 'session', method: 'search', args: { request: { query: 'x' } } }])
+    socket.close()
+  })
+
+  it('refuses an endpoint outside the allowlist without leaking whether the kernel has it', async () => {
+    const handle: HostRemoteHandle = { invoke: async () => ({}), stream: async () => (async function* () { /* 不适用 */ })() }
+    const { database, root, url } = await startHarness({ hostRemote: handle, kernelCatalog: kernelCatalogForTests() })
+    const credentials = await ticket(database, root.id)
+    const socket = connect(url, {
+      protocols: ['dshrb-v1', 'dsh-mobile-v1'],
+      headers: { Authorization: `Bearer ${credentials.token}` },
+    })
+    const { frames } = collect(socket)
+    await new Promise<void>((resolve, reject) => {
+      socket.once('open', resolve)
+      socket.once('error', reject)
+    })
+    await nextKind(frames, 'kernel-endpoints')
+    socket.send(JSON.stringify({ type: 'kernel-call', callId: 'k2', endpoint: 'settings/describe' }))
+    await nextKind(frames, 'kernel-call-result')
+    const result = frames.find(frame => frame.kind === 'kernel-call-result')?.data as { ok: boolean; error?: { code: string } }
+    expect(result.ok).toBe(false)
+    expect(result.error?.code).toBe('METHOD_NOT_ALLOWED')
+    socket.close()
+  })
+
+  it('answers NOT_IMPLEMENTED when the client never offered dshrb-v1', async () => {
+    const handle: HostRemoteHandle = { invoke: async () => ({}), stream: async () => (async function* () { /* 不适用 */ })() }
+    const { database, root, url } = await startHarness({ hostRemote: handle, kernelCatalog: kernelCatalogForTests() })
+    const credentials = await ticket(database, root.id)
+    const socket = connect(url, {
+      protocols: 'dsh-mobile-v1',
+      headers: { Authorization: `Bearer ${credentials.token}` },
+    })
+    const { frames } = collect(socket)
+    await new Promise<void>((resolve, reject) => {
+      socket.once('open', resolve)
+      socket.once('error', reject)
+    })
+    await nextKind(frames, 'hello')
+    socket.send(JSON.stringify({ type: 'kernel-call', callId: 'k3', endpoint: 'session/search' }))
+    await nextKind(frames, 'error')
+    const error = frames.find(frame => frame.kind === 'error')?.data as { code?: string; requestType?: string }
+    expect(error.code).toBe('NOT_IMPLEMENTED')
+    expect(error.requestType).toBe('kernel-call')
+    // 老连接既收不到 kernel-endpoints，也收不到 kernel-call-result。
+    expect(frames.some(frame => frame.kind === 'kernel-endpoints')).toBe(false)
+    expect(frames.some(frame => frame.kind === 'kernel-call-result')).toBe(false)
     socket.close()
   })
 })

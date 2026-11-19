@@ -177,10 +177,17 @@ describe('kernelCapabilityFlags', () => {
     expect(kernelCapabilityFlags(createKernelEndpointCatalog(registryOf([])))).toEqual({ kernelCatalog: false, kernelCall: false })
   })
 
-  it('declares the catalog bit for a non-empty catalog and still withholds the call surface', () => {
-    // 「给位 ⇒ 目录非空」的另一半；调用面要等端点白名单（阶段 5）。
+  it('withholds the call surface when no catalogued endpoint is on the allowlist', () => {
+    // 「给位 ⇒ 目录非空」的另一半；调用面还要白名单里至少有一条端点。
     const flags = kernelCapabilityFlags(createKernelEndpointCatalog(registryOf([descriptor()])))
     expect(flags).toEqual({ kernelCatalog: true, kernelCall: false })
+  })
+
+  it('declares the call surface once the catalog overlaps the allowlist', () => {
+    // 阶段 5：白名单 14 条与目录有交集 ⇒ 调用面可以声明。
+    const allowed = descriptor({ namespace: 'session', method: 'search' })
+    const flags = kernelCapabilityFlags(createKernelEndpointCatalog(registryOf([allowed])))
+    expect(flags).toEqual({ kernelCatalog: true, kernelCall: true })
   })
 })
 

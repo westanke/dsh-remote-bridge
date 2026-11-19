@@ -104,6 +104,26 @@ channels:
       `MobileServerFrame` schema enumerates the full set). Unknown `type` answers
       `error` with code `UNKNOWN_TYPE`.
 
+      ## Kernel-call plane (sub-protocol `dshrb-v1` only)
+
+      Four frames belong to the new generic kernel-call plane added in issue #26
+      phase 5: `kernel-call` / `kernel-call-cancel` (client → server) and
+      `kernel-call-result` / `kernel-endpoints` (server → client). They are only
+      enabled on a connection whose offered `Sec-WebSocket-Protocol` list
+      includes **`dshrb-v1`** (the handshake still echoes `dsh-mobile-v1`; the
+      capability is decided from the client's offered list, not from the
+      selected protocol). A `dsh-mobile-v1` connection (every already-shipped
+      app) keeps the exact old vocabulary and behaviour — it neither sends nor
+      receives them. Their `data` shapes are `KernelCallFrame` /
+      `KernelCallCancelFrame` / `KernelCallResultFrame` / `KernelEndpointsFrame`.
+      The server pushes `kernel-endpoints` (allowlist ∩ catalog) as soon as the
+      connection is authenticated, and answers each `kernel-call` with exactly
+      one `kernel-call-result`.
+
+      Correlation on this plane uses the client-chosen `callId`, **not**
+      `requestId`: `kernel-call-result` never carries `data.requestId` (see
+      `REQUEST_ID_ECHO_EXCLUDED_KINDS`).
+
       ## requestId correlation (request/response)
 
       `requestId` is an **opaque client-chosen string**. Correlation is
@@ -148,6 +168,9 @@ channels:
         `session-title-changed`, `queue-item-updated`
       - chunked transfer pushes: `file-download-chunk`,
         `file-upload-chunk-accepted`
+      - kernel-call plane (`dshrb-v1` only): `kernel-call-result` (the answer to
+        a `kernel-call`, correlated by its own `callId`), `kernel-endpoints`
+        (catalog snapshot push)
 
       > Adding a **push** kind is a two-step change: append it to
       > `REQUEST_ID_ECHO_EXCLUDED_KINDS`, and add a line here. A push kind that
@@ -567,6 +590,11 @@ components:
         is echoed verbatim on `data.requestId` of **whatever frame answers this
         request** — including `error` frames. See "requestId correlation" on the
         `mobile` channel for the full rule set.
+
+        The `dshrb-v1`-only members `kernel-call` / `kernel-call-cancel` are
+        shaped by `KernelCallFrame` / `KernelCallCancelFrame`; on a
+        `dsh-mobile-v1` connection they are not part of the negotiated
+        vocabulary at all.
       required: [type]
       properties:
         type:
@@ -655,6 +683,9 @@ components:
             - schedule-history
             - schedule-update
             - schedule-delete
+            # 通用内核调用面（issue #26 阶段 5，仅 dshrb-v1 子协议）
+            - kernel-call
+            - kernel-call-cancel
             # 声明但本内核无对应 RPC → NOT_IMPLEMENTED + REST 兜底
             - search
             - directories
@@ -699,6 +730,10 @@ components:
         Note: `id`/`time` envelope fields are **not** stamped on `/ws/mobile`
         frames (that envelope belongs to `/api/v1/events`); a client must key on
         `kind` plus its own `requestId`.
+
+        The `dshrb-v1`-only kinds `kernel-call-result` / `kernel-endpoints` are
+        shaped by `KernelCallResultFrame` / `KernelEndpointsFrame`. They never
+        carry `data.requestId`: the call plane correlates by its own `callId`.
       required: [kind]
       properties:
         kind:
@@ -785,6 +820,9 @@ components:
             - schedule-history
             - schedule-update
             - schedule-delete
+            # 通用内核调用面（issue #26 阶段 5，仅 dshrb-v1 子协议）
+            - kernel-call-result
+            - kernel-endpoints
             # 连接与反压
             - connection-resync-required
         data:
@@ -877,6 +915,147 @@ components:
         statusCode:
           type: integer
           description: Present when the failure originated from an HTTP-status-shaped upstream error.
+
+    # ── 通用内核调用面（issue #26 阶段 5，仅 dshrb-v1 子协议）─────────────────
+    #
+    # 这四个帧只在协商到 `dshrb-v1` 时存在；`dsh-mobile-v1` 的已发布 App 既不发送
+    # 也不接收（老连接上的 enum 与行为一字不变）。相关性规则：`kernel-call` 与
+    # `kernel-call-result` 只用 `callId` 配对 —— `requestId` 回显不覆盖这一组
+    # （见 `REQUEST_ID_ECHO_EXCLUDED_KINDS`）。
+
+    KernelCallFrame:
+      type: object
+      title: kernel-call (client → server, dshrb-v1 only)
+      description: |
+        Invoke one allowlisted kernel endpoint by its descriptor wire name.
+        `endpoint` is the kernel registry string (`namespace/method`, e.g.
+        `session/list`) — not a bridge-invented alias: the bridge keeps no
+        endpoint-name table and the catalog frame is the discovery source.
+        `args` is handed to the endpoint's strict codec **verbatim**, so its key
+        set must match the descriptor exactly (the kernel rejects both missing
+        and extra wire keys). The answer is `kernel-call-result` carrying the
+        same `callId`; `callId`, not `requestId`, is the correlation handle.
+
+        Failure modes, all as a `kernel-call-result` with `ok: false` (shape
+        errors of this frame itself are answered with an `error` frame,
+        `BAD_REQUEST`): `METHOD_NOT_ALLOWED` (endpoint outside the bridge
+        allowlist — checked *before* the catalog, so a denied call cannot probe
+        which endpoints exist), `kernel/endpoint-unknown` (allowed but absent
+        from the running kernel), `call/in-flight` (same `callId` already
+        running), `call/cancelled` (this call was cancelled), plus the
+        endpoint's own normalised error. Retrying with the same `callId`
+        replays the previous result (24 h idempotency window keyed by
+        principal + `callId`) instead of executing the write twice. Only valid
+        on a connection that offered `dshrb-v1`: on a `dsh-mobile-v1`-only
+        connection this frame is outside that connection's vocabulary and the
+        call plane is not enabled at all.
+      required: [type, callId, endpoint]
+      properties:
+        type: { type: string, const: kernel-call }
+        callId:
+          type: string
+          minLength: 1
+          description: Client-chosen correlation id, echoed verbatim on the matching `kernel-call-result`.
+        endpoint:
+          type: string
+          minLength: 1
+          description: |
+            Kernel descriptor endpoint name (`namespace/method`). Endpoints
+            outside the bridge allowlist are refused with the same error shape
+            as nonexistent ones (`METHOD_NOT_ALLOWED`), so error codes cannot be
+            used to enumerate what the kernel has installed.
+        args:
+          type: object
+          additionalProperties: true
+          description: |
+            Exact-key argument object for the endpoint's strict codec. Omitted
+            when the endpoint takes no arguments.
+
+    KernelCallCancelFrame:
+      type: object
+      title: kernel-call-cancel (client → server, dshrb-v1 only)
+      description: |
+        Ask the server to abort one in-flight `kernel-call`. Best-effort: the
+        call may already have settled, in which case the result still arrives
+        and the client de-duplicates by `callId`. A `callId` that matches no
+        running call (already settled, or never existed) is answered with an
+        `error` frame, code `call/not-found`. The resulting cancelled call is
+        reported as a `kernel-call-result` with `ok: false` and
+        `error.code: call/cancelled`, and is deliberately **not** cached for
+        idempotent replay — a retry should really retry.
+      required: [type, callId]
+      properties:
+        type: { type: string, const: kernel-call-cancel }
+        callId:
+          type: string
+          minLength: 1
+          description: The `callId` of the in-flight `kernel-call` to cancel.
+
+    KernelCallResultFrame:
+      type: object
+      title: kernel-call-result (server → client, dshrb-v1 only)
+      description: |
+        The answer to exactly one `kernel-call`, correlated by `callId` and
+        **never** carrying `data.requestId` (that channel belongs to the classic
+        request/response frames). `ok: false` means the invocation failed;
+        `error.code` is stable and `error.message` never contains absolute host
+        paths.
+      required: [kind, callId, ok]
+      properties:
+        kind: { type: string, const: kernel-call-result }
+        callId:
+          type: string
+          minLength: 1
+          description: The `callId` of the `kernel-call` this frame answers.
+        ok: { type: boolean }
+        value:
+          description: |
+            Endpoint-defined result, forwarded verbatim from the kernel
+            descriptor's output. No shape is promised here: clients must
+            tolerate unknown fields (a kernel upgrade may add more). One shape
+            **is** reserved: a streaming endpoint yields
+            `{frames: unknown[], truncated?: true}` (the bridge collects a
+            bounded number of frames, default 64, and sets `truncated` when the
+            stream was cut off by that bound — the phone has no backpressure,
+            so the frame protocol deliberately never carries an open-ended
+            stream).
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code: { type: string }
+            message: { type: string }
+
+    KernelEndpointsFrame:
+      type: object
+      title: kernel-endpoints (server → client, dshrb-v1 only)
+      description: |
+        Pushed by the server immediately after the `dshrb-v1` handshake: the
+        kernel endpoints **this connection may call** — the intersection of the
+        bridge allowlist and the running kernel's catalog, not the kernel's full
+        224-endpoint surface. Clients use it as the only source of truth for
+        discovery (no hardcoded endpoint tables).
+
+        The catalog is **not** an authorization list in the other direction: an
+        endpoint appearing here can still be refused by scope checks at call
+        time, and an endpoint missing here is never callable — treat
+        `METHOD_NOT_ALLOWED` from `kernel-call-result` as the authoritative
+        "not reachable" signal.
+
+        The element shape is not frozen yet — this release pins only the frame
+        itself (`{kind, endpoints[]}`). Current entries are
+        `{endpoint, scope, stream, summary}`; clients must ignore unknown fields
+        and unknown entries.
+      required: [kind, endpoints]
+      properties:
+        kind: { type: string, const: kernel-endpoints }
+        endpoints:
+          type: array
+          items: {}
+          description: |
+            One entry per callable kernel endpoint. Currently
+            `{endpoint, scope, stream, summary}`; element shape is implemented
+            in a later phase, so treat entries as opaque for now.
 
     MobileConnectionLimits:
       type: object

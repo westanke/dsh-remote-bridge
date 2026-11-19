@@ -19,6 +19,17 @@ export const WS_PATH = '/ws/mobile'
 export const WS_PROTOCOL = 'dsh-mobile-v1'
 
 /**
+ * 阶段 5 的新子协议：通用内核调用面（`kernel-call` / `kernel-call-cancel` /
+ * `kernel-call-result` / `kernel-endpoints`）只在客户端**声明**了该子协议时才启用。
+ *
+ * 判定看的是请求头清单（`ws-handler.ts` 的 `offersKernelSubprotocol`），不是
+ * `webSocket.protocol`：握手回给客户端的仍是 `dsh-mobile-v1`，能力面按客户端声明
+ * 的清单决定。老 App 的清单里没有它 ⇒ 老连接上这些帧不存在，行为与今天**逐字相同**，
+ * 新帧因此是纯增量、不是替换。
+ */
+export const WS_PROTOCOL_DSHRB = 'dshrb-v1'
+
+/**
  * 从客户端提供的子协议清单里挑出**第一个服务端认识的**。
  *
  * ## 为什么不再要求「首项必须是 dsh-mobile-v1」（issue #26 阶段 2）
@@ -168,6 +179,10 @@ export type ClientFrameType =
   | 'schedule-history'
   | 'schedule-update'
   | 'schedule-delete'
+  // 通用内核调用面（issue #26 阶段 5）：只有客户端清单里声明了 dshrb-v1 的连接
+  // 才接受/发出，dsh-mobile-v1 的已发布 App 既不发也不收（见 {@link KernelCallFrameData}）。
+  | 'kernel-call'
+  | 'kernel-call-cancel'
 
 /** 服务端 → 客户端的 `kind` 取值。 */
 export type ServerFrameKind =
@@ -237,6 +252,10 @@ export type ServerFrameKind =
   | 'question-response'
   | 'approval-response'
   | 'approval-resolved'
+  // 通用内核调用面（issue #26 阶段 5）：只在 dshrb-v1 子协议下发出。
+  // kernel-call-result 用 callId 定位（不进 requestId 回显）；kernel-endpoints 是目录广播。
+  | 'kernel-call-result'
+  | 'kernel-endpoints'
   | 'connection-resync-required'
 
 // ───────────────────────── 帧载荷类型 ─────────────────────────
@@ -548,6 +567,58 @@ export interface FileUploadCancelFrame extends ClientFrame {
   uploadId: string
 }
 
+// ── 通用内核调用面（issue #26 阶段 5，仅 dshrb-v1 子协议）───────────────────
+//
+// 这一组帧只在客户端**声明**了 `dshrb-v1` 子协议的连接上启用：`dsh-mobile-v1` 的已发布
+// App 既不会发送它们，也看不到服务端发它们（老连接上的行为一字不变）。载荷接口都是
+// **纯 `data` 载荷**，不含外壳的 `type`/`kind` —— 客户端帧外壳仍是 {@link ClientFrame}，
+// 服务端帧外壳仍是 {@link ServerFrame}。
+
+/**
+ * `kernel-call` 客户端帧载荷：按 wire 键调用一个白名单内的内核端点。
+ *
+ * - `endpoint` 是**内核描述符里的端点名**（`namespace/method` 的 wire 形，如
+ *   `session/list`），不是桥自造的别名 —— 桥不持有端点名常量表。
+ * - `args` 原样交给端点的 strict codec：键集合必须与描述符**完全一致**
+ *   （内核 `assertExactArguments` 对多传和漏传都拒绝），因此它不是「想传什么传什么」
+ *   的自由对象。
+ * - `callId` 由客户端自选，是**应答定位句柄**：`kernel-call-result` 原样带回它；
+ *   它不参与 `requestId` 回显（两条关联通道各自独立）。
+ */
+export interface KernelCallFrameData {
+  callId: string
+  endpoint: string
+  args?: Record<string, unknown>
+}
+
+/** `kernel-call-cancel` 客户端帧载荷：按 `callId` 取消一次进行中的调用。 */
+export interface KernelCallCancelFrameData {
+  callId: string
+}
+
+/**
+ * `kernel-call-result` 服务端帧载荷：`kernel-call` 的应答。
+ *
+ * `callId` 定位到那一次调用（**不靠** `requestId`）；`ok:false` 时 `error` 必须
+ * 说明 `code`/`message`，且错误文案不泄露「端点存在性」与绝对主机路径。
+ */
+export interface KernelCallResultData {
+  callId: string
+  ok: boolean
+  value?: unknown
+  error?: { code: string; message: string }
+}
+
+/**
+ * `kernel-endpoints` 服务端帧载荷：内核端点目录快照（只读描述符投影）。
+ *
+ * 元素形状由后续阶段实装，这里先留 `readonly unknown[]` —— 本阶段只钉「有一个
+ * 目录帧、字段叫 endpoints」这一层，不保证单个元素的字段。
+ */
+export interface KernelEndpointsFrameData {
+  endpoints: readonly unknown[]
+}
+
 // ───────────────────────── 编解码 ─────────────────────────
 
 /** 把任意 JSON 可序列化对象编码为 `ws` 能发的文本帧。 */
@@ -583,6 +654,10 @@ export function makeErrorFrame(code: string, message: string, requestId?: string
  * 只会误伤；而 `speech-state` 例外地在处理器里手写了 `requestId`，那属于它自己的
  * 语义，注入层不覆盖（见 {@link withRequestIdEcho} 的「已有不覆盖」规则）。
  *
+ * `kernel-call-result` 也是应答，但它走**另一条**关联通道：客户端自己给的 `callId`
+ * 原样带回（阶段 5），因此同样不回显 `requestId`；`kernel-endpoints` 则与
+ * `connection-resync-required` 一样是主动推送。
+ *
  * 显式列举而非前缀/启发式判断：新增推送 kind 时**必须**同步本表，否则会误注入。
  */
 const REQUEST_ID_ECHO_EXCLUDED: readonly ServerFrameKind[] = [
@@ -604,6 +679,11 @@ const REQUEST_ID_ECHO_EXCLUDED: readonly ServerFrameKind[] = [
   // 文件分块流（分块回执由处理器自己写 requestId）
   'file-download-chunk',
   'file-upload-chunk-accepted',
+  // 通用内核调用面（阶段 5，仅 dshrb-v1）
+  // kernel-call-result 自带客户端选的 callId 定位（与 pong 一样没有「在途请求」语义）；
+  // kernel-endpoints 是目录快照广播，主动推送、不回答某一次请求。
+  'kernel-call-result',
+  'kernel-endpoints',
 ]
 
 /**

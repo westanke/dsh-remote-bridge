@@ -65,6 +65,8 @@ export interface KernelEndpointShape {
   readonly parameters: readonly { readonly wire: string; readonly optional: boolean }[]
   readonly contextWire?: string
   readonly cancellation: boolean
+  /** 流式端点（`mode:'stream'`）。通用调用面据此选择 `invoke` 还是 `stream`。 */
+  readonly stream?: boolean
 }
 
 /**

@@ -717,7 +717,7 @@ assistant 消息，只有最后那条含正文。桥此前只送了 `role`，客
 | `chat-schedules-v1` | `GET /chat/schedules`、`POST /chat/schedules` | 内核 typertGateway（schedule Remote）缺席时**不发位**（端点只会 503，发位等于挂一个必然失败的入口） |
 | `speech-transcription-v1` | `POST /chat/speech/transcriptions` | **只在 typert Gateway 整体缺席时不发位**；内核没装语音包时仍发位，`GET /chat/speech/catalog` 回 `200 {available:false,reason}` |
 | `kernel-endpoint-catalog-v1` | 无 REST 依据（**运行时探测面**） | 内核 Typert 登记表读不到（老内核没有 `typert` 服务）或目录为空时**不发位**；发位即保证目录非空 |
-| `kernel-call-v1` | 无 REST 依据（**运行时探测面**） | 通用调用面还差端点白名单（issue #26 阶段 5），在那之前**恒不发位** —— 声明一个没人能服务的面比不声明更糟 |
+| `kernel-call-v1` | 无 REST 依据（**运行时探测面**） | 通用调用面可用（issue #26 阶段 5）：内核网关与连接服务都在**且**白名单里至少有一条端点在内核目录中；只是目录非空**不发** —— 「能调但每次被拒」比不声明更糟 |
 
 最后一行是有意为之：客户端必须能区分「桥支持语音、但本机没配」（位在、目录
 `available:false` → 引导去插件管理装语音包）与「桥不支持语音」（位不在 → 隐藏入口）。
@@ -795,6 +795,19 @@ v2.8 新增。独立于现有 `/api/v1/events`（单向广播，保留不动）�
     客户端数组的排序当成协议要求 —— 排过序的客户端（把 `dsh-auth.*` 排前面）握手直接被
     4001 掉，手机上只看到「连接被关闭」。清单里一个都没有时行为不变：握手完成后照样
     `close(4001, AUTH_REQUIRED)`。
+  - **`dshrb-v1`（issue #26 阶段 5，通用内核调用面）**：客户端清单里提供 `dshrb-v1` 时
+    连接启用四个新帧（`kernel-call` / `kernel-call-cancel` / `kernel-call-result` /
+    `kernel-endpoints`，见下面两张帧表）。能力面按**客户端声明**的清单判定（`ws-handler.ts`
+    的 `offersKernelSubprotocol` 读请求头），握手回给客户端的子协议仍是 `dsh-mobile-v1`。
+    已发布 App 的清单里没有它 ⇒ 帧词表与行为**与今天逐字相同**，新帧名不会出现在老连接上。
+  - **白名单是唯一执法点**（`src/host/bridge/kernel-allowlist.ts`）：通用调用面只接
+    `KERNEL_ALLOWLIST` 里的 14 条 unary 端点，其余一律 `METHOD_NOT_ALLOWED`，且文案与
+    「内核根本没这个端点」完全同形（先拒后查目录 —— 让错误码无法当存在性探针）。
+    `terminal` / `sandbox` / `dynamicCordisRunner` / `workspaceFiles` / `fileUploads` /
+    `settings` / `credentials` / `account` / `liveshareShares` / `cuaAccess` / `forgePanel` /
+    `agentTeams` 十二个命名空间**钉死在桥内**，无论内核是否新增端点都不外放。
+    每条端点的 scope 与 REST 侧同一份判据（`auth.ts` 的 `requireScope`/`requireRoot`），
+    且执行器跑在 `interactions:'none'` 的 owner peer 上 —— 被脚本化的客户端不能替人点「允许」。
   - 不允许 URL query 带 token，避免令牌进入 URL 日志。
 - 配对码：一次性，10 分钟有效期（复用 `/api/v1/pairings/exchange` 产出的 code），256-bit，Base64URL 载荷；设备令牌不过期，撤销即时生效。
 - 鉴权：`dsh-pair`/`dsh-auth`/`bearer.<token>` 均复用 `principal()`，与 `/api/v1` 同一套判据；`allowAdmin: true` 允许 loopback admin；连接上限 32（鉴权后计数，Upgrade 前判定，超出回 HTTP `429` + `Retry-After: 5`）。
@@ -815,7 +828,7 @@ v2.8 新增。独立于现有 `/api/v1/events`（单向广播，保留不动）�
 
 - 实现只有一处：`MobileGatewayWsHandler.sendFrame` 在 `encodeFrame` 前调 `withRequestIdEcho(frame, this.frameRequestId.getStore())`。各域处理器不必各自复制（少数仍复制，集中注入**不覆盖** `data` 里已有的值）。
 - id 走 `AsyncLocalStorage`，不是实例字段：帧分发是并发的（`webSocket.on('message')` 里 `void this.handleMessage(...)` 不 await），共享槽位会串号。
-- 不回显的是一次「推送/流式」帧，集合声明在代码里：`REQUEST_ID_ECHO_EXCLUDED_KINDS`（`src/host/ws-protocol.ts`）——`hello` / `paired` / `pong` / `subscribed` / `event` / `approval-resolved` / `speech-state` / `speech-transcript` / `speech-preparing` / `connection-resync-required` / `file-download-chunk` / `file-upload-chunk-accepted`。该表的字面量数组声明为 `readonly ServerFrameKind[]`，写进一个非帧 kind 会编译失败。**新增推送 kind 必须同步该集合**，否则它会带上当时在途请求的 id。
+- 不回显的是一次「推送/流式」帧，集合声明在代码里：`REQUEST_ID_ECHO_EXCLUDED_KINDS`（`src/host/ws-protocol.ts`）——`hello` / `paired` / `pong` / `subscribed` / `event` / `approval-resolved` / `speech-state` / `speech-transcript` / `speech-preparing` / `connection-resync-required` / `file-download-chunk` / `file-upload-chunk-accepted` / `kernel-call-result` / `kernel-endpoints`。该表的字面量数组声明为 `readonly ServerFrameKind[]`，写进一个非帧 kind 会编译失败。**新增推送 kind 必须同步该集合**，否则它会带上当时在途请求的 id。其中 `kernel-call-result` 明明是应答却也在表里：它自带客户端铸的 `callId` 做关联，再注入 `requestId` 会出现两条互相矛盾的配对通道；`kernel-endpoints` 则是鉴权通过后主动推送的一次目录快照。
 - 请求没带 `requestId`（或带 `""`）⇒ 应答帧里**完全没有** `requestId` 键（不是 `null`、不是 `""`）。
 - `data` 不是普通对象（缺省 / `null` / 数组）时不注入。
 - `file-resolve`、`file-download-open`、`file-upload-open` 的 `requestId` 是**必填**，缺它回 `error code:'bad-request'`。
@@ -860,6 +873,8 @@ v2.8 新增。独立于现有 `/api/v1/events`（单向广播，保留不动）�
 | `agent-team` / `subagents` | 智能体团队/子会话目录（只读会话投影） | `sessionId`, `requestId?`（应答回显，见上）；回 `projectionState:'ready'|'unavailable'|'migration-required'` |
 | `speech-catalog` / `speech-subscribe` / `speech-unsubscribe` / `speech-configure` / `speech-prepare` / `speech-cancel-preparation` / `speech-transcribe` / `speech-cancel` | 官方语音输入（纯代理内核 speech Remote） | `requestId?`（应答回显；`speech-state` 等推送帧自带的是订阅上下文里那个 id，不跟随本次请求），transcribe 带 `audioBase64`（16k PCM16 WAV，≤4 MiB）、`providerId?`、`language?` |
 | `schedule-catalog` / `schedule-list` / `schedule-history` / `schedule-update` / `schedule-delete` | 定时任务（代理内核 schedule Remote，DSH 0.2.2 记录面） | catalog 无会话；其余带 `sessionId`；update 带完整 `expected`+`change`（桥只取 `expected.updatedAt` 做 `expectedUpdatedAt` 乐观并发，`change` 即 `patch.timing`）；回程记录按旧形状呈现（`sessionId` 从内核 `target` 派生，`paused`/`ended` → `inactive`，新字段原样透传） |
+| `kernel-call` | 通用内核调用（**仅 `dshrb-v1`**，issue #26 阶段 5；不按业务类目造新帧，端点名走内核描述符） | `callId`（客户端自铸，重试带同一个即按 `(principal,callId)` 幂等回放，24 h）、`endpoint`（内核原名 `namespace/method`，桥不维护第二份端点表）、`args?`（严格按描述符键集，多/漏键本地拒）。回一帧 `kernel-call-result`；授权失败在结果帧 `ok:false`（`METHOD_NOT_ALLOWED`，先于目录查询 ⇒ 不可拿错误码探端点存在性）、`kernel/endpoint-unknown`、`call/in-flight`、`call/cancelled`、端点自身错误。帧形状错回 `error BAD_REQUEST`；清单里没提供 `dshrb-v1` 的连接上不启用（老连接的能力面里没有这帧）；流式端点结果为 `{frames,truncated?}`（默认收 64 帧） |
+| `kernel-call-cancel` | 取消一次在飞行中的内核调用（**仅 `dshrb-v1`**） | `callId`；尽力而为 —— 已结算的调用结果帧照样会来，客户端按 `callId` 去重。匹配不到在飞行的调用回 `error code:'call/not-found'`；被取消的那次以结果帧 `ok:false` + `call/cancelled` 结算，且**不进幂等**（重试应真的重试） |
 
 ### 服务端→客户端帧（{kind: …}）
 
@@ -886,6 +901,8 @@ v2.8 新增。独立于现有 `/api/v1/events`（单向广播，保留不动）�
 | `agent-team` / `subagents` | 团队/子会话投影响应（随 `projectionState` 与 `asOfSeq`） |
 | `speech-catalog` / `speech-subscribed` / `speech-unsubscribed` / `speech-state` / `speech-configured` / `speech-preparing` / `speech-preparation-cancelled` / `speech-transcript` / `speech-cancelled` | 语音输入响应与就绪状态推送；内核无该服务时 catalog 回 `available:false, code:'speech/unavailable'`，其余回 `error` |
 | `schedule-catalog` / `schedule-list` / `schedule-history` / `schedule-update` / `schedule-delete` | 定时任务响应；内核无 schedule Remote 时回 `error code:'schedule/unavailable'`，引导 REST 兜底 |
+| `kernel-call-result` | 通用内核调用结果（**仅 `dshrb-v1`**）：`{callId, ok, value?, error?{code,message}}`。**不带 `data.requestId`**，按 `callId` 关联（见上面 exclusion 清单）；幂等命中的重试拿到的是上次结果的原样回放 |
+| `kernel-endpoints` | 能力目录快照（**仅 `dshrb-v1`**）：鉴权通过后即推一次，内容是「桥白名单 ∩ 内核目录」的 `{endpoint, scope, stream, wires, summary}[]` —— 不是内核全量端点（全量等于把攻击面列给客户端），客户端据此知道能调什么、需要什么 scope、`args` 该带哪些键（`wires` 取自内核描述符，客户端不必硬编码键名）。元素形状由后续阶段冻结，客户端需容忍未知字段与未知端点 |
 
 ### HITL（提问与审批）双向
 

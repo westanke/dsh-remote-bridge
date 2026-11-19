@@ -1,0 +1,205 @@
+/**
+ * 通用内核调用面的**唯一执法点**（issue #26 阶段 5）。
+ *
+ * ## 为什么白名单在这里，而不是在处理器里
+ *
+ * `kernel-call` 让手机按名字调内核端点 —— 这是整个桥里唯一一处「客户端指定要执行
+ * 什么代码」的入口。判定散在处理器、校验器、路由三处，迟早会有一条路绕开其中
+ * 一处；所以规范只有一句：**能不能调，只问这个文件**。处理器拿到
+ * {@link authorizeKernelEndpoint} 的返回值（或异常）就照办，不再自己判断。
+ *
+ * ## 四道闸（顺序即安全边界）
+ *
+ * 1. **默认拒绝**：不在 {@link KERNEL_ALLOWLIST} 里一律 `METHOD_NOT_ALLOWED`，且
+ *    文案与「端点不存在」完全相同 —— 否则可以用错误差异探测内核装了哪些插件。
+ * 2. **高危命名空间钉本地**：{@link KERNEL_DENIED_NAMESPACES} 里的命名空间**永远**
+ *    不给远程，哪怕将来有人往白名单里加了一条（这条判定在白名单查找之前，加白也
+ *    不生效）。这些命名空间要么能读本机凭据/文件，要么能起进程。
+ * 3. **scope 不外包**：每个端点声明自己需要的设备 scope，由 `AuthService`
+ *    的 `requireScope`/`requireRoot` 判 —— 与 REST 面同一套判据，不另写一份
+ *    「内核调用专用」的权限模型。scope 缺失即 403，与 REST 的 `SCOPE_REQUIRED` 同形。
+ * 4. **不得触发交互**：调用方统一用 `interactions:'none'` 的 owner peer（阶段 2 的
+ *    `ws-host-services.ts` 就是这么建的），端点若弹审批/提问会直接失败，不会在
+ *    手机上凭空长出一张没人能答的卡片。
+ *
+ * ## 单一路径原则
+ *
+ * 同一个语义只能有一条路：桥自己已经封装的 35 个入口（31 条换源端点 + 4 条永久
+ * 留桥）**不得**再出现在白名单里，否则「手机调 A 和调 B 都能做到同一件事」，
+ * 两条路的鉴权、审计、错误码会慢慢分叉。{@link BRIDGE_OWNED_ENDPOINTS} 是这份
+ * 清单的机器可读副本，`tests/kernel-allowlist.spec.ts` 断言两者不相交。
+ */
+
+import type { DeviceScope, Principal } from '../../shared/contracts.ts'
+
+/** 调不了时抛的错误。文案**不区分**「没这个端点」与「没被允许」。 */
+export class KernelCallDeniedError extends Error {
+  readonly code = 'METHOD_NOT_ALLOWED'
+
+  constructor() {
+    super('This kernel endpoint is not available over the mobile protocol.')
+    this.name = 'KernelCallDeniedError'
+  }
+}
+
+/** 一条白名单。`summary` 会出现在 `kernel-endpoints` 帧里，给客户端做能力发现。 */
+export interface KernelAllowlistEntry {
+  /** 内核端点名，形如 `session/search`。 */
+  readonly endpoint: string
+  /** 需要的设备 scope；与 REST 面同一套（`chat.read` 等）。 */
+  readonly scope: DeviceScope
+  /** 一句话说明，仅用于能力发现，不参与鉴权。 */
+  readonly summary: string
+}
+
+/** 白名单里的命名空间**永不**外放，即使加了白名单条目也不生效。 */
+export const KERNEL_DENIED_NAMESPACES: readonly string[] = [
+  // 能起进程 / 执行任意代码
+  'terminal',
+  'sandbox',
+  'dynamicCordisRunner',
+  // 能读本机文件（交接目录、工作区字节）
+  'workspaceFiles',
+  'fileUploads',
+  // 能读/改凭据与全局设置（SEC-H11：改 baseURL 就能把凭据引到任意地址）
+  'settings',
+  'credentials',
+  // 账号与远程协作面：涉及本机会话身份、他人机器、屏幕采集
+  'account',
+  'liveshareShares',
+  'cuaAccess',
+  'forgePanel',
+  'agentTeams',
+]
+
+/**
+ * 阶段 5 的白名单（14 条，全部 unary）。
+ *
+ * 挑选标准：①对手机是**新**能力（不在已封装的 35 条里）②不会因为一次误调就把
+ * 本机弄坏 ③scope 能落到既有的七个设备权限上。写操作只放「可撤销、影响面小」的
+ * 那几条（收藏/取消收藏、反馈标记、初始化默认模型）。
+ */
+export const KERNEL_ALLOWLIST: readonly KernelAllowlistEntry[] = [
+  // —— 会话只读 ——
+  { endpoint: 'session/search', scope: 'chat.read', summary: 'Search visible Sessions by text.' },
+  { endpoint: 'session/state', scope: 'chat.read', summary: 'Read one Session state snapshot without resuming it.' },
+  { endpoint: 'session/canOpenWorkspacePath', scope: 'chat.read', summary: 'Check whether a workspace path may be opened.' },
+  { endpoint: 'session/workspacePathApplications', scope: 'chat.read', summary: 'List pending workspace path requests.' },
+  // —— 消息反馈（写入，但只影响标记）——
+  { endpoint: 'messageFeedback/list', scope: 'chat.read', summary: 'List feedback marks for a message.' },
+  { endpoint: 'messageFeedback/put', scope: 'chat.write', summary: 'Set a feedback mark on a message.' },
+  { endpoint: 'messageFeedback/delete', scope: 'chat.write', summary: 'Remove a feedback mark from a message.' },
+  // —— 会话收藏（可逆）——
+  { endpoint: 'workspace/pinSession', scope: 'chat.write', summary: 'Pin a Session in the workspace list.' },
+  { endpoint: 'workspace/unpinSession', scope: 'chat.write', summary: 'Unpin a Session in the workspace list.' },
+  { endpoint: 'session/initializeDefaultModel', scope: 'chat.write', summary: 'Persist the first available model for a Session.' },
+  // —— 插件市场与产品分析（只读）——
+  { endpoint: 'productAnalytics/enabled', scope: 'settings.read', summary: 'Report whether product analytics is enabled.' },
+  { endpoint: 'pluginMarket/search', scope: 'settings.read', summary: 'Search the plugin market index.' },
+  { endpoint: 'pluginMarket/listIndexes', scope: 'settings.read', summary: 'List configured plugin market indexes.' },
+  { endpoint: 'pluginMarket/readEntryDetail', scope: 'settings.read', summary: 'Read one plugin market entry detail.' },
+]
+
+const ALLOWLIST_INDEX: ReadonlyMap<string, KernelAllowlistEntry> = new Map(
+  KERNEL_ALLOWLIST.map(entry => [entry.endpoint, entry]),
+)
+
+/** 白名单索引（`endpoint → entry`）。同一条端点重复登记时以**先出现的**为准。 */
+export function kernelAllowlistIndex(): ReadonlyMap<string, KernelAllowlistEntry> {
+  return ALLOWLIST_INDEX
+}
+
+/** 这个端点是否**允许**远程调用（不含 scope 判定；scope 由 {@link authorizeKernelEndpoint}）。 */
+export function isKernelEndpointAllowed(endpoint: string): boolean {
+  return ALLOWLIST_INDEX.has(endpoint) && !KERNEL_DENIED_NAMESPACES.includes(namespaceOf(endpoint))
+}
+
+/**
+ * 判定一次调用是否放行。
+ *
+ * 顺序就是安全顺序：**先**默认拒绝（含高危命名空间），**再**问 scope。
+ * 反过来的话，「没权限」会先于「没这个端点」暴露出去，等于给攻击者一个免费的
+ * 端点存在性探测口。
+ *
+ * @param authorizer - `AuthService`（`requireScope`/`requireRoot` 与 REST 面同源）。
+ * @param principal - 当前连接的主体（admin 或设备）。
+ * @param endpoint - 客户端点名的内核端点。
+ * @returns 命中的白名单条目（调用方据此知道该端点声明的 scope）。
+ * @throws {@link KernelCallDeniedError} 不在白名单 / 命名空间被钉住。
+ */
+export function authorizeKernelEndpoint(
+  authorizer: KernelScopeAuthorizer,
+  principal: KernelPrincipal,
+  endpoint: string,
+): KernelAllowlistEntry {
+  const entry = isKernelEndpointAllowed(endpoint) ? ALLOWLIST_INDEX.get(endpoint) : undefined
+  if (entry === undefined) throw new KernelCallDeniedError()
+  authorizer.requireScope(principal, entry.scope)
+  return entry
+}
+
+/** `auth.ts` 的最小面（避免为了两个方法把整个服务拖进白名单模块）。 */
+export interface KernelScopeAuthorizer {
+  requireScope(principal: KernelPrincipal, scope: DeviceScope): void
+  requireRoot(principal: KernelPrincipal, rootId: string): void
+}
+
+/** `contracts.ts` 的 `Principal`；这里只用到「能被 requireScope 接受」这一点。 */
+export type KernelPrincipal = Principal
+
+/** `endpoint` 的命名空间（`session/list` → `session`）。 */
+export function namespaceOf(endpoint: string): string {
+  const slash = endpoint.indexOf('/')
+  return slash === -1 ? endpoint : endpoint.slice(0, slash)
+}
+
+/**
+ * 桥自己封装的 35 个入口（31 条内核端点 + 4 条永久留桥的名字）。
+ *
+ * 这是「单一路径原则」的机器可读副本：白名单与它必须**零交集**。
+ * 阶段 4 的门面瘦身把这些端点收进了 `kernel-views.ts` / `kernel-local.ts`；
+ * 这份清单只用于机检，不参与运行期判定。
+ */
+export const BRIDGE_OWNED_ENDPOINTS: readonly string[] = [
+  'agentPresets/list',
+  'agentPresets/select',
+  'credentials/describe',
+  'credentials/set',
+  'credentials/unset',
+  'fileUploads/upload',
+  'llm/discoverModels',
+  'llm/listConfigurableProviders',
+  'llm/listProviders',
+  'permissionPresets/catalog',
+  'session/attachment',
+  'session/cancel',
+  'session/create',
+  'session/follow',
+  'session/fork',
+  'session/list',
+  'session/modelCatalog',
+  'session/page',
+  'session/projections',
+  'session/prompt',
+  'session/rename',
+  'session/selectModel',
+  'session/wait',
+  'settings/describe',
+  'settings/mutate',
+  'userQuestions/answer',
+  'workspace/archiveSession',
+  'workspace/create',
+  'workspace/delete',
+  'workspace/follow',
+  'workspace/rename',
+  // 4 条永久留桥（不是内核端点，但同样不许走通用调用面）
+  'approvals.respond',
+  'userQuestions.cancel',
+  'sessions.readHandoffImage',
+  'sessions.uploadAttachmentStream',
+]
+
+/** 单一路径原则：白名单与桥自有入口的交集（空数组才算合规）。 */
+export function singlePathViolations(): readonly string[] {
+  return KERNEL_ALLOWLIST.map(entry => entry.endpoint).filter(endpoint => BRIDGE_OWNED_ENDPOINTS.includes(endpoint))
+}

@@ -374,13 +374,15 @@ issue #26 把桥手抄的 31 条内核语义入口换成了「内核端点 + 描
 
 | 断言 | 测试 |
 |---|---|
-| 1 / 2 | 阶段 5 的白名单用例（`tests/kernel-allowlist.spec.ts`） |
-| 3 | 阶段 5 的 `kernel-call` 用例（owner peer `interactions:'none'`） |
+| 1 | `tests/kernel-allowlist.spec.ts` › raises one indistinguishable error for a real-but-unlisted endpoint and for a nonexistent one；`tests/kernel-call.spec.ts` › denies an endpoint outside the allowlist before touching the catalog / reports an allowlisted endpoint that the catalog does not know |
+| 2 | `tests/kernel-allowlist.spec.ts` › does not swallow a scope failure；`tests/kernel-call.spec.ts` › maps a missing device scope to 403-shaped failures |
+| 3 | `tests/kernel-call.spec.ts` › never lets the call surface reach an interaction（owner peer 由 `ws-host-services.ts` 以 `interactions:'none'` 建立） |
 | 4 | `tests/kernel-deltas.spec.ts` › machine check（门面 ≤450 行；门面零端点名常量表） |
 | 5 | `tests/dsh-0.2-bridge.spec.ts` › claims an approval request… / cancels a bridged front-of-house question…；`tests/handoff-hardening.spec.ts` › reads the bytes of an existing handoff file…；`tests/ws-file-transfer.spec.ts` › hands the kernel a byte stream… / falls back to the base64 path… |
 
-> 断言 1~3 属于阶段 5（通用调用面），落地时把上表的「阶段 5」替换成实际用例名 ——
-> 写在这里的每一条都必须是**能跑红的**，不是「已具备」。
+> 写在这里的每一条都必须是**能跑红的**，不是「已具备」。断言 1~3 属阶段 5 的通用调用面
+> （`kernel-allowlist.ts` 是唯一执法点、`kernel-call.ts` 是执行器）：默认拒绝先于目录查找、
+> 默认拒绝先于 scope 判定 —— 顺序反过来就等于送攻击者一个免费的存在性探针。
 
 ## 路径威胁
 

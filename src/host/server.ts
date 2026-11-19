@@ -236,8 +236,11 @@ export class RemoteApiServer implements RemoteControl {
    * 注入内核可选远程服务（typertGateway + owner peer），用于定时任务与官方语音 WS 代理。
    * 传入 undefined（老内核无这两个服务）时相关帧回结构化 unavailable，引导 REST 兜底。
    */
-  attachMobileRemoteServices(remote: Parameters<MobileGatewayWsHandler['attachRemoteServices']>[0]): void {
-    this.wsMobile.attachRemoteServices(remote)
+  attachMobileRemoteServices(
+    remote: Parameters<MobileGatewayWsHandler['attachRemoteServices']>[0],
+    catalog?: Parameters<MobileGatewayWsHandler['attachRemoteServices']>[1],
+  ): void {
+    this.wsMobile.attachRemoteServices(remote, catalog)
   }
 
   async start(): Promise<void> {

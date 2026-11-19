@@ -29,6 +29,8 @@
  * 不 import 内核包：本仓不把内核类型带进产物依赖，跨版本才不会因为类型面变化而编译失败。
  */
 
+import { isKernelEndpointAllowed } from './kernel-allowlist.ts'
+
 /** 登记表里单个参数的最小结构（内核 `InvocationParameterDescriptor` 的子集）。 */
 export interface KernelParameterDescriptorLike {
   readonly name: string
@@ -209,12 +211,15 @@ export function createKernelEndpointCatalog(registry: TypertRegistryLike | undef
  * 规则只有一条且方向固定：**目录非空才给位**。反过来（空目录也声明有目录）
  * 会让客户端按描述符驱动去调一个它其实看不到的清单。
  *
- * `kernelCall` 在这里恒 `false`：通用调用面还差**端点白名单**（阶段 5 的唯一执法点）。
- * 放在这个函数里而不是散在 `index.ts`，是为了让这条规则可被测试钉住 ——
- * 「探测不到内核 ⇒ 不给位，给位 ⇒ 目录非空」。
+ * `kernelCall` 需要**两个**条件同时成立：①目录非空 ②目录里至少有一个端点在白名单
+ * 里（阶段 5 的 `kernel-allowlist.ts` 是唯一执法点）。只满足①的话客户端会拿到一个
+ * 「能调」的位、却每次都被 `METHOD_NOT_ALLOWED` 拒 —— 声明与能力不符比不给位更糟。
+ * 放在这个函数里而不是散在 `index.ts`，是为了让这条规则可被测试钉住。
  */
 export function kernelCapabilityFlags(catalog: KernelEndpointCatalog): { kernelCatalog: boolean; kernelCall: boolean } {
-  return { kernelCatalog: catalog.endpoints.length > 0, kernelCall: false }
+  const catalogReady = catalog.endpoints.length > 0
+  const callable = catalog.endpoints.some(entry => isKernelEndpointAllowed(entry.endpoint))
+  return { kernelCatalog: catalogReady, kernelCall: catalogReady && callable }
 }
 
 /** 从 reflect 上取 `typert` 服务（可选，不进 inject）。 */
