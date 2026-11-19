@@ -244,6 +244,18 @@ export async function streamKernelEndpoint(
  * 「只有一份实现」。这里保留一个具名导出，是为了让换源处的调用点读起来是
  * 「归一内核错误」，而不是「凑巧用了个 RPC 工具函数」。
  */
+/**
+ * 内核端点背后的服务**整条缺席**（裁剪过的 profile、测试替身）。
+ *
+ * 真网关在 `resolveReceiverContext` 取不到服务时抛 `gateway/service-unavailable`；
+ * 进程内传输在同样的情形下抛同一个码，好让调用点只认一条判据。有些端点的正确
+ * 回应是「降级」而不是「报错」（`permissionPresets.catalog` 给的是内核声明的默认
+ * 档位），那类调用点用它来分辨「服务没了」与「调用真的错了」。
+ */
+export function isKernelServiceUnavailable(error: unknown): boolean {
+  return (error as { code?: unknown } | null | undefined)?.code === 'gateway/service-unavailable'
+}
+
 export function kernelRpcError(error: unknown): { code: string; message: string } {
   return toRpcError(error)
 }

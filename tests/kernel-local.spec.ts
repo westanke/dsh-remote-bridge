@@ -111,21 +111,29 @@ describe('local kernel transport (in-process)', () => {
 
     // 目录按 endpoint 字典序排列，所以期望值也按字典序写（否则顺序差异会伪装成内容差异）。
     expect(names).toEqual([
-      // 阶段 3b：workspace 写侧 / settings / credentials
+      // 阶段 3c：llm / agentPresets / permissionPresets
+      'agentPresets/list',
+      'agentPresets/select',
       'credentials/describe',
       'credentials/set',
       'credentials/unset',
+      'llm/discoverModels',
+      'llm/listConfigurableProviders',
+      'llm/listProviders',
+      'permissionPresets/catalog',
       // 阶段 3a：会话读侧
       'session/cancel',
       'session/create',
       'session/follow',
       'session/fork',
       'session/list',
+      'session/modelCatalog',
       'session/page',
       'session/projections',
       'session/rename',
       'session/selectModel',
       'session/wait',
+      // 阶段 3b：settings + workspace 写侧
       'settings/describe',
       'settings/mutate',
       'workspace/archiveSession',

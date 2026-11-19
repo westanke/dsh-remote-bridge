@@ -37,6 +37,7 @@ import {
   invokeBareEndpoint,
   invokeKernelEndpoint,
   invokeRequestEndpoint,
+  isKernelServiceUnavailable,
   streamBareEndpoint,
   streamRequestEndpoint,
 } from './bridge/kernel-invoke.ts'
@@ -48,6 +49,7 @@ import { FrameHub, SessionEventRelay, wireSessionRegistryRelay } from './bridge/
 import { ApprovalBridge, QuestionBridge, SESSION_RELAY_LIMIT } from './bridge/chat.ts'
 import { createAgentResolver, readArchivedSessionIds } from './bridge/host-reads.ts'
 import { optionalService, userQuestionsOf, toUserQuestionView } from './bridge/kernel-services.ts'
+import type { LlmLike } from './bridge/kernel-services.ts'
 import { DEFAULT_IMAGE_HANDOFF_DIR, readHandoffImageFile, handoffImagesForTextOnlyModel, resolveImageRef } from './bridge/attachments.ts'
 import { normalizePermissionCatalog, FALLBACK_PERMISSION_CATALOG } from './bridge/permissions.ts'
 import { projectionsOf, readSessionProjections } from './bridge/projections.ts'
@@ -504,33 +506,35 @@ export function createDsh02ApiProxy(
     },
 
     agentPresets: {
+      // 换源（阶段 3c）：`agentPresets/list` 就是内核的 `@Remote('list')` ⇒ `remoteExportList()`，
+      // 返回 `{ presets }`。0.2.x 取消了旧 `trust: 'system' | 'user'` 的区分（每个部署声明的
+      // 预设同等可信），所以 `AgentPresetRow` 上**没有** `trust`；插件视图与 Android 的
+      // 严格 kotlinx 解码器仍要求它 —— 缺这一个字段不是少一项，是整份列表开不了。
       list: () => call('agentPresets.list', async (signal) => {
-        // 0.2.x dropped the old `trust: 'system' | 'user'` split: every preset a
-        // deployment declares is equally trusted, so neither `AgentPreset` nor
-        // `AgentPresetRow` carries the field. The plugin's `AgentPresetView`
-        // (and the Android client's strict kotlinx.serialization decoder, which
-        // otherwise fails with "Field 'trust' is required") still require it.
-        const withTrust = (rows: readonly unknown[]): unknown[] => rows.map(row => ({
+        const roster = await invokeBareEndpoint<{ presets?: unknown }>(
+          kernel.caller, kernel.catalog.byName, 'agentPresets/list', signal,
+        )
+        const rows = Array.isArray(roster?.presets) ? roster.presets : []
+        const presets = rows.map(row => ({
           ...(row as Record<string, unknown>),
           trust: (row as { trust?: unknown }).trust ?? 'system',
         }))
-        const roster = await host.agentPresets.remoteExportList()
-        if (roster && typeof roster === 'object') {
-          const view = roster as { presets?: unknown; authorable?: unknown; hasDocument?: unknown }
-          if (Array.isArray(view.presets)) {
-            return {
-              presets: withTrust(view.presets),
-              authorable: view.authorable === true,
-              hasDocument: view.hasDocument === true,
-            } as never
-          }
-        }
-        const items = await host.agentPresets.list()
-        return { presets: withTrust(items), authorable: false, hasDocument: false } as never
+        // `authorable` / `hasDocument` 是 0.1.x 的旧视图字段，0.2.x 的 roster 不携带。
+        return { presets, authorable: false, hasDocument: false } as never
       }),
       select: request => call('agentPresets.select', async (signal) => {
-        const agent = await agentFor(request.payload.sessionId)
-        const agentPreset = await host.agentPresets.select(agent, request.payload.agentPreset)
+        // **保留的 delta（行为差异，别再挪）**：内核端点按 `agentId`（= 会话 id）走 agent
+        // lookup，冷会话会被**隐式 resume**；桥今天的语义是先要求有 live Agent
+        // （否则 `session/agent-unavailable`）。3c 只换传输，不改这条判据 ——
+        // 要放开隐式唤醒得单独立项，它改变的是「点一下就把会话跑起来」这种副作用。
+        await agentFor(request.payload.sessionId)
+        const agentPreset = await invokeKernelEndpoint<string>(
+          kernel.caller,
+          kernel.catalog.byName,
+          'agentPresets/select',
+          { agentId: request.payload.sessionId, agentPreset: request.payload.agentPreset },
+          signal,
+        )
         return { agentPreset }
       }),
     },
@@ -538,23 +542,22 @@ export function createDsh02ApiProxy(
     // 权限档位目录：内核的 `permissionPresets.catalog()` 是进程级清单，
     // 客户端必须能拿到它才能列候选档位（见 PermissionPresetsLike 的 @patch 说明）。
     permissionPresets: {
+      // 换源（阶段 3c）：`permissionPresets/catalog` 是无参端点。
+      //
+      // **降级必须留着**：本机实测（2026-10-19）这条 profile 上 `permissionPresets`
+      // 服务压根没挂进注入面，网关会报 `gateway/service-unavailable`。一个可选能力
+      // 缺席不该让权限入口整个 500 —— 那时给**内核声明过的默认档位**
+      // （依据见 FALLBACK_PERMISSION_CATALOG 注释），至少这两个是能切成功的。
       catalog: () => call('permissionPresets.catalog', async (signal) => {
-        // **必须容错读取**，不能直接 `host.permissionPresets`：
-        // 本机实测（2026-10-19）这条 profile 上它抛
-        // `cannot get property "permissionPresets" without inject`。
-        //
-        // 注意这不是「加载时机不对」—— 文件顶部那段注释已经把结论写死了：
-        // 该异常的含义是「**压根没有**这个可注入服务」。旁证是内核那条能力本身在正常工作：
-        // `/permission` 命令存在（`GET …/commands` 能列出来）、会话投影里
-        // `permissions.currentValue` 也有值 —— 只是服务没挂进本插件的注入面。
-        // 所以「装包」解决不了它（本 profile 里包就在核身体内），直接读只会让端点 500。
-        const service = optionalService<PermissionPresetsLike>(host, 'permissionPresets')
-        if (service === null || typeof service.catalog !== 'function') {
-          // 降级：给出**内核声明过的默认档位**（依据见 FALLBACK_PERMISSION_CATALOG 注释），
-          // 让客户端的档位菜单可用；拿不到内核全量清单时至少这两个是能切成功的。
-          return FALLBACK_PERMISSION_CATALOG
+        try {
+          const catalog = await invokeBareEndpoint<unknown>(
+            kernel.caller, kernel.catalog.byName, 'permissionPresets/catalog', signal,
+          )
+          return normalizePermissionCatalog(catalog)
+        } catch (error) {
+          if (isKernelServiceUnavailable(error)) return FALLBACK_PERMISSION_CATALOG
+          throw error
         }
-        return normalizePermissionCatalog(await service.catalog())
       }),
     },
 
@@ -690,15 +693,19 @@ export function createDsh02ApiProxy(
     },
 
     llm: {
+      // 换源（阶段 3c）：两个无参端点。0.2.x 把「可配置目录」（有哪些路由、在哪里配置）
+      // 与「活路由表」（真正注册上的）拆成两条内核方法 —— 桥这边仍然合并成一条视图，
+      // 契约（`dsh-llm` 的配置面）就是这么描述的。
       providers: () => call('llm.providers', async (signal) => {
-        // The plugin models a configurable provider as
-        // `{ provider, displayName, settingsNs, settingsPath, active, declared? }`.
-        // 0.2.x splits that across two calls: the configurable directory (which
-        // routes exist and where they are configured) and the live registry
-        // (which routes are actually registered). Merge them, exactly as the
-        // dsh-llm contract describes for configuration surfaces.
-        const directory = host.llm.listConfigurableProviders()
-        const live = new Set(host.llm.listProviders().map(entry => entry.id))
+        const [directory, registry] = await Promise.all([
+          invokeBareEndpoint<LlmLike['listConfigurableProviders'] extends () => infer R ? R : never>(
+            kernel.caller, kernel.catalog.byName, 'llm/listConfigurableProviders', signal,
+          ),
+          invokeBareEndpoint<readonly { id: string }[]>(
+            kernel.caller, kernel.catalog.byName, 'llm/listProviders', signal,
+          ),
+        ])
+        const live = new Set(registry.map(entry => entry.id))
         return {
           providers: directory.map(entry => ({
             provider: entry.provider,
@@ -714,9 +721,14 @@ export function createDsh02ApiProxy(
         } as never
       }),
       models: () => call('llm.models', async (signal) => {
-        // The model directory the settings page renders is the same catalogue a
-        // session sees; sessions.models projects the per-session slice of it.
-        const catalog = await host.sessionController.modelCatalog()
+        // 换源（阶段 3c）：设置页渲染的模型目录就是会话看到的那份目录
+        // （`sessions.models` 只是给它叠上 per-session 的选择）。
+        // **保留的 delta**：`contextWindow` / `maxTokens` 来自 `llm.resolveModelInfo`，
+        // 它**不是端点**（内核没给它 `@Remote`）⇒ 只能留在桥（`enrichModelGroups`）。
+        const catalog = await invokeBareEndpoint<{
+          groups?: unknown
+          failures?: unknown
+        }>(kernel.caller, kernel.catalog.byName, 'session/modelCatalog', signal)
         const view = catalog as { groups?: unknown; failures?: unknown }
         // 与 sessions.models 同源：设置页与模型选择器看到同一份容量。
         const groups = Array.isArray(view.groups) ? view.groups : []
@@ -726,8 +738,15 @@ export function createDsh02ApiProxy(
         }
       }),
       discoverModels: request => call('llm.discoverModels', async (signal) => {
+        // 换源（阶段 3c）：两个顶层参（`settingsNs` + `request`），声明了 cancellation。
         const { settingsNs, ...rest } = request.payload
-        const models = await host.llm.discoverModels(settingsNs, rest)
+        const models = await invokeKernelEndpoint<readonly unknown[]>(
+          kernel.caller,
+          kernel.catalog.byName,
+          'llm/discoverModels',
+          { settingsNs, request: rest },
+          signal,
+        )
         return { models: [...models] } as never
       }),
     },

@@ -539,6 +539,7 @@ export const PLUGIN_VERSION: string          // shared/version.ts，与 package.
 | `export function streamRequestEndpoint` | `src/host/bridge/kernel-invoke.ts` | function |
 | `export function invokeBareEndpoint` | `src/host/bridge/kernel-invoke.ts` | function |
 | `export function streamBareEndpoint` | `src/host/bridge/kernel-invoke.ts` | function |
+| `export function isKernelServiceUnavailable` | `src/host/bridge/kernel-invoke.ts` | function |
 | `export interface KernelGateway` | `src/host/bridge/proxy-options.ts` | interface |
 | `export function createLocalKernelGateway` | `src/host/bridge/kernel-local.ts` | function |
 | `export function localEndpointDescriptors` | `src/host/bridge/kernel-local.ts` | function |

@@ -561,6 +561,33 @@ base64 膨胀 4/3，所以单条路径的原始文件实际上限约 **17.2 MiB*
 `docs:check` 四段全过（12 文档 / 39 tasks / 9 ADRs / STRUCTURE 84 锚点 / INTERFACES 87 锚点）；
 双产物 build 成功（host `lib/index.js` 628.64 kB、client `lib/client.cjs` 772.91 kB）。
 
+## 未发布 · 内核端点归一（B2 全量换源）阶段 3c：模型目录与预设面 6 条换源（issue #26，2026-11-19）
+
+> 第三批换源。**手机协议零改动**：六条 REST 路径与响应形状照旧。
+
+- **6 条换源**：`llm.providers` → `llm/listConfigurableProviders` + `llm/listProviders`（两条无参端点
+  并发取，再用 id 求交算 `active`）；`llm.models` → `session/modelCatalog`（无参）；`llm.discoverModels`
+  → `llm/discoverModels`（两个顶层参 `settingsNs` + `request`，**声明了 cancellation**）；
+  `agentPresets.list` → `agentPresets/list`（无参，返回 `{ presets }`）；`agentPresets.select` →
+  `agentPresets/select`（**scope=agent**：wire 键 `agentId` 装的是会话 id，lookup 再解析成 Agent）；
+  `permissionPresets.catalog` → `permissionPresets/catalog`（无参）。
+- **三个必须守住的语义（都留在桥里）**：
+  1. **`trust` 字段**：内核 `AgentPresetRow` 没有它（0.2.x 取消了 system/user 之分），而 Android 的
+     严格 kotlinx 解码器「缺字段即整份失败」—— 少这一个字段不是少一项，是预设列表开不了。
+  2. **容量字段**：`contextWindow`/`maxTokens` 来自 `llm.resolveModelInfo`，它**不是端点**（内核没给
+     `@Remote`）⇒ 只能留在桥（`bridge/models.ts` 的 `enrichModelGroups`）。**注意**：用
+     `llm/discoverModels` 顶替**不等价**（它按 provider 探测，未配凭据的 provider 仍无数据）。
+  3. **`agentPresets.select` 的冷会话语义**：内核端点的 `agentId` lookup 会 `resolveAgent(sessionId)`，
+     即**隐式 resume 冷会话**；桥今天的 `agentFor` 抛 `session/agent-unavailable`。3c 只换传输，
+     **保留**这条前置判定 —— 放开隐式唤醒改变的是「点一下就把会话跑起来」这种副作用，要单独立项。
+- **`permissionPresets.catalog` 的降级照旧**：服务整条缺席时网关报 `gateway/service-unavailable`，
+  新增 `isKernelServiceUnavailable(error)` 判据（与进程内传输共用同一个码），命中就给
+  `FALLBACK_PERMISSION_CATALOG`，其余错误照旧上抛 —— 可选能力缺席不该让权限入口 500。
+- **既有用例一行未改**：6 个 spec / 98 例全绿（含 `permission-presets` 的「服务不可注入时降级」与
+  「有服务时以内核为准」两条方向用例，以及 `agentPresets.list` 的 trust 用例）。
+- **未做的验收**：同 3a/3b —— REST 逐字段快照与 6 项真机清单本机无法执行；`agentPresets.select` 的
+  唤醒差异已写进 `STATUS.md`，真机时重点看「冷会话点选预设」与「已启动会话点选预设」两种路径。
+
 ## 未发布 · 内核端点归一（B2 全量换源）阶段 3b：写侧与设置面 9 条换源（issue #26，2026-11-19）
 
 > 第二批换源。**手机协议零改动**：九条 REST 路径与响应形状照旧，改的仍是桥内部走哪条通道。

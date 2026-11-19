@@ -1,6 +1,20 @@
 # 当前状态
 
-- 日期：2026-11-19（**已发版 v2.12.1：大文件上传流式化 + 隧道工具 schema 修形**；`main` 上另有未发版的 issue #26 阶段 0 / 1 / 2 / 3a / 3b）
+- 日期：2026-11-19（**已发版 v2.12.1：大文件上传流式化 + 隧道工具 schema 修形**；`main` 上另有未发版的 issue #26 阶段 0 / 1 / 2 / 3a / 3b / 3c）
+- **已完成（未发布，issue #26 阶段 3c / `MOB-006`）· 模型目录与预设面 6 条换源**：
+  ①**换源清单**：`llm.providers` → `llm/listConfigurableProviders` + `llm/listProviders`（并发取、id 求交得
+  `active`）、`llm.models` → `session/modelCatalog`、`llm.discoverModels` → 同名端点（两顶层参 + cancellation）、
+  `agentPresets.list` → `agentPresets/list`、`agentPresets.select` → 同名端点（**scope=agent**，`agentId` 装会话 id）、
+  `permissionPresets.catalog` → 同名端点（无参）。
+  ②**保留的三个语义**：`trust:'system'` 补齐（缺了 Android 预设列表整份解码失败）；`contextWindow`/`maxTokens`
+  仍由 `enrichModelGroups` 从 `llm.resolveModelInfo` 补（**它不是端点**；用 `llm/discoverModels` 顶替不等价）；
+  `agentPresets.select` 仍先 `agentFor` 要求 live Agent —— 内核端点的 agent lookup 会**隐式 resume 冷会话**，
+  这是一条**已知行为差异**，3c 刻意不放开来（真机重点看冷/热两种路径）。
+  ③**新增 `isKernelServiceUnavailable(error)`**（`bridge/kernel-invoke.ts`）：真网关与进程内传输在「服务整条
+  缺席」时抛同一个码 `gateway/service-unavailable`，`permissionPresets.catalog` 据此走
+  `FALLBACK_PERMISSION_CATALOG` 降级，其余错误照旧上抛。
+  ④**既有用例一行未改**：6 个 spec / 98 例全绿（含权限档位降级/以内核为准两条方向用例、preset 的 trust 用例）。
+  ⑤**未做的验收**：REST 逐字段快照与 6 项真机清单本机无法执行，**开真机前不算通过**。
 - **已完成（未发布，issue #26 阶段 3b / `MOB-005`）· 写侧与设置面 9 条换源**：
   ①**换源清单**：`workspace.create`/`rename`/`delete`/`archiveSession` → 四个同名写侧端点（单参），
   `settings.describe` → `settings/describe`（**无参**，走 `invokeBareEndpoint`）、`settings.mutate` →

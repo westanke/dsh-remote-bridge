@@ -198,6 +198,68 @@ const LOCAL_ENDPOINTS: readonly LocalEndpoint[] = [
     descriptor: { namespace: 'credentials', method: 'unset', parameters: [request('ref')] },
     run: (host, args) => host.credentialsController.unset(args.ref as never),
   },
+
+  // ===== 阶段 3c：llm 3 条 + agentPresets 2 条 + permissionPresets 1 条 =====
+  {
+    descriptor: { namespace: 'llm', method: 'listConfigurableProviders', parameters: [] },
+    run: host => host.llm.listConfigurableProviders(),
+  },
+  {
+    descriptor: { namespace: 'llm', method: 'listProviders', parameters: [] },
+    run: host => host.llm.listProviders(),
+  },
+  {
+    descriptor: { namespace: 'session', method: 'modelCatalog', parameters: [] },
+    run: host => host.sessionController.modelCatalog(),
+  },
+  {
+    // 两个顶层参 + 声明 cancellation（真描述符如此，`signal` 接在参数后面）。
+    descriptor: {
+      namespace: 'llm',
+      method: 'discoverModels',
+      parameters: [request('settingsNs'), request('request')],
+      cancellation: { parameter: 'signal' },
+    },
+    run: (host, args, signal) => host.llm.discoverModels(
+      args.settingsNs as never,
+      args.request,
+      signal ?? IDLE_SIGNAL,
+    ),
+  },
+  {
+    // 内核的 `@Remote('list')` 就是 `remoteExportList()`，返回 `{ presets }`。
+    // 测试替身可能只实现了 `list()`，退回去包成同一形状。
+    descriptor: { namespace: 'agentPresets', method: 'list', parameters: [] },
+    run: async host => {
+      const remote = (host.agentPresets as { remoteExportList?: () => Promise<unknown> }).remoteExportList
+      if (typeof remote === 'function') return await remote.call(host.agentPresets)
+      return { presets: [...await host.agentPresets.list()] }
+    },
+  },
+  {
+    // scope = agent：wire 键 `agentId` 装的是**会话 id**，lookup 再解析成 Agent
+    // （内核 `dsh-api-session-controller/src/agent.ts:129` 的 `lookups.configure('agent', sessionId => resolveAgent(sessionId))`）。
+    descriptor: {
+      namespace: 'agentPresets',
+      method: 'select',
+      parameters: [request('agentId'), request('agentPreset')],
+    },
+    run: async (host, args) => host.agentPresets.select(
+      await resolveLocalAgent(host, args.agentId),
+      args.agentPreset as never,
+    ),
+  },
+  {
+    // 无参端点；服务缺席时抛 `gateway/service-unavailable`，让调用点走降级清单。
+    descriptor: { namespace: 'permissionPresets', method: 'catalog', parameters: [] },
+    run: async host => {
+      const service = readLocalService<{ catalog?: () => Promise<unknown> }>(host, 'permissionPresets')
+      if (service === null || typeof service.catalog !== 'function') {
+        throw Object.assign(new Error('permissionPresets service is unavailable'), { code: 'gateway/service-unavailable' })
+      }
+      return await service.catalog()
+    },
+  },
 ]
 
 function localWorkspaceFollow(host: Dsh02HostServices, signal: AbortSignal | undefined): AsyncIterable<unknown> {
@@ -231,6 +293,36 @@ function localWorkspaceFollow(host: Dsh02HostServices, signal: AbortSignal | und
     }
   }
   return frames()
+}
+
+/**
+ * 宽容读一个可选宿主服务。
+ *
+ * 与门面里的 `optionalService` 同一个理由：cordis 上「读一个没被提供的注入属性」
+ * 是**抛异常**（`cannot get property "x" without inject`），不是返回 undefined。
+ * 少一条服务不该把端点打崩，所以这里两种缺席形态都收敛成 `null`。
+ */
+function readLocalService<T>(host: Dsh02HostServices, name: string): T | null {
+  try {
+    const value = (host as unknown as Record<string, unknown>)[name]
+    return value === null || value === undefined ? null : value as T
+  } catch {
+    return null
+  }
+}
+
+/**
+ * 会话 id → 内核 Agent（`resolveAgent` 的包装对象要拆开，见 `host-reads.ts` 的解释）。
+ * 端点语义是「lookup 解析身份」，进程内直连就在这里做同一件事。
+ */
+async function resolveLocalAgent(host: Dsh02HostServices, sessionId: unknown): Promise<unknown> {
+  const resolved = await host.sessionController.resolveAgent(sessionId as never) as unknown
+  const wrapped = resolved !== null && typeof resolved === 'object'
+    && ('agent' in resolved || 'error' in resolved)
+  if (!wrapped) return resolved
+  const failure = (resolved as { error?: unknown }).error
+  if (failure !== undefined && failure !== null) throw failure
+  return (resolved as { agent?: unknown }).agent
 }
 
 /** 端点名 → 表项（构建一次，复用）。 */
