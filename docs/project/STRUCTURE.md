@@ -288,7 +288,7 @@ host services 之上重建 0.1.x 的 `apiProxy` 面容，让 `chat-adapter` / `s
 | `src/host/bridge/host-reads.ts` | file | 宿主读取助手：sessionIdOfAgent/sessionIdOf/readArchivedSessionIds/createAgentResolver（原工厂内联） |
 | `src/host/bridge/kernel-endpoints.ts` | file | 内核端点目录（issue #26 阶段 2）：describeKernelEndpoint/readKernelEndpoints/createKernelEndpointCatalog/readTypertRegistry/kernelCapabilityFlags —— 从 Typert 登记表抄 wire 键与描述，只读、永不抛 |
 | `src/host/bridge/kernel-invoke.ts` | file | 内核端点调用封装（issue #26 阶段 2）：assertKernelArguments/wrapRequestArgument/kernelCallSignal/requireKernelEndpoint/invokeKernelEndpoint/streamKernelEndpoint/kernelRpcError —— 参数校验文案与内核逐字一致 |
-| `src/host/bridge/kernel-local.ts` | file | 进程内传输（issue #26 阶段 3a）：createLocalKernelGateway —— 没有 typertGateway 时（单测 / 缺席的可选服务）把同一套端点语义接到宿主服务上；wires 手写，由 tests/kernel-local.spec.ts 在装了内核的机器上与真实描述符比对防漂 |
+| `src/host/bridge/kernel-local.ts` | file | 进程内传输（issue #26 阶段 3a / 3b）：createLocalKernelGateway —— 没有 typertGateway 时（单测 / 缺席的可选服务）把同一套端点语义接到宿主服务上，表从 11 条增到 20 条（3b 起也承载 workspace 写侧 / settings / credentials，并支持多顶层参）；`assertWires` 补上与内核同一条「拒多余键」判定；wires 手写，由 tests/kernel-local.spec.ts 在装了内核的机器上与真实描述符比对防漂 |
 | `src/host/bridge/kernel-services.ts` | file | 0.2.x 宿主服务结构视图 + UserQuestionsLike 视图 + optionalService |
 | `src/host/bridge/models.ts` | file | 模型目录补容 modelCapacityOf/enrichModelGroups（TTL 缓存，不缓存失败） |
 | `src/host/bridge/permissions.ts` | file | 权限档位目录读取与降级清单（normalizePermissionCatalog/FALLBACK_PERMISSION_CATALOG） |

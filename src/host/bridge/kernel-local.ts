@@ -21,7 +21,7 @@
  * `wires` 是手写的（进程内直连没有登记表可读）。防漂移的办法是拿真实内核的
  * 目录去比：`tests/kernel-local.spec.ts` 在本机装有内核时逐条断言
  * `LOCAL_ENDPOINTS` 的 wire 键/流式/cancellation 与 `typert.host.js` 的描述符
- * **完全一致**，缺一项就红。没有内核的机器上该用例整段 skip（CI 不受影响），
+ * **完全一致**，缺一项就红。没有内核的机器上该段整段 skip（CI 不受影响），
  * 所以它只在开发机上生效 —— 这不是完美门禁，但它让「改了内核参数名、忘了改这张表」
  * 在开发机上立刻炸，而不是等到手机上某个功能静默失效。
  *
@@ -30,24 +30,20 @@
 
 import type { Dsh02HostServices } from './kernel-services.ts'
 import { createKernelEndpointCatalog, type KernelEndpointCatalog, type KernelDescriptorLike } from './kernel-endpoints.ts'
-import { KernelEndpointUnknownError, type KernelCaller } from './kernel-invoke.ts'
+import { KernelArgumentsError, KernelEndpointUnknownError, type KernelCaller } from './kernel-invoke.ts'
 import type { KernelGateway } from './proxy-options.ts'
 
 /** 一个永不中止的信号：给「能接受 undefined、但接口声明要求必填 signal」的方法用。 */
 const IDLE_SIGNAL = new AbortController().signal
 
-/** 表里的一条：端点名 + 描述符 + 实现（实现拿的永远是解包后的 payload）。 */
+/** wire 键 → 值的参数集（与真实网关 `args` 同形）。 */
+type Wire = Readonly<Record<string, unknown>>
+
+/** 表里的一条：端点名 + 描述符 + 实现（实现拿到的就是 wire 参数集）。 */
 interface LocalEndpoint {
   readonly descriptor: KernelDescriptorLike
-  /**
-   * 流式方法的实现返回 `AsyncIterable`；unary 返回结果值。
-   *
-   * `payload` 声明成 `never` 是有意的：解包出来的是 `unknown`（描述符只说「有一个
-   * JSON 参数」），而各宿主方法要的是各自的请求类型。在这里收成 `never`，让表里的
-   * 实现直接按方法的参数类型写、不必每个都抄一遍 `as {...}`；真正做校验的是调用点
-   * （`assertKernelArguments` 已经拒了多余/缺失的 wire 键）与内核方法自己。
-   */
-  readonly run: (host: Dsh02HostServices, payload: never, signal: AbortSignal | undefined) => unknown
+  /** 流式方法的实现返回 `AsyncIterable`；unary 返回结果值。 */
+  readonly run: (host: Dsh02HostServices, args: Wire, signal: AbortSignal | undefined) => unknown
 }
 
 const request = (wire = 'request'): KernelDescriptorLike['parameters'][number] => ({
@@ -56,13 +52,18 @@ const request = (wire = 'request'): KernelDescriptorLike['parameters'][number] =
   source: 'json',
 })
 
+/** 单参端点的快捷取法：`args[wire]` 交给宿主方法（类型由各方法自己声明）。 */
+const one = (args: Wire, wire = 'request'): never => args[wire] as never
+
 /**
- * 阶段 3a 收进来的十条（会话读侧 9 条 + `workspace.list`）。
+ * 进程内传输的端点表。
  *
- * 顺序无关紧要（目录会按 endpoint 字典序排），但**按批次分组**，
- * 下一批（3b/3c/3d）直接往下追加。
+ * 顺序无关紧要（目录会按 endpoint 字典序排），但**按批次分组**：
+ * 3a = 会话读侧 + `workspace.list`；3b = workspace 写侧 + settings + credentials。
+ * 后续批次（3c/3d）直接往下追加。
  */
 const LOCAL_ENDPOINTS: readonly LocalEndpoint[] = [
+  // ===== 阶段 3a：会话读侧 9 条 + workspace.list =====
   {
     descriptor: {
       namespace: 'session',
@@ -70,11 +71,11 @@ const LOCAL_ENDPOINTS: readonly LocalEndpoint[] = [
       parameters: [request('_request')],
       cancellation: { parameter: 'signal' },
     },
-    run: (host, payload, signal) => host.sessionController.list(payload, signal ?? IDLE_SIGNAL),
+    run: (host, args, signal) => host.sessionController.list(one(args, '_request'), signal ?? IDLE_SIGNAL),
   },
   {
     descriptor: { namespace: 'session', method: 'create', parameters: [request()] },
-    run: (host, payload) => host.sessionController.create(payload),
+    run: (host, args) => host.sessionController.create(one(args)),
   },
   {
     // 流式 + 声明 cancellation：与真实描述符一致（`mode:'stream'` + `signal` 参数）。
@@ -85,7 +86,7 @@ const LOCAL_ENDPOINTS: readonly LocalEndpoint[] = [
       parameters: [request()],
       cancellation: { parameter: 'signal' },
     },
-    run: (host, payload, signal) => host.sessionController.follow(payload, signal ?? IDLE_SIGNAL),
+    run: (host, args, signal) => host.sessionController.follow(one(args), signal ?? IDLE_SIGNAL),
   },
   {
     descriptor: {
@@ -94,7 +95,7 @@ const LOCAL_ENDPOINTS: readonly LocalEndpoint[] = [
       parameters: [request()],
       cancellation: { parameter: 'signal' },
     },
-    run: (host, payload, signal) => host.sessionController.page(payload, signal ?? IDLE_SIGNAL),
+    run: (host, args, signal) => host.sessionController.page(one(args), signal ?? IDLE_SIGNAL),
   },
   {
     descriptor: {
@@ -103,7 +104,7 @@ const LOCAL_ENDPOINTS: readonly LocalEndpoint[] = [
       parameters: [request()],
       cancellation: { parameter: 'signal' },
     },
-    run: (host, payload, signal) => host.sessionController.projections(payload, signal ?? IDLE_SIGNAL),
+    run: (host, args, signal) => host.sessionController.projections(one(args), signal ?? IDLE_SIGNAL),
   },
   {
     descriptor: {
@@ -112,23 +113,23 @@ const LOCAL_ENDPOINTS: readonly LocalEndpoint[] = [
       parameters: [request()],
       cancellation: { parameter: 'signal' },
     },
-    run: (host, payload, signal) => host.sessionController.wait(payload, signal ?? IDLE_SIGNAL),
+    run: (host, args, signal) => host.sessionController.wait(one(args), signal ?? IDLE_SIGNAL),
   },
   {
     descriptor: { namespace: 'session', method: 'selectModel', parameters: [request()] },
-    run: (host, payload) => host.sessionController.selectModel(payload),
+    run: (host, args) => host.sessionController.selectModel(one(args)),
   },
   {
     descriptor: { namespace: 'session', method: 'rename', parameters: [request()] },
-    run: (host, payload) => host.sessionController.rename(payload),
+    run: (host, args) => host.sessionController.rename(one(args)),
   },
   {
     descriptor: { namespace: 'session', method: 'fork', parameters: [request()] },
-    run: (host, payload) => host.sessionController.fork(payload),
+    run: (host, args) => host.sessionController.fork(one(args)),
   },
   {
     descriptor: { namespace: 'session', method: 'cancel', parameters: [request()] },
-    run: (host, payload) => host.sessionController.cancel(payload),
+    run: (host, args) => host.sessionController.cancel(one(args)),
   },
   {
     // `workspace/follow` 无参数、流式、声明 cancellation。宿主对象的
@@ -141,7 +142,61 @@ const LOCAL_ENDPOINTS: readonly LocalEndpoint[] = [
       parameters: [],
       cancellation: { parameter: 'signal' },
     },
-    run: (host, _payload, signal) => localWorkspaceFollow(host, signal),
+    run: (host, _args, signal) => localWorkspaceFollow(host, signal),
+  },
+
+  // ===== 阶段 3b：workspace 写侧 4 条 + settings 2 条 + credentials 3 条 =====
+  {
+    descriptor: { namespace: 'workspace', method: 'create', parameters: [request()] },
+    run: (host, args) => host.workspaceController.create(one(args)),
+  },
+  {
+    descriptor: { namespace: 'workspace', method: 'rename', parameters: [request()] },
+    run: (host, args) => host.workspaceController.rename(one(args)),
+  },
+  {
+    descriptor: { namespace: 'workspace', method: 'delete', parameters: [request()] },
+    run: (host, args) => host.workspaceController.delete(one(args)),
+  },
+  {
+    descriptor: { namespace: 'workspace', method: 'archiveSession', parameters: [request()] },
+    run: (host, args) => host.workspaceController.archiveSession(one(args)),
+  },
+  {
+    // 无参端点：`args` 必须是空对象（真网关同样会拒多余键）。
+    descriptor: { namespace: 'settings', method: 'describe', parameters: [] },
+    run: host => host.settingsController.describe(),
+  },
+  {
+    // **三个顶层参**：这是阶段 2「wire 键自动取」的第一次实战。
+    descriptor: {
+      namespace: 'settings',
+      method: 'mutate',
+      parameters: [request('ns'), request('ops'), request('expectedRevision')],
+    },
+    run: (host, args) => host.settingsController.mutate(
+      args.ns as never,
+      args.ops as never,
+      args.expectedRevision as never,
+    ),
+  },
+  {
+    // 顶层数组参。
+    descriptor: { namespace: 'credentials', method: 'describe', parameters: [request('refs')] },
+    run: (host, args) => host.credentialsController.describe(args.refs as never),
+  },
+  {
+    // 两个顶层参。
+    descriptor: {
+      namespace: 'credentials',
+      method: 'set',
+      parameters: [request('ref'), request('value')],
+    },
+    run: (host, args) => host.credentialsController.set(args.ref as never, args.value as never),
+  },
+  {
+    descriptor: { namespace: 'credentials', method: 'unset', parameters: [request('ref')] },
+    run: (host, args) => host.credentialsController.unset(args.ref as never),
   },
 ]
 
@@ -208,26 +263,30 @@ export function createLocalKernelGateway(host: Dsh02HostServices): KernelGateway
     if (found === undefined) throw new KernelEndpointUnknownError(`${namespace}/${method}`)
     return found.run
   }
-  // 进程内直连没有 wire 编码：参数就是描述符里的那一个 payload。多参端点在
-  // 这里无法表达（也没有需要），出现就是写错，直接抛 —— 别静默只取第一个。
-  const payloadOf = (endpoint: string, args: Readonly<Record<string, unknown>>): unknown => {
-    const keys = Reflect.ownKeys(args)
-    if (keys.length === 0) return undefined
-    if (keys.length > 1) throw new KernelEndpointUnknownError(`${endpoint} (local transport takes a single payload argument)`)
-    return args[String(keys[0])]
+  // 真网关会在 `assertExactArguments` 里拒多余键；进程内直连没有那一步，
+  // 所以在这里做同一条判定 —— 否则「多传一个键」在单测里会静默通过，
+  // 上线才被内核拒收，正是这次改造想消灭的那类差异。
+  const assertWires = (endpoint: string, args: Wire): void => {
+    const descriptor = catalog.byName.get(endpoint)
+    const wires = descriptor?.wires ?? []
+    for (const key of Reflect.ownKeys(args)) {
+      if (!wires.includes(String(key))) throw new KernelArgumentsError(endpoint, `unexpected "${String(key)}"`)
+    }
   }
 
   const caller: KernelCaller = {
     async invoke(namespace, method, args = {}, signal) {
-      const run = resolve(namespace, method)
+      const endpoint = `${namespace}/${method}`
+      assertWires(endpoint, args)
       // 取消照传：宿主方法的 AbortSignal 与内核 `cancellation` 参数语义一致。
-      return await run(host, payloadOf(`${namespace}/${method}`, args) as never, signal)
+      return await resolve(namespace, method)(host, args, signal)
     },
     async stream(namespace, method, args = {}, signal) {
-      const run = resolve(namespace, method)
-      const result = run(host, payloadOf(`${namespace}/${method}`, args) as never, signal)
+      const endpoint = `${namespace}/${method}`
+      assertWires(endpoint, args)
+      const result = resolve(namespace, method)(host, args, signal)
       if (result === null || typeof result !== 'object') {
-        throw new KernelEndpointUnknownError(`${namespace}/${method} (local transport expected a stream)`)
+        throw new KernelEndpointUnknownError(`${endpoint} (local transport expected a stream)`)
       }
       return result as AsyncIterable<unknown>
     },

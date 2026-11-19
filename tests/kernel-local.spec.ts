@@ -8,7 +8,7 @@ import {
   readKernelEndpoints,
   type KernelDescriptorLike,
 } from '../src/host/bridge/kernel-endpoints.ts'
-import { KernelEndpointUnknownError } from '../src/host/bridge/kernel-invoke.ts'
+import { KernelArgumentsError, KernelEndpointUnknownError } from '../src/host/bridge/kernel-invoke.ts'
 import { createLocalKernelGateway, localEndpointDescriptors } from '../src/host/bridge/kernel-local.ts'
 import type { Dsh02HostServices } from '../src/host/bridge/kernel-services.ts'
 
@@ -45,12 +45,27 @@ describe('local kernel transport (in-process)', () => {
     expect(host.sessionController.rename).toHaveBeenCalledTimes(1)
   })
 
-  it('refuses an args object with more than one wire key', async () => {
+  it('refuses a wire key the descriptor does not declare', async () => {
     const gateway = createLocalKernelGateway(fakeHost())
+    // 真网关在 `assertExactArguments` 里就拒了；进程内传输必须做同一条判定，
+    // 否则「多传一个键」在单测里静默通过、上线才被内核拒收。
     await expect(gateway.caller.invoke('session', 'rename', {
       request: { sessionId: 's-1' },
       extra: true,
-    })).rejects.toBeInstanceOf(KernelEndpointUnknownError)
+    })).rejects.toBeInstanceOf(KernelArgumentsError)
+  })
+
+  it('spreads several top-level wire keys across the host method arguments', async () => {
+    const settings = { mutate: vi.fn(async () => ({ revision: 2 })), describe: vi.fn(async () => ({})) }
+    const credentials = { set: vi.fn(async () => undefined), unset: vi.fn(async () => undefined) }
+    const host = fakeHost({ settingsController: settings, credentialsController: credentials })
+    const gateway = createLocalKernelGateway(host)
+
+    await gateway.caller.invoke('settings', 'mutate', { ns: 'ui', ops: [{ op: 'set' }], expectedRevision: 1 })
+    await gateway.caller.invoke('credentials', 'set', { ref: 'anthropic', value: 'sk-1' })
+
+    expect(settings.mutate).toHaveBeenCalledWith('ui', [{ op: 'set' }], 1)
+    expect(credentials.set).toHaveBeenCalledWith('anthropic', 'sk-1')
   })
 
   it('raises the unknown-endpoint error instead of guessing a method', async () => {
@@ -94,7 +109,13 @@ describe('local kernel transport (in-process)', () => {
     const gateway = createLocalKernelGateway(fakeHost())
     const names = gateway.catalog.endpoints.map(endpoint => endpoint.endpoint)
 
+    // 目录按 endpoint 字典序排列，所以期望值也按字典序写（否则顺序差异会伪装成内容差异）。
     expect(names).toEqual([
+      // 阶段 3b：workspace 写侧 / settings / credentials
+      'credentials/describe',
+      'credentials/set',
+      'credentials/unset',
+      // 阶段 3a：会话读侧
       'session/cancel',
       'session/create',
       'session/follow',
@@ -105,7 +126,13 @@ describe('local kernel transport (in-process)', () => {
       'session/rename',
       'session/selectModel',
       'session/wait',
+      'settings/describe',
+      'settings/mutate',
+      'workspace/archiveSession',
+      'workspace/create',
+      'workspace/delete',
       'workspace/follow',
+      'workspace/rename',
     ])
     // 目录条目与表里的描述符逐条同源：换源点拿到的 wire 键就是这里声明的。
     for (const descriptor of localEndpointDescriptors()) {

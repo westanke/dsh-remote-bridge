@@ -561,6 +561,28 @@ base64 膨胀 4/3，所以单条路径的原始文件实际上限约 **17.2 MiB*
 `docs:check` 四段全过（12 文档 / 39 tasks / 9 ADRs / STRUCTURE 84 锚点 / INTERFACES 87 锚点）；
 双产物 build 成功（host `lib/index.js` 628.64 kB、client `lib/client.cjs` 772.91 kB）。
 
+## 未发布 · 内核端点归一（B2 全量换源）阶段 3b：写侧与设置面 9 条换源（issue #26，2026-11-19）
+
+> 第二批换源。**手机协议零改动**：九条 REST 路径与响应形状照旧，改的仍是桥内部走哪条通道。
+
+- **9 条换源**：`workspace.create`/`rename`/`delete`/`archiveSession` → `workspace/create` 等四个
+  同名端点（都是「一个 `request` 对象」的单参端点）；`settings.describe` → `settings/describe`
+  （**无参端点**，走 `invokeBareEndpoint`）；`settings.mutate` → `settings/mutate`（**三个顶层参**
+  `ns`/`ops`/`expectedRevision`）；`credentials.describe` → `credentials/describe`（顶层数组
+  `refs`）、`credentials.set` → `{ref, value}`、`credentials.unset` → `{ref}`。
+- **本批第一次实战「参数不是一个 request 对象」**：阶段 2 的封装把 wire 键从描述符取，这里只
+  提供值 —— 三个顶层参写错一个键名，`assertKernelArguments` 当场在桥内拒，不会到内核才炸。
+- **`kernel-local.ts` 从 payload 化改成 args 化**：原来进程内传输只接受单个 wire 键（多键直接
+  抛错），3b 起的端点有 2~3 个顶层参，故改成「按描述符声明的 wire 键把参数集交给宿主方法」，
+  并补 `assertWires` 做与内核 `assertExactArguments` 同一条「拒多余键」判定 —— 进程内直连没有
+  那一步的话，「多传一个键」会在单测里静默通过、上线才被内核拒收。表从 11 条增到 20 条。
+- **既有用例一行未改**：`tests/dsh-0.2-bridge.spec.ts` / `settings-adapter` / `approval-timeout` /
+  `frame-hub-backpressure` / `handoff-hardening` / `kernel-local` 共 6 个 spec、98 例原样通过。
+- **`workspace.archiveSession` 的 delta**：`stopActivity` 缺省语义仍由内核判（缺省时报
+  `workspace/session-active`），桥不替它决定。
+- **未做的验收**：同 3a —— 「该族 REST 响应逐字段快照相等」与「6 项真机清单」本机无法执行，
+  `STATUS.md` 已标注待真机确认。
+
 ## 未发布 · 内核端点归一（B2 全量换源）阶段 3a：会话/工作区读侧 10 条换源（issue #26，2026-11-19）
 
 > 第一批换源。**手机协议零改动**：REST 路径、响应形状、帧名全部照旧 —— 改的是桥内部

@@ -35,6 +35,7 @@ import { createLocalKernelGateway } from './bridge/kernel-local.ts'
 import type { KernelGateway } from './bridge/proxy-options.ts'
 import {
   invokeBareEndpoint,
+  invokeKernelEndpoint,
   invokeRequestEndpoint,
   streamBareEndpoint,
   streamRequestEndpoint,
@@ -486,13 +487,20 @@ export function createDsh02ApiProxy(
           controller.abort()
         }
       }),
-      create: request => call('workspace.create', (signal) => host.workspaceController.create(request.payload) as Promise<never>),
-      rename: request => call('workspace.rename', (signal) => host.workspaceController.rename(request.payload) as Promise<never>),
+      // 换源（阶段 3b）：workspace 写侧四条都是「一个 request 对象」的单参端点。
+      create: request => call('workspace.create', (signal) => invokeRequestEndpoint<never>(
+        kernel.caller, kernel.catalog.byName, 'workspace/create', request.payload, signal,
+      )),
+      rename: request => call('workspace.rename', (signal) => invokeRequestEndpoint<never>(
+        kernel.caller, kernel.catalog.byName, 'workspace/rename', request.payload, signal,
+      )),
       delete: request => call('workspace.delete', async (signal) => {
-        await host.workspaceController.delete(request.payload)
+        await invokeRequestEndpoint(kernel.caller, kernel.catalog.byName, 'workspace/delete', request.payload, signal)
         return { deleted: true as const }
       }),
-      archiveSession: request => call('workspace.archiveSession', (signal) => host.workspaceController.archiveSession(request.payload) as Promise<never>),
+      archiveSession: request => call('workspace.archiveSession', (signal) => invokeRequestEndpoint<never>(
+        kernel.caller, kernel.catalog.byName, 'workspace/archiveSession', request.payload, signal,
+      )),
     },
 
     agentPresets: {
@@ -626,27 +634,57 @@ export function createDsh02ApiProxy(
     },
 
     settings: {
-      describe: () => call('settings.describe', (signal) => host.settingsController.describe() as never),
-      mutate: request => call('settings.mutate', (signal) => host.settingsController.mutate(
-        request.payload.ns,
-        request.payload.ops,
-        request.payload.expectedRevision,
-      ) as Promise<never>),
+      // 换源（阶段 3b）：`settings/describe` 无参，`settings/mutate` 是**三个顶层参**
+      // （`ns` / `ops` / `expectedRevision`）—— 本批第一次实战「参数不是一个 request 对象」。
+      describe: () => call('settings.describe', (signal) => invokeBareEndpoint<never>(
+        kernel.caller, kernel.catalog.byName, 'settings/describe', signal,
+      )),
+      mutate: request => call('settings.mutate', (signal) => invokeKernelEndpoint<never>(
+        kernel.caller,
+        kernel.catalog.byName,
+        'settings/mutate',
+        {
+          ns: request.payload.ns,
+          ops: request.payload.ops,
+          expectedRevision: request.payload.expectedRevision,
+        },
+        signal,
+      )),
     },
 
     credentials: {
       // CredentialInfo is the settings-controller's own view type; asserted here
       // because the plugin models it structurally in settings-adapter.ts.
+      // 换源（阶段 3b）：`describe` 是**顶层数组参**（`refs`），`set` 两个顶层参，
+      // `unset` 一个 —— 参数键全部由描述符给，这里只提供值。
       describe: request => call('credentials.describe', async (signal) => {
-        const credentials = await host.credentialsController.describe(request.payload.refs)
+        const credentials = await invokeKernelEndpoint<readonly unknown[]>(
+          kernel.caller,
+          kernel.catalog.byName,
+          'credentials/describe',
+          { refs: request.payload.refs },
+          signal,
+        )
         return { credentials } as never
       }),
       set: request => call('credentials.set', async (signal) => {
-        await host.credentialsController.set(request.payload.ref, request.payload.value)
+        await invokeKernelEndpoint(
+          kernel.caller,
+          kernel.catalog.byName,
+          'credentials/set',
+          { ref: request.payload.ref, value: request.payload.value },
+          signal,
+        )
         return {}
       }),
       unset: request => call('credentials.unset', async (signal) => {
-        await host.credentialsController.unset(request.payload.ref)
+        await invokeKernelEndpoint(
+          kernel.caller,
+          kernel.catalog.byName,
+          'credentials/unset',
+          { ref: request.payload.ref },
+          signal,
+        )
         return {}
       }),
     },

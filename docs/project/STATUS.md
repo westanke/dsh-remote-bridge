@@ -1,6 +1,21 @@
 # 当前状态
 
-- 日期：2026-11-19（**已发版 v2.12.1：大文件上传流式化 + 隧道工具 schema 修形**；`main` 上另有未发版的 issue #26 阶段 0 / 1 / 2 / 3a）
+- 日期：2026-11-19（**已发版 v2.12.1：大文件上传流式化 + 隧道工具 schema 修形**；`main` 上另有未发版的 issue #26 阶段 0 / 1 / 2 / 3a / 3b）
+- **已完成（未发布，issue #26 阶段 3b / `MOB-005`）· 写侧与设置面 9 条换源**：
+  ①**换源清单**：`workspace.create`/`rename`/`delete`/`archiveSession` → 四个同名写侧端点（单参），
+  `settings.describe` → `settings/describe`（**无参**，走 `invokeBareEndpoint`）、`settings.mutate` →
+  `settings/mutate`（**三个顶层参** `ns`/`ops`/`expectedRevision`）、`credentials.describe` →
+  `credentials/describe`（顶层数组 `refs`）、`credentials.set` → `{ref, value}`、`credentials.unset` → `{ref}`。
+  ②**本批第一次实战「参数不是一个 request 对象」**：wire 键全部由描述符给，调用点只提供值；键名写错
+  会在桥内被 `assertKernelArguments` 当场拒，不会拖到内核才炸。
+  ③**`kernel-local.ts` 从 payload 化改成 args 化**（20 条表项）：原来进程内传输只收单个 wire 键，
+  3b 起的端点有 2~3 个顶层参，故改成「按描述符把参数集交给宿主方法」，并补 `assertWires` 做与内核
+  `assertExactArguments` 同一条「拒多余键」判定 —— 少了它，「多传一个键」会在单测里假绿。
+  ④**既有用例一行未改**：`dsh-0.2-bridge` / `settings-adapter` / `approval-timeout` /
+  `frame-hub-backpressure` / `handoff-hardening` / `kernel-local` 6 个 spec、98 例全绿。
+  ⑤**`workspace.archiveSession` 的 delta**：`stopActivity` 缺省语义仍由内核判（缺省报
+  `workspace/session-active`），桥不替它决定。
+  ⑥**未做的验收**：同 3a —— REST 逐字段快照与 6 项真机清单本机无法执行，**开真机前不算通过**。
 - **已完成（未发布，issue #26 阶段 3a / `MOB-004`）· 会话/工作区读侧 10 条换源：桥不再直接调宿主方法**：
   ①**换源清单**：`sessions.list` → `session/list`（wire 键是 `_request`）、`sessions.create` →
   `session/create`、`sessions.history` → `session/follow`（流式取首帧 snapshot，带 `beforeSeq` 时改走
