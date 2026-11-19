@@ -10,10 +10,10 @@
  */
 import type { DeviceScope, Principal } from '../shared/contracts.ts'
 import type { DshChatAdapter } from './chat-adapter.ts'
-import type { ClientFrame } from './ws-protocol.ts'
+import type { ClientFrame, SendFrame } from './ws-protocol.ts'
 
-/** 发帧回调：与 ws-handler 的 `sendFrame` 同形（连接由闭包捕获，本类不持 socket）。 */
-export type MobileFrameSink = (frame: { kind: string; data?: unknown }) => void
+/** 发帧回调：与 ws-handler 的 `sendFrame` 同签名（连接由闭包捕获，本类不持 socket）。 */
+export type MobileFrameSink = SendFrame
 
 /** 本连接的授权根与设备视图（与 `MobileSocketState.device` 同形）。 */
 export interface MobileDeviceView {

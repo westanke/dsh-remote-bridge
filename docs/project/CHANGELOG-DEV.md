@@ -561,6 +561,54 @@ base64 膨胀 4/3，所以单条路径的原始文件实际上限约 **17.2 MiB*
 `docs:check` 四段全过（12 文档 / 39 tasks / 9 ADRs / STRUCTURE 84 锚点 / INTERFACES 87 锚点）；
 双产物 build 成功（host `lib/index.js` 628.64 kB、client `lib/client.cjs` 772.91 kB）。
 
+## 未发布 · 内核端点归一（B2 全量换源）阶段 1：帧词表收口（issue #26，2026-11-19）
+
+> 九阶段的第二阶段。仍然**不动手机协议**：REST 路径零改动、帧名零改动、App 不用发版 ——
+> 这一步只让「代码发的帧」与「契约声明的帧」变成同一个集合。
+
+**现象**：`/ws/mobile` 的帧词表有两份真值，而且谁也不管谁。
+
+- `src/host/ws-protocol.ts` 的 `ClientFrameType` / `ServerFrameKind` 是**代码视角**的联合类型；
+- `docs/api/asyncapi.yaml` 的 `MobileClientFrame.type.enum` / `MobileServerFrame.kind.enum` 是**契约视角**。
+
+实测两边对不上：起点代码 70 / 66、契约 75 / 78。更糟的是 13 个域处理器的发帧回调签名是
+`(frame: { kind: string; data?: unknown }) => void` —— `kind: string` 让「发一条契约里没有的帧」
+**永远编译通过**，只能等手机端把未知 kind 丢掉才发现（`PITFALLS.md` §论证要先追到消费侧 的同一类病）。
+契约白名单（`scripts/check-project-docs.ts` 与 `tests/mobile-frame-contract.spec.ts` 各一份）记着
+「契约里有、代码里没有」的 17 个名字，但没人认领的差额其实两边都有。
+
+**修法**（同一提交）：
+
+- `ws-protocol.ts` 里 `ServerFrame.kind` 收成 `ServerFrameKind`，并新增
+  `SendFrame = (frame: ServerFrame) => void` 作为**唯一**发送签名：13 个域处理器
+  （`ws-sessions`/`ws-hitl`/…/`ws-file-transfer` 的 `TransferSendFrame`、`ws-basic` 的 `MobileFrameSink`）
+  各自的小别名全部改成从这里导入。`tsc` 随即变成帧词表的门禁：本阶段它当场抓出两处
+  `{ kind: string }` 的漏网（`ws-speech.ts` 的 `dispatch` 返回值、`ws-handler.ts` 的 `MobileBasicFrames` 构造）。
+- **服务端**删 11 个「声明但从没发过」的死声明、补 12 个「真发但未声明」的；**客户端**补 5 个
+  （`fork` / `workspace-create` / `file-list` / `directory-create` / `directories`）。
+  收口后 **75 / 67 / 去重 108**（起点 70 / 66 / 114），与契约 enum 逐条零差异。
+- 两个白名单**清空**（只许变短的断言保留）；`TECH-DEBT.md` 的 **DEBT-005 按清账删除**。
+
+**issue 的计数差一帧，按行为改正**：issue 把 `connection-resync-required` 也算进「服务端从不发的死声明」
+（目标 66 / 107）。核账后发现它是**真发**的 —— `src/host/ws-handler.ts:827` 在反压溢出丢帧后用它补一条
+重同步提示，`tests/mobile-gateway-ws.spec.ts:2209` 的用例正断言该帧。删掉它等于删掉一条已验收的行为，
+所以保留，最终 67 / 108。issue 的验收口径（两个白名单为空、两侧零差异）不受影响，数字差异写进 ROADMAP。
+
+**顺带清掉两处同类漂移**：`REQUEST_ID_ECHO_EXCLUDED_KINDS` 里挂着 7 个永不发生的 kind
+（`question-requested` / `approval-requested` / `question-resolved` / `tasks-updated` / `goal-updated` /
+`session-title-changed` / `queue-item-updated`），`REBUILDABLE_SERVER_KINDS` 里 4 个 —— 其中只有 `event`
+真的可重建。两张表改成 `readonly ServerFrameKind[]` 字面量 + `Set`：以后往表里写一个非帧 kind 是**类型错误**。
+
+**为什么 HITL 的主动推送能删**：手机端的审批/提问卡片走的是通用 `event` 帧
+（`chat.approval.*` / `chat.userQuestions/*` 载荷），不是 `approval-requested` / `question-requested`
+这类专用 kind —— 这两条声明从 v2.8 进契约起就没被发送过（`src/host/ws-hitl.ts` 只应答与 replay）。
+删声明不影响卡片，`docs/project/API.md` 的帧表与 HITL 一节已同步改成「推送走 `event`」。
+
+**验证**：`pnpm check` exit 0（`tsc --noEmit` 0 错 / `vitest run` **83 文件 · 866 用例全绿**
+（`tests/mobile-frame-contract.spec.ts` 22 例断言集合不变）/ `docs:check` 12 文档 · 53 tasks · 10 ADR ·
+STRUCTURE 117 锚点 · INTERFACES 92 锚点 / 双产物 build 成功）。**手机协议零改动**；真机未跑
+（本阶段不动任何帧形状，风险面在类型层）。
+
 ## 未发布 · 内核端点归一（B2 全量换源）阶段 0：地基四件（issue #26，2026-11-19）
 
 > 这是 issue #26 九阶段施工的第一阶段。本阶段**不动手机协议**：REST 路径零改动、

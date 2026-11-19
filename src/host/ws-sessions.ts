@@ -12,10 +12,7 @@ import type { WorkspaceDatabase } from './database.ts'
 import type { DshChatAdapter } from './chat-adapter.ts'
 import { ApiError } from './errors.ts'
 import { matchAuthorizedRootResolved } from './root-resolver.ts'
-import type { ClientFrame, SessionWaitFrame } from './ws-protocol.ts'
-
-/** 单条连接的发送回调签名。 */
-export type SendFrame = (frame: { kind: string; data?: unknown }) => void
+import type { ClientFrame, SessionWaitFrame, SendFrame } from './ws-protocol.ts'
 
 /** 会话生命周期处理器。 */
 export class SessionHandler {

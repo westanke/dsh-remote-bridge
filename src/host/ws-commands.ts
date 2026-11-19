@@ -19,10 +19,8 @@ import {
   type CommandSelectFrame,
   type CommandsFrame,
   type PermissionFrame,
+  SendFrame,
 } from './ws-protocol.ts'
-
-/** 单条连接的发送回调签名。 */
-export type SendFrame = (frame: { kind: string; data?: unknown }) => void
 
 /** 标准化二级菜单选项（模型/权限同构）。 */
 interface SubmenuOption {

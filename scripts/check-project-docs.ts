@@ -416,18 +416,12 @@ function unionMembers(source: string, typeName: string, endMarker: string): stri
 /**
  * 契约 enum 里允许出现的「代码联合类型尚未收录」的成员。
  *
- * 这些不是遗漏，是**已核实的实现细节帧**：handler 会处理/发送它们，但
- * `ClientFrameType` / `ServerFrameKind` 两个联合类型还没收录（见
- * `docs/project/TECH-DEBT.md` 的 DEBT-005）。白名单是台账不是豁免：谁把联合类型
- * 补齐，就必须把这里对应的项删掉，否则「白名单里有、联合类型里也有」不会报错
- * —— 所以下面同时断言白名单与联合类型**不相交**，保证它只会自动变短。
+ * issue #26 阶段 1 已把两侧全部收编（`ClientFrameType` 75 / `ServerFrameKind` 67，
+ * 与契约 enum 逐条零差异），白名单因此清空；**只许变短**的规矩保留在断言里：
+ * 谁再往契约里加代码没有的帧，就必须先补联合类型，而不是往回加白名单。
  */
-const MOBILE_CLIENT_ONLY_IN_CONTRACT = ['fork', 'workspace-create', 'file-list', 'directory-create', 'directories']
-const MOBILE_SERVER_ONLY_IN_CONTRACT = [
-  'paired', 'fork', 'workspace-create',
-  'host', 'models', 'default-model', 'providers', 'permission', 'permission-options',
-  'agent-presets', 'session-stats', 'context-usage',
-]
+const MOBILE_CLIENT_ONLY_IN_CONTRACT: string[] = []
+const MOBILE_SERVER_ONLY_IN_CONTRACT: string[] = []
 {
   const protocolSource = await readFile(path.join(root, 'src', 'host', 'ws-protocol.ts'), 'utf8')
   const clientUnion = unionMembers(protocolSource, 'ClientFrameType', '/** 服务端')

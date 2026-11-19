@@ -721,7 +721,6 @@ components:
             - workspaces
             - sessions
             - history
-            - search
             - attachment
             # 文件
             - file-list
@@ -740,13 +739,8 @@ components:
             - session-archived
             - session-renamed
             - session-waited
-            - session-archives
-            - session-title-changed
             - fork
             - workspace-create
-            - queue-item-updated
-            - session-queues
-            - session-queue
             # 模型 / 设置
             - models
             - default-model
@@ -766,18 +760,13 @@ components:
             - goal-pause
             - goal-resume
             - goal-clear
-            - tasks-updated
-            - goal-updated
             - session-stats
             - context-usage
             - agent-team
             - subagents
             - host
             # HITL
-            - question-requested
             - question-response
-            - question-resolved
-            - approval-requested
             - approval-response
             - approval-resolved
             # 语音

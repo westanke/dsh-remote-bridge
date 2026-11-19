@@ -35,7 +35,7 @@ import {
  * docs:check 里也有同一组断言。**故意重复**：
  * - docs:check 是发布门禁，跑在 `npm run check` 的第三段，只有 CI/发版时拦住人；
  * - 这里是 `npm test` 的一部分，改代码时先撞上它，反馈更早。
- * 两处的白名单必须同步（都指向 TECH-DEBT 的 DEBT-005），谁清账都要一起删。
+ * 两处的白名单必须同步（阶段 1 之前都指向 TECH-DEBT 的 DEBT-005），谁清账都要一起删。
  */
 
 const asyncapiText = readFileSync(new URL('../docs/api/asyncapi.yaml', import.meta.url), 'utf8')
@@ -113,16 +113,12 @@ const serverEnum = enumOf('MobileServerFrame', 'kind')
 /**
  * 契约里允许出现、但 `ws-protocol.ts` 联合类型尚未收录的帧。
  *
- * 这些是**已核实的实现细节帧**（handler 真的处理/发送它们），登记在
- * `docs/project/TECH-DEBT.md` 的 DEBT-005 名下。白名单只许变短：
- * 谁把联合类型补齐，就必须同步删掉这里的对应项（下面有断言盯着）。
+ * issue #26 阶段 1 已把两侧全部收编（客户端 75 / 服务端 67，与契约 enum 逐条零差异），
+ * DEBT-005 随之关闭，白名单清空。**只许变短**的规矩留在断言里：谁再往契约里加代码
+ * 没有的帧，就得先补联合类型，而不是往回加白名单。
  */
-const CLIENT_ONLY_IN_CONTRACT = ['fork', 'workspace-create', 'file-list', 'directory-create', 'directories']
-const SERVER_ONLY_IN_CONTRACT = [
-  'paired', 'fork', 'workspace-create',
-  'host', 'models', 'default-model', 'providers', 'permission', 'permission-options',
-  'agent-presets', 'session-stats', 'context-usage',
-]
+const CLIENT_ONLY_IN_CONTRACT: string[] = []
+const SERVER_ONLY_IN_CONTRACT: string[] = []
 
 describe('/ws/mobile 帧词汇表与 asyncapi 契约一致', () => {
   it('从 ws-protocol.ts 解析出的联合类型规模符合预期（防止解析静默失效）', () => {
@@ -145,14 +141,14 @@ describe('/ws/mobile 帧词汇表与 asyncapi 契约一致', () => {
     expect(missing, `asyncapi 缺少服务端帧：${missing.join(', ')}`).toEqual([])
   })
 
-  it('契约没有比实现更宽（多出来的只能是 DEBT-005 白名单）', () => {
+  it('契约没有比实现更宽（多出来的只能是白名单，现已清空）', () => {
     const declaredClient = new Set(clientUnion)
     const declaredServer = new Set(serverUnion)
     expect(clientEnum.filter(type => !declaredClient.has(type) && !CLIENT_ONLY_IN_CONTRACT.includes(type))).toEqual([])
     expect(serverEnum.filter(kind => !declaredServer.has(kind) && !SERVER_ONLY_IN_CONTRACT.includes(kind))).toEqual([])
   })
 
-  it('DEBT-005 白名单只许变短：已进联合类型的名字必须从白名单删掉', () => {
+  it('帧白名单只许变短：已进联合类型的名字必须从白名单删掉', () => {
     const declaredClient = new Set(clientUnion)
     const declaredServer = new Set(serverUnion)
     expect(CLIENT_ONLY_IN_CONTRACT.filter(type => declaredClient.has(type))).toEqual([])

@@ -762,7 +762,7 @@ data 字段与实时路径**一致**（只多 `replayed`）；数据来自适配
 | 心跳 | 服务端每 30s ping；连续 2 个周期缺 pong 即 terminate（`ws-handler.ts` 的 `startHeartbeat`，与 `/api/v1/events` 的 `startHeartbeat` 各管自己那张连接表） | 正常实现自动回 pong 即可 |
 | 连接数 | 默认上限 32（可配置）；**鉴权先于计数**，第 33 条鉴权通过后在 Upgrade 阶段收到 HTTP `429`（`Retry-After: 5`）。`/ws/mobile` 与 `/api/v1/events` **各自计数**（各自 32，互不占用），判定都在 Upgrade 之前做（`server.ts` 的 `handleUpgrade` 两个分支） | 未鉴权请求不消耗名额；429 后退避重连 |
 | 帧大小 | 单帧上限 1 MiB，超限 WebSocket close `1009` | 大附件走 REST 上传，不要塞进 WS |
-| 发送队列 | 每连接 512 帧；溢出时优先丢可重建的 `chat.message.delta`，状态帧（`chat.turn.*` / `chat.approval.*` / `chat.turn.failed` / `connection.ready`）优先保留。`/ws/mobile` 侧按 kind 判据（`isRebuildableServerFrame`：`event` / `tasks-updated` / `goal-updated` / `session-title-changed` / `queue-item-updated` 可丢，**应答帧一律不丢**） | — |
+| 发送队列 | 每连接 512 帧；溢出时优先丢可重建的 `chat.message.delta`，状态帧（`chat.turn.*` / `chat.approval.*` / `chat.turn.failed` / `connection.ready`）优先保留。`/ws/mobile` 侧按 kind 判据（`isRebuildableServerFrame`：只有 `event` 可丢 —— 它的载荷都能从 REST 历史与状态重拉，**应答帧一律不丢**） | — |
 
 队列溢出丢帧后，服务端会尽力补发一帧连接级通知（状态帧也塞不进、要 close `1013 Backpressure` 之前也会再发一次）。两个通道拼写不同、载荷相同：`/api/v1/events` 是 `type: 'connection.resyncRequired'`，`/ws/mobile` 是 `kind: 'connection-resync-required'`（后者在队列排空后补发，多次溢出合并成一条，`dropped` 累加）：
 
@@ -776,7 +776,7 @@ data 字段与实时路径**一致**（只多 `replayed`）；数据来自适配
 
 ## 移动端网关 WebSocket (/ws/mobile)
 
-v2.8 新增。独立于现有 `/api/v1/events`（单向广播，保留不动）的双向请求/响应通道，专供移动端客户端，协议形参考上游 `dsh-plugin-mobile-gateway`：连接即推 `hello`，客户端发 `{type: …}` 帧，服务端回 `{kind: …}` 响应帧，并可主动推送 `event`/`question-requested`/`approval-requested` 等。
+v2.8 新增。独立于现有 `/api/v1/events`（单向广播，保留不动）的双向请求/响应通道，专供移动端客户端，协议形参考上游 `dsh-plugin-mobile-gateway`：连接即推 `hello`，客户端发 `{type: …}` 帧，服务端回 `{kind: …}` 响应帧，并可主动推送 `event` 帧（审批与提问卡片就是 `chat.approval.*` / `chat.userQuestions/*` 载荷，不是专用 kind）。
 
 **WS 优先，REST 兜底**：移动端业务（发消息、查历史、选模型、回复审批/提问、执行命令、文件下载）优先走 WS；REST `/api/v1` 保留作为兜底与管理面（`/manage/*`），两者共享同一套设备 token / loopback admin 鉴权与 scope/root/session 授权。
 
@@ -808,7 +808,7 @@ v2.8 新增。独立于现有 `/api/v1/events`（单向广播，保留不动）�
 
 - 实现只有一处：`MobileGatewayWsHandler.sendFrame` 在 `encodeFrame` 前调 `withRequestIdEcho(frame, this.frameRequestId.getStore())`。各域处理器不必各自复制（少数仍复制，集中注入**不覆盖** `data` 里已有的值）。
 - id 走 `AsyncLocalStorage`，不是实例字段：帧分发是并发的（`webSocket.on('message')` 里 `void this.handleMessage(...)` 不 await），共享槽位会串号。
-- 不回显的是一次「推送/流式」帧，集合声明在代码里：`REQUEST_ID_ECHO_EXCLUDED_KINDS`（`src/host/ws-protocol.ts`）——`hello` / `paired` / `pong` / `subscribed` / `event` / `question-requested` / `approval-requested` / `approval-resolved` / `question-resolved` / `speech-state` / `speech-transcript` / `speech-preparing` / `tasks-updated` / `goal-updated` / `session-title-changed` / `queue-item-updated` / `file-download-chunk` / `file-upload-chunk-accepted`。**新增推送 kind 必须同步该集合**，否则它会带上当时在途请求的 id。
+- 不回显的是一次「推送/流式」帧，集合声明在代码里：`REQUEST_ID_ECHO_EXCLUDED_KINDS`（`src/host/ws-protocol.ts`）——`hello` / `paired` / `pong` / `subscribed` / `event` / `approval-resolved` / `speech-state` / `speech-transcript` / `speech-preparing` / `connection-resync-required` / `file-download-chunk` / `file-upload-chunk-accepted`。该表的字面量数组声明为 `readonly ServerFrameKind[]`，写进一个非帧 kind 会编译失败。**新增推送 kind 必须同步该集合**，否则它会带上当时在途请求的 id。
 - 请求没带 `requestId`（或带 `""`）⇒ 应答帧里**完全没有** `requestId` 键（不是 `null`、不是 `""`）。
 - `data` 不是普通对象（缺省 / `null` / 数组）时不注入。
 - `file-resolve`、`file-download-open`、`file-upload-open` 的 `requestId` 是**必填**，缺它回 `error code:'bad-request'`。
@@ -862,25 +862,27 @@ v2.8 新增。独立于现有 `/api/v1/events`（单向广播，保留不动）�
 | `pong` | 心跳应答（`{at,time}`，同一毫秒时间戳） |
 | `subscribed` | 订阅确认 |
 | `sent` | 消息已发（应答帧，回显 `requestId`） |
-| `workspaces` / `sessions` / `history` / `search` | 查询响应 |
+| `workspaces` / `sessions` / `history` | 查询响应（`search` 只有客户端帧：内核无搜索通道，回 `NOT_IMPLEMENTED`） |
 | `commands` / `command-options` / `command-executed` / `command-selected` | 命令响应；`commands` 另带 `builtinTokens`（0.2.2 一方命令 en/zh 六条）与每条目的 `definitionId`/`builtin`（P2-B） |
 | `attachment` / `file-list` / `directory-create` / `file-download-opened/chunk/cancelled` | 附件、目录浏览/建目录（需 `files.write`）与文件下载（chunk 末块带 `sha256`） |
 | `file-upload-opened/chunk-accepted/completed/cancelled` | 分片上传（completed 带 `receiptId` 与 `sha256`） |
-| `session-cancelled` / `queue-item-updated` / `session-queues` / `session-queue` | 会话与队列状态 |
-| `session-archived` / `session-renamed` / `session-archives` / `session-title-changed` | 会话生命周期 |
+| `session-cancelled` | 会话取消回执 |
+| `session-created` / `session-archived` / `session-renamed` / `session-waited` / `fork` / `workspace-create` | 会话与工作区生命周期（`session-created` 带 `{sessionId, rootId \| workspaceId, agentPreset?}`） |
 | `error` | 错误（不回显绝对路径）；**带** `data.requestId` 与 `data.requestType`——前者钉到具体在途请求，后者说明是哪类请求 |
 | `event` | 内部事件透传（与 `/api/v1/events` 同源，受 scope/授权过滤）；推送帧，不带 `requestId` |
-| `tasks` / `goal` / `goal-edit` / `goal-pause` / `goal-resume` / `goal-clear` / `tasks-updated` / `goal-updated` | 任务/目标投影（tasks/goal 读基线，goal-* 为写应答带新 `ref` 或 `cleared:true`；updated 主动推送本期未发，客户端仍可轮询读帧） |
+| `tasks` / `goal` / `goal-edit` / `goal-pause` / `goal-resume` / `goal-clear` | 任务/目标投影（tasks/goal 读基线，goal-* 为写应答带新 `ref` 或 `cleared:true`）。**没有** `tasks-updated` / `goal-updated` 推送帧：投影变化要客户端轮询读帧（issue #26 阶段 1 删掉了这两条死声明） |
 | `session-stats` / `context-usage` | 会话统计与上下文占用投影响应 |
-| `question-requested` / `question-response` / `question-resolved` | HITL 提问（server→client 主动推送） |
-| `approval-requested` / `approval-response` / `approval-resolved` | HITL 审批（server→client 主动推送；outcome `allowed-once`\|`rejected`，不支持始终允许） |
+| `question-response` | HITL 提问回执（`{action, accepted}`）；**主动推送走 `event` 帧**（`chat.userQuestions/*` 载荷），不是专用 kind |
+| `approval-response` / `approval-resolved` | HITL 审批回执（outcome `allowed-once`\|`rejected`，不支持始终允许）；**主动推送走 `event` 帧**（`chat.approval.*` 载荷） |
+| `paired` / `host` / `models` / `default-model` / `providers` / `permission` / `permission-options` / `agent-presets` | 配对流程与设置面查询/写入应答（`paired` 先于 `hello`，见握手一节） |
+| `connection-resync-required` | 反压溢出丢帧后的全量重同步提示（`{dropped, reason}`，多次溢出合并成一条） |
 | `agent-team` / `subagents` | 团队/子会话投影响应（随 `projectionState` 与 `asOfSeq`） |
 | `speech-catalog` / `speech-subscribed` / `speech-unsubscribed` / `speech-state` / `speech-configured` / `speech-preparing` / `speech-preparation-cancelled` / `speech-transcript` / `speech-cancelled` | 语音输入响应与就绪状态推送；内核无该服务时 catalog 回 `available:false, code:'speech/unavailable'`，其余回 `error` |
 | `schedule-catalog` / `schedule-list` / `schedule-history` / `schedule-update` / `schedule-delete` | 定时任务响应；内核无 schedule Remote 时回 `error code:'schedule/unavailable'`，引导 REST 兜底 |
 
 ### HITL（提问与审批）双向
 
-- `question-answer` / `question-cancel`：客户端回应服务端推送的 `question-requested`；迟到或非待处理返回 `{accepted:false, reason:'not-pending'|'reply-queued'|'answer-invalid'|'not-answerable'|'unavailable'}`。
+- `question-answer` / `question-cancel`：客户端回应的是 `event` 帧里推送的待处理提问（`chat.userQuestions/*` 载荷）；迟到或非待处理返回 `{accepted:false, reason:'not-pending'|'reply-queued'|'answer-invalid'|'not-answerable'|'unavailable'}`。
 - `approval-response`：`outcome` 为 `allowed-once` 或 `rejected`，**v1 不提供永久允许**；已解决、过期或重复决定返回 `APPROVAL_NOT_PENDING` 等价帧。
 - 重放：建立后，待处理的审批与提问按本条连接的授权逐条补推（`replayed=true`），客户端按 `approvalId`/`callId` 去重。
 - 审批/提问卡片对应 DSH 内部 `chat.approval.*` / `chat.userQuestions/*` 事件，通过 `/api/v1` REST 兜底同步。

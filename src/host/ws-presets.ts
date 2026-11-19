@@ -12,10 +12,8 @@ import {
   type SelectAgentPresetFrame,
   type SessionAgentPresetFrame,
   encodeFrame,
+  SendFrame,
 } from './ws-protocol.ts'
-
-/** 单条连接的发送回调签名。 */
-export type SendFrame = (frame: { kind: string; data?: unknown }) => void
 
 /** Agent preset 处理器。 */
 export class PresetsHandler {

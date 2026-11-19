@@ -25,7 +25,7 @@ import { constants, createReadStream } from 'node:fs'
 import { basename, extname, join } from 'node:path'
 import type { Principal } from '../shared/contracts.ts'
 import type { StoredRoot, WorkspaceDatabase } from './database.ts'
-import type { ClientFrame } from './ws-protocol.ts'
+import type { ClientFrame, SendFrame } from './ws-protocol.ts'
 import {
   DEFAULT_FILE_DOWNLOAD_CHUNK_BYTES,
   DEFAULT_FILE_DOWNLOAD_MAX_BYTES,
@@ -37,8 +37,8 @@ import {
 import { matchAuthorizedRootResolved } from './root-resolver.ts'
 import { isFileUploadStreamUnsupported } from './bridge/file-upload-stream.ts'
 
-/** 单条连接的发送回调签名（与其它域处理器一致）。 */
-export type TransferSendFrame = (frame: { kind: string; data?: unknown }) => void
+/** 文件域处理器的发送回调（与 ws-handler 的 sendFrame 同形，签名唯一来源是 ws-protocol 的 SendFrame）。 */
+export type TransferSendFrame = SendFrame
 
 interface DownloadTransfer {
   connectionKey: string

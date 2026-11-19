@@ -78,6 +78,9 @@ export type ClientFrameType =
   | 'file-download-read'
   | 'file-download-cancel'
   | 'file-resolve'
+  | 'file-list'
+  | 'directory-create'
+  | 'directories'
   | 'search'
   | 'host'
   | 'default-model'
@@ -115,6 +118,8 @@ export type ClientFrameType =
   | 'session-rename'
   | 'session-wait'
   | 'session-agent-preset'
+  | 'fork'
+  | 'workspace-create'
   | 'queue-update'
   | 'select-agent-preset'
   | 'file-upload-open'
@@ -141,12 +146,19 @@ export type ClientFrameType =
 export type ServerFrameKind =
   | 'hello'
   | 'pong'
+  | 'paired'
+  | 'host'
   | 'subscribed'
   | 'sent'
   | 'workspaces'
   | 'sessions'
   | 'history'
-  | 'search'
+  | 'models'
+  | 'default-model'
+  | 'providers'
+  | 'permission'
+  | 'permission-options'
+  | 'agent-presets'
   | 'commands'
   | 'command-options'
   | 'command-executed'
@@ -180,14 +192,13 @@ export type ServerFrameKind =
   | 'schedule-delete'
   | 'session-cancelled'
   | 'session-created'
-  | 'queue-item-updated'
-  | 'session-queues'
-  | 'session-queue'
+  | 'fork'
+  | 'workspace-create'
+  | 'session-stats'
+  | 'context-usage'
   | 'session-archived'
   | 'session-renamed'
   | 'session-waited'
-  | 'session-archives'
-  | 'session-title-changed'
   | 'error'
   | 'event'
   | 'tasks'
@@ -196,12 +207,7 @@ export type ServerFrameKind =
   | 'goal-pause'
   | 'goal-resume'
   | 'goal-clear'
-  | 'tasks-updated'
-  | 'goal-updated'
-  | 'question-requested'
   | 'question-response'
-  | 'question-resolved'
-  | 'approval-requested'
   | 'approval-response'
   | 'approval-resolved'
   | 'connection-resync-required'
@@ -214,11 +220,24 @@ export interface ClientFrame {
   [key: string]: unknown
 }
 
-/** 服务端帧的通用外壳（编码前）。 */
+/**
+ * 服务端帧的通用外壳（编码前）。
+ *
+ * `kind` 收口到 {@link ServerFrameKind}：发一条未声明的帧现在是**类型错误**，
+ * 不再等到客户端把未知 kind 丢掉才发现（DEBT-005 的收口点）。
+ */
 export interface ServerFrame {
-  kind: string
-  [key: string]: unknown
+  kind: ServerFrameKind
+  data?: unknown
 }
+
+/**
+ * 单条连接的发送回调签名（各 `ws-*.ts` 域处理器的唯一注入面）。
+ *
+ * 13 个域处理器此前各自声明 `(frame: { kind: string; data?: unknown }) => void`，
+ * `string` 让「发了未声明的帧」永远编译通过。统一从这里取类型后，`tsc` 就是帧词表的门禁。
+ */
+export type SendFrame = (frame: ServerFrame) => void
 
 /** 带序号与时间戳的服务端主帽头。 */
 export interface ServerEnvelope {
@@ -539,7 +558,7 @@ export function makeErrorFrame(code: string, message: string, requestId?: string
  *
  * 显式列举而非前缀/启发式判断：新增推送 kind 时**必须**同步本表，否则会误注入。
  */
-export const REQUEST_ID_ECHO_EXCLUDED_KINDS: ReadonlySet<string> = new Set<string>([
+const REQUEST_ID_ECHO_EXCLUDED: readonly ServerFrameKind[] = [
   // 握手与心跳
   'hello',
   'paired',
@@ -547,26 +566,26 @@ export const REQUEST_ID_ECHO_EXCLUDED_KINDS: ReadonlySet<string> = new Set<strin
   // 订阅确认与事件透传
   'subscribed',
   'event',
-  // HITL 主动推送（对应的回执 approval-response / question-response 才是应答帧）
-  'question-requested',
-  'approval-requested',
+  // HITL 主动推送（应答帧 approval-response / question-response 才回显）
   'approval-resolved',
-  'question-resolved',
   // 语音跟随时序推送（speech-state 由处理器自己写 requestId，注入层不覆盖）
   'speech-state',
   'speech-transcript',
   'speech-preparing',
-  // 会话/任务投影与队列的推送
-  'tasks-updated',
-  'goal-updated',
-  'session-title-changed',
-  'queue-item-updated',
   // 反压溢出后的全量重同步提示：主动推送，没有对应请求
   'connection-resync-required',
   // 文件分块流（分块回执由处理器自己写 requestId）
   'file-download-chunk',
   'file-upload-chunk-accepted',
-])
+]
+
+/**
+ * 同样的成员，摊成 `Set` 供注入层 O(1) 判断。
+ *
+ * 字面量数组声明为 `readonly ServerFrameKind[]`：拼错或写进一个不走 `kind` 通道的名字
+ * 现在是**类型错误**（阶段 1 之前这里挂着 7 个永不发生的 kind，谁也没发现）。
+ */
+export const REQUEST_ID_ECHO_EXCLUDED_KINDS: ReadonlySet<string> = new Set(REQUEST_ID_ECHO_EXCLUDED)
 
 /**
  * 反压溢出后的「你漏了 N 帧，重拉一次」提示帧 kind。
@@ -577,7 +596,7 @@ export const REQUEST_ID_ECHO_EXCLUDED_KINDS: ReadonlySet<string> = new Set<strin
  * 判据能让它发现。所以溢出时优先丢可重建的帧，并在队列排空后补一条本帧，把「静默」
  * 变成「告知」。
  */
-export const RESYNC_REQUIRED_KIND = 'connection-resync-required'
+export const RESYNC_REQUIRED_KIND: ServerFrameKind = 'connection-resync-required'
 
 /**
  * 可重建的服务端帧：丢掉之后客户端重拉一次（history / tasks / goal）就能补齐。
@@ -591,12 +610,10 @@ export const RESYNC_REQUIRED_KIND = 'connection-resync-required'
  * 反过来，**应答帧一律不可重建**（丢了这次请求就永远等不到回音）、大载荷帧
  * （`history` / `file-*` / `speech-*`）也不可 —— 重发成本远高于丢弃一条 delta。
  */
-const REBUILDABLE_SERVER_KINDS: ReadonlySet<string> = new Set<string>([
+const REBUILDABLE_SERVER_KINDS: ReadonlySet<string> = new Set<ServerFrameKind>([
+  // 只有 `event` 丢得起：它的载荷都在 REST 历史与状态里，重拉即可补齐。
+  // 之前还列着四个 `*-updated` 推送 kind —— 它们从没被发送过（DEBT-005 的另一种形态）。
   'event',
-  'tasks-updated',
-  'goal-updated',
-  'session-title-changed',
-  'queue-item-updated',
 ])
 
 /** 该服务端帧是否属于「丢了可以重拉补齐」的类型（反压溢出时优先丢它）。 */
@@ -623,9 +640,9 @@ export function requestIdOf(frame: ClientFrame): string | undefined {
  * 4. `data` 里已经有 `requestId`——处理器手写的回显优先，**绝不覆盖**已验收的行为。
  */
 export function withRequestIdEcho(
-  frame: { kind: string; data?: unknown },
+  frame: ServerFrame,
   requestId: string | undefined,
-): { kind: string; data?: unknown } {
+): ServerFrame {
   if (requestId === undefined || requestId === '') return frame
   if (REQUEST_ID_ECHO_EXCLUDED_KINDS.has(frame.kind)) return frame
   const data = frame.data

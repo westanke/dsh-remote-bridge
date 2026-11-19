@@ -573,6 +573,8 @@ export const PLUGIN_VERSION: string          // shared/version.ts，与 package.
 | `export const PROTOCOL_AUTH_PREFIX` | `src/host/ws-protocol.ts` | const |
 | `export type ClientFrameType` | `src/host/ws-protocol.ts` | type |
 | `export type ServerFrameKind` | `src/host/ws-protocol.ts` | type |
+| `export interface ServerFrame` | `src/host/ws-protocol.ts` | interface |
+| `export type SendFrame` | `src/host/ws-protocol.ts` | type |
 | `export function encodeFrame` | `src/host/ws-protocol.ts` | function |
 | `export function decodeFrame` | `src/host/ws-protocol.ts` | function |
 | `export function makeServerFrame` | `src/host/ws-protocol.ts` | function |

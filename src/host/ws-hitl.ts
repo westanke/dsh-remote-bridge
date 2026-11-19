@@ -2,16 +2,14 @@
  * HITL（人机交互）WS 处理器（/ws/mobile）。
  *
  * 与 `dsh-plugin-mobile-gateway` 对齐：approval-response / question-answer 双向；
- * server 主动推 question-requested / approval-requested；replay 重放待处理项；
+ * server 的主动推送走通用 `event` 帧（`chat.question.*` / `chat.approval.*` 载荷），
+ * 本处理器只负责应答与 replay 重放待处理项；
  * outcome 只能是 allowed-once | rejected，不支持“始终允许”。
  */
 import type { Principal } from '../shared/contracts.ts'
 import type { DshChatAdapter, UserQuestionAnswerItem } from './chat-adapter.ts'
 import { ApiError } from './errors.ts'
-import type { ApprovalResponseFrame, ClientFrame, QuestionAnswerFrame, QuestionCancelFrame } from './ws-protocol.ts'
-
-/** 单条连接的发送回调签名。 */
-export type SendFrame = (frame: { kind: string; data?: unknown }) => void
+import type { ApprovalResponseFrame, ClientFrame, QuestionAnswerFrame, QuestionCancelFrame, SendFrame } from './ws-protocol.ts'
 
 /** HITL 处理器。 */
 export class HitlHandler {

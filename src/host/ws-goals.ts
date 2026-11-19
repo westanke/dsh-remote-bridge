@@ -13,11 +13,8 @@
 import type { DshChatAdapter } from './chat-adapter.ts'
 import { ApiError } from './errors.ts'
 import type { HostRemoteHandle } from './ws-host-services.ts'
-import type { ClientFrame } from './ws-protocol.ts'
+import type { ClientFrame, SendFrame } from './ws-protocol.ts'
 import type { Principal } from '../shared/contracts.ts'
-
-/** 单条连接的发送回调签名。 */
-export type SendFrame = (frame: { kind: string; data?: unknown }) => void
 
 /** 目标引用（compare-and-set 保护）。 */
 interface GoalRef {

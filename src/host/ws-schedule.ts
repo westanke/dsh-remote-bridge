@@ -26,11 +26,8 @@
  */
 import type { Principal } from '../shared/contracts.ts'
 import { ApiError } from './errors.ts'
-import type { ClientFrame } from './ws-protocol.ts'
+import type { ClientFrame, SendFrame } from './ws-protocol.ts'
 import type { HostRemoteHandle } from './ws-host-services.ts'
-
-/** 单条连接的发送回调签名。 */
-export type SendFrame = (frame: { kind: string; data?: unknown }) => void
 
 const SCHEDULE_TYPES = new Set([
   'schedule-catalog',

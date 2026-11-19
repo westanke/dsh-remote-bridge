@@ -17,10 +17,7 @@
 import type { Principal } from '../shared/contracts.ts'
 import type { DshChatAdapter } from './chat-adapter.ts'
 import { ApiError } from './errors.ts'
-import type { ClientFrame } from './ws-protocol.ts'
-
-/** 单条连接的发送回调签名。 */
-export type SendFrame = (frame: { kind: string; data?: unknown }) => void
+import type { ClientFrame, SendFrame } from './ws-protocol.ts'
 
 /** 团队/子会话投影处理器。 */
 export class TeamHandler {

@@ -1,6 +1,34 @@
 # 当前状态
 
-- 日期：2026-11-19（**已发版 v2.12.1：大文件上传流式化 + 隧道工具 schema 修形**；`main` 上另有未发版的 issue #26 阶段 0）
+- 日期：2026-11-19（**已发版 v2.12.1：大文件上传流式化 + 隧道工具 schema 修形**；`main` 上另有未发版的 issue #26 阶段 0 / 阶段 1）
+- **已完成（未发布，issue #26 阶段 1 / `MOB-002`）· 帧词表收口：`SendFrame` 从 `{kind: string}` 收成真联合类型**：
+  基线实测 `ClientFrameType` 70 / `ServerFrameKind` 66 / 去重 114，与 issue 的起点一致；`asyncapi.yaml` 的
+  client enum 75、server enum 78 —— **契约比实现宽**，而 `tsc` 完全看不见（发帧回调的签名就是 `string`）。
+  ①**发帧签名只有一个来源**：`ws-protocol.ts` 新增 `export type SendFrame = (frame: ServerFrame) => void`
+  与 `ServerFrame { kind: ServerFrameKind; data?: unknown }`（原 `kind: string` + 索引签名）；13 个域处理器
+  各自声明的 `(frame: { kind: string; data?: unknown }) => void`（含 `TransferSendFrame` / `MobileFrameSink`）
+  全部删掉改成导入 —— 现在「发一条没声明的帧」是**编译错误**，不再等客户端把未知 kind 丢掉才发现。
+  ②**两侧对齐**：服务端删 11 个「声明但从没发过」的死声明（`question-requested` / `question-resolved` /
+  `approval-requested` / `tasks-updated` / `goal-updated` / `session-title-changed` / `queue-item-updated` /
+  `session-archives` / `session-queues` / `session-queue` / `search`），补 12 个「真发但未声明」的
+  （`paired` / `host` / `models` / `default-model` / `providers` / `permission` / `permission-options` /
+  `agent-presets` / `fork` / `workspace-create` / `session-stats` / `context-usage`）；客户端补 5 个
+  （`fork` / `workspace-create` / `file-list` / `directory-create` / `directories`）。**收口后 75 / 67 / 去重 108**，
+  与契约 enum 逐条零差异（脚本双向核对：code-only 空、contract-only 空）。
+  ③**issue 的计数差一帧**：issue 把 `connection-resync-required` 也当成死声明（目标 66 / 107），但它是真发的
+  —— `ws-handler.ts:827` 在反压溢出后用 `RESYNC_REQUIRED_KIND` 补发，`tests/mobile-gateway-ws.spec.ts:2209`
+  的用例正断言它。按「行为才是真值」保留该帧，故为 67 / 108；issue 的验收口径（两个白名单为空、两侧零差异）
+  不受影响。
+  ④**顺带清掉两处同类漂移**：`REQUEST_ID_ECHO_EXCLUDED_KINDS` 里挂着 7 个永不发生的 kind、
+  `REBUILDABLE_SERVER_KINDS` 里 4 个（只剩 `event` 真的可重建）；两张表改成 `readonly ServerFrameKind[]`
+  字面量 + `Set`，写错名字以后是类型错误。`RESYNC_REQUIRED_KIND` 也标成 `ServerFrameKind`。
+  ⑤**白名单清空**：`scripts/check-project-docs.ts` 与 `tests/mobile-frame-contract.spec.ts` 两处
+  `MOBILE_*_ONLY_IN_CONTRACT` 都改成空数组，「只许变短」的断言保留 —— 谁再往契约里加代码没有的帧，
+  就得先补联合类型。`TECH-DEBT.md` 的 **DEBT-005 按清账删除**（不是标「已修」）。
+  **手机协议零改动**：换源阶段不让 App 感知，本阶段只是让类型与既有契约对齐；删掉的死声明从来没发到过线上。
+  `pnpm check` exit 0；`vitest run` **83 文件 / 866 用例**全绿（`tests/mobile-frame-contract.spec.ts` 22 例断言集合未变、
+  白名单断言仍在）；`docs:check` 12 文档 / 53 tasks / 10 ADR / STRUCTURE 117 锚点 / INTERFACES 92 锚点。
+  **真机端到端未做**（本阶段不动 wire 形状，风险面在类型层）。
 - **已完成（未发布，issue #26 阶段 0 / `MOB-001`）· 地基四件：CI 矩阵对齐、隧道端口分离、手机状态核对、债务台账补登**：
   ①**CI 矩阵与 `engines.dsh` 不一致**：`package.json` 声明 `>=0.2.2-rc.1 <0.3.0`，集成 job 却 checkout
   上游 `687f282e`（0.2.1-rc.2）—— 声明区间与实测区间对不上，任何依赖新内核服务的改动都会在 CI 上「假绿」。

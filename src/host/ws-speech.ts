@@ -13,11 +13,8 @@
  * 每连接最多 8 个挂起操作。连接关闭时中止该连接全部任务。
  */
 import type { Principal } from '../shared/contracts.ts'
-import type { ClientFrame } from './ws-protocol.ts'
+import type { ClientFrame, SendFrame, ServerFrame } from './ws-protocol.ts'
 import type { HostRemoteHandle } from './ws-host-services.ts'
-
-/** 单条连接的发送回调签名。 */
-export type SendFrame = (frame: { kind: string; data?: unknown }) => void
 
 /** 本模块的错误形状：带稳定 `code` 的 `Error`（`{code}` 是内核/WS 层共用判据）。 */
 interface SpeechFailure extends Error {
@@ -208,7 +205,7 @@ export class SpeechHandler {
     key: unknown,
     frame: ClientFrame,
     send: SendFrame,
-  ): Promise<{ kind: string; data?: unknown } | undefined> {
+  ): Promise<ServerFrame | undefined> {
     const requestId = this.identifier(frame.requestId, 'requestId')
     const state = this.stateFor(key)
 

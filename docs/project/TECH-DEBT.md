@@ -29,7 +29,7 @@
 | `src/host/cloudflared.ts` | 707 | **隧道子进程的下载与生命周期全在一个文件**：`cloudflared` 二进制的多源下载（deb / GitHub 备源）、SHA-256 校验、平台架构判定、Quick Tunnel 子进程的拉起与地址提取、以及一组对外的错误键与阶段键（HEAD 已 707，本轮之前就超预算但**未入表**，按「既有文件越线，处置同新增超预算」补登） | 拆 `src/host/tunnel-download.ts`（下载源选择 + 校验 + 解包落盘）与 `src/host/tunnel-process.ts`（子进程拉起 + 地址提取 + 退出处理），`cloudflared.ts` 退回「编排 + 对外状态」。阶段 0.2 只改 `startQuick` 的 `--url` 指向，不动下载面 ⇒ 两刀不冲突 |
 | `src/host/bff-schedule.ts` | 684 | **REST 定时任务对等面的全部实现**：`catalog/create/edit/run/view/deleteInactive` 的内核翻译、经典 cron 形态与 0.2.2 七种 `timing` kind 的双向折算、`target` 派生 `sessionId`、cron/时区两套校验器，全在一个类里（HEAD 已 684，本轮之前就超预算但**未入表**，按「既有文件越线，处置同新增超预算」补登） | 拆 `src/host/bff-schedule-timing.ts`（七种 kind ↔ 经典 cron 的折算与两个校验器）与 `src/host/bff-schedule-target.ts`（target 派生），`bff-schedule.ts` 退回端点翻译 |
 | `src/client/i18n.tsx` | 675 | **中英文案表与切换控件全在一个文件**：`zh` 文案表（约 300 行）、`MessageKey` 派生类型、翻译函数、locale 的读写与订阅、以及 `LanguageToggle` 组件（HEAD 已 675，本轮之前就超预算但**未入表**，按「既有文件越线，处置同新增超预算」补登） | 拆 `src/client/i18n-zh.ts`（文案表）+ `src/client/i18n.tsx`（函数与组件）。文案表是纯数据、零依赖 ⇒ 可直接搬，不改行为 |
-| `src/host/ws-protocol.ts` | 636 | **线路协议的唯一真值来源**：路径与子协议常量、大小与超时预算、`ClientFrameType` / `ServerFrameKind` 两个联合类型、40 余个帧的 TS 形状、以及编解码与 requestId 回显的纯函数，全在一个文件里（HEAD 已 636，本轮之前就超预算但**未入表**，按「既有文件越线，处置同新增超预算」补登）。**它同时是 DEBT-005 的载体** —— 两个联合类型与 handler 实际行为的差集就记在下方 | 拆 `src/host/ws-protocol-frames.ts`（帧形状与联合类型）+ `src/host/ws-protocol-consts.ts`（常量与预算），`ws-protocol.ts` 退回编解码与纯函数。**与 issue #26 阶段 1 同批做**：阶段 1 要把两个联合类型补到与 handler 一致并删掉两处契约白名单，先拆再补可以避免在一个 636 行的文件里同时改结构与内容 |
+| `src/host/ws-protocol.ts` | 655 | **线路协议的唯一真值来源**：路径与子协议常量、大小与超时预算、`ClientFrameType` / `ServerFrameKind` 两个联合类型、40 余个帧的 TS 形状、以及编解码与 requestId 回显的纯函数，全在一个文件里（阶段 1 从 636 涨到 655：补了 12 个真帧与 `ServerFrame` / `SendFrame` 两处注释；本轮之前就超预算但**未入表**，按「既有文件越线，处置同新增超预算」补登） | 拆 `src/host/ws-protocol-frames.ts`（帧形状与联合类型）+ `src/host/ws-protocol-consts.ts`（常量与预算），`ws-protocol.ts` 退回编解码与纯函数。issue #26 阶段 1 **只做内容不做拆分**：先补联合类型、清白名单（DEBT-005 随之关闭），拆 `ws-protocol-frames.ts` / `ws-protocol-consts.ts` 留作独立一步（阶段 9 之后），避免同一提交里既改口径又搬结构 |
 | `src/host/plugin-inventory.ts` | 605 | **插件清单的读取与启停全在一个文件**：profile 名解析、`DSH_HOME` 定位、清单读取（扫 profile 目录）、更新检查、状态判定（loaded/installed/official）、以及 `togglePlugin` 的启停实现与错误类型（HEAD 已 605，本轮之前就超预算但**未入表**，按「既有文件越线，处置同新增超预算」补登） | 拆 `src/host/plugin-inventory-read.ts`（解析 + 读取 + 状态判定）与 `src/host/plugin-inventory-toggle.ts`（启停），`plugin-inventory.ts` 退回 re-export 与编排 |
 
 > 这几个是**已登记的债，不是许可**。新增超预算文件必须先入本表再写码。
@@ -138,14 +138,6 @@
 | DEBT-002 | README 双站无自动对账 | `README.md` / `README.en.md` | `docs:check` 不覆盖 README；TS 侧无 README 解析器 | `docs:check` 扩展：校验版本号/插件基线/测试数双站一致 |
 | DEBT-003 | `@patch` 四要素无脚本校验 | 全仓 | 制度已立（`AGENTS.md` §3.3），尚无扫描器 | `docs:check` 或独立脚本：扫 `// @patch` 块验四要素齐全 + `test` 指向的测试真实存在 |
 | DEBT-004 | 历史兼容补丁未全部自报 | `src/host/bridge/` 等 | 存量补丁一次清完会动到刚真机验收过的逻辑 | 按代际分批收编；**可以不再无声增长** |
-| DEBT-005 | `/ws/mobile` 的帧联合类型未收录 handler 实际处理的全部帧 | `src/host/ws-protocol.ts` 的 `ClientFrameType` / `ServerFrameKind` | `asyncapi.yaml` 是按**实际行为**写的契约（handler 认哪些帧、发哪些帧），两个联合类型是早期按域分批加的，缺了后来补的帧。补齐要逐个核对 handler 分支，且补完必须同步删掉契约白名单（`scripts/check-project-docs.ts` 与 `tests/mobile-frame-contract.spec.ts` 两处），一次做不完容易两处不同步 | 把 `ws-protocol.ts` 两个联合类型补到与 handler 实际行为一致；同一提交删掉 `MOBILE_CLIENT_ONLY_IN_CONTRACT` / `MOBILE_SERVER_ONLY_IN_CONTRACT` 两个白名单里的对应项（白名单只许变短，测试会盯） |
-
-> **DEBT-005 的白名单是台账不是豁免**：`scripts/check-project-docs.ts` 与
-> `tests/mobile-frame-contract.spec.ts` 各有一份「契约里有、联合类型里还没有」的白名单，
-> 两处必须同步；两边都断言白名单与联合类型**不相交**，所以谁把联合类型补齐却忘了删白名单，
-> 测试会直接红。当前白名单：客户端 `fork`/`workspace-create`/`file-list`/`directory-create`/`directories`；
-> 服务端 `paired`/`fork`/`workspace-create`/`host`/`models`/`default-model`/`providers`/`permission`/
-> `permission-options`/`agent-presets`/`session-stats`/`context-usage`。
 
 ## 账怎么记
 

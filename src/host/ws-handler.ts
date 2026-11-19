@@ -31,6 +31,7 @@ import {
   PROTOCOL_AUTH_PREFIX,
   type ClientFrame,
   type HelloData,
+  type ServerFrame,
   type PairedData,
   encodeFrame,
   decodeFrame,
@@ -742,7 +743,7 @@ export class MobileGatewayWsHandler {
    * requestId，交给 {@link withRequestIdEcho} 决定要不要塞进 `data`。处理器无需再各自
    * 复制一遍（已手写回显的处理器不受影响 —— 注入规则是「`data` 里已有就不覆盖」）。
    */
-  private sendFrame(webSocket: WebSocket, frame: { kind: string; data?: unknown }): void {
+  private sendFrame(webSocket: WebSocket, frame: ServerFrame): void {
     const state = this.stateOf(webSocket)
     const text = encodeFrame(withRequestIdEcho(frame, this.frameRequestId.getStore()))
     const rebuildable = isRebuildableServerFrame(frame.kind)

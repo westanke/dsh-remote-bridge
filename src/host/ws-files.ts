@@ -16,12 +16,9 @@
 import { resolve as resolvePath } from 'node:path'
 import type { Principal } from '../shared/contracts.ts'
 import type { StoredRoot, WorkspaceDatabase } from './database.ts'
-import type { ClientFrame } from './ws-protocol.ts'
+import type { ClientFrame, SendFrame } from './ws-protocol.ts'
 import { matchAuthorizedRootResolved } from './root-resolver.ts'
 import { ApiError } from './errors.ts'
-
-/** 单条连接的发送回调签名。 */
-export type SendFrame = (frame: { kind: string; data?: unknown }) => void
 
 /** 文件浏览处理器（file-list / directory-create）。 */
 export class FilesHandler {
