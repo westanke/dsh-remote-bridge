@@ -38,6 +38,8 @@
 - **与谁配**：Android 客户端 `dsh-companion`（**要求 bridge ≥ 2.3.7** —— 与 README 双站的安装要求
   一致，姊妹仓 `AGENTS.md` §1 已同步）。客户端会解析 `connection.ready` 的能力位做**运行时**探测
   （见 `src/host/capabilities.ts`），因此「最低版本」是**安装门槛**，不是功能判据。
+- **并列收录**：`dsh-Chat`（双客户端仓：Flutter `app/` + HarmonyOS ArkTS `harmony/`；协议基线
+  bridge ≥ 2.10.0、子协议 `dsh-mobile-v1`）。它与 `dsh-companion` 连同一个桥，下载入口在「App 下载」卡。
 - **不做什么**：不跑内核、不做移动端 UI 适配。
   WebUI 的移动端适配是 `dsh-web-mobile` 那条线，**与本项目的「手机设置」面板不是一回事**——
   我们的面板是给原生客户端配套的**桌面端设置入口**，不与它竞争。

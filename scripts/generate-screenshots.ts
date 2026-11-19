@@ -71,8 +71,8 @@ const devicesBody = `<table class="daw-table">
 
 const qrBody = `<div class="daw-qr-grid">
         ${APP_QR_CODES.map(code => `<figure class="daw-qr-card">
-          <img class="daw-qr-image" src="${code.dataUrl}" alt="${code.label}">
-          <figcaption class="daw-qr-site">${code.label}</figcaption>
+          <img class="daw-qr-image" src="${code.dataUrl}" alt="${code.client} · ${code.label}">
+          <figcaption class="daw-qr-site">${code.client} · ${code.label}</figcaption>
           <a class="daw-qr-url" href="${code.url}">${code.url}</a>
         </figure>`).join('')}
       </div>`

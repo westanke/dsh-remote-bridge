@@ -24,7 +24,7 @@ const decodeQrImage = ((jsqrModule as unknown as { default?: QrDecoder }).defaul
 /**
  * 「App 下载」二维码的回归测试。
  *
- * 钉的是**提交进仓库的那两个 SVG 资产**，不是生成脚本的输出 ——
+ * 钉的是**提交进仓库的那几个 SVG 资产**，不是生成脚本的输出 ——
  * 生成脚本跑一次就过去了，而资产会被人手改、会被 sed 波及、会在 rebase 里被覆盖。
  *
  * 验证方式刻意用**另一个实现**：编码是 `qrcode`（生成脚本用的），
@@ -133,12 +133,13 @@ function decode(matrix: boolean[][]): string | null {
 const asset = (name: string): string => readFileSync(resolve(__dirname, '..', 'assets', name), 'utf8')
 
 describe('App 下载二维码', () => {
-  it('两个站各有一份资产，且都能被独立解码器解出正确地址', () => {
-    expect(APP_QR_CODES.map(code => code.key)).toEqual(['github', 'gitee'])
+  it('两个客户端 × 两个站各有一份资产，且都能被独立解码器解出正确地址', () => {
+    expect(APP_QR_CODES.map(code => code.key)).toEqual(['github', 'gitee', 'chat-github', 'chat-gitee'])
+    expect(APP_QR_CODES.map(code => code.client)).toEqual(['dsh-companion', 'dsh-companion', 'dsh-Chat', 'dsh-Chat'])
 
     for (const code of APP_QR_CODES) {
       const matrix = matrixFromSvg(asset(`app-qr-${code.key}.svg`))
-      // 33×33 是「版本 4 + 纠错 M + 这两个长度相近的 URL」的稳定结果；
+      // 33×33 是「版本 4 + 纠错 M + 这些长度的 URL」的稳定结果；
       // 数字变了说明 URL 或纠错等级被改过，值得看一眼。
       expect(matrix.length).toBe(33)
       expect(decode(matrix)).toBe(code.url)
@@ -186,6 +187,8 @@ describe('App 下载二维码', () => {
     expect(APP_QR_CODES.map(code => code.url)).toEqual([
       'https://github.com/westanke/dsh-companion/releases',
       'https://gitee.com/westanke/dsh-companion/releases',
+      'https://github.com/westanke/dsh-Chat/releases',
+      'https://gitee.com/westanke/dsh-Chat/releases',
     ])
   })
 })

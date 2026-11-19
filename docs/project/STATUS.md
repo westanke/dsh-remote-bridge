@@ -1,6 +1,18 @@
 # 当前状态
 
 - 日期：2026-11-19（**已发版 v2.12.1：大文件上传流式化 + 隧道工具 schema 修形**；`main` 上另有未发版的 issue #26 阶段 0 / 1 / 2 / 3a / 3b / 3c / 3d / 4 / 5 / 6 / 7 / 8 / 9、完工检修一批，以及真机测试期修的两个 bug）
+- **已完成（未发布，2026-11-20）· 客户端清单并列收录 dsh-Chat**：
+  桥先前只承认 dsh-companion 一个受信任客户端。按「同一个桥、多个客户端」的定位补上第二个：
+  `README.md`/`README.en.md` 客户端清单与下载页扩成两客户端（各 GitHub + Gitee 两条），
+  `AGENTS.md` §1「与谁配」加「并列收录」一段（Flutter `app/` + HarmonyOS ArkTS `harmony/`、
+  协议基线 ≥ 2.10.0、子协议 `dsh-mobile-v1`），`docs/project/COMPATIBILITY.md` 运行矩阵加
+  dsh-Chat 行并**如实标「与 bridge 2.12.1 联调待实测」**，`docs/project/INTERFACES.md` 的
+  `AppQrCode` 增加 `client` 字段。二维码由 `scripts/generate-app-qr.mjs` 生成（`qrcode` 编码 +
+  `jsqr` 反解自验证，生成幂等），`TARGETS` 从 2 条扩到 4 条，新增
+  `assets/app-qr-chat-{github,gitee}.{svg,png}`；「App 下载」卡改成两客户端两列，i18n 加
+  `appDownloadClientsHint` 与带 `{client}` 的 alt 模板。验收：`pnpm check` exit 0（92 文件 /
+  **1 003** 用例，docs:check 12 文档 / 53 tasks / 10 ADR、STRUCTURE 134 锚点、INTERFACES 145
+  锚点双向一致），e2e 9/9，`assets/screenshots/panel-app-download.png` 重新生成。
 - **已完成（未发布，2026-11-19 真机测试）· 安卓真机跑通内核调用面，并修掉两个「单测发现不了」的 bug**：
   ①**桥侧｜apply 期读目录，把「空」钉成事实**：`src/index.ts` 在 apply 期调一次
   `createKernelEndpointCatalog(...)`，而桥的 apply 早于各 `dsh-api-*` 注册 `@Remote` 端点

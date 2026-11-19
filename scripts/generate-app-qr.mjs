@@ -5,7 +5,7 @@
  * 用法：`node scripts/generate-app-qr.mjs`
  *
  * 为什么是预生成而不是运行时生成：
- * - 二维码内容是两个**固定的 Releases 列表页**（不是某个具体文件），
+ * - 二维码内容是**固定的 Releases 列表页**（不是某个具体文件），
  *   所以发新版不需要重新生成 —— 这正是用户要的「不用每次发新版就改」。
  * - 预生成意味着浏览器端零依赖、零网络请求：不装 qrcode 包、不调在线二维码服务。
  *
@@ -31,7 +31,7 @@ const MODULE_PATH = resolve(ROOT, 'src/client/app-qr.ts')
 const keyToFile = (key, extension) => `app-qr-${key}.${extension}`
 
 /**
- * 二维码内容：两个站点的 Releases **列表页**。
+ * 二维码内容：两个客户端（dsh-companion / dsh-Chat）× 两个站点的 Releases **列表页**。
  *
  * 两种格式各有用处，都提交进仓库：
  * - **SVG** 给插件界面用（以 data URL 内联进 bundle）：矢量，任意尺寸都清晰。
@@ -39,8 +39,10 @@ const keyToFile = (key, extension) => `app-qr-${key}.${extension}`
  *   PNG 在两站都稳。
  */
 const TARGETS = [
-  { key: 'github', label: 'GitHub', url: 'https://github.com/westanke/dsh-companion/releases' },
-  { key: 'gitee', label: 'Gitee', url: 'https://gitee.com/westanke/dsh-companion/releases' },
+  { client: 'dsh-companion', key: 'github', label: 'GitHub', url: 'https://github.com/westanke/dsh-companion/releases' },
+  { client: 'dsh-companion', key: 'gitee', label: 'Gitee', url: 'https://gitee.com/westanke/dsh-companion/releases' },
+  { client: 'dsh-Chat', key: 'chat-github', label: 'GitHub', url: 'https://github.com/westanke/dsh-Chat/releases' },
+  { client: 'dsh-Chat', key: 'chat-gitee', label: 'Gitee', url: 'https://gitee.com/westanke/dsh-Chat/releases' },
 ]
 
 /** 每个模块放大成多少像素再交给解码器 —— jsqr 需要真实位图，不能只给模块矩阵。 */
@@ -116,6 +118,7 @@ async function main() {
 
     // 客户端用 data URL 内联，避免任何资源管线依赖：bundle 里就是一段字符串。
     entries.push({
+      client: target.client,
       key: target.key,
       label: target.label,
       url: target.url,
@@ -123,17 +126,24 @@ async function main() {
     })
   }
 
+  // 联合类型从 TARGETS 生成，避免「脚本加了条目、类型忘了加」这种漂移。
+  const clientUnion = [...new Set(entries.map(entry => entry.client))].map(client => `'${client}'`).join(' | ')
+  const keyUnion = entries.map(entry => `'${entry.key}'`).join(' | ')
+
   const module = `// 本文件由 scripts/generate-app-qr.mjs 生成，请勿手改。
 // 重新生成：node scripts/generate-app-qr.mjs
 //
-// 内容是两个固定地址（GitHub / Gitee 的 Releases **列表页**），因此发新版无需重新生成。
+// 内容是四个固定地址（两个客户端 × GitHub / Gitee 的 Releases **列表页**），
+// 因此发新版无需重新生成。
 // 以 data URL 内联，客户端不引任何二维码依赖、也不发网络请求。
 //
 // scripts/../tests/app-qr.spec.ts 会把这些 data URL 解回来核对地址，防止手改或漂移。
 
 export interface AppQrCode {
-  /** 站点标识，用于 i18n 键与 React key。 */
-  readonly key: 'github' | 'gitee'
+  /** 客户端标识（dsh-companion / dsh-Chat），用于界面归属与文案。 */
+  readonly client: ${clientUnion}
+  /** 资产标识（站点 + 客户端），用于资产文件名与 React key。 */
+  readonly key: ${keyUnion}
   /** 展示用站点名（不本地化：GitHub / Gitee 都是专名）。 */
   readonly label: string
   /** 二维码指向的地址。 */

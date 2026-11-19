@@ -10,6 +10,9 @@
 | macOS | GitHub 当前 macOS runner | `macos-latest` |
 | Linux | Ubuntu 当前 LTS runner | `ubuntu-latest` |
 | Android | Android 8.0（API 26）及以上；compile/target SDK 36 | Gradle、lint、单元/UI 测试、Android 15 端到端与签名 Release APK |
+| dsh-Chat | Flutter `app/`：Android 1.0.18+19 已发版（含 iOS 通道）；HarmonyOS ArkTS `harmony/`：2026-11-15 起步，未发版 | 与 bridge 2.12.1 联调**待实测** |
+
+dsh-Chat 的协议基线为 bridge ≥ 2.10.0（协议 v3，子协议 `dsh-mobile-v1`），Android 产物名 `dsh-Chat-v<VER>.apk`；下载页见 [GitHub Releases](https://github.com/westanke/dsh-Chat/releases) · [Gitee Releases](https://gitee.com/westanke/dsh-Chat/releases)。收录本身不新增协议能力，也不代表上表之外已完成实测。
 
 当前 npm 上的旧版 DSH 包存在未发布的内部依赖，独立插件开发仓库设置 `auto-install-peers=false`；插件不在运行时导入这些包，而由已启动的 DSH Host 通过 Cordis service 注入 `apiProxy` 和 `webServer`。
 

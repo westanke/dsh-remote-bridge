@@ -521,7 +521,7 @@ export const PLUGIN_VERSION: string          // shared/version.ts，与 package.
 | `PLUGINS_TAB_ID` / `PLUGINS_TAB_KIND` / `pluginsTabDefinition` / `PluginsTabTitle` / `makePluginsTabBody` | `plugins.tsx` | 插件清单的右侧栏 tab：`SidebarRightTabDefinition` + guide 卡片（rc.3 起可 pin） |
 | 交接消息解析 | `handoff.tsx` | 用户消息行首标记 → 图片 |
 | 语言 store 与文案 | `i18n.tsx` | `zh-CN` / `en` |
-| `AppQrCode` | `app-qr.ts` | 应用下载二维码（生成物） |
+| `AppQrCode` / `APP_QR_CODES` | `app-qr.ts` | 应用下载二维码（生成物）：`client`（`dsh-companion` \| `dsh-Chat`）、`key`、`label`、`url`、`dataUrl` |
 
 ---
 

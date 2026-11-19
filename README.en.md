@@ -2,8 +2,8 @@
 
 <p align="center">
   <strong>You left the house. The desktop is still locked. Take out your phone and keep using that machine.</strong><br>
-  Translates DSH's private remote protocol into a versioned REST API so the Android client
-  <a href="https://github.com/westanke/dsh-companion">dsh-companion</a> keeps your chats,
+  Translates DSH's private remote protocol into a versioned REST API so the phone clients
+  dsh-companion and dsh-Chat keep your chats,
   sessions, files and devices on the same machine.
 </p>
 
@@ -23,7 +23,7 @@
   <img alt="License" src="https://img.shields.io/badge/license-AGPL--3.0-2da44e">
 </p>
 
-`dsh-remote-bridge` is the remote-access bridge plugin for DeepSeek Harness (DSH). It translates DSH's private remote protocol into a versioned REST API so dsh-companion ([GitHub](https://github.com/westanke/dsh-companion) · [Gitee](https://gitee.com/westanke/dsh-companion)) and other trusted clients can keep using the same chat, workspace, and file capabilities while away from the machine. On the desktop it provides a **Phone settings** section inside your DSH settings, rendering collapsible cards inline: five in the main list (Remote / Public tunnel / Devices / Trash / App download) plus a collapsed-by-default **Advanced settings** group holding Roots, Image reading and Plugins — every card folds on its own and several may stay open at once.
+`dsh-remote-bridge` is the remote-access bridge plugin for DeepSeek Harness (DSH). It translates DSH's private remote protocol into a versioned REST API so dsh-companion ([GitHub](https://github.com/westanke/dsh-companion) · [Gitee](https://gitee.com/westanke/dsh-companion)) and dsh-Chat ([GitHub](https://github.com/westanke/dsh-Chat) · [Gitee](https://gitee.com/westanke/dsh-Chat)), among other trusted clients, can keep using the same chat, workspace, and file capabilities while away from the machine. On the desktop it provides a **Phone settings** section inside your DSH settings, rendering collapsible cards inline: five in the main list (Remote / Public tunnel / Devices / Trash / App download) plus a collapsed-by-default **Advanced settings** group holding Roots, Image reading and Plugins — every card folds on its own and several may stay open at once.
 
 **Who it is for**: people who use DSH as their main tool but do not want to be tied to the desk. Remote access is **off by default** — until you enable it, the plugin listens on loopback only, so installing it never exposes the machine to the LAN by itself.
 
@@ -150,7 +150,7 @@ The entry lives in DSH settings under the title **Phone settings**. It renders s
 | Image reading | Set the handoff directory (the image-reading path); shows the read-only factory default `.dsh-images` and the fallback directory |
 | Trash | View and restore deleted entries (only deletions made from the phone app appear here) |
 | Plugins | See what this profile has installed, enable or disable it, check for updates, and jump to the kernel's plugin list |
-| App download | Scan to install the Android client; the codes point at both hosts' Releases list pages |
+| App download | Scan to install dsh-companion or dsh-Chat; the codes point at both hosts' Releases list pages |
 
 The sidebar gear button was **removed**: having the entry in both the sidebar and the settings page gave one thing two starting points. The in-conversation **Files** tab is gone too, so the desktop now has exactly one entry point.
 
@@ -166,20 +166,28 @@ When the active model cannot see images (a text-only model), this plugin saves t
 
 > If you previously installed `dsh-image-paths`, **disable** that row: both plugins attach their gallery to the same seat, so one picture would be drawn twice. This plugin already carries the capability.
 
-### Stable client API
+### Clients and stable client API
 
-The companion Android client is [dsh-companion](https://github.com/westanke/dsh-companion)
-([Gitee](https://gitee.com/westanke/dsh-companion)) — scan either code below with your phone to
-download it. Both point at the **Releases list page** of their host, so publishing a new version
-never requires regenerating them:
+Two client repositories are listed side by side; both talk to the same bridge:
 
-| GitHub | Gitee (faster from mainland China) |
-| --- | --- |
-| ![dsh-companion releases on GitHub](assets/app-qr-github.png) | ![dsh-companion releases on Gitee](assets/app-qr-gitee.png) |
-| <https://github.com/westanke/dsh-companion/releases> | <https://gitee.com/westanke/dsh-companion/releases> |
+- **[dsh-companion](https://github.com/westanke/dsh-companion) ([Gitee](https://gitee.com/westanke/dsh-companion))** — the Android client, a fork of the upstream [dsh-android-app](https://github.com/Hakunm/dsh-android-app).
+- **[dsh-Chat](https://github.com/westanke/dsh-Chat) ([Gitee](https://gitee.com/westanke/dsh-Chat))** — a dual-client repo: Flutter (`app/`, Android 1.0.18+19 released, iOS channel included) and native HarmonyOS ArkTS (`harmony/`, started 2026-11-15, unreleased). It targets bridge ≥ 2.10.0 (protocol v3, `dsh-mobile-v1` subprotocol).
+
+Scan any code below with your phone to download — each points at the **Releases list page** of its
+host, so publishing a new version never requires regenerating them:
+
+| Client | GitHub | Gitee (faster from mainland China) |
+| --- | --- | --- |
+| dsh-companion | ![dsh-companion releases on GitHub](assets/app-qr-github.png) | ![dsh-companion releases on Gitee](assets/app-qr-gitee.png) |
+| dsh-Chat | ![dsh-Chat releases on GitHub](assets/app-qr-chat-github.png) | ![dsh-Chat releases on Gitee](assets/app-qr-chat-gitee.png) |
+
+Download pages (same targets as the codes):
+
+- dsh-companion: <https://github.com/westanke/dsh-companion/releases> · <https://gitee.com/westanke/dsh-companion/releases>
+- dsh-Chat: <https://github.com/westanke/dsh-Chat/releases> · <https://gitee.com/westanke/dsh-Chat/releases>
 
 > The codes encode the Releases **list page**, not a specific APK filename — so a new release
-> never needs new artwork, and whoever scans always lands on the latest version. Both images are
+> never needs new artwork, and whoever scans always lands on the latest version. All four images are
 > produced by `pnpm qr:app` (`scripts/generate-app-qr.mjs`), which verifies its own output with an
 > independent decoder; the test suite also decodes the committed files back and checks the address.
 
@@ -547,3 +555,4 @@ inside the zero-change set, and 4 slots retained with 0 removed.
 - npm: [`dsh-remote-bridge`](https://www.npmjs.com/package/dsh-remote-bridge) ([mainland-China mirror](https://registry.npmmirror.com/dsh-remote-bridge))
 - License: [GNU Affero General Public License v3.0](./LICENSE)
 - Android client: dsh-companion ([GitHub](https://github.com/westanke/dsh-companion) · [Gitee](https://gitee.com/westanke/dsh-companion)), a fork of the upstream [dsh-android-app](https://github.com/Hakunm/dsh-android-app), kept in step with this plugin
+- Another client repository: dsh-Chat ([GitHub](https://github.com/westanke/dsh-Chat) · [Gitee](https://gitee.com/westanke/dsh-Chat)), containing a Flutter build (Android 1.0.18+19, iOS channel included) and a native HarmonyOS ArkTS build (unreleased)

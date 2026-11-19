@@ -56,9 +56,17 @@ describe('workspace translations', () => {
     expect(translate('en', 'workspaceSettings')).toBe('Workspace settings')
   })
 
-  it('interpolates the QR alt text with the site name', () => {
-    expect(translate('zh-CN', 'appDownloadQrAlt', { site: 'GitHub' })).toBe('GitHub 下载页二维码')
-    expect(translate('en', 'appDownloadQrAlt', { site: 'Gitee' })).toBe('QR code for the Gitee download page')
+  it('interpolates the QR alt text with the client and site name', () => {
+    expect(translate('zh-CN', 'appDownloadQrAlt', { client: 'dsh-companion', site: 'GitHub' })).toBe('dsh-companion · GitHub 下载页二维码')
+    expect(translate('en', 'appDownloadQrAlt', { client: 'dsh-Chat', site: 'Gitee' })).toBe('QR code for the dsh-Chat Gitee download page')
+  })
+
+  it('names both clients in the app download card', () => {
+    expect(translate('zh-CN', 'appDownloadClientsHint')).toContain('dsh-companion')
+    expect(translate('zh-CN', 'appDownloadClientsHint')).toContain('dsh-Chat')
+    expect(translate('en', 'appDownloadClientsHint')).toContain('dsh-companion')
+    expect(translate('en', 'appDownloadClientsHint')).toContain('dsh-Chat')
+    expect(translate('en', 'appDownloadClientsHint')).not.toBe(translate('zh-CN', 'appDownloadClientsHint'))
   })
 
   // 折叠卡片头部的描述行。每张卡片都渲染它，所以缺一条就是设置页上出现一行空标题。

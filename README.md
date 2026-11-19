@@ -2,8 +2,8 @@
 
 <p align="center">
   <strong>人已经出门，电脑还锁着 —— 掏出手机，继续用这台机器。</strong><br>
-  把 DSH 内核的私有 remote 协议翻译成版本化 REST，配上 Android 客户端
-  <a href="https://github.com/westanke/dsh-companion">dsh-companion</a>，
+  把 DSH 内核的私有 remote 协议翻译成版本化 REST，配上手机客户端
+  dsh-companion 与 dsh-Chat，
   聊天、会话、文件、设备全程留在同一台机器上。
 </p>
 
@@ -23,7 +23,7 @@
   <img alt="License" src="https://img.shields.io/badge/license-AGPL--3.0-2da44e">
 </p>
 
-`dsh-remote-bridge` 是 DeepSeek Harness（DSH）的远程访问桥接插件：它把 DSH 内核的私有 remote 协议翻译成版本化的 REST 接口，让 dsh-companion（[GitHub](https://github.com/westanke/dsh-companion) · [Gitee](https://gitee.com/westanke/dsh-companion)）等受信任客户端在离开电脑后仍能使用同一套聊天、工作区与文件能力；桌面端在你的 DSH 设置里提供一个「手机设置」，内联折叠卡片：主列表五张（远程访问 / 外网隧道 / 设备 / 回收站 / App 下载），另有默认收起的「高级设置」组收纳根目录、识图与插件三项，每张卡片各自折叠、可多张同时展开。
+`dsh-remote-bridge` 是 DeepSeek Harness（DSH）的远程访问桥接插件：它把 DSH 内核的私有 remote 协议翻译成版本化的 REST 接口，让 dsh-companion（[GitHub](https://github.com/westanke/dsh-companion) · [Gitee](https://gitee.com/westanke/dsh-companion)）与 dsh-Chat（[GitHub](https://github.com/westanke/dsh-Chat) · [Gitee](https://gitee.com/westanke/dsh-Chat)）等受信任客户端在离开电脑后仍能使用同一套聊天、工作区与文件能力；桌面端在你的 DSH 设置里提供一个「手机设置」，内联折叠卡片：主列表五张（远程访问 / 外网隧道 / 设备 / 回收站 / App 下载），另有默认收起的「高级设置」组收纳根目录、识图与插件三项，每张卡片各自折叠、可多张同时展开。
 
 **它适合谁**：把 DSH 当主力工具、但不想被「必须坐在电脑前」绑住的人。远程访问**默认关闭**，未启用时只监听回环地址——装完不会自动把机器暴露到局域网。
 
@@ -143,7 +143,7 @@ dsh plugin --profile web add ./dsh-remote-bridge-v2.12.1.tgz
 | 识图 | 设置图片交接目录（识图路径），并只读展示出厂默认 `.dsh-images` 与兜底目录 |
 | 回收站 | 查看与恢复被删除的条目（只列出来自手机 App 的删除记录） |
 | 插件 | 查看本 profile 装了哪些插件、启用或停用、检查更新，并能跳转到内核的插件列表 |
-| App 下载 | 扫码下载 Android 客户端，二维码指向两个站点的 Releases 列表页 |
+| App 下载 | 扫码下载 dsh-companion 或 dsh-Chat，二维码指向两个站点的 Releases 列表页 |
 
 
 ### 图片交接：手机发的图，桌面也看得见
@@ -158,19 +158,27 @@ dsh plugin --profile web add ./dsh-remote-bridge-v2.12.1.tgz
 
 > 如果你此前装过 [dsh-image-paths](https://github.com/lunar-tear/dsh-plugins)，请把它那一行**停用**：两个插件的图集会挂在同一个位置，同一张图会被画两遍。本插件已自带这套能力。
 
-### 连接 Android App 或其他客户端
+### 连接客户端（Android / HarmonyOS / 其他）
 
-配套的 Android 客户端是 [dsh-companion](https://github.com/westanke/dsh-companion)（[Gitee](https://gitee.com/westanke/dsh-companion)）。
-用手机扫描下面任意一个码即可下载 —— 两个码都指向**对应站点的 Releases 列表页**，
+桥同时配套两个客户端仓，二者连的是同一套接口：
+
+- **[dsh-companion](https://github.com/westanke/dsh-companion)（[Gitee](https://gitee.com/westanke/dsh-companion)）** —— Android 客户端，上游 [dsh-android-app](https://github.com/Hakunm/dsh-android-app) 的 fork。
+- **[dsh-Chat](https://github.com/westanke/dsh-Chat)（[Gitee](https://gitee.com/westanke/dsh-Chat)）** —— 双客户端仓：Flutter 版（`app/`，Android 已发版 1.0.18+19，含 iOS 通道）与 HarmonyOS 原生 ArkTS 版（`harmony/`，2026-11-15 起步，未发版）。协议基线要求桥 ≥ 2.10.0（协议 v3，子协议 `dsh-mobile-v1`）。
+
+用手机扫描下表中任意一个码即可下载 —— 每个码都指向**对应站点的 Releases 列表页**，
 所以发新版不需要更换二维码：
 
-| GitHub | Gitee（国内访问更快） |
-| --- | --- |
-| ![GitHub 上的 dsh-companion Releases](assets/app-qr-github.png) | ![Gitee 上的 dsh-companion Releases](assets/app-qr-gitee.png) |
-| <https://github.com/westanke/dsh-companion/releases> | <https://gitee.com/westanke/dsh-companion/releases> |
+| 客户端 | GitHub | Gitee（国内访问更快） |
+| --- | --- | --- |
+| dsh-companion | ![GitHub 上的 dsh-companion Releases](assets/app-qr-github.png) | ![Gitee 上的 dsh-companion Releases](assets/app-qr-gitee.png) |
+| dsh-Chat | ![GitHub 上的 dsh-Chat Releases](assets/app-qr-chat-github.png) | ![Gitee 上的 dsh-Chat Releases](assets/app-qr-chat-gitee.png) |
 
-> 二维码里写的是 Releases **列表页**，不是某个具体的 APK 文件名 ——
+下载页（与二维码同址）：
 
+- dsh-companion：<https://github.com/westanke/dsh-companion/releases> · <https://gitee.com/westanke/dsh-companion/releases>
+- dsh-Chat：<https://github.com/westanke/dsh-Chat/releases> · <https://gitee.com/westanke/dsh-Chat/releases>
+
+> 二维码里写的是 Releases **列表页**，不是某个具体的 APK 文件名 —— 扫码永远落到最新版本。
 
 装好 App 后，在「手机设置 → 远程访问」里生成配置文本或配对码即可连上本机。
 公开 API 不依赖 DSH 私有协议，也可用于其他客户端：
@@ -565,3 +573,4 @@ DSH **0.2.1-rc.3** 隔离实例上**实跑验过**，不是静态推断：插件
 - npm：[`dsh-remote-bridge`](https://www.npmjs.com/package/dsh-remote-bridge)（[国内镜像](https://registry.npmmirror.com/dsh-remote-bridge)）
 - 许可证：[GNU Affero General Public License v3.0](./LICENSE)
 - Android 客户端：dsh-companion（[GitHub](https://github.com/westanke/dsh-companion) · [Gitee](https://gitee.com/westanke/dsh-companion)），上游 [dsh-android-app](https://github.com/Hakunm/dsh-android-app) 的 fork，与本插件配套
+- 另一客户端仓：dsh-Chat（[GitHub](https://github.com/westanke/dsh-Chat) · [Gitee](https://gitee.com/westanke/dsh-Chat)），内含 Flutter 版（Android 1.0.18+19，含 iOS 通道）与 HarmonyOS 原生 ArkTS 版（未发版）

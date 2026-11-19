@@ -1,4 +1,20 @@
-# 开发日志
+## 未发布 · 并列收录 dsh-Chat 客户端（2026-11-20）
+
+**为什么有这一段**：桥的客户端清单与「App 下载」卡一直只列 dsh-companion，而手机上已经有第二个
+原生客户端 dsh-Chat（Flutter `app/` + HarmonyOS ArkTS `harmony/`）。协议是同一套（`dsh-mobile-v1`
+/ `hello.protocol=3`），但「桥承认谁」这件事写在 README、AGENTS、COMPATIBILITY 与二维码里 ——
+不补就等于让用户自己去找下载页。
+
+**改法**：①`scripts/generate-app-qr.mjs` 的 `TARGETS` 扩成 4 条（两个客户端 × GitHub/Gitee），
+每条带 `client` 键；二维码仍是「编码后立刻用 `jsqr` 反解自验证」，`tests/app-qr.spec.ts` 反解
+data URL 防地址漂移。②`src/client/cards/app-download.tsx` 改成两客户端两列，i18n 新增
+`appDownloadClientsHint`、alt 模板带 `{client}`。③文档：README 双站客户端清单、`AGENTS.md` §1
+「与谁配」加「并列收录」段、`COMPATIBILITY.md` 运行矩阵加 dsh-Chat 行（写明**联调待实测**）、
+`INTERFACES.md` 的 `AppQrCode` 加 `client`。
+
+**注意**：dsh-Chat 的协议对齐是同一轮在它自己仓里做的（`docs/protocol-conformance.md`），
+桥侧这轮只做「承认 + 给下载入口」，没有改任何端点、帧或能力位。`COMPATIBILITY.md` 里那一行
+仍标「待实测」——本机没有 Android 设备，不做没有证据的兼容性声明。
 
 ## 未发布 · 安卓真机跑通内核调用面（issue #26，2026-11-19）
 

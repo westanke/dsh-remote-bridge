@@ -162,7 +162,7 @@ host services 之上重建 0.1.x 的 `apiProxy` 面容，让 `chat-adapter` / `s
 | `i18n.tsx` | 双语文案与语言 store（`zh-CN` / `en`），跨 slot 同步 |
 | `styles.ts` | 面板全部 CSS（含 `.daw-root` 与 `.daw-settings-section` 双覆盖的不变量） |
 | `api.ts` | 浏览器侧 REST 客户端（`DirectoryPage` / `ContentResult` / `WorkspaceApiError`） |
-| `app-qr.ts` | 应用下载二维码 data URL，**由 `scripts/generate-app-qr.mjs` 生成，勿手改** |
+| `app-qr.ts` | 应用下载二维码 data URL（dsh-companion 与 dsh-Chat × GitHub / Gitee 四个），**由 `scripts/generate-app-qr.mjs` 生成，勿手改** |
 
 ### 3.3 `src/shared/` —— 双端共享（2 个文件）
 
@@ -376,7 +376,7 @@ host services 之上重建 0.1.x 的 `apiProxy` 面容，让 `chat-adapter` / `s
 | `src/host/ws-team.ts` | file | 移动端网关 WS 智能体团队/子会话域（agent-team/subagents，只读会话投影，/ws/mobile） |
 | `src/client/` | dir | DSH WebUI 浏览器半边 |
 | `src/client/api.ts` | file | 浏览器侧 REST 客户端 |
-| `src/client/app-qr.ts` | file | 应用下载二维码（生成物，勿手改） |
+| `src/client/app-qr.ts` | file | 应用下载二维码（双客户端 × 双站，生成物，勿手改） |
 | `src/client/handoff.tsx` | file | 图片交接消息渲染 |
 | `src/client/i18n.tsx` | file | 双语文案与语言 store |
 | `src/client/index.tsx` | file | 客户端插件入口与 slot 注册 |
@@ -394,7 +394,7 @@ host services 之上重建 0.1.x 的 `apiProxy` 面容，让 `chat-adapter` / `s
 | `src/client/cards/trash.tsx` | file | 回收站卡（手机端删除记录的恢复与彻底清理，展开才拉取） |
 | `src/client/cards/image.tsx` | file | 识图卡（图片落盘目录名，展开才拉取） |
 | `src/client/cards/plugins.tsx` | file | 插件卡（profile 插件清单、启停、检查更新） |
-| `src/client/cards/app-download.tsx` | file | App 下载卡（双站二维码与地址） |
+| `src/client/cards/app-download.tsx` | file | App 下载卡（两个客户端 × 双站二维码与地址） |
 | `src/shared/` | dir | 双端共享契约与版本 |
 | `src/shared/contracts.ts` | file | 共享契约类型 |
 | `src/shared/version.ts` | file | PLUGIN_VERSION |
