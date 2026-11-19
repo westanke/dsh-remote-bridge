@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
-import { BRIDGE_CAPABILITIES, connectionReadyData, HISTORY_FORMAT_VERSION } from '../src/host/capabilities.ts'
+import { availableCapabilities, BRIDGE_CAPABILITIES, connectionReadyData, HISTORY_FORMAT_VERSION } from '../src/host/capabilities.ts'
 import { PLUGIN_VERSION } from '../src/shared/version.ts'
 
 const openapi = readFileSync(new URL('../docs/api/openapi.yaml', import.meta.url), 'utf8')
@@ -89,6 +89,11 @@ const EVIDENCE: Record<string, { openapi?: string[]; asyncapi?: string[] }> = {
   },
   'chat-schedules-v1': { openapi: ['/chat/schedules', '/chat/schedules/{id}'] },
   'speech-transcription-v1': { openapi: ['/chat/speech/transcriptions', '/chat/speech/catalog'] },
+  // 内核端点目录 / 通用调用面（issue #26 阶段 2）。两条都是**运行时探测面**：
+  // 依据是「这台进程读不读得到内核的 Typert 登记表」，不新增 REST 路径，
+  // 阶段 5 的 WS 帧落地前也没有事件字面量可指。与 mobile-tasks-v1 同类，故用空依据。
+  'kernel-endpoint-catalog-v1': {},
+  'kernel-call-v1': {},
 }
 
 describe('bridge capability declaration', () => {
@@ -160,6 +165,29 @@ describe('bridge capability declaration', () => {
     expect(openapi).toContain('operationId: createSchedule')
     expect(openapi).toContain('operationId: createSpeechTranscription')
     expect(openapi).toContain('operationId: getSpeechCatalog')
+  })
+
+  /**
+   * 内核端点目录的两个位（issue #26 阶段 2）：探测面，只在**真能提供**时才给。
+   *
+   * 这里是能力位这一侧的一半；另一半（目录非空 ⇒ 给位）钉在
+   * `tests/kernel-endpoints.spec.ts` 的 `kernelCapabilityFlags` 用例里。
+   */
+  it('drops the kernel endpoint bits when the kernel probe finds nothing', () => {
+    const withoutKernel = availableCapabilities({ kernelCatalog: false, kernelCall: false })
+    expect(withoutKernel).not.toContain('kernel-endpoint-catalog-v1')
+    expect(withoutKernel).not.toContain('kernel-call-v1')
+    // 其余能力位不受影响（新开关不能把整份清单打掉）。
+    expect(withoutKernel).toContain('approvals-v1')
+  })
+
+  it('keeps the general call surface off until the endpoint allowlist exists', () => {
+    // 阶段 2：目录在、白名单还没落地 —— 只能声明目录，不能声明调用面。
+    const catalogOnly = availableCapabilities({ kernelCatalog: true, kernelCall: false })
+    expect(catalogOnly).toContain('kernel-endpoint-catalog-v1')
+    expect(catalogOnly).not.toContain('kernel-call-v1')
+    const both = availableCapabilities({ kernelCatalog: true, kernelCall: true })
+    expect(both).toContain('kernel-call-v1')
   })
 
   it('declares a positive integer history format version', () => {

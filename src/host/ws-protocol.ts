@@ -18,6 +18,33 @@ export const WS_PATH = '/ws/mobile'
 /** 子协议首项：始终是 dsh-mobile-v1。 */
 export const WS_PROTOCOL = 'dsh-mobile-v1'
 
+/**
+ * 从客户端提供的子协议清单里挑出**第一个服务端认识的**。
+ *
+ * ## 为什么不再要求「首项必须是 dsh-mobile-v1」（issue #26 阶段 2）
+ *
+ * 浏览器与各语言客户端都会**自己排序**：有的按字母序、有的把 `Sec-WebSocket-Protocol`
+ * 当成集合去重后重排、有的 SDK 会把调用方传进来的数组排序。要求「首项必须是
+ * dsh-mobile-v1」于是变成一条**客户端排队顺序**的约束 —— 只要它排了一次序，
+ * 握手就被服务端按「子协议不对」拒绝（4001），而客户端只能看到一句「连接被关闭」。
+ *
+ * 现在的语义是「清单里**有**就行，协商结果仍是 dsh-mobile-v1」：服务端回给客户端的
+ * 永远是这个固定值（不是客户端清单里的任意项），所以老 App（首项就是它）行为一字不变。
+ *
+ * 注意 `ws` 库的语义：返回假值只是**不加响应头**，握手照常完成 —— 所以「没提供
+ * dsh-mobile-v1」不会被在这里拒绝，而是照旧交给 `onConnection` 关 4001
+ * （`AUTH_REQUIRED`），对外行为与此前完全一致。
+ *
+ * @param protocols - 客户端清单（`ws` 给的是 `Set`，保序）。
+ * @returns 协商用的协议名；一个都不认识时返回 `false`（不加响应头）。
+ */
+export function pickMobileSubprotocol(protocols: Iterable<string>): string | false {
+  for (const protocol of protocols) {
+    if (protocol === WS_PROTOCOL) return WS_PROTOCOL
+  }
+  return false
+}
+
 /** 首次配对子协议前缀：`dsh-pair.<6-hex-code>`。 */
 export const PROTOCOL_PAIR_PREFIX = 'dsh-pair.'
 

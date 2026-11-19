@@ -244,18 +244,32 @@
   `tests/capabilities.spec.ts` 逐条核对。
 - 客户端只把 `approvals-v1` / `questions-v1` 当必需项（详见
   `dsh-companion` 的 `BridgeCapabilities.kt`）；其余全是特性探测。
+- **运行时探测面**（无 REST/AsyncAPI 字面量可指）：`kernel-endpoint-catalog-v1` 与
+  `kernel-call-v1`（issue #26 阶段 2）依据写 `{}`，语义由 `tests/kernel-endpoints.spec.ts`
+  的 `kernelCapabilityFlags` 用例与 `tests/capabilities.spec.ts` 两侧钉住：
+  **目录非空才给目录位**；调用面要等端点白名单（阶段 5），在此之前恒不给。
 - 最高频的新增动作：加 REST 路由 → 加能力位 → 写依据 → 跑 `capabilities.spec`。
 
 ### 3.5 移动端网关 WebSocket (/ws/mobile)
 
 - 端点：`/ws/mobile`（双向请求/响应，挂主 HTTP server upgrade），与 `/api/v1/events` 并存；端口默认 `3090`。
 - 子协议（`Sec-WebSocket-Protocol`）：`dsh-mobile-v1, dsh-pair.<code>`（首次配对，随请求带 `X-DSH-Device-ID`；成功后推 `paired` 再推 `hello`）；`dsh-mobile-v1, dsh-auth.<token>` 或 HTTP 头 `Authorization: Bearer <token>`（后续连接）。不允许 URL query 带 token。
+- **协商与位置无关**（issue #26 阶段 2）：`server.ts` 的 `handleProtocols` 只认 `dsh-mobile-v1`
+  （`pickMobileSubprotocol`），客户端把 `dsh-auth.*` 排前面也照样连得上；协商结果恒为
+  `dsh-mobile-v1`。清单里一个都没有时仍握手成功，再由 `onConnection` 关 4001（与改动前一致）。
 - 连接即推 `hello`：`{kind:'hello', protocol:3, capabilities, authenticated, device, port, clients}`；能力位与 §3.4 同源（`src/host/capabilities.ts`）。
 - 客户端帧 `{type:…}`：`ping` / `subscribe` / `unsubscribe` / `message` / `workspaces` / `sessions` / `history` / `attachment` / `file-download-open/read/cancel` / `search` / `host` / `default-model` / `save-default-model` / `models` / `providers` / `commands` / `command-execute` / `command-options` / `command-select` / `select-model` / `permission-options` / `permission` / `context-usage` / `session-stats` / `tasks` / `goal` / `goal-edit` / `goal-pause` / `goal-resume` / `goal-clear` / `plugin-catalog/inspect/install/settings` / `agent-presets` / `defaults` / `set-default` / `question-answer` / `question-cancel` / `approval-response` / `session-wait`。
-- 服务端帧 `{kind:…}`：`hello` / `pong` / `subscribed` / `sent` / `workspaces` / `sessions` / `history` / `search` / `commands` / `command-options` / `command-executed` / `command-selected` / `attachment` / `file-list` / `file-download-opened/chunk/cancelled` / `session-cancelled` / `queue-item-updated` / `session-queues` / `session-queue` / `session-archived` / `session-renamed` / `session-waited` / `session-archives` / `session-title-changed` / `error` / `event` / `tasks` / `goal` / `goal-edit` / `goal-pause` / `goal-resume` / `goal-clear` / `tasks-updated` / `goal-updated` / `question-requested/response/resolved` / `approval-requested/response/resolved`。
+- 服务端帧 `{kind:…}`：**清单不在此抄第二份**（抄了必漂）—— 权威是
+  `src/host/ws-protocol.ts` 的 `ServerFrameKind` 联合类型，逐条说明见 [API.md](API.md) 的
+  「服务端→客户端帧」表，两侧一致性由 `docs:check` 的帧对账段与
+  `tests/mobile-frame-contract.spec.ts` 共同钉住（issue #26 阶段 1 起白名单为空 = 零差异）。
+  三个易错点：① `search` 只有客户端帧（服务端回 `error NOT_IMPLEMENTED`）；
+  ② 审批/提问的**主动推送走 `event` 帧**（`chat.approval.*` / `chat.userQuestions/*` 载荷），
+  不是 `approval-requested` / `question-requested` 这类专用 kind；③ `connection-resync-required`
+  是真帧（反压溢出后提示全量重同步）。
 - `message` 帧：`sessionId` 可选（省略自动建会话）、`mode:'queue'|'steer'`、`content`（PromptContentPart[]，图片 Base64 无 `data:` 前缀）、`clientTimeZone`、`workspaceId`/`cwd`。
 - `history` 帧：`beforeSeq`/`maxMessages`/`maxBytes`（默认 4 MiB）、`view:'conversation'`；响应带 `hasMore`+`nextBeforeSeq`。
-- HITL：`question-answer`/`approval-response` 双向；server→client `question-requested`/`approval-requested`（`outcome: 'allowed-once'|'rejected'`，**不支持始终允许**）；重放待处理项 `replayed=true`，客户端按 `approvalId`/`callId` 去重。
+- HITL：`question-answer` / `question-cancel` / `approval-response` 由客户端发起；**待处理项的推送走 `event` 帧**（`chat.userQuestions/*` / `chat.approval.*` 载荷），`outcome: 'allowed-once'|'rejected'`，**不支持始终允许**；重放待处理项 `replayed=true`，客户端按 `approvalId`/`callId` 去重。
 - 背压与关闭：同 §3.1（单帧 1 MiB、发送队列 512 帧、30s ping、连续错过 2 周期 terminate、设备撤销 close(4001)）；`connection.resyncRequired` 通知客户端改走 REST 重取基线。
 - 鉴权与授权：复用 `principal()` 与 `eventAllowed`（scope/root/session 三层）；会话级操作再用 `isSessionAuthorized` 过滤；未带凭据 401，越权 scope 403，系统错误不回显绝对路径。
 
@@ -512,6 +526,16 @@ export const PLUGIN_VERSION: string          // shared/version.ts，与 package.
 | `export function unwrapDsh` | `src/host/chat-adapter.ts` | function |
 | `export function normalizeDshEvent` | `src/host/chat-adapter.ts` | function |
 | `export const FILE_UPLOAD_STREAM_UNSUPPORTED` | `src/host/bridge/file-upload-stream.ts` | const |
+| `export interface KernelEndpoint` | `src/host/bridge/kernel-endpoints.ts` | interface |
+| `export function describeKernelEndpoint` | `src/host/bridge/kernel-endpoints.ts` | function |
+| `export function readKernelEndpoints` | `src/host/bridge/kernel-endpoints.ts` | function |
+| `export function readTypertRegistry` | `src/host/bridge/kernel-endpoints.ts` | function |
+| `export function kernelCapabilityFlags` | `src/host/bridge/kernel-endpoints.ts` | function |
+| `export function assertKernelArguments` | `src/host/bridge/kernel-invoke.ts` | function |
+| `export function invokeKernelEndpoint` | `src/host/bridge/kernel-invoke.ts` | function |
+| `export function streamKernelEndpoint` | `src/host/bridge/kernel-invoke.ts` | function |
+| `export function kernelRpcError` | `src/host/bridge/kernel-invoke.ts` | function |
+| `export function pickMobileSubprotocol` | `src/host/ws-protocol.ts` | function |
 | `export async function uploadAttachmentStreamToKernel` | `src/host/bridge/file-upload-stream.ts` | function |
 | `export class WorkspaceDatabase` | `src/host/database.ts` | class |
 | `export function hashSecret` | `src/host/database.ts` | function |

@@ -20,6 +20,7 @@ import { createImageRouteHandler, IMAGE_ROUTE, readHandoffSubdir } from './host/
 import { DEFAULT_REMOTE_HOST, normalizeListenerHost, normalizeListenerPort } from './host/listener-config.ts'
 import { ApiRouter } from './host/router.ts'
 import { attachEmbeddedRoutes, RemoteApiServer } from './host/server.ts'
+import { createKernelEndpointCatalog, kernelCapabilityFlags, readTypertRegistry } from './host/bridge/kernel-endpoints.ts'
 import { DshSettingsAdapter } from './host/settings-adapter.ts'
 import { createHostRemoteServices } from './host/ws-host-services.ts'
 import { PLUGIN_VERSION } from './shared/version.ts'
@@ -229,6 +230,11 @@ export async function apply(ctx: HostContext, config: Config = {}): Promise<void
   // 同样是可选服务：reflect.get 取不到就不启用，WS 帧回结构化 unavailable 引导 REST。
   // 提到 RemoteApiServer 之前构造，是因为能力位要在构造时就能如实声明（见下）。
   const hostRemote = createHostRemoteServices(reflect)
+  // 内核端点目录（issue #26 阶段 2）：登记表读得到什么就抄什么，**只读**。
+  // 放在这里而不是用到时再读，是为了能力位能在构造时如实声明（见下）。
+  // 读不到（老内核没有 typert）时目录为空 —— 能力位随之不发。
+  const kernelCatalog = createKernelEndpointCatalog(readTypertRegistry(reflect))
+  const kernelFlags = kernelCapabilityFlags(kernelCatalog)
   const capabilities = {
     jobs: jobControllerAvailable,
     // `chat-schedules-v1` 随 typertGateway Remote 同生死（DSH 0.2.2 起 create/edit
@@ -238,6 +244,10 @@ export async function apply(ctx: HostContext, config: Config = {}): Promise<void
     // `GET …/catalog` 仍回 200 `{available:false,reason}`，客户端要能区分
     // 「支持但本机没配」与「不支持」。理由写在 `capabilities.ts`。
     speech: hostRemote.services !== undefined,
+    // 内核端点目录 / 通用调用面：规则只有一条 —— **目录非空才给位**。
+    // `kernelCall` 在阶段 5（端点白名单）落地前恒 false：声明一个没人能服务的
+    // 能力面比不声明更糟。规则本身在 `kernelCapabilityFlags` 里，测试钉着它。
+    ...kernelFlags,
   }
   const remote = new RemoteApiServer({
     port,

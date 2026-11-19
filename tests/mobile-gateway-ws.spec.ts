@@ -203,6 +203,47 @@ describe('mobile gateway WebSocket (/ws/mobile) — authenticated session', () =
     socket.close()
   })
 
+  /**
+   * 子协议**位置无关**（issue #26 阶段 2）。
+   *
+   * 修复前服务端要求 `webSocket.protocol === 'dsh-mobile-v1'`，而 `ws` 默认回客户端
+   * 清单的**第一项** —— 于是客户端只要排过一次序（把 dsh-auth.* 排到前面），
+   * 握手就被 4001 掉，手机端只能看到「连接被关闭」。现在由 `handleProtocols`
+   * 在清单里挑，位置不再影响结果。
+   */
+  it('negotiates dsh-mobile-v1 even when the client lists it second', async () => {
+    const { database, root, url } = await startHarness()
+    const pairing = database.createPairing([root.id], ['chat.read'])
+    const credentials = database.exchangePairing(pairing.code, 'Mobile device')
+
+    const socket = connect(url, {
+      // 授权前缀排在前面，正是修复前必挂的顺序。
+      protocols: [`dsh-auth.${credentials.token}`, 'dsh-mobile-v1'],
+      headers: { Authorization: `Bearer ${credentials.token}` },
+    })
+    const { frames } = collect(socket)
+    await new Promise<void>((resolve, reject) => {
+      socket.once('open', resolve)
+      socket.once('error', reject)
+    })
+    await nextKind(frames, 'hello')
+    expect(socket.protocol).toBe('dsh-mobile-v1')
+    socket.close()
+  })
+
+  it('still refuses a connection that never offers dsh-mobile-v1', async () => {
+    const { database, root, url } = await startHarness()
+    const pairing = database.createPairing([root.id], ['chat.read'])
+    const credentials = database.exchangePairing(pairing.code, 'Mobile device')
+
+    const socket = connect(url, {
+      protocols: [`dsh-auth.${credentials.token}`],
+      headers: { Authorization: `Bearer ${credentials.token}` },
+    })
+    const closed = new Promise<number>((resolve) => socket.once('close', code => resolve(code)))
+    await expect(closed).resolves.toBe(4001)
+  })
+
   it('answers ping with a pong frame', async () => {
     const { database, root, url } = await startHarness()
     const pairing = database.createPairing([root.id], ['chat.read'])

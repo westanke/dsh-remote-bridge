@@ -13,6 +13,7 @@ import type { WorkspaceDatabase } from './database.ts'
 import { ApiError } from './errors.ts'
 import type { WorkspaceEventBus } from './event-bus.ts'
 import { MobileGatewayWsHandler } from './ws-handler.ts'
+import { pickMobileSubprotocol, WS_PATH } from './ws-protocol.ts'
 import { DEFAULT_REMOTE_HOST, loopbackFor, normalizeListenerHost, normalizeListenerPort } from './listener-config.ts'
 import {
   recordBroadcastEvent,
@@ -175,6 +176,21 @@ export class RemoteApiServer implements RemoteControl {
       noServer: true,
       clientTracking: false,
       maxPayload: Math.max(1, options.maxPayloadBytes ?? DEFAULT_MAX_PAYLOAD_BYTES),
+      // 子协议协商（issue #26 阶段 2）：/ws/mobile 上只认 `dsh-mobile-v1`，但**不看位置** ——
+      // 客户端排过序也照样连得上（理由见 `ws-protocol.ts` 的 `pickMobileSubprotocol`）。
+      // 其它路径（/api/v1/events）保持 `ws` 的默认行为（回客户端清单首项），
+      // 那是既有对外行为，本阶段不动它。
+      handleProtocols: (protocols, req) => {
+        const offered = protocols.values().next().value ?? false
+        if (new URL(req.url ?? '/', 'http://workspace.local').pathname !== WS_PATH) {
+          return offered
+        }
+        // 挑不出认识的协议时**退回原行为**（回客户端首项）：握手照样完成，随后由
+        // `onConnection` 关 4001 `AUTH_REQUIRED` —— 与改动前逐字一致。
+        // 直接回 `false` 会让 `ws` 不发 `Sec-WebSocket-Protocol` 头，客户端那边是
+        // 一次握手失败（1006），等于把一个可控的拒绝变成了连接异常。
+        return pickMobileSubprotocol(protocols) || offered
+      },
     })
     // 移动端网关 WS（/ws/mobile）：与 /api/v1/events 共享同一 HTTP server upgrade，
     // 各自按 pathname 分流。

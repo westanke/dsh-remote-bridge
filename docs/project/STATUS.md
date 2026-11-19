@@ -1,6 +1,35 @@
 # 当前状态
 
-- 日期：2026-11-19（**已发版 v2.12.1：大文件上传流式化 + 隧道工具 schema 修形**；`main` 上另有未发版的 issue #26 阶段 0 / 阶段 1）
+- 日期：2026-11-19（**已发版 v2.12.1：大文件上传流式化 + 隧道工具 schema 修形**；`main` 上另有未发版的 issue #26 阶段 0 / 阶段 1 / 阶段 2）
+- **已完成（未发布，issue #26 阶段 2 / `MOB-003`）· 描述符驱动的统一调用封装（不改任何端点行为）**：
+  ①**目录只读**：`src/host/bridge/kernel-endpoints.ts` 从 Typert 登记表（`ctx.typert.local.list()`，
+  经 `ctx.reflect.get('typert', false)` 取 —— `inject` 一行没加）抽 `KernelEndpoint`：endpoint /
+  namespace / method / **wire 键** / JSON Schema / 是否流式 / 是否声明 cancellation。`optional` 的判定
+  与内核 `assertExactArguments` 的 `acceptsMissing` 逐字一致（`source === 'json'` 且
+  `acceptsUndefined === true || codec.mode === 'src-json'`），否则「可省略」两边会吵架。读取**永不抛**：
+  登记表缺席、`list()` 抛错一律回空目录 —— 目录读崩不能把插件的 `apply` 带下水。
+  ②**本机 224 个端点逐条自证**：`tests/kernel-endpoints.spec.ts` 动态 import 全部
+  `@deepseek-ai/dsh-api-*/lib/typert.host.js` 的 `TYPERT.invocations`（18 个包），断言「目录条目数 ===
+  描述符数」且 20 条代表端点的 wire 键/流式/cancellation 与硬编码期望逐条相等（`session/list` 的
+  wire 键是 `_request`、`settings/mutate` 是三个顶层参 —— 手抄就会错在这两处）。内核不在机器上时
+  该段整体 `skipIf`，CI 不受影响。
+  ③**调用封装**：`src/host/bridge/kernel-invoke.ts` 提供 `assertKernelArguments`（多传/漏传在**进内核前**
+  本地拦下，文案与错码 `gateway/arguments-invalid` 与内核逐字一致）、`wrapRequestArgument`、
+  `kernelCallSignal`（只有描述符声明了 cancellation 才把 `AbortSignal` 下传）、`invokeKernelEndpoint` /
+  `streamKernelEndpoint`、`kernelRpcError`（**直接委托** `bridge/rpc.ts` 的 `toRpcError`，错误码与今天
+  `call()` 逐条等价只有一份实现）。20 个用例，含「参数被拦时 `caller.calls` 为空」——证明拦截发生在
+  本地而不是靠内核兜底。
+  ④**能力位随探测给**：`kernel-endpoint-catalog-v1`（目录非空才发）与 `kernel-call-v1`（白名单未落地，
+  **恒不发** —— 声明一个没人能服务的面比不声明更糟）。规则收在 `kernelCapabilityFlags()` 一个函数里，
+  两侧测试钉住「探测不到 ⇒ 不给位、给位 ⇒ 目录非空」。
+  ⑤**子协议位置无关**：`server.ts` 的 `handleProtocols` 用 `pickMobileSubprotocol` 从客户端清单里挑
+  `dsh-mobile-v1`（协商结果恒为该值）。此前要求「首项必须是它」，而 `ws` 默认回**首项** —— 客户端
+  只要排过一次序（把 `dsh-auth.*` 排前面）就被 4001 掉。**踩坑**：直接返回 `false` 会让 `ws` 不发
+  `Sec-WebSocket-Protocol` 响应头，客户端拿到的是握手失败（1006）而不是 4001，等于把可控拒绝变成
+  连接异常；正确做法是挑不出认识的协议时**退回原行为**（回首项），再由 `onConnection` 关 4001。
+  `pnpm check` exit 0；`vitest run` **85 文件 / 907 用例**全绿（新增 `kernel-endpoints` 17 例、
+  `kernel-invoke` 20 例、能力位 2 例、子协议 2 例 + 既有 4001 用例未改一行）；
+  `docs:check` 12 文档 / 53 tasks / 10 ADR / STRUCTURE 119 锚点 / INTERFACES 104 锚点。
 - **已完成（未发布，issue #26 阶段 1 / `MOB-002`）· 帧词表收口：`SendFrame` 从 `{kind: string}` 收成真联合类型**：
   基线实测 `ClientFrameType` 70 / `ServerFrameKind` 66 / 去重 114，与 issue 的起点一致；`asyncapi.yaml` 的
   client enum 75、server enum 78 —— **契约比实现宽**，而 `tsc` 完全看不见（发帧回调的签名就是 `string`）。

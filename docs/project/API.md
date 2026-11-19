@@ -716,6 +716,8 @@ assistant 消息，只有最后那条含正文。桥此前只送了 `role`，客
 | `attachment-chunked-upload-v1` | `POST /chat/sessions/{sessionId}/attachments/uploads` | 不降级（只依赖本进程的会话与 spool） |
 | `chat-schedules-v1` | `GET /chat/schedules`、`POST /chat/schedules` | 内核 typertGateway（schedule Remote）缺席时**不发位**（端点只会 503，发位等于挂一个必然失败的入口） |
 | `speech-transcription-v1` | `POST /chat/speech/transcriptions` | **只在 typert Gateway 整体缺席时不发位**；内核没装语音包时仍发位，`GET /chat/speech/catalog` 回 `200 {available:false,reason}` |
+| `kernel-endpoint-catalog-v1` | 无 REST 依据（**运行时探测面**） | 内核 Typert 登记表读不到（老内核没有 `typert` 服务）或目录为空时**不发位**；发位即保证目录非空 |
+| `kernel-call-v1` | 无 REST 依据（**运行时探测面**） | 通用调用面还差端点白名单（issue #26 阶段 5），在那之前**恒不发位** —— 声明一个没人能服务的面比不声明更糟 |
 
 最后一行是有意为之：客户端必须能区分「桥支持语音、但本机没配」（位在、目录
 `available:false` → 引导去插件管理装语音包）与「桥不支持语音」（位不在 → 隐藏入口）。
@@ -788,6 +790,11 @@ v2.8 新增。独立于现有 `/api/v1/events`（单向广播，保留不动）�
 - 子协议（`Sec-WebSocket-Protocol`）：
   - 首次配对：`dsh-mobile-v1, dsh-pair.<code>`，随请求带 `X-DSH-Device-ID`（必填，安装级稳定标识，仅校验不落库）；可选 `X-DSH-Device-Name`（Base64(UTF-8) 展示名，缺省回退 Device-ID，非法编码同样回退）。成功后服务端推 `paired`（`{kind:'paired', token, device}`），再推 `hello`。
   - 后续连接：`dsh-mobile-v1, dsh-auth.<token>`，或 HTTP 头 `Authorization: Bearer <token>`。
+  - **位置无关**（issue #26 阶段 2 起）：服务端从客户端清单里挑**第一个自己认识的**，
+    协商结果永远是 `dsh-mobile-v1`。此前要求「首项必须是 `dsh-mobile-v1`」，等于把
+    客户端数组的排序当成协议要求 —— 排过序的客户端（把 `dsh-auth.*` 排前面）握手直接被
+    4001 掉，手机上只看到「连接被关闭」。清单里一个都没有时行为不变：握手完成后照样
+    `close(4001, AUTH_REQUIRED)`。
   - 不允许 URL query 带 token，避免令牌进入 URL 日志。
 - 配对码：一次性，10 分钟有效期（复用 `/api/v1/pairings/exchange` 产出的 code），256-bit，Base64URL 载荷；设备令牌不过期，撤销即时生效。
 - 鉴权：`dsh-pair`/`dsh-auth`/`bearer.<token>` 均复用 `principal()`，与 `/api/v1` 同一套判据；`allowAdmin: true` 允许 loopback admin；连接上限 32（鉴权后计数，Upgrade 前判定，超出回 HTTP `429` + `Retry-After: 5`）。

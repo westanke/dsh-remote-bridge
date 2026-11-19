@@ -317,16 +317,19 @@ export class MobileGatewayWsHandler {
    * 返回 false 表示不属于此处理器（由调用方决定后续，通常是 socket.destroy()）。
    */
   onConnection(webSocket: WebSocket, req: IncomingMessage): boolean {
-    const protocol = webSocket.protocol
-    if (protocol !== WS_PROTOCOL) {
-      // 子协议不是 dsh-mobile-v1，拒绝。
-      webSocket.close(4001, 'AUTH_REQUIRED')
-      return true
-    }
-
     const protocols = req.headers['sec-websocket-protocol']
     const joined = Array.isArray(protocols) ? protocols.join(',') : protocols ?? ''
     const protocolList = joined.split(',').map(p => p.trim()).filter(Boolean)
+
+    // 子协议判定（issue #26 阶段 2）：要求**清单里有** dsh-mobile-v1，而不是
+    // 「协商结果恰好等于它」。`ws` 的协商结果现在由 `handleProtocols` 给出（见
+    // `server.ts`），它已经是 `dsh-mobile-v1`；这里再看一遍请求头，是为了兜住
+    // 「客户端一个都没提供」与「只提供了别的前缀」两种情况 —— 两者的对外行为
+    // 与改动前完全一致（关闭码 4001）。
+    if (!protocolList.includes(WS_PROTOCOL)) {
+      webSocket.close(4001, 'AUTH_REQUIRED')
+      return true
+    }
 
     const pairCode = protocolList.find(p => p.startsWith(PROTOCOL_PAIR_PREFIX))
     const authToken = protocolList.find(p => p.startsWith(PROTOCOL_AUTH_PREFIX))

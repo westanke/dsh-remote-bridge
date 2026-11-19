@@ -561,6 +561,25 @@ base64 膨胀 4/3，所以单条路径的原始文件实际上限约 **17.2 MiB*
 `docs:check` 四段全过（12 文档 / 39 tasks / 9 ADRs / STRUCTURE 84 锚点 / INTERFACES 87 锚点）；
 双产物 build 成功（host `lib/index.js` 628.64 kB、client `lib/client.cjs` 772.91 kB）。
 
+## 未发布 · 内核端点归一（B2 全量换源）阶段 2：描述符驱动的统一调用封装（issue #26，2026-11-19）
+
+- **新增 `src/host/bridge/kernel-endpoints.ts`（230 行）**：把内核 Typert 登记表读成只读目录 ——
+  `readTypertRegistry(reflect)`（`reflect.get('typert', false)`，`inject` 不加一行）、
+  `describeKernelEndpoint(descriptor)`、`readKernelEndpoints(registry)`（字典序、去重、**永不抛**）、
+  `createKernelEndpointCatalog(registry)` → `{ endpoints, byName }`、`kernelCapabilityFlags(catalog)`。
+  `optional` 与内核 `acceptsMissing` 逐字一致；`jsonSchema` 是惰性投影，取值包在 try 里。
+- **新增 `src/host/bridge/kernel-invoke.ts`（194 行）**：`assertKernelArguments`（本地拦下多传/漏传，
+  文案与 `gateway/arguments-invalid` 与内核逐字一致）、`wrapRequestArgument`、`kernelCallSignal`
+  （只对声明 cancellation 的端点透传 `AbortSignal`）、`requireKernelEndpoint`、
+  `invokeKernelEndpoint` / `streamKernelEndpoint`、`kernelRpcError`（委托 `toRpcError`，错误码只有一份实现）。
+- **能力位**：`kernel-endpoint-catalog-v1`（目录非空才发）与 `kernel-call-v1`（白名单未落地前恒不发）。
+- **子协议位置无关**：`ws-protocol.ts` 的 `pickMobileSubprotocol` + `server.ts` 的 `handleProtocols`
+  从客户端清单里挑 `dsh-mobile-v1`，不再要求它是首项；挑不出时退回原行为（回首项）再由
+  `ws-handler.ts` 关 4001 —— 老客户端行为逐字不变。
+- **测试**：`tests/kernel-endpoints.spec.ts` 17 例（含真实内核 224 端点自证，缺少内核时整段 skip）、
+  `tests/kernel-invoke.spec.ts` 20 例、能力位 2 例、子协议 2 例。
+- **手机协议零改动**：本阶段不新增帧、不改 REST 形状，也没有换源 —— 两条能力位在手机上只是个特性探测。
+
 ## 未发布 · 内核端点归一（B2 全量换源）阶段 1：帧词表收口（issue #26，2026-11-19）
 
 > 九阶段的第二阶段。仍然**不动手机协议**：REST 路径零改动、帧名零改动、App 不用发版 ——

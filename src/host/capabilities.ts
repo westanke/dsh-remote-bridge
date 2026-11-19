@@ -106,6 +106,13 @@ export const BRIDGE_CAPABILITIES: readonly string[] = [
   'attachment-chunked-upload-v1', // POST /chat/sessions/{sessionId}/attachments/uploads
   'chat-schedules-v1', // GET /chat/schedules、POST /chat/schedules
   'speech-transcription-v1', // POST /chat/speech/transcriptions
+  // —— 内核端点目录与通用调用面（issue #26 阶段 2 起）——
+  // 这两个位**没有**契约字面量可指：它们描述的是「这台进程能不能读到内核的
+  // Typert 登记表、能不能被允许按端点名调用」，属于**运行时探测面**，
+  // 不新增 REST 路径（阶段 5 的 WS 帧落地后才有事件字面量）。
+  // `tests/capabilities.spec.ts` 因此对它们用空依据（既有先例：mobile-tasks-v1 等）。
+  'kernel-endpoint-catalog-v1', // 运行时：ctx.typert.local.list() 非空
+  'kernel-call-v1', // 运行时：目录非空 + 端点白名单非空（阶段 5 起才可能为真）
 ]
 
 /**
@@ -149,6 +156,20 @@ export interface CapabilityFlags {
   schedule?: boolean
   /** 内核 typert Gateway 在不在（`speech` 目录与转写都要经它）。 */
   speech?: boolean
+  /**
+   * 内核 Typert 登记表读得到端点目录（`ctx.typert.local.list()` 非空）。
+   *
+   * 判据是**目录非空**而不是「网关在」：登记表是空的话，桥能做的仍然只是手抄端点，
+   * 声称有目录等于让客户端按描述符驱动去调一个它看不到的清单。
+   */
+  kernelCatalog?: boolean
+  /**
+   * 通用内核调用面可用：目录非空**且**端点白名单非空。
+   *
+   * 白名单（阶段 5 的 `kernel-allowlist.ts`）是**唯一执法点**；在它落地之前这个位
+   * 恒为 `false` —— 声明一个没人能服务的能力面，比不声明更糟。
+   */
+  kernelCall?: boolean
 }
 
 const CAPABILITY_REQUIREMENTS: Readonly<Partial<Record<string, keyof CapabilityFlags>>> = {
@@ -166,6 +187,11 @@ const CAPABILITY_REQUIREMENTS: Readonly<Partial<Record<string, keyof CapabilityF
   // 已经分别做了（前者引导去插件管理装语音包，后者直接隐藏入口）。
   // 只有连 typert Gateway 都没有（极老内核）时端点才只能 503，那才不发位。
   'speech-transcription-v1': 'speech',
+  // 内核端点目录：判据是「登记表读出来的目录非空」，不是「网关在」——
+  // 目录是本阶段唯一真正的交付物，空目录等于没有（见 index.ts 的探测点）。
+  'kernel-endpoint-catalog-v1': 'kernelCatalog',
+  // 通用调用面：目录 + 白名单都非空才给位（白名单是阶段 5 的唯一执法点）。
+  'kernel-call-v1': 'kernelCall',
 }
 
 /**
