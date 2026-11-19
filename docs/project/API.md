@@ -875,6 +875,17 @@ v2.8 新增。独立于现有 `/api/v1/events`（单向广播，保留不动）�
 | `schedule-catalog` / `schedule-list` / `schedule-history` / `schedule-update` / `schedule-delete` | 定时任务（代理内核 schedule Remote，DSH 0.2.2 记录面） | catalog 无会话；其余带 `sessionId`；update 带完整 `expected`+`change`（桥只取 `expected.updatedAt` 做 `expectedUpdatedAt` 乐观并发，`change` 即 `patch.timing`）；回程记录按旧形状呈现（`sessionId` 从内核 `target` 派生，`paused`/`ended` → `inactive`，新字段原样透传） |
 | `kernel-call` | 通用内核调用（**仅 `dshrb-v1`**，issue #26 阶段 5；不按业务类目造新帧，端点名走内核描述符） | `callId`（客户端自铸，重试带同一个即按 `(principal,callId)` 幂等回放，24 h）、`endpoint`（内核原名 `namespace/method`，桥不维护第二份端点表）、`args?`（严格按描述符键集，多/漏键本地拒）。回一帧 `kernel-call-result`；授权失败在结果帧 `ok:false`（`METHOD_NOT_ALLOWED`，先于目录查询 ⇒ 不可拿错误码探端点存在性）、`kernel/endpoint-unknown`、`call/in-flight`、`call/cancelled`、端点自身错误。帧形状错回 `error BAD_REQUEST`；清单里没提供 `dshrb-v1` 的连接上不启用（老连接的能力面里没有这帧）；流式端点结果为 `{frames,truncated?}`（默认收 64 帧） |
 | `kernel-call-cancel` | 取消一次在飞行中的内核调用（**仅 `dshrb-v1`**） | `callId`；尽力而为 —— 已结算的调用结果帧照样会来，客户端按 `callId` 去重。匹配不到在飞行的调用回 `error code:'call/not-found'`；被取消的那次以结果帧 `ok:false` + `call/cancelled` 结算，且**不进幂等**（重试应真的重试） |
+| `plugin-detail` | 读某个插件包的详情（issue #26 阶段 7） | `{name, language?, options?}`；响应为同 kind 帧，`data` 为 `{ok:true, value}` 或 `{ok:false, error:{code,message}}`（+ `requestId` 回显）；需 `settings.*` scope |
+| `plugin-install-status` | 查一次安装的进度（`installId` 是 `plugin-install` 返回值里的 id，issue #26 阶段 7） | `{installId}`；响应为同 kind 帧，`data` 为 `{ok:true, value}` 或 `{ok:false, error:{code,message}}`（+ `requestId` 回显）；需 `settings.*` scope |
+| `plugin-remove` | 卸载已安装的插件包（issue #26 阶段 7） | `{name}`；响应为同 kind 帧，`data` 为 `{ok:true, value}` 或 `{ok:false, error:{code,message}}`（+ `requestId` 回显）；需 `settings.*` scope |
+| `plugin-update` | 更新已安装的插件包（可指定版本，issue #26 阶段 7） | `{name, version?, options?}`；响应为同 kind 帧，`data` 为 `{ok:true, value}` 或 `{ok:false, error:{code,message}}`（+ `requestId` 回显）；需 `settings.*` scope |
+| `plugin-versions` | 列某个插件包已发布的版本（issue #26 阶段 7） | `{name, options?}`；响应为同 kind 帧，`data` 为 `{ok:true, value}` 或 `{ok:false, error:{code,message}}`（+ `requestId` 回显）；需 `settings.*` scope |
+| `plugin-registries` | 列已配置的插件源（issue #26 阶段 7） | `{}`（无参）；响应为同 kind 帧，`data` 为 `{ok:true, value}` 或 `{ok:false, error:{code,message}}`（+ `requestId` 回显）；需 `settings.*` scope |
+| `schedule-create` | 创建定时任务（`request` 原样透传内核 `schedule/create`，issue #26 阶段 7） | `{request}`；响应为同 kind 帧，`data` 为 `{ok:true, value}` 或 `{ok:false, error:{code,message}}`（+ `requestId` 回显）；需 `chat.*` scope |
+| `schedule-edit` | 编辑定时任务（`request` 原样透传内核 `schedule/edit`，issue #26 阶段 7） | `{request}`；响应为同 kind 帧，`data` 为 `{ok:true, value}` 或 `{ok:false, error:{code,message}}`（+ `requestId` 回显）；需 `chat.*` scope |
+| `schedule-view` | 读单条定时任务（`request` 原样透传内核 `schedule/view`，issue #26 阶段 7） | `{request}`；响应为同 kind 帧，`data` 为 `{ok:true, value}` 或 `{ok:false, error:{code,message}}`（+ `requestId` 回显）；需 `chat.*` scope |
+| `schedule-run` | 立刻执行一次定时任务（`request` 原样透传内核 `schedule/run`，issue #26 阶段 7） | `{request}`；响应为同 kind 帧，`data` 为 `{ok:true, value}` 或 `{ok:false, error:{code,message}}`（+ `requestId` 回显）；需 `chat.*` scope |
+| `schedule-delete-inactive` | 清理已停用/已结束的定时任务（无参，issue #26 阶段 7） | `{}`（无参）；响应为同 kind 帧，`data` 为 `{ok:true, value}` 或 `{ok:false, error:{code,message}}`（+ `requestId` 回显）；需 `chat.*` scope |
 
 ### 服务端→客户端帧（{kind: …}）
 
@@ -901,6 +912,8 @@ v2.8 新增。独立于现有 `/api/v1/events`（单向广播，保留不动）�
 | `agent-team` / `subagents` | 团队/子会话投影响应（随 `projectionState` 与 `asOfSeq`） |
 | `speech-catalog` / `speech-subscribed` / `speech-unsubscribed` / `speech-state` / `speech-configured` / `speech-preparing` / `speech-preparation-cancelled` / `speech-transcript` / `speech-cancelled` | 语音输入响应与就绪状态推送；内核无该服务时 catalog 回 `available:false, code:'speech/unavailable'`，其余回 `error` |
 | `schedule-catalog` / `schedule-list` / `schedule-history` / `schedule-update` / `schedule-delete` | 定时任务响应；内核无 schedule Remote 时回 `error code:'schedule/unavailable'`，引导 REST 兜底 |
+| `schedule-create` / `schedule-edit` / `schedule-view` / `schedule-run` / `schedule-delete-inactive` | 阶段 7 直通帧的**同名应答**：`{request}` 原样交给内核 `schedule/create|edit|view|run|deleteInactive`，`data` 为 `{ok:true, value}` 或 `{ok:false, error:{code,message}}`（+ `requestId` 回显）。错误走结果帧而不是 `error` 帧：这五条是请求-应答，客户端按 kind 找回调 |
+| `plugin-catalog` / `plugin-detail` / `plugin-inspect` / `plugin-install` / `plugin-install-status` / `plugin-remove` / `plugin-update` / `plugin-versions` / `plugin-registries` / `plugin-settings` | 插件族**同名应答**（`plugin-catalog`/`inspect`/`install`/`settings` 四条此前只回 `NOT_IMPLEMENTED`，阶段 7 起为真实现）：请求经 `kernel-allowlist.ts` 的 `KERNEL_FRAME_CALLS` 落到 `pluginManager/*`，与 `kernel-call` 帧共用同一个 `KernelCallService`（默认拒绝 + 同一套设备 scope 判据），`data` 同样是 `{ok, value\|error}` 信封 |
 | `kernel-call-result` | 通用内核调用结果（**仅 `dshrb-v1`**）：`{callId, ok, value?, error?{code,message}}`。**不带 `data.requestId`**，按 `callId` 关联（见上面 exclusion 清单）；幂等命中的重试拿到的是上次结果的原样回放 |
 | `kernel-endpoints` | 能力目录快照（**仅 `dshrb-v1`**）：鉴权通过后即推一次，内容是「桥白名单 ∩ 内核目录」的 `{endpoint, scope, stream, wires, summary}[]` —— 不是内核全量端点（全量等于把攻击面列给客户端），客户端据此知道能调什么、需要什么 scope、`args` 该带哪些键（`wires` 取自内核描述符，客户端不必硬编码键名）。元素形状由后续阶段冻结，客户端需容忍未知字段与未知端点 |
 

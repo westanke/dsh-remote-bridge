@@ -183,6 +183,19 @@ export type ClientFrameType =
   // 才接受/发出，dsh-mobile-v1 的已发布 App 既不发也不收（见 {@link KernelCallFrameData}）。
   | 'kernel-call'
   | 'kernel-call-cancel'
+  // 竞品已覆盖的插件管理与定时任务记录面（issue #26 阶段 7，MOB-011）：这里只补词表，
+  // 转发表分别是 kernel-allowlist.ts 的 KERNEL_FRAME_CALLS 与 ws-schedule.ts 的直通表。
+  | 'plugin-detail'
+  | 'plugin-install-status'
+  | 'plugin-remove'
+  | 'plugin-update'
+  | 'plugin-versions'
+  | 'plugin-registries'
+  | 'schedule-create'
+  | 'schedule-edit'
+  | 'schedule-view'
+  | 'schedule-run'
+  | 'schedule-delete-inactive'
 
 /** 服务端 → 客户端的 `kind` 取值。 */
 export type ServerFrameKind =
@@ -232,6 +245,23 @@ export type ServerFrameKind =
   | 'schedule-history'
   | 'schedule-update'
   | 'schedule-delete'
+  // issue #26 阶段 7：五个直通帧的应答**同名**回给客户端（同一信封 `{ok,value|error}`）。
+  | 'schedule-create'
+  | 'schedule-edit'
+  | 'schedule-view'
+  | 'schedule-run'
+  | 'schedule-delete-inactive'
+  // issue #26 阶段 7：插件帧的应答也同名 —— 请求与应答共用词表，客户端按 kind 找回调。
+  | 'plugin-catalog'
+  | 'plugin-detail'
+  | 'plugin-inspect'
+  | 'plugin-install'
+  | 'plugin-install-status'
+  | 'plugin-remove'
+  | 'plugin-update'
+  | 'plugin-versions'
+  | 'plugin-registries'
+  | 'plugin-settings'
   | 'session-cancelled'
   | 'session-created'
   | 'fork'

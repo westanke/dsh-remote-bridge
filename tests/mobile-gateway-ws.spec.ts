@@ -2412,9 +2412,29 @@ function kernelCatalogForTests(): ReturnType<typeof createKernelEndpointCatalog>
   return createKernelEndpointCatalog(registry)
 }
 
+/** 阶段 7 的插件帧需要 `pluginManager/listBundles` 在目录里才可能被放行。 */
+function kernelCatalogWithPlugin(): ReturnType<typeof createKernelEndpointCatalog> {
+  const registry: TypertRegistryLike = {
+    local: {
+      list: () => [{
+        id: 'test#pluginManager/listBundles',
+        service: 'pluginManager',
+        namespace: 'pluginManager',
+        method: 'listBundles',
+        invocation: { kind: 'direct' },
+        parameters: [],
+        result: { mode: 'json' },
+      } as never],
+      get: () => undefined,
+      hasSeen: () => false,
+    },
+  }
+  return createKernelEndpointCatalog(registry)
+}
+
 describe('mobile gateway WebSocket (/ws/mobile) — kernel-call plane', () => {
-  async function ticket(database: WorkspaceDatabase, rootId: string) {
-    const pairing = database.createPairing([rootId], ['chat.read'] as never)
+  async function ticket(database: WorkspaceDatabase, rootId: string, scopes: string[] = ['chat.read']) {
+    const pairing = database.createPairing([rootId], scopes as never)
     return database.exchangePairing(pairing.code, 'Mobile device')
   }
 
@@ -2499,6 +2519,62 @@ describe('mobile gateway WebSocket (/ws/mobile) — kernel-call plane', () => {
     // 老连接既收不到 kernel-endpoints，也收不到 kernel-call-result。
     expect(frames.some(frame => frame.kind === 'kernel-endpoints')).toBe(false)
     expect(frames.some(frame => frame.kind === 'kernel-call-result')).toBe(false)
+    socket.close()
+  })
+
+  it('routes a legacy plugin frame through the allowlisted kernel endpoint', async () => {
+    const calls: Array<{ namespace: string; method: string; args: unknown }> = []
+    const handle: HostRemoteHandle = {
+      invoke: async (namespace, method, args) => {
+        calls.push({ namespace, method, args })
+        return { bundles: [{ name: 'katex' }] }
+      },
+      stream: async () => (async function* () { /* 不适用 */ })(),
+    }
+    const { database, root, url } = await startHarness({ hostRemote: handle, kernelCatalog: kernelCatalogWithPlugin() })
+    // 插件族按白名单条目要 `settings.read`：这是设备 scope 判据真的生效的证据，
+    // 不是测试给面子 —— 默认的 chat.read 设备在这里会拿到 SCOPE_REQUIRED。
+    const credentials = await ticket(database, root.id, ['chat.read', 'settings.read'])
+    const socket = connect(url, {
+      protocols: ['dshrb-v1', 'dsh-mobile-v1'],
+      headers: { Authorization: `Bearer ${credentials.token}` },
+    })
+    const { frames } = collect(socket)
+    await new Promise<void>((resolve, reject) => {
+      socket.once('open', resolve)
+      socket.once('error', reject)
+    })
+    await nextKind(frames, 'kernel-endpoints')
+
+    // 这一帧在阶段 5 还是 `NOT_IMPLEMENTED` 兜底；阶段 7 起它真的打到内核。
+    socket.send(JSON.stringify({ type: 'plugin-catalog', requestId: 'p1' }))
+    await nextKind(frames, 'plugin-catalog')
+    expect(frames.find(frame => frame.kind === 'plugin-catalog')?.data)
+      .toEqual({ ok: true, value: { bundles: [{ name: 'katex' }] }, requestId: 'p1' })
+    expect(calls).toEqual([{ namespace: 'pluginManager', method: 'listBundles', args: {} }])
+    socket.close()
+  })
+
+  it('answers NOT_IMPLEMENTED for a plugin frame when dshrb-v1 was never offered', async () => {
+    const handle: HostRemoteHandle = { invoke: async () => ({}), stream: async () => (async function* () { /* 不适用 */ })() }
+    const { database, root, url } = await startHarness({ hostRemote: handle, kernelCatalog: kernelCatalogWithPlugin() })
+    const credentials = await ticket(database, root.id)
+    const socket = connect(url, {
+      protocols: ['dsh-mobile-v1'],
+      headers: { Authorization: `Bearer ${credentials.token}` },
+    })
+    const { frames } = collect(socket)
+    await new Promise<void>((resolve, reject) => {
+      socket.once('open', resolve)
+      socket.once('error', reject)
+    })
+    await nextKind(frames, 'hello')
+    socket.send(JSON.stringify({ type: 'plugin-catalog', requestId: 'p2' }))
+    await nextKind(frames, 'error')
+    const error = frames.find(frame => frame.kind === 'error')?.data as { code?: string; requestType?: string }
+    // 关键：旧连接拿到的是「能力暂缺」，不是 UNKNOWN_TYPE —— 说明这帧已从兜底表挪进真处理器。
+    expect(error.code).toBe('NOT_IMPLEMENTED')
+    expect(error.requestType).toBe('plugin-catalog')
     socket.close()
   })
 })

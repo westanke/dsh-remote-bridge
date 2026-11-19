@@ -1,6 +1,20 @@
 # 当前状态
 
-- 日期：2026-11-19（**已发版 v2.12.1：大文件上传流式化 + 隧道工具 schema 修形**；`main` 上另有未发版的 issue #26 阶段 0 / 1 / 2 / 3a / 3b / 3c / 3d / 4 / 5 / 6）
+- 日期：2026-11-19（**已发版 v2.12.1：大文件上传流式化 + 隧道工具 schema 修形**；`main` 上另有未发版的 issue #26 阶段 0 / 1 / 2 / 3a / 3b / 3c / 3d / 4 / 5 / 6 / 7）
+- **已完成（未发布，issue #26 阶段 7 / `MOB-011`）· 补齐插件与排程帧**：
+  ①**帧词表**：客户端 +11（插件 `plugin-detail`/`plugin-install-status`/`plugin-remove`/
+  `plugin-update`/`plugin-versions`/`plugin-registries` + 排程 `schedule-create`/`schedule-edit`/
+  `schedule-view`/`schedule-run`/`schedule-delete-inactive`）→ **88**；服务端 +15 同名应答 kind
+  （请求与应答共用词表，`data` 统一 `{ok,value}` / `{ok,error:{code,message}}`）→ **84**；去重 **123**。
+  ②**通用面落地，不抄第二套语义**：`kernel-allowlist.ts` 的 `KERNEL_FRAME_CALLS` 是「帧 → 内核端点」
+  的唯一映射（十个插件帧 → `pluginManager/*`），处理器 `KernelFrameHandler` 经**同一个**
+  `KernelCallService`（默认拒绝 + 设备 scope 判据 + 在飞表 + 幂等）—— 白名单同时扩到 24 条。
+  排程五帧走 `ws-schedule.ts` 的直通表，`{request}` 原样进内核。
+  ③`plugin-catalog`/`plugin-inspect`/`plugin-install`/`plugin-settings` 四条从结构化
+  `NOT_IMPLEMENTED` 升级为真实现；旧连接（未协商 `dshrb-v1`）仍拿到 `NOT_IMPLEMENTED`，
+  与阶段 5 的 `kernel-call` 面同一判据。④**验收**：`pnpm check` 全绿（92 文件 / 987 用例），
+  `docs:check` 帧对账 client 88 / server 84 双向零差异。**未做**：REST 逐字段快照对比与 6 项真机清单
+  （本机无真机、无内核 CLI 会话），因此**不得宣称已在手机上验证**。
 - **已完成（未发布，issue #26 阶段 6 / `MOB-010`）· 契约同步与跨仓**：
   ①**本仓五处同步**：`docs/api/asyncapi.yaml` 两个 enum 各 +2 成员、4 个帧 schema 与
   「`dshrb-v1` only」说明；`docs/project/API.md` 四行帧表 + 能力位判据改成「白名单 ∩ 内核目录 非空」

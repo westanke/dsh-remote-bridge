@@ -384,6 +384,29 @@ issue #26 把桥手抄的 31 条内核语义入口换成了「内核端点 + 描
 > （`kernel-allowlist.ts` 是唯一执法点、`kernel-call.ts` 是执行器）：默认拒绝先于目录查找、
 > 默认拒绝先于 scope 判定 —— 顺序反过来就等于送攻击者一个免费的存在性探针。
 
+## 插件帧（issue #26 阶段 7）：把「装插件」暴露成一次 WS 调用
+
+手机侧新增的十个插件帧（`plugin-catalog` / `plugin-detail` / `plugin-inspect` /
+`plugin-install` / `plugin-install-status` / `plugin-remove` / `plugin-update` /
+`plugin-versions` / `plugin-registries` / `plugin-settings`）最终调用的是内核
+`pluginManager/*`，其中 `installBundle` / `updateBundle` 会让宿主**执行新代码**。
+这条攻击面不是新开的（`REST /api/v1/settings/plugins` 一直允许有 `settings.write`
+的设备这么做），但阶段 7 把它挪到了通用面上，因此约束必须写清楚：
+
+- **权限**：全部十条都要 `settings.read` 或 `settings.write`；`DEFAULT_DEVICE_SCOPES`
+  不含 `settings.write`，设备必须被显式授予才能装/删/升/停用。
+- **单一路径**：帧 → 端点只有 `kernel-allowlist.ts` 的 `KERNEL_FRAME_CALLS` 一张表，
+  与 `kernel-call` 共用同一个 `KernelCallService` ⇒ 默认拒绝、scope 判据、在飞表、
+  幂等全部同源；`tests/ws-kernel-frames.spec.ts` 断言「帧表里每个端点都在白名单内」，
+  往表里塞一个没进白名单的端点会先红。
+- **`inspect` 按写权限放行**：它收任意 spec（可含远端 URL），解析会出网 —— 用
+  `settings.read` 就能让宿主替陌生地址发请求，所以按 `settings.write` 判。
+- **不扩大内核能力**：`pluginManager` 不在钉死命名空间里是刻意选择 —— 它改的是
+  profile 的插件配置，够不到本机凭据、也不起本桥的进程；安装脚本由内核自己的
+  白名单执行，桥只做 scope 与参数校验，不做二次判定。
+- **能力面**：未协商 `dshrb-v1`（或宿主无该服务）时这十帧回 `NOT_IMPLEMENTED`，
+  老客户端行为逐字不变。
+
 ## 路径威胁
 
 wire path 拒绝绝对路径、盘符、UNC、反斜杠、空字节、空段、`.` 和 `..`。服务从已解析的真实根开始逐段 `lstat`；中间 symlink/junction 一律拒绝，末端链接不能读取内容，删除时只处理链接本身。

@@ -98,7 +98,76 @@ export const KERNEL_ALLOWLIST: readonly KernelAllowlistEntry[] = [
   { endpoint: 'pluginMarket/search', scope: 'settings.read', summary: 'Search the plugin market index.' },
   { endpoint: 'pluginMarket/listIndexes', scope: 'settings.read', summary: 'List configured plugin market indexes.' },
   { endpoint: 'pluginMarket/readEntryDetail', scope: 'settings.read', summary: 'Read one plugin market entry detail.' },
+  // —— 插件管理（issue #26 阶段 7）：手机侧的插件读写，全部落在既有七个设备 scope 上 ——
+  // `pluginManager` 不在钉死命名空间里：它只改 profile 的插件配置，够不到本机凭据，
+  // 也不起本桥的进程（安装脚本由内核自己的白名单执行，桥不做二次判定）。
+  { endpoint: 'pluginManager/listBundles', scope: 'settings.read', summary: 'List installed plugin bundles.' },
+  { endpoint: 'pluginManager/readBundleDetail', scope: 'settings.read', summary: 'Read one installed bundle detail.' },
+  { endpoint: 'pluginManager/listVersions', scope: 'settings.read', summary: 'List published versions for a bundle name.' },
+  { endpoint: 'pluginManager/registries', scope: 'settings.read', summary: 'List configured plugin registries.' },
+  { endpoint: 'pluginManager/waitForInstall', scope: 'settings.read', summary: 'Read the progress of one install request.' },
+  // inspect 收任意 spec（可能带远端 URL），解析会出网 —— 所以按写权限放行，而不是读权限。
+  { endpoint: 'pluginManager/inspect', scope: 'settings.write', summary: 'Resolve one plugin spec without installing it.' },
+  { endpoint: 'pluginManager/installBundle', scope: 'settings.write', summary: 'Install a plugin bundle from a spec.' },
+  { endpoint: 'pluginManager/removeBundle', scope: 'settings.write', summary: 'Remove an installed plugin bundle.' },
+  { endpoint: 'pluginManager/updateBundle', scope: 'settings.write', summary: 'Update an installed bundle to another version.' },
+  { endpoint: 'pluginManager/setBundleEnabled', scope: 'settings.write', summary: 'Enable or disable an installed bundle.' },
 ]
+
+/**
+ * 客户端帧 → 内核端点的**唯一**映射（issue #26 阶段 7）。
+ *
+ * 为什么放在这个文件：`tests/kernel-deltas.spec.ts` 的机检规定「内核端点名只许出现在
+ * `kernel-invoke` / `kernel-deltas` / `kernel-allowlist` 三个文件」。帧的转发表天然
+ * 要写端点名，放这里既过机检，又让「一个帧能调什么」与「什么允许被调」处在同一屏
+ * 可见 —— 加帧时不可能只改一半。
+ *
+ * `args` 是**唯一**的翻译层：把手机载荷按描述符的 wire 键拼出来。刻意不做字段重命名
+ * 或裁剪（除了 `installId → requestId` 这种名字冲突），于是不存在「桥里又抄一套插件
+ * 语义」的问题。
+ */
+export interface KernelFrameCall {
+  /** 客户端帧名（`ClientFrameType` 的成员）。 */
+  readonly frame: string
+  /** 内核端点名。 */
+  readonly endpoint: string
+  /** 把载荷翻译成描述符 wire 键；省略表示无参端点。 */
+  readonly args?: (payload: Readonly<Record<string, unknown>>) => Record<string, unknown>
+}
+
+/** 只挑出**存在**的键：避免把 `undefined` 写成 `"key": null` 被内核 strict codec 拒。 */
+function pick(payload: Readonly<Record<string, unknown>>, keys: readonly string[]): Record<string, unknown> {
+  const picked: Record<string, unknown> = {}
+  for (const key of keys) {
+    if (payload[key] !== undefined) picked[key] = payload[key]
+  }
+  return picked
+}
+
+/** 阶段 7 的插件帧：6 个新声明 + 4 个从 `NOT_IMPLEMENTED` 升级的旧帧。 */
+export const KERNEL_FRAME_CALLS: readonly KernelFrameCall[] = [
+  { frame: 'plugin-catalog', endpoint: 'pluginManager/listBundles' },
+  { frame: 'plugin-inspect', endpoint: 'pluginManager/inspect', args: payload => pick(payload, ['spec', 'options']) },
+  { frame: 'plugin-install', endpoint: 'pluginManager/installBundle', args: payload => pick(payload, ['spec', 'options']) },
+  // 手机说的 `installId` 就是内核的 `requestId`；帧自己的 `requestId` 是回显用的，
+  // 两者同名会互相混淆，所以在载荷里改叫 `installId`。
+  { frame: 'plugin-install-status', endpoint: 'pluginManager/waitForInstall', args: payload => ({ requestId: payload.installId }) },
+  { frame: 'plugin-detail', endpoint: 'pluginManager/readBundleDetail', args: payload => pick(payload, ['name', 'language', 'options']) },
+  { frame: 'plugin-remove', endpoint: 'pluginManager/removeBundle', args: payload => pick(payload, ['name']) },
+  { frame: 'plugin-update', endpoint: 'pluginManager/updateBundle', args: payload => pick(payload, ['name', 'version', 'options']) },
+  { frame: 'plugin-versions', endpoint: 'pluginManager/listVersions', args: payload => pick(payload, ['name', 'options']) },
+  { frame: 'plugin-registries', endpoint: 'pluginManager/registries' },
+  { frame: 'plugin-settings', endpoint: 'pluginManager/setBundleEnabled', args: payload => pick(payload, ['name', 'enabled']) },
+]
+
+const FRAME_CALL_INDEX: ReadonlyMap<string, KernelFrameCall> = new Map(
+  KERNEL_FRAME_CALLS.map(call => [call.frame, call]),
+)
+
+/** 这个客户端帧是否由通用调用面直接转发给内核（阶段 7 的插件族）。 */
+export function kernelFrameCall(frame: string): KernelFrameCall | undefined {
+  return FRAME_CALL_INDEX.get(frame)
+}
 
 const ALLOWLIST_INDEX: ReadonlyMap<string, KernelAllowlistEntry> = new Map(
   KERNEL_ALLOWLIST.map(entry => [entry.endpoint, entry]),

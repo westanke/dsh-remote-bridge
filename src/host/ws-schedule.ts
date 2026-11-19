@@ -35,6 +35,26 @@ const SCHEDULE_TYPES = new Set([
   'schedule-history',
   'schedule-update',
   'schedule-delete',
+  // issue #26 阶段 7
+  'schedule-create',
+  'schedule-edit',
+  'schedule-view',
+  'schedule-run',
+  'schedule-delete-inactive',
+])
+
+/**
+ * issue #26 阶段 7 的五个「直通」帧：载荷就是内核 `schedule/*` 的 `request`，
+ * 桥不做字段翻译（`schedule-update`/`schedule-delete` 那两条旧帧才有 0.2.1 ↔ 0.2.2 的
+ * 形状折算）。响应统一是**同 kind** 帧，`data` 为 `{ok:true, value}` 或
+ * `{ok:false, error:{code,message}}` —— 与插件帧同一套信封，客户端一个解包函数通吃。
+ */
+const SCHEDULE_PASSTHROUGH: ReadonlyMap<string, { method: string; withRequest: boolean }> = new Map([
+  ['schedule-create', { method: 'create', withRequest: true }],
+  ['schedule-edit', { method: 'edit', withRequest: true }],
+  ['schedule-view', { method: 'view', withRequest: true }],
+  ['schedule-run', { method: 'run', withRequest: true }],
+  ['schedule-delete-inactive', { method: 'deleteInactive', withRequest: false }],
 ])
 
 /** 定时任务处理器。 */
@@ -57,6 +77,14 @@ export class ScheduleHandler {
     try {
       // principal 仅用于授权面（调度属于会话级）；内核 peer 已是 owner，会话归属校验在内核。
       void principal
+
+      // 阶段 7 的五个直通帧：不需要 sessionId（create 自带 target，deleteInactive 是全局清理），
+      // 所以放在下面那条「带 sessionId」的判定之前。
+      const passthrough = SCHEDULE_PASSTHROUGH.get(frame.type)
+      if (passthrough !== undefined) {
+        await this.passthrough(frame, passthrough, echo)
+        return true
+      }
       // catalog 不需要会话；其余四帧必须带 sessionId。
       if (frame.type === 'schedule-catalog') {
         const items = await this.catalogItems()
@@ -109,6 +137,37 @@ export class ScheduleHandler {
       }
     }
     return true
+  }
+
+  /**
+   * 阶段 7 直通：`{request}` 原样交给内核，结果装进统一信封再按同 kind 回给手机。
+   *
+   * 错误也走**结果帧**（`ok:false`）而不是 `error` 帧：这五个帧都是请求-应答，
+   * 客户端按 kind 找回调；把它转成 `error` 会让「参数不合法」与「连接级故障」
+   * 走两条不同的处理路径，错误码还要在客户端再映射一次。
+   */
+  private async passthrough(
+    frame: ClientFrame,
+    call: { method: string; withRequest: boolean },
+    echo: Record<string, unknown>,
+  ): Promise<void> {
+    let args: Record<string, unknown> = {}
+    if (call.withRequest) {
+      const request = asObject(frame.request)
+      if (request === null) {
+        throw new ApiError(400, 'BAD_REQUEST', `${frame.type} requires a request object.`)
+      }
+      args = { request }
+    }
+    try {
+      const value = await this.remote?.invoke('schedule', call.method, args)
+      this.sendFrame({ kind: frame.type as never, data: { ok: true, value, ...echo } })
+    } catch (error) {
+      const code = typeof error === 'object' && error !== null && typeof (error as { code?: unknown }).code === 'string'
+        ? (error as { code: string }).code
+        : 'schedule/failed'
+      this.sendFrame({ kind: frame.type as never, data: { ok: false, error: { code, message: this.messageOf(error) }, ...echo } })
+    }
   }
 
   /** 目录原始条目：0.2.2 wire 是裸数组注解、运行时被网关包成 {items}（与 0.2.1 一致）——两种都收。 */

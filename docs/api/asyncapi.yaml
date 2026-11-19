@@ -211,12 +211,23 @@ channels:
 
       ## Declared but not backed by this kernel build
 
-      `search`, `directories`, `defaults`, `set-default`, `queue-update`,
-      `plugin-catalog`, `plugin-inspect`, `plugin-install`, `plugin-settings`
+      `search`, `directories`, `defaults`, `set-default`, `queue-update`
       answer `error` with code `NOT_IMPLEMENTED` and a human-readable `message`
       pointing at the REST fallback (`requestType` echoes the frame type). They
       are part of the vocabulary precisely so a client can tell "capability
       missing" from "unknown frame".
+
+      The plugin family (`plugin-catalog`, `plugin-inspect`, `plugin-install`,
+      `plugin-settings`) used to be in that list; as of the kernel-call plane
+      (issue #26 stage 7) it is **served** on connections that negotiated
+      `dshrb-v1` **and** whose host exposes the kernel `pluginManager` service —
+      the request is routed to `pluginManager/*` through the same allowlist and
+      device-scope checks as `kernel-call`. On any other connection (or a host
+      without that service) those four frames, plus the six newer plugin frames
+      (`plugin-detail`, `plugin-install-status`, `plugin-remove`, `plugin-update`,
+      `plugin-versions`, `plugin-registries`), still answer `NOT_IMPLEMENTED`
+      with the REST fallback. A client must therefore treat `NOT_IMPLEMENTED`
+      here as "capability missing" and `UNKNOWN_TYPE` as "frame name is wrong".
     messages:
       clientFrame:
         $ref: '#/components/messages/MobileClientFrame'
@@ -683,6 +694,12 @@ components:
             - schedule-history
             - schedule-update
             - schedule-delete
+            # issue #26 阶段 7（MOB-011）：直通内核 schedule/* 的五个记录面帧
+            - schedule-create
+            - schedule-edit
+            - schedule-view
+            - schedule-run
+            - schedule-delete-inactive
             # 通用内核调用面（issue #26 阶段 5，仅 dshrb-v1 子协议）
             - kernel-call
             - kernel-call-cancel
@@ -696,6 +713,14 @@ components:
             - plugin-inspect
             - plugin-install
             - plugin-settings
+            # issue #26 阶段 7（MOB-011）：插件管理补帧（上面四个旧帧同批由
+            # NOT_IMPLEMENTED 升级为真实现，处理器见阶段 7）
+            - plugin-detail
+            - plugin-install-status
+            - plugin-remove
+            - plugin-update
+            - plugin-versions
+            - plugin-registries
         requestId:
           type: string
           minLength: 1
@@ -820,6 +845,23 @@ components:
             - schedule-history
             - schedule-update
             - schedule-delete
+            # 定时任务直通应答（issue #26 阶段 7，同 kind 回包）
+            - schedule-create
+            - schedule-edit
+            - schedule-view
+            - schedule-run
+            - schedule-delete-inactive
+            # 插件族应答（issue #26 阶段 7，同 kind 回包；data 为 {ok,value|error}）
+            - plugin-catalog
+            - plugin-detail
+            - plugin-inspect
+            - plugin-install
+            - plugin-install-status
+            - plugin-remove
+            - plugin-update
+            - plugin-versions
+            - plugin-registries
+            - plugin-settings
             # 通用内核调用面（issue #26 阶段 5，仅 dshrb-v1 子协议）
             - kernel-call-result
             - kernel-endpoints

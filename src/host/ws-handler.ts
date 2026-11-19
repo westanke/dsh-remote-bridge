@@ -54,6 +54,7 @@ import { HostHandler } from './ws-host.ts'
 import { TeamHandler } from './ws-team.ts'
 import { ScheduleHandler } from './ws-schedule.ts'
 import { KernelCallHandler } from './ws-kernel-call.ts'
+import { KernelFrameHandler } from './ws-kernel-frames.ts'
 import { createKernelCallService } from './bridge/kernel-call.ts'
 import type { KernelEndpointCatalog } from './bridge/kernel-endpoints.ts'
 import { SpeechHandler } from './ws-speech.ts'
@@ -130,6 +131,8 @@ interface MobileSocketState {
     schedule: ScheduleHandler
     /** 通用内核调用面：只有协商到 `dshrb-v1` 且内核服务齐全时才存在。 */
     kernelCall?: KernelCallHandler
+    /** 阶段 7：插件帧 → 内核端点（与 kernelCall 共用同一个调用服务）。 */
+    kernelFrames?: KernelFrameHandler
   }
 }
 
@@ -187,11 +190,6 @@ const KNOWN_UNSUPPORTED_FRAMES: Readonly<Record<string, string>> = {
   // 编辑/删除排队中的回合或插队 steer：本桥 sessions 面只有 prompt(mode:queue|steer)，
   // 没有按 itemId 编辑/删除队列项的 RPC；steer 新回合可直接用 message 帧 mode:'steer'。
   'queue-update': 'editing/removing a queued turn is not supported by this kernel build; send a new message with mode:"steer" to steer the running turn.',
-  // 插件管理：走 REST /api/v1/settings/plugins 兜底（需要 settings.write）。
-  'plugin-catalog': 'plugin management over WS is unavailable; use REST GET /api/v1/settings/plugins as fallback.',
-  'plugin-inspect': 'plugin management over WS is unavailable; use REST GET /api/v1/settings/plugins as fallback.',
-  'plugin-install': 'plugin management over WS is unavailable; use REST POST /api/v1/settings/plugins as fallback.',
-  'plugin-settings': 'plugin settings over WS are unavailable; use REST /api/v1/settings/plugins as fallback.',
 }
 
 // ───────────────────────── 处理器主类 ─────────────────────────
@@ -498,8 +496,10 @@ export class MobileGatewayWsHandler {
     const kernelCallEnabled = kernelRemote !== undefined
       && kernelCatalog !== undefined
       && this.offersKernelSubprotocol(req)
-    const kernelCall = new KernelCallHandler(
-      kernelCallEnabled ? createKernelCallService({
+    // 一个连接一份服务，两个处理器共用：插件帧与 kernel-call 帧的 scope 判据、
+    // 在飞行表、幂等键因此完全同源（阶段 7 的「单一路径」要求）。
+    const kernelService = kernelCallEnabled && kernelRemote !== undefined && kernelCatalog !== undefined
+      ? createKernelCallService({
         caller: kernelRemote,
         catalog: kernelCatalog,
         authorizer: this.auth,
@@ -507,7 +507,15 @@ export class MobileGatewayWsHandler {
           read: (deviceId, key) => this.database.readIdempotent(deviceId, key),
           save: (deviceId, key, status, body) => this.database.saveIdempotent(deviceId, key, status, body),
         },
-      }) : undefined,
+      })
+      : undefined
+    const kernelCall = new KernelCallHandler(
+      kernelService,
+      frame => this.sendFrame(webSocket, frame),
+      { enabled: kernelCallEnabled },
+    )
+    const kernelFrames = new KernelFrameHandler(
+      kernelService,
       frame => this.sendFrame(webSocket, frame),
       { enabled: kernelCallEnabled },
     )
@@ -547,6 +555,7 @@ export class MobileGatewayWsHandler {
           this.settingsService === undefined ? undefined : () => this.settingsService!.catalog(),
         ),
         kernelCall,
+        kernelFrames,
       },
     }
 
@@ -720,6 +729,8 @@ export class MobileGatewayWsHandler {
     // 通用内核调用面先判：它的帧类型与其它域不重叠，但先判能让「未协商 dshrb-v1」
     // 的连接拿到明确的 NOT_IMPLEMENTED，而不是落到后面的 UNKNOWN_TYPE。
     if (handlers.kernelCall !== undefined && await handlers.kernelCall.handle(state.principal, clientFrame)) return
+    // 阶段 7：插件帧（十种）走同一个调用服务，→ pluginManager 端点。
+    if (handlers.kernelFrames !== undefined && await handlers.kernelFrames.handle(state.principal, clientFrame)) return
     if (await handlers.sessions.handle(state.principal, clientFrame)) return
     if (await handlers.hitl.handle(state.principal, clientFrame)) return
     // 全局目录（无会话 default-model/providers/permission-options）先于会话模型处理器。

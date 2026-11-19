@@ -262,8 +262,18 @@
   能力面按**客户端声明**判定（`ws-handler.ts` 的 `offersKernelSubprotocol`），握手回执仍是
   `dsh-mobile-v1`；能力位 `kernel-call-v1` 只在「白名单 ∩ 内核目录 非空」时才发。
   已发布客户端清单里没有它 ⇒ 帧词表与行为逐字不变（发这两帧只会拿到 `NOT_IMPLEMENTED`）。
+- **插件族与排程直通（issue #26 阶段 7）**：十种插件帧（`plugin-catalog/inspect/install/settings`
+  升级 + `plugin-detail/install-status/remove/update/versions/registries` 新增）与五种排程帧
+  （`schedule-create/edit/view/run/delete-inactive`）的应答**与请求同名**，`data` 统一是
+  `{ok:true, value}` 或 `{ok:false, error:{code,message}}`（可带 `requestId` 回显）；插件帧
+  经 `kernel-allowlist.ts` 的 `KERNEL_FRAME_CALLS` 落到 `pluginManager/*`，scope 判据与
+  `kernel-call` 帧同源（同一份 `KernelCallService`）。这十帧在**任何**子协议下都收，但未协商
+  `dshrb-v1` 或内核服务缺席时回 `NOT_IMPLEMENTED`。
 - 连接即推 `hello`：`{kind:'hello', protocol:3, capabilities, authenticated, device, port, clients}`；能力位与 §3.4 同源（`src/host/capabilities.ts`）。协商到 `dshrb-v1` 时，`hello` **之后**再推一帧 `kernel-endpoints`（白名单 ∩ 目录，含每个端点的 `scope`/`stream`/`wires`/`summary`）。
-- 客户端帧 `{type:…}`：`ping` / `subscribe` / `unsubscribe` / `message` / `workspaces` / `sessions` / `history` / `attachment` / `file-download-open/read/cancel` / `search` / `host` / `default-model` / `save-default-model` / `models` / `providers` / `commands` / `command-execute` / `command-options` / `command-select` / `select-model` / `permission-options` / `permission` / `context-usage` / `session-stats` / `tasks` / `goal` / `goal-edit` / `goal-pause` / `goal-resume` / `goal-clear` / `plugin-catalog/inspect/install/settings` / `agent-presets` / `defaults` / `set-default` / `question-answer` / `question-cancel` / `approval-response` / `session-wait` / `kernel-call` / `kernel-call-cancel`（后两个仅 `dshrb-v1`）。
+- 客户端帧 `{type:…}`：**清单不在此抄第二份**（抄了必漂 —— 本行此前就漏过 file-upload-*、agent-team/subagents、speech-* 与 schedule-* 家族）。权威是
+  `src/host/ws-protocol.ts` 的 `ClientFrameType` 联合类型，逐条说明见 [API.md](API.md) 的
+  「客户端→服务端帧」表。只有两条子协议专属项需要在这里点名：`kernel-call` /
+  `kernel-call-cancel` 仅在协商到 `dshrb-v1` 时被受理（否则 `NOT_IMPLEMENTED`）。
 - 服务端帧 `{kind:…}`：**清单不在此抄第二份**（抄了必漂）—— 权威是
   `src/host/ws-protocol.ts` 的 `ServerFrameKind` 联合类型，逐条说明见 [API.md](API.md) 的
   「服务端→客户端帧」表，两侧一致性由 `docs:check` 的帧对账段与
@@ -553,6 +563,10 @@ export const PLUGIN_VERSION: string          // shared/version.ts，与 package.
 | `export function isKernelEndpointAllowed` | `src/host/bridge/kernel-allowlist.ts` | function |
 | `export function authorizeKernelEndpoint` | `src/host/bridge/kernel-allowlist.ts` | function |
 | `export function singlePathViolations` | `src/host/bridge/kernel-allowlist.ts` | function |
+| `export interface KernelFrameCall` | `src/host/bridge/kernel-allowlist.ts` | interface |
+| `export const KERNEL_FRAME_CALLS` | `src/host/bridge/kernel-allowlist.ts` | const |
+| `export function kernelFrameCall` | `src/host/bridge/kernel-allowlist.ts` | function |
+| `export class KernelFrameHandler` | `src/host/ws-kernel-frames.ts` | class |
 | `export function createKernelCallService` | `src/host/bridge/kernel-call.ts` | function |
 | `export interface KernelCallService` | `src/host/bridge/kernel-call.ts` | interface |
 | `export type KernelCallResult` | `src/host/bridge/kernel-call.ts` | type |

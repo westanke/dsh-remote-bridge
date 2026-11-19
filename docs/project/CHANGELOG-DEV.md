@@ -561,6 +561,36 @@ base64 膨胀 4/3，所以单条路径的原始文件实际上限约 **17.2 MiB*
 `docs:check` 四段全过（12 文档 / 39 tasks / 9 ADRs / STRUCTURE 84 锚点 / INTERFACES 87 锚点）；
 双产物 build 成功（host `lib/index.js` 628.64 kB、client `lib/client.cjs` 772.91 kB）。
 
+## 未发布 · 内核端点归一（B2 全量换源）阶段 7：补齐插件与排程帧（issue #26，2026-11-19）
+
+- **帧词表**（`src/host/ws-protocol.ts`）：客户端 +11 → **88**（插件六：`plugin-detail` /
+  `plugin-install-status` / `plugin-remove` / `plugin-update` / `plugin-versions` /
+  `plugin-registries`；排程五：`schedule-create` / `schedule-edit` / `schedule-view` /
+  `schedule-run` / `schedule-delete-inactive`）；服务端 +15 **同名应答** kind → **84**。请求
+  与应答共用词表，`data` 统一为 `{ok:true, value}` 或 `{ok:false, error:{code,message}}`
+  （可带 `requestId` 回显）—— 客户端一个解包函数通吃。`docs/api/asyncapi.yaml` 两个 enum 与
+  `docs/project/API.md` 两张帧表同步。
+- **不抄第二套插件语义**：`src/host/bridge/kernel-allowlist.ts` 新增 `KERNEL_FRAME_CALLS`
+  （帧 → 端点的唯一映射，十个插件帧 → `pluginManager/*`）与 `kernelFrameCall()`；白名单从
+  14 扩到 **24** 条（`pluginManager` 读五条 `settings.read`、写五条 `settings.write` ——
+  `inspect` 收任意 spec 会出网，故按写权限放行）。新处理器 `src/host/ws-kernel-frames.ts`
+  经**同一个** `KernelCallService` 执行，于是「默认拒绝 / 设备 scope 判据 / 在飞表 / 幂等」
+  与 `kernel-call` 帧完全同源。
+- **排程五帧直通**：`src/host/ws-schedule.ts` 加 `SCHEDULE_PASSTHROUGH`，`{request}` 原样进内核
+  `schedule/create|edit|view|run|deleteInactive`，不再做 0.2.1 ↔ 0.2.2 的形状折算（那两条折算只
+  属于旧的 `schedule-update`/`schedule-delete`）。内核拒绝走**结果帧** `ok:false` 而不是 `error`
+  帧：这五条是请求-应答，客户端按 kind 找回调。
+- **旧帧升级**：`plugin-catalog` / `plugin-inspect` / `plugin-install` / `plugin-settings` 从
+  `KNOWN_UNSUPPORTED_FRAMES` 的 `NOT_IMPLEMENTED` 兜底改为真实现；未协商 `dshrb-v1` 或宿主没有
+  内核服务时仍回 `NOT_IMPLEMENTED`（与 `kernel-call` 面同一判据），因此老客户端行为不变。
+- **测试**：新增 `tests/ws-kernel-frames.spec.ts`（8 例：帧表全覆盖、`installId → requestId`
+  改名、帧内记账键不进内核参数、`ok:false` 透传、帧表端点必在白名单）与
+  `tests/ws-schedule-passthrough.spec.ts`（8 例）；`tests/mobile-gateway-ws.spec.ts`
+  95 → **100 例**（真连接上跑通 `plugin-catalog`，并钉住「未协商 dshrb-v1 ⇒ NOT_IMPLEMENTED
+  而非 UNKNOWN_TYPE」）。
+- **验收**：`pnpm check` 全绿（92 文件 / 987 用例）；`docs:check` 帧对账 client 88 / server 84
+  双向零差异。**未做**：REST 响应逐字段快照对比与 6 项真机清单（本机无真机、无内核 CLI 会话）。
+
 ## 未发布 · 内核端点归一（B2 全量换源）阶段 6：契约同步与跨仓（issue #26，2026-11-19）
 
 > 阶段 5 把通用调用面做出来，这一阶段把它**在四处说清楚**：本仓契约（AsyncAPI / API.md）、

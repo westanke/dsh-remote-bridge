@@ -361,7 +361,8 @@ host services 之上重建 0.1.x 的 `apiProxy` 面容，让 `chat-adapter` / `s
 | `src/host/ws-presets.ts` | file | 移动端网关 WS agent 预设域（agent-presets/select-agent-preset，/ws/mobile） |
 | `src/host/ws-protocol.ts` | file | WS 线路协议常量、帧类型与编解码（/ws/mobile） |
 | `src/host/ws-kernel-call.ts` | file | 通用内核调用面 WS 处理器（issue #26 阶段 5）：KernelCallHandler —— 只认 kernel-call / kernel-call-cancel，仅在协商到 dshrb-v1 时启用（否则回 NOT_IMPLEMENTED），连接建立即推一帧 kernel-endpoints（白名单 ∩ 目录），连接关闭 dispose 掉在飞行调用；权限与参数判定不在这里（在 kernel-allowlist / kernel-call） |
-| `src/host/ws-schedule.ts` | file | 移动端网关 WS 定时任务域（schedule-*，代理内核 schedule Remote，缺失回 unavailable） |
+| `src/host/ws-kernel-frames.ts` | file | 通用内核调用面「既有帧 → 内核端点」处理器（issue #26 阶段 7）：KernelFrameHandler —— 插件族十帧经 kernel-allowlist 的 KERNEL_FRAME_CALLS 走同一个 KernelCallService（scope 判据/在飞行表/幂等与 kernel-call 帧同源），载荷按描述符 wire 键翻译，结果装进 `{ok,value}` / `{ok,error}` 信封按同 kind 回包；未协商 dshrb-v1 回 NOT_IMPLEMENTED |
+| `src/host/ws-schedule.ts` | file | 移动端网关 WS 定时任务域（schedule-*，代理内核 schedule Remote，缺失回 unavailable）；阶段 7 起含五个直通帧（schedule-create/edit/view/run/delete-inactive，`{request}` 原样进内核，同 kind 回 `{ok,value\|error}`） |
 | `src/host/ws-sessions.ts` | file | 移动端网关 WS 会话生命周期域（session-create/cancel/archive/rename，/ws/mobile） |
 | `src/host/ws-speech.ts` | file | 移动端网关 WS 官方语音域（speech-*，纯代理内核 speech Remote，4MiB/4并发/180s，缺失回 unavailable） |
 | `src/host/ws-settings.ts` | file | 移动端网关 WS 全局设置域（default-model 全局目录/providers/permission-options，/ws/mobile） |
