@@ -561,6 +561,42 @@ base64 膨胀 4/3，所以单条路径的原始文件实际上限约 **17.2 MiB*
 `docs:check` 四段全过（12 文档 / 39 tasks / 9 ADRs / STRUCTURE 84 锚点 / INTERFACES 87 锚点）；
 双产物 build 成功（host `lib/index.js` 628.64 kB、client `lib/client.cjs` 772.91 kB）。
 
+## 未发布 · 内核端点归一（B2 全量换源）阶段 3d：附件/prompt/models/userQuestions 换源（issue #26，2026-11-19）
+
+> 第四批换源，也是 3a~3d 里语义最重的一批。**手机协议零改动**。
+
+- **换源**：`sessions.uploadAttachment` → `fileUploads/upload`（scope=agent，`agentId` 装会话 id）；
+  `sessions.readAttachment` → `session/attachment`；`sessions.prompt` → `session/prompt`；
+  `sessions.models` 的两次读 → `session/modelCatalog` + `session/projections`；
+  `userQuestions.answer` → `userQuestions/answer`。
+- **`prompt` 删掉一处与内核重复的绑定**：桥此前在调用前后自己做
+  `fileUploads.bindPrompt` → `binding.commit()`，而内核 `session/prompt`
+  在 `commands.prompt` 里**已经**做了同样的事（`using binding = …bindPrompt(); …; binding.commit()`）。
+  双重绑定会把同一批凭证绑两次、commit 两次 —— 换源时**删掉桥这份**。
+  桥仍保留：`requestId` 铸造（内核必填）、`locale` 摘除（内核入参严格）、
+  纯文本模型的图片交接改写（`handoffImagesForTextOnlyModel`）。
+- **`readAttachment` 的两层判定留桥**：内核 0.2.2 的 `session/attachment` 只拿
+  「完整五字段 ref」并**不校验引用关系**（KDoc 原文：neither Session existence nor its
+  image references are checked）⇒ `resolveImageRef` 补齐 ref 与「必须是本会话历史引用过的图」
+  这两层仍由桥承担，App 契约（只带 `attachmentId`）不变。
+- **`models` 的冷会话唤醒与选择语义留桥**：`resolveAgent` 仍是读模型目录前的前置
+  （插件的命令发现依赖这一步把 Agent 唤醒）；`current = selection.next ?? selection.lastUsed ?? default`
+  与 `enrichModelGroups` 的容量补齐照旧 —— 两条都不是端点能给出的。
+- **`userQuestions` 仍是半留桥**：`answer` 走端点，但桥的前台挂起表那半（waterfall 截住的
+  阻塞式提问，内核投影里没有它）必须留着；端点在 `continued` 里找不到 `callId` 时
+  **返回 `false` 而不是抛错**，桥据此转去问挂起表 —— 这条分支语义未改。
+  服务整条缺席时端点报 `gateway/service-unavailable`，桥按「与换源前 `service === null` 等价」
+  静默走挂起表。
+- **`uploadAttachment` 不再在门面里预解析 Agent**：`agentId` 这个 scope lookup 就是内核
+  解析身份的那条路，门面里再 `agentFor` 一次会把同一个 `resolveAgent` 跑两遍
+  （回归用例当场抓到了「第二次拿到默认替身」的错位）。错误码改由内核给（冷会话上传从
+  「桥的 `session/agent-unavailable`」变成内核的解析错误），属**已知行为变化**，已记进 STATUS。
+- **测试**：`tests/dsh-0.2-bridge.spec.ts` 原 56 例里只有
+  「binds file receipts to the prompt and commits only after it succeeds」一条**被改写**
+  （它断言的正是本批刻意删除的重复绑定），改为断言「桥不再绑定、请求原样进内核」；
+  其余 55 例一行未改。`tests/kernel-local.spec.ts` 目录期望扩到 31 条。
+- **未做的验收**：同前几批 —— REST 逐字段快照与 6 项真机清单本机无法执行。
+
 ## 未发布 · 内核端点归一（B2 全量换源）阶段 3c：模型目录与预设面 6 条换源（issue #26，2026-11-19）
 
 > 第三批换源。**手机协议零改动**：六条 REST 路径与响应形状照旧。

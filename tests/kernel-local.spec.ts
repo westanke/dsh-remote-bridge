@@ -111,36 +111,37 @@ describe('local kernel transport (in-process)', () => {
 
     // 目录按 endpoint 字典序排列，所以期望值也按字典序写（否则顺序差异会伪装成内容差异）。
     expect(names).toEqual([
-      // 阶段 3c：llm / agentPresets / permissionPresets
-      'agentPresets/list',
+      'agentPresets/list', // 3c
       'agentPresets/select',
-      'credentials/describe',
+      'credentials/describe', // 3b
       'credentials/set',
       'credentials/unset',
-      'llm/discoverModels',
+      'fileUploads/upload', // 3d
+      'llm/discoverModels', // 3c
       'llm/listConfigurableProviders',
       'llm/listProviders',
-      'permissionPresets/catalog',
-      // 阶段 3a：会话读侧
-      'session/cancel',
+      'permissionPresets/catalog', // 3c
+      'session/attachment', // 3d
+      'session/cancel', // 3a
       'session/create',
       'session/follow',
       'session/fork',
       'session/list',
-      'session/modelCatalog',
-      'session/page',
+      'session/modelCatalog', // 3c
+      'session/page', // 3a
       'session/projections',
-      'session/rename',
+      'session/prompt', // 3d
+      'session/rename', // 3a
       'session/selectModel',
       'session/wait',
-      // 阶段 3b：settings + workspace 写侧
-      'settings/describe',
+      'settings/describe', // 3b
       'settings/mutate',
-      'workspace/archiveSession',
+      'userQuestions/answer', // 3d
+      'workspace/archiveSession', // 3b
       'workspace/create',
       'workspace/delete',
-      'workspace/follow',
-      'workspace/rename',
+      'workspace/follow', // 3a
+      'workspace/rename', // 3b
     ])
     // 目录条目与表里的描述符逐条同源：换源点拿到的 wire 键就是这里声明的。
     for (const descriptor of localEndpointDescriptors()) {

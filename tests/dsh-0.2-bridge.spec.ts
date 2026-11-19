@@ -677,7 +677,12 @@ describe('dsh 0.2.x bridge: attachments', () => {
     expect(request).toEqual({ data: 'QUJD' })
   })
 
-  it('binds file receipts to the prompt and commits only after it succeeds', async () => {
+  it('leaves file-receipt binding to the kernel instead of binding twice', async () => {
+    // 回归（issue #26 阶段 3d）：桥此前在 `prompt` 前后自己 `bindPrompt` +
+    // `binding.commit()`，而内核的 `session/prompt` 内部**已经**做了同样的事
+    // （`dsh-api-session-controller/src/commands.ts` 的 `bindPrompt` → `commit`）。
+    // 换源后这份重复绑定必须消失：双重绑定会把同一批凭证绑两次，第二次 commit
+    // 还会在「内核已经提交过」之后再来一次。
     const { host } = makeHost()
     const api = createDsh02ApiProxy(host)
     const binding = { commit: vi.fn() }
@@ -689,16 +694,16 @@ describe('dsh 0.2.x bridge: attachments', () => {
       content: [{ type: 'file' as const, receiptId: 'receipt-1' }],
     }
 
-    await api.sessions.prompt({ rpcId: 'r', payload })
-    expect(host.fileUploads?.bindPrompt).toHaveBeenCalledTimes(1)
-    expect(binding.commit).toHaveBeenCalledTimes(1)
-
-    // 失败时不 commit：内核的语义是「unless delivery commits it」才归还凭证，
-    // 所以不 commit 意味着凭证保留，用户可以重试而不是重新上传。
-    binding.commit.mockClear()
-    vi.mocked(host.sessionController.prompt).mockRejectedValueOnce(new Error('delivery failed'))
-    await api.sessions.prompt({ rpcId: 'r', payload })
+    const response = await api.sessions.prompt({ rpcId: 'r', payload })
+    expect(response.result.ok).toBe(true)
+    expect(host.fileUploads?.bindPrompt).not.toHaveBeenCalled()
     expect(binding.commit).not.toHaveBeenCalled()
+    // 请求原样进内核：receiptId 仍在 content 里，由内核自己解析与绑定。
+    const [forwarded] = vi.mocked(host.sessionController.prompt).mock.calls[0] as unknown as [
+      { content: readonly unknown[]; requestId: string },
+    ]
+    expect(forwarded.content).toEqual(payload.content)
+    expect(typeof forwarded.requestId).toBe('string')
   })
 
   it('never touches fileUploads for a text-only prompt', async () => {

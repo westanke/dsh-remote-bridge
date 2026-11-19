@@ -31,6 +31,7 @@
 import type { Dsh02HostServices } from './kernel-services.ts'
 import { createKernelEndpointCatalog, type KernelEndpointCatalog, type KernelDescriptorLike } from './kernel-endpoints.ts'
 import { KernelArgumentsError, KernelEndpointUnknownError, type KernelCaller } from './kernel-invoke.ts'
+import { userQuestionsOf, type FileUploadsLike } from './kernel-services.ts'
 import type { KernelGateway } from './proxy-options.ts'
 
 /** 一个永不中止的信号：给「能接受 undefined、但接口声明要求必填 signal」的方法用。 */
@@ -258,6 +259,62 @@ const LOCAL_ENDPOINTS: readonly LocalEndpoint[] = [
         throw Object.assign(new Error('permissionPresets service is unavailable'), { code: 'gateway/service-unavailable' })
       }
       return await service.catalog()
+    },
+  },
+
+  // ===== 阶段 3d：附件 + prompt + models 内建 + userQuestions =====
+  {
+    // scope = agent，两个顶层参 + cancellation。
+    descriptor: {
+      namespace: 'fileUploads',
+      method: 'upload',
+      parameters: [request('agentId'), request()],
+      cancellation: { parameter: 'signal' },
+    },
+    run: async (host, args, signal) => {
+      // 用 readLocalService：直接读属性在「服务缺席」时会抛
+      // `cannot get property "fileUploads" without inject`，那是实现细节，
+      // 不该冒充业务错误（既有用例钉的是 FILE_UPLOADS_UNAVAILABLE）。
+      const service = readLocalService<FileUploadsLike>(host, 'fileUploads')
+      if (service === null || typeof service.upload !== 'function') {
+        throw new Error('FILE_UPLOADS_UNAVAILABLE: this DSH build provides no ctx.fileUploads service, so file attachments cannot be sent')
+      }
+      return await service.upload(
+        await resolveLocalAgent(host, args.agentId),
+        one(args),
+        signal ?? IDLE_SIGNAL,
+      )
+    },
+  },
+  {
+    descriptor: { namespace: 'session', method: 'attachment', parameters: [request()] },
+    run: (host, args) => host.sessionController.attachment(one(args)),
+  },
+  {
+    // prompt 的 `locale` 摘除、`requestId` 铸造、图片交接全在门面；这里只转发。
+    descriptor: {
+      namespace: 'session',
+      method: 'prompt',
+      parameters: [request()],
+      cancellation: { parameter: 'signal' },
+    },
+    run: (host, args, signal) => host.sessionController.prompt(one(args), signal ?? IDLE_SIGNAL),
+  },
+  {
+    // scope = agent（`agentId` 是会话 id）+ 三个顶层参。返回值是 boolean：
+    // `false` 表示「这条 callId 不在内核的 continued 里」，调用点据此转去问挂起表。
+    descriptor: {
+      namespace: 'userQuestions',
+      method: 'answer',
+      parameters: [request('agentId'), request('callId'), request('answer')],
+    },
+    run: async (host, args) => {
+      const agent = await resolveLocalAgent(host, args.agentId)
+      const service = userQuestionsOf(agent)
+      if (service === null || typeof service.answer !== 'function') {
+        throw Object.assign(new Error('userQuestions service is unavailable'), { code: 'gateway/service-unavailable' })
+      }
+      return await service.answer(agent, args.callId as never, args.answer as never)
     },
   },
 ]

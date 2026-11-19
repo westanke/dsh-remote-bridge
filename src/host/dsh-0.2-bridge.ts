@@ -262,14 +262,16 @@ export function createDsh02ApiProxy(
         }
       }),
       prompt: request => call('sessions.prompt', async (signal) => {
-        // 0.2.x requires a client-minted requestId that the old payload omitted.
+        // 换源（阶段 3d）：`session/prompt`。桥侧保留三件事，其余交给内核：
+        //   ① `requestId` 内核**必填**，由桥铸造（客户端 wire 里没有这个字段）；
+        //   ② `locale` 是桥自加的界面语言字段，内核入参是严格形状 —— 多一个就被
+        //      `gateway/arguments-invalid` 拒掉，必须摘出来；
+        //   ③ 给纯文本模型发图时把图片改写成「私有文件 + 路径」的一行文本
+        //      （`handoffImagesForTextOnlyModel`）。内核的模态检查会把这种消息
+        //      直接判成 `session/attachment-invalid` / `MODEL_DOES_NOT_SUPPORT_IMAGES`，
+        //      而这步改写是「发得出去 + 识图插件能接手」的前提，不能丢。
         const requestId = randomUUID()
-        // `locale` 是我们自己加的字段（客户端界面语言），**不能**原样递给内核 ——
-        // 内核的 prompt 入参是严格形状，多一个字段就可能被拒。摘出来单独用。
         const { locale, ...kernelPayload } = request.payload
-        const receiptIds = request.payload.content
-          .filter((part): part is { type: 'file'; receiptId: string } => part.type === 'file')
-          .map(part => part.receiptId)
 
         // 模型确认看不到图时，把图片换成「私有文件 + 路径」，让消息里不再有
         // image 部件 —— 内核那道模态检查（MODEL_DOES_NOT_SUPPORT_IMAGES）就不会触发，
@@ -282,39 +284,32 @@ export function createDsh02ApiProxy(
             )
           : request.payload.content
 
-        // 带文件的 prompt 必须先把凭证绑定到这次请求：内核的注释写明凭证
-        // 「unless delivery commits it」会恢复原主人，所以绑定后还要在**成功之后**
-        // commit —— 失败时不 commit，凭证得以保留供用户重试。
-        //
-        // 没有 fileUploads 服务时，只有**带文件**的 prompt 走不通；纯文本 / 纯图片
-        // 照常发。所以这里只在真的要绑凭证时才报错，不牵连其它消息。
-        const binding = receiptIds.length === 0
-          ? undefined
-          : await (async () => {
-              if (fileUploadService == null) {
-                throw new Error('FILE_UPLOADS_UNAVAILABLE: this DSH build provides no ctx.fileUploads service, so file attachments cannot be sent')
-              }
-              return fileUploadService.bindPrompt(await agentFor(request.payload.sessionId), receiptIds, requestId)
-            })()
-
-        await host.sessionController.prompt(
+        // 文件凭证的绑定/提交由**内核**在 `prompt` 内部完成
+        // （`dsh-api-session-controller/src/commands.ts` 的 `bindPrompt` → `binding.commit()`）。
+        // 桥此前自己又绑了一遍（阶段 3a 之前的历史包袱），换源后删掉，避免双重绑定。
+        // wire 键是 `request`（单参端点）：`invokeRequestEndpoint` 负责包一层，
+        // 调用点只写内核那个对象的真实字段。
+        await invokeRequestEndpoint<{ accepted?: boolean }>(
+          kernel.caller, kernel.catalog.byName, 'session/prompt',
           { requestId, ...kernelPayload, content },
           signal,
         )
-        binding?.commit()
         return { accepted: true as const }
       }),
       uploadAttachment: request => call('sessions.uploadAttachment', async (signal) => {
         const { sessionId, data, name } = request.payload
-        if (fileUploadService == null) throw new Error('FILE_UPLOADS_UNAVAILABLE: this DSH build provides no ctx.fileUploads service, so file attachments cannot be sent')
-        const value = await fileUploadService.upload(
-          await agentFor(sessionId),
-          name === undefined || name === '' ? { data } : { data, name },
+        // 换源（阶段 3d）：`fileUploads/upload`（scope=agent，wire `agentId` 装会话 id）。
+        // 桥侧保留两件：live Agent 前置判定（与 `agentPresets.select` 同一条策略 ——
+        // 内核 lookup 会隐式 resume 冷会话，这是一条已知行为差异，本批不放宽）
+        // 与 `attachment` 回填（`FileUploadValue.file`：attachmentId/name/bytes）。
+        // Agent 由端点的 scope lookup 解析（`agentId` 装会话 id）—— 与内核同一条路，
+        // 不再在门面里先 `agentFor` 一次（那会把同一个 resolveAgent 跑两遍，
+        // 且让「冷会话上传」多一层与内核不一致的判定）。
+        const value = await invokeKernelEndpoint<{ receiptId: string; file?: { attachmentId: string; name: string; bytes: number } }>(
+          kernel.caller, kernel.catalog.byName, 'fileUploads/upload',
+          { agentId: sessionId, request: name === undefined || name === '' ? { data } : { data, name } },
           signal,
         )
-        // 0.2.2（P2-D）：`FileUploadValue.file`（FileAttachmentRef：attachmentId/
-        // name/bytes）一并透出 —— App 由此拿到内容寻址 id 做展示，无需再问内核。
-        // 两代内核形状一致（0.2.1-rc.5 与 0.2.2-rc.1 的 FileUploadValue 同型）。
         return {
           receiptId: value.receiptId,
           name: name ?? null,
@@ -334,24 +329,28 @@ export function createDsh02ApiProxy(
         return uploadAttachmentStreamToKernel(fileUploadService, { sessionId, data, ...(name === undefined ? {} : { name }) }, signal)
       }, { timeoutMs: FILE_UPLOAD_STREAM_TIMEOUT_MS }),
       readAttachment: request => call('sessions.readAttachment', async (signal) => {
-        // 走**内核的 sessionController.attachment()**，不自己碰 `ctx.attachments`。
+        // 换源（阶段 3d）：`session/attachment`，不自己碰 `ctx.attachments`。
         //
         // 这是真机排查出来的正路：真进程里 `ctx.attachments` 是 **MISSING** ——
         // 这条 profile 没把附件存储挂成可注入服务（`dsh-attachment-local` 只是个库）。
         // 期间误判过两次：先说「存储没数据」（实测 35/35 命中，错的），
         // 再说「缺四项元数据」（真因是服务压根拿不到）。教训是先看真进程日志再下结论。
         //
-        // 0.2.1：内核这个方法一次做完三件事（校验引用、读字节、拿会话事件里
-        // 的真实 ref 做完整性校验），请求只带 id。
-        // **0.2.2 起它不再代查引用**：schema 要求完整 ref（五必填元数据），
+        // **0.2.2 起内核不再代查引用**：schema 要求完整 ref（五必填元数据），
         // sessionId 只当权限闸。桥侧先从会话历史 records 里把 ref 摘出来
         //（resolveImageRef：记忆化 + snapshot 窗口 + 有界回走）再调内核 ——
         // App 契约不变，手机端历史里依旧只有 id（见 @patch attachment-ref-resolve）。
+        // 「必须是本会话历史引用过的图」这层判定也只能留在这里：内核明说
+        // neither Session existence nor its image references are checked。
         //
         // 返回的 `data` 是 **base64 字符串**，必须解码后才能当字节用。
         const { sessionId, attachmentId } = request.payload
         const ref = await resolveImageRef(host, sessionId, attachmentId, signal)
-        const value = await host.sessionController.attachment({ sessionId, attachment: ref })
+        const value = await invokeRequestEndpoint<{ attachment: { mediaType: string }; data: string }>(
+          kernel.caller, kernel.catalog.byName, 'session/attachment',
+          { sessionId, attachment: ref },
+          signal,
+        )
         const bytes = new Uint8Array(Buffer.from(value.data, 'base64'))
         return { bytes, mediaType: value.attachment.mediaType }
       }),
@@ -390,8 +389,13 @@ export function createDsh02ApiProxy(
         // default) and the session's own projection (which model it actually
         // uses). Fold them into the plugin's `{ current, routable, groups,
         // failures }` view; a strict client decoder rejects the catalog alone.
-        const catalog = await host.sessionController.modelCatalog()
-        const baseline = await host.sessionController.projections({ sessionId }, signal)
+        // 换源（阶段 3d）：两读分别走 `session/modelCatalog`（无参）与 `session/projections`。
+        const catalog = await invokeBareEndpoint<Awaited<ReturnType<Dsh02HostServices['sessionController']['modelCatalog']>>>(
+          kernel.caller, kernel.catalog.byName, 'session/modelCatalog',
+        )
+        const baseline = await invokeRequestEndpoint<Awaited<ReturnType<Dsh02HostServices['sessionController']['projections']>>>(
+          kernel.caller, kernel.catalog.byName, 'session/projections', { sessionId }, signal,
+        )
         const selection = baseline?.values?.['modelSelection'] as
           | { lastUsed?: unknown; next?: unknown }
           | undefined
@@ -411,7 +415,7 @@ export function createDsh02ApiProxy(
           routable: Array.isArray(catalog.routableProviders) && catalog.routableProviders.length > 0,
           groups: await enrichModelGroups(host, groups, signal),
           failures: Array.isArray(catalog.failures)
-            ? catalog.failures.map(entry => ({
+            ? catalog.failures.map((entry: { id?: unknown; name?: unknown; message?: unknown }) => ({
                 provider: typeof entry.id === 'string' ? entry.id : String(entry.name ?? ''),
                 message: typeof entry.message === 'string' ? entry.message : '',
               }))
@@ -592,14 +596,24 @@ export function createDsh02ApiProxy(
         const agent = await agentForQuestions(sessionId)
         let kernelCouldNotAnswer = false
         if (agent !== null) {
-          const service = userQuestionsOf(agent)
-          if (service !== null && typeof service.answer === 'function') {
-            let answered: unknown
-            try {
-              // `await` 同时接住两种失败：**同步抛**（表达式在 try 内求值）与
-              // **返回 rejected promise**（await 把它变成异常）。
-              answered = await service.answer(agent, callId, answer)
-            } catch (error) {
+          let answered: unknown
+          try {
+            // 换源（阶段 3d）：`userQuestions/answer`（scope=agent，`agentId` 装会话 id）。
+            // 返回 `false` 表示「这条 callId 不在内核的 continued 里」—— 内核用返回值
+            // 而不是异常表达这件事，调用点据此转去问前台挂起表，语义不能改。
+            //
+            // `await` 同时接住两种失败：**同步抛**（表达式在 try 内求值）与
+            // **返回 rejected promise**（await 把它变成异常）。
+            answered = await invokeKernelEndpoint<boolean>(
+              kernel.caller, kernel.catalog.byName, 'userQuestions/answer',
+              { agentId: sessionId, callId, answer },
+              signal,
+            )
+          } catch (error) {
+            // 这条 profile 没装 userQuestions 服务（端点报 `gateway/service-unavailable`）：
+            // 与换源前的 `service === null` 等价 —— 静默走前台挂起表，不当故障抛出。
+            if (isKernelServiceUnavailable(error)) answered = false
+            else {
               const code = errorCodeOf(error)
               // 重复提交是**状态冲突**，不是服务器故障：内核的 REPLY_QUEUED 必须是 409。
               if (code === 'REPLY_QUEUED') return { accepted: false, reason: 'reply-queued' } as never
@@ -610,8 +624,8 @@ export function createDsh02ApiProxy(
               if (code === 'CALLER_NOT_LIVE' || code === 'DELEGATED_CALLER') kernelCouldNotAnswer = true
               else throw error
             }
-            if (answered === true) return { accepted: true } as never
           }
+          if (answered === true) return { accepted: true } as never
         }
         // 前台挂起表（本插件接管的这批）。找不到就是「这条不在等」。
         const bridged = questions.answer({ sessionId, callId, answer })

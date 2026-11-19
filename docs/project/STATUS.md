@@ -1,6 +1,25 @@
 # 当前状态
 
-- 日期：2026-11-19（**已发版 v2.12.1：大文件上传流式化 + 隧道工具 schema 修形**；`main` 上另有未发版的 issue #26 阶段 0 / 1 / 2 / 3a / 3b / 3c）
+- 日期：2026-11-19（**已发版 v2.12.1：大文件上传流式化 + 隧道工具 schema 修形**；`main` 上另有未发版的 issue #26 阶段 0 / 1 / 2 / 3a / 3b / 3c / 3d）
+- **已完成（未发布，issue #26 阶段 3d / `MOB-007`）· 附件/prompt/models/userQuestions 换源**：
+  ①**换源**：`sessions.uploadAttachment` → `fileUploads/upload`、`sessions.readAttachment` →
+  `session/attachment`、`sessions.prompt` → `session/prompt`、`sessions.models` 的两读 →
+  `session/modelCatalog` + `session/projections`、`userQuestions.answer` → `userQuestions/answer`。
+  ②**`prompt` 删掉与内核重复的绑定**：桥此前自己做 `bindPrompt` → `commit`，内核 `commands.prompt`
+  内部已经做了同一件事，双重绑定必须消失；桥仍保留 `requestId` 铸造、`locale` 摘除与
+  `handoffImagesForTextOnlyModel` 的图片交接改写。
+  ③**`readAttachment` 两层留桥**：内核只认完整五字段 ref 且**不校验引用关系**，所以
+  `resolveImageRef` 补齐 + 「本会话历史引用过」判定仍在桥（App 契约不变）。
+  ④**`models` 留桥**：冷会话 `resolveAgent` 前置（命令发现依赖它）、`current` 选择语义、
+  容量字段 `enrichModelGroups`。
+  ⑤**`userQuestions` 半留桥**：`answer` 走端点，前台挂起表那半留着；端点找不到 `callId` 时
+  **返回 `false` 不抛**，桥据此转挂起表；服务缺席（`gateway/service-unavailable`）静默走挂起表。
+  ⑥**已知行为变化**：`uploadAttachment` 不再在门面预解析 Agent（否则同一个 `resolveAgent` 跑两遍），
+  冷会话上传的错误码从桥的 `session/agent-unavailable` 变成内核的解析错误 —— 真机要重点看
+  「冷会话上传附件」这条。
+  ⑦**测试**：`tests/dsh-0.2-bridge.spec.ts` 56 例里仅「binds file receipts…」一条被改写
+  （它断言的正是本批删掉的重复绑定），其余 55 例一行未改；`kernel-local` 目录 31 条。
+  ⑧**未做的验收**：REST 逐字段快照与 6 项真机清单本机无法执行，**开真机前不算通过**。
 - **已完成（未发布，issue #26 阶段 3c / `MOB-006`）· 模型目录与预设面 6 条换源**：
   ①**换源清单**：`llm.providers` → `llm/listConfigurableProviders` + `llm/listProviders`（并发取、id 求交得
   `active`）、`llm.models` → `session/modelCatalog`、`llm.discoverModels` → 同名端点（两顶层参 + cancellation）、
