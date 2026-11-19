@@ -16,6 +16,7 @@ import { wireRelative } from '../path-policy.ts'
 import type { SettingsApiProxy } from '../settings-adapter.ts'
 import type { Dsh02HostServices, ImageAttachmentRefLike, SessionAddressLike } from './kernel-services.ts'
 import type { PromptContentPartLike } from './kernel-services.ts'
+import { handoffKeepsMessageDeliverable } from './kernel-deltas.ts'
 import { timeoutSignal, SESSION_DIR_LOOKUP_TIMEOUT_MS } from './rpc.ts'
 
 
@@ -247,22 +248,25 @@ async function currentModelSelection(
 
 
 /**
- * 内核会不会因为「这个模型看不到图」拒收？判据与内核**逐字一致**：
- * `inputModalities` 已声明且不含 `image`。
+ * 这个会话当前模型**能不能看**图？判据与内核**逐字一致**：
+ * `inputModalities` 已声明且不含 `image` ⇒ 看不了。
  *
  * 元数据缺失（`undefined`）**不算**「确认看不到图」—— 内核在那种情况下也不拒，
- * 我们跟着不插手（拿不准就走原路）。
+ * 我们跟着不插手（拿不准就走原路），所以这里默认回 `true`（假设能看）。
+ *
+ * 「要不要改写」的判定不在这里，而在 `kernel-deltas.ts` 的
+ * `handoffKeepsMessageDeliverable` —— delta 10 的唯一出处，避免两处各写一份。
  */
-async function modelIsConfirmedTextOnly(
+async function modelSupportsImages(
   host: Dsh02HostServices,
   sessionId: string,
 ): Promise<boolean> {
   const selection = await currentModelSelection(host, sessionId)
-  if (selection === undefined) return false
+  if (selection === undefined) return true
   const info = await host.llm.resolveModelInfo(selection.provider, selection.model)
   const modalities = info?.inputModalities
-  if (!Array.isArray(modalities)) return false
-  return !modalities.includes('image')
+  if (!Array.isArray(modalities)) return true
+  return modalities.includes('image')
 }
 
 
@@ -322,9 +326,13 @@ export async function handoffImagesForTextOnlyModel(
   sessionId: string,
   content: readonly PromptContentPartLike[],
 ): Promise<readonly PromptContentPartLike[]> {
-  if (!content.some(part => part.type === 'image')) return content
+  const hasImageParts = content.some(part => part.type === 'image')
+  if (!hasImageParts) return content
   try {
-    if (!(await modelIsConfirmedTextOnly(host, sessionId))) return content
+    const supportsImages = await modelSupportsImages(host, sessionId)
+    // delta 10 的唯一判定点：有图 + 模型看不了 ⇒ 必须改写成文本，否则内核会以
+    // `session/attachment-invalid` / `MODEL_DOES_NOT_SUPPORT_IMAGES` 拒收整条消息。
+    if (!handoffKeepsMessageDeliverable(supportsImages, hasImageParts)) return content
     const workspace = await sessionWorkspaceDir(host, roots, sessionId)
     const dir = workspace !== undefined ? join(workspace, subdir) : fallbackDir
     let index = 0

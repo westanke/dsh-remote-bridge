@@ -892,6 +892,79 @@ describe('dsh 0.2.x bridge: contract shapes', () => {
     expect(JSON.stringify(value)).not.toContain('read-only')
   })
 
+  // issue #26 检修（审计 P0 缺口）：`beforeSeq` 分页是换源里唯一没被端到端覆盖的
+  // 分支 —— 它先 `session/follow` 拿快照（要 `cursor` 当 `throughSeq`），再改打
+  // `session/page`。原来只有「正常窗口」的用例，谁把 `historyPageQuery` 的键写错都
+  // 不会红。
+  it('pages history through session/page, carrying the follow cursor as throughSeq', async () => {
+    const { host } = makeHost()
+    const streamed: Array<{ namespace: string; method: string; args: unknown }> = []
+    const invoked: Array<{ namespace: string; method: string; args: unknown }> = []
+    const api = createDsh02ApiProxy(host, {
+      kernel: {
+        caller: {
+          stream: async (namespace, method, args) => {
+            streamed.push({ namespace, method, args })
+            return (async function* () {
+              yield {
+                type: 'snapshot',
+                cursor: 42,
+                records: [{ seq: 42 }],
+                hasMore: false,
+                // 带上投影基线，避免再打一次 projections 兜底 RPC（本用例只关心分页）。
+                projections: { values: { todos: [] } },
+              }
+            })()
+          },
+          invoke: async (namespace, method, args) => {
+            invoked.push({ namespace, method, args })
+            return { records: [{ seq: 12 }], hasMore: true }
+          },
+        },
+        catalog: createKernelEndpointCatalog({
+          local: {
+            list: () => [
+              {
+                namespace: 'session',
+                method: 'follow',
+                mode: 'stream',
+                parameters: [{ name: 'request', wire: 'request', source: 'json' }],
+              },
+              {
+                namespace: 'session',
+                method: 'page',
+                parameters: [{ name: 'request', wire: 'request', source: 'json' }],
+              },
+            ],
+            get: () => undefined,
+            hasSeen: () => true,
+          },
+        }),
+      },
+    })
+
+    const response = await api.sessions.history({ rpcId: 'r', payload: { sessionId: 'session-1', beforeSeq: 12 } })
+
+    expect(response.result.ok).toBe(true)
+    const value = response.result.ok ? (response.result.value as Record<string, unknown>) : undefined
+    expect(value?.events).toEqual([{ seq: 12 }])
+    expect(value?.hasMore).toBe(true)
+    // 快照自带投影 ⇒ 不许再问一次投影（那是多一次 RPC，也是子会话唯一不能走的路）。
+    expect(value?.projections).toEqual({ values: { todos: [] } })
+    expect(streamed).toEqual([{
+      namespace: 'session',
+      method: 'follow',
+      args: { request: { address: { kind: 'session', sessionId: 'session-1' } } },
+    }])
+    expect(invoked).toEqual([{
+      namespace: 'session',
+      method: 'page',
+      // `throughSeq` 必须来自 follow 的 `cursor`：缺了它内核的分页起点就从最新开始，
+      // 用户会看到「翻页翻回第一页」。
+      args: { request: { address: { kind: 'session', sessionId: 'session-1' }, throughSeq: 42, beforeSeq: 12 } },
+    }])
+  })
+
   // 换源后的同一条容错（issue #26 检修，审计 R1）：真网关在、但目录里**没有**
   // 这个端点（profile 裁剪 / 老内核）。这时抛的是 `kernel/endpoint-unknown`，
   // 不是 `gateway/service-unavailable` —— 两者都必须落到降级清单，否则一次

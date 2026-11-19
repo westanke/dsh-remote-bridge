@@ -589,9 +589,13 @@ base64 膨胀 4/3，所以单条路径的原始文件实际上限约 **17.2 MiB*
 - **L1/L2/L4 语义修正**：`cancel()` 只对声明了 `cancellation` 的端点生效（其余回 `call/not-found`，
   不再假装已取消）；单次调用 30 s 硬上限（`call/timeout`）；`ws-kernel-frames.ts` 的 callId
   注释改为与实现一致（requestId 只是可读前缀，不承担唯一性）。
-- **验收**：`npx tsc --noEmit` exit 0；`npx vitest run` **92 文件 / 1 000 用例全绿**；
+- **验收**：`npx tsc --noEmit` exit 0；`npx vitest run` **92 文件 / 1 001 用例全绿**；
   `pnpm docs:check` 三段全绿（STRUCTURE 134 / INTERFACES 145 锚点）；新增坑位两条
   （`端点缺席 ≠ 服务缺席`、`幂等表：键不带端点、失败也落表、窗口只靠清理器`）。
+- **补遗（同一批）**：①补上换源里唯一没被端到端覆盖的分支 —— `sessions.history` 的
+  `beforeSeq` → `session/page`（断言 `throughSeq` 来自 follow 的 `cursor`、快照自带投影时不再多打一次
+  RPC），这条覆盖是审计给的 P0；②把「要不要做图片交接」的判定收敛到 delta 10 的唯一出处
+  `handoffKeepsMessageDeliverable`（`bridge/attachments.ts` 原先自己写了一份等价判断，属双份真相）。
 - ⚠️ **真机未跑**：本批改的是授权/幂等/取消语义，单人无第二台设备与内核 CLI 会话，
   6 项真机清单**仍未执行**；「已修」只表示单测与类型门禁通过。
 

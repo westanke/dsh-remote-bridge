@@ -19,9 +19,9 @@
   目录为空时**回退进程内传输**（原先会把所有换源入口变成 `kernel/endpoint-unknown`）。
   ⑥**取消/超时语义**：`cancel()` 只对声明 `cancellation` 的端点生效（其余 `call/not-found`），
   单次调用 30 s 硬上限（`call/timeout`）。
-  ⑦**验收**：`npx tsc --noEmit` exit 0；`npx vitest run` **92 文件 / 1 000 用例全绿**；
-  `docs:check` 三段绿（STRUCTURE 134 / INTERFACES 145）；新增回归用例 8 条
-  （kernel-call 22 / ws-kernel-frames 10 / dsh-0.2-bridge 58 / kernel-deltas 15 /
+  ⑦**验收**：`npx tsc --noEmit` exit 0；`npx vitest run` **92 文件 / 1 001 用例全绿**；
+  `docs:check` 三段绿（STRUCTURE 134 / INTERFACES 145）；新增回归用例 9 条
+  （kernel-call 22 / ws-kernel-frames 10 / dsh-0.2-bridge 59 / kernel-deltas 15 /
   mobile-gateway-ws 101）。⚠️ **真机未跑、REST 逐字段快照未做**，未通过前不得宣称已验证。
   ⑧**未修但已确认（下批候选）**：`session/search` 帧仍不在词表（内核有端点、竞品有帧）、
   队列读写（`session/control` + `session/updateQueue`）、子会话写、`defaults`/`set-default`、
