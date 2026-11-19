@@ -234,6 +234,7 @@ host services 之上重建 0.1.x 的 `apiProxy` 面容，让 `chat-adapter` / `s
 | `src/host/provider-url-policy.ts` | ≈190 行 | 供应商 baseURL 地址策略（纯函数） |
 | `src/host/device-identity.ts` | ≈200 行 | 设备身份探测（纯函数） |
 | `src/host/cloudflared.ts` | ≈430 行 | 隧道与二进制下载 |
+| `src/host/tunnel-listener.ts` | ≈215 行 | 隧道专用数据端口（issue #26 阶段 0.2）：端口分离的唯一落点，cloudflared 指向它 |
 | `src/client/workspace.tsx` | ≈473 行 | 面板外壳（拆卡前是 1308 行的巨型组件） |
 | `src/shared/version.ts` | 1 行 | 版本号；与 `package.json`、两站 README、OpenAPI/AsyncAPI 版本同源 |
 
@@ -335,6 +336,7 @@ host services 之上重建 0.1.x 的 `apiProxy` 面容，让 `chat-adapter` / `s
 | `src/host/server.ts` | file | 监听器与嵌入路由 |
 | `src/host/settings-adapter.ts` | file | 提供商/模型设置 adapter |
 | `src/host/settings-namespace.ts` | file | 通用设置命名空间的写策略、脱敏与 ops 校验（纯函数） |
+| `src/host/tunnel-listener.ts` | file | 隧道专用数据端口监听（issue #26 阶段 0.2）：只绑回环、只放行 `/api/v1/**` 与 `/ws/mobile`，`/manage/**` 与宿主前缀在该端口不存在；进入分派前剥掉 `X-Dsh-Workspace-Admin`，永不产生回环管理员身份 |
 | `src/host/wire-json.ts` | file | 出网 JSON 安全序列化 |
 | `src/host/ws-basic.ts` | file | 移动端网关 WS 基础帧处理器（message/workspaces/sessions/history/attachment，与 13 个域处理器同构：每连接一个实例，/ws/mobile） |
 | `src/host/ws-commands.ts` | file | 移动端网关 WS 命令域（commands/command-execute、model/permission 通用二级菜单 command-options/select、permission 会话档位切换，/ws/mobile） |

@@ -36,6 +36,11 @@ export interface RemoteControl {
     configuredHost: string
     configuredPort: number
     remoteEnabled: boolean
+    /**
+     * 隧道专用监听端口（issue #26 阶段 0.2）。cloudflared 指向的是它，不是 `port`。
+     * 未启动时为 0。
+     */
+    tunnelPort?: number
     operation?: RemoteOperationView
   }
   enable(rootIds: string[], scopes: DeviceScope[]): RemoteOperationView

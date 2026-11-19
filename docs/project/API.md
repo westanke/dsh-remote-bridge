@@ -74,13 +74,40 @@ curl -X POST http://127.0.0.1:3090/manage/config/text \
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
 | `GET` | `/manage/cloudflare/status` | 当前隧道状态：`{ channel, url, running, error?, errorKey? }`。未启动时 `running:false`、`url:null`。豁免判据 0 的端点之一，供本机面板读「隧道开着」；隧道来源的请求仍被判据 1/2/3 挡住（403），读不到隧道地址 |
-| `POST` | `/manage/cloudflare/create` | 查/建 `cloudflared` 可执行文件并启动 **Quick Tunnel**（转发到配置的监听端口，常为 `3090`），响应 `201` 返回与 `status` 同构的状态。**请求体可选** `{ "configText": true }`（v2.5.2）：在隧道**起来之前**的这一次调用里等随机域名并顺带生成 `DSH1:` 令牌配置，响应在状态之外多带 `configText`（结构同 `POST /manage/config/text` 的 201），`url` 也回填为等到的地址；12s 内没等到地址则不带 `configText`、`url:null`，客户端可轮询 `status` 后补一步 |
+| `POST` | `/manage/cloudflare/create` | 查/建 `cloudflared` 可执行文件并启动 **Quick Tunnel**（转发到**隧道专用数据端口**，见下节；不是主监听端口 `3090`），响应 `201` 返回与 `status` 同构的状态。**请求体可选** `{ "configText": true }`（v2.5.2）：在隧道**起来之前**的这一次调用里等随机域名并顺带生成 `DSH1:` 令牌配置，响应在状态之外多带 `configText`（结构同 `POST /manage/config/text` 的 201），`url` 也回填为等到的地址；12s 内没等到地址则不带 `configText`、`url:null`，客户端可轮询 `status` 后补一步 |
 | `POST` | `/manage/cloudflare/stop` | 停止当前隧道，返回 `200` 与状态。**唯一豁免判据 0 的写操作**（v2.5.2）：本机面板在隧道运行时仍可停机；经边缘（带转发/`cf-*` 头）仍 403 |
 | `GET` | `/manage/cloudflare/activity` | 创建期间的阶段进度（用户侧用它轮询画进度条）：`{ stage, labelKey, labelParams?, percent }`（v2.5.2 起文案为可本地化的 `labelKey`，不再下发拼好的中文）；`create` 结束即清空 |
 
 `create` 会先下载缺省的 `cloudflared`（官方 GitHub Release，版本 `CLOUDFLARED_VERSION`；
-可用环境变量 `CLOUDFLARED_MIRROR` 指定下载镜像），随后 `spawn cloudflared tunnel --url http://127.0.0.1:<port>`，
+可用环境变量 `CLOUDFLARED_MIRROR` 指定下载镜像），随后
+`spawn cloudflared tunnel --url http://127.0.0.1:<隧道专用端口>`，
 并从 stdout 里用正则抓取 `https://<host>.trycloudflare.com` 形式的对外地址。
+
+### 隧道专用数据端口（issue #26 阶段 0.2 起）
+
+隧道**不再**指向主监听端口（默认 `3090`）。桥另起一个只绑 `127.0.0.1`、端口由系统分配的
+**隧道专用监听**（`src/host/tunnel-listener.ts`），cloudflared 只转到它：
+
+| 在这个端口上 | 行为 |
+| --- | --- |
+| `/api/v1` 与 `/api/v1/**` | **放行**，与原主端口同一套鉴权（设备令牌；`/api/v1/healthz` 免鉴权） |
+| `/ws/mobile`（upgrade） | **放行**，复用主端口同一个 `MobileGatewayWsHandler` 实例（子协议/令牌/连接上限完全一致） |
+| `/manage` 与 `/manage/**` | **不存在** ⇒ `404 ROUTE_NOT_FOUND` |
+| `/dsh-workspace-api/**` | **不存在**（该前缀只挂在宿主 `webServer`，即主端口） |
+| `/api/v1/events` | **不存在**（桥自己的广播 WS 通道，只走主端口） |
+| 其它任何 upgrade | 直接销毁连接 |
+
+它的端口号通过 `GET /manage/status` 的**可选**字段 `tunnelPort` 暴露（未启动时为 `0`）；
+`cloudflared` 指向哪个端口由代码定死，`create` 不接受调用方指定端口。端口号 <= 0 时
+`create` 返回 `503 TUNNEL_PORT_UNAVAILABLE`。
+
+放行 `/api/v1/**` 而不是只放 `/ws/mobile` 是刻意的：手机端用**同一个基地址**同时承载
+REST（`base + /api/v1/...`）与 WebSocket（`base + /ws/mobile`），只放 WS 会让经隧道的
+REST 调用全部失败。管理面则靠**端口分离**做拓扑级隔离 —— 隧道那个端口上根本没有那条路由，
+不依赖请求头判据。详见 `SECURITY.md` §隧道数据面的端口分离。
+
+隧道端口**永不产生「回环管理员」身份**：进入路由分派前它会剥掉
+`X-Dsh-Workspace-Admin` 头，所以经隧道的请求即便伪造该头也只能拿到设备令牌身份。
 
 `CLOUDFLARED_MIRROR` 支持两种形态：
 
@@ -755,7 +782,9 @@ v2.8 新增。独立于现有 `/api/v1/events`（单向广播，保留不动）�
 
 ### 端点与鉴权
 
-- 路径：`ws://HOST:PORT/ws/mobile`（挂主 HTTP server 的 upgrade，`PORT` 默认 `3090`）
+- 路径：`ws://HOST:PORT/ws/mobile`（挂主 HTTP server 的 upgrade，`PORT` 默认 `3090`）；
+  issue #26 阶段 0.2 起**同一个路径也开在隧道专用数据端口上**（同一个 handler 实例，
+  鉴权与连接上限完全一致），cloudflared 只指向那个端口 —— 见 §隧道专用数据端口
 - 子协议（`Sec-WebSocket-Protocol`）：
   - 首次配对：`dsh-mobile-v1, dsh-pair.<code>`，随请求带 `X-DSH-Device-ID`（必填，安装级稳定标识，仅校验不落库）；可选 `X-DSH-Device-Name`（Base64(UTF-8) 展示名，缺省回退 Device-ID，非法编码同样回退）。成功后服务端推 `paired`（`{kind:'paired', token, device}`），再推 `hello`。
   - 后续连接：`dsh-mobile-v1, dsh-auth.<token>`，或 HTTP 头 `Authorization: Bearer <token>`。

@@ -62,7 +62,8 @@
 | [ADR-0007](decisions/ADR-0007-image-handoff-route.md) | accepted | 图片交接的显示链路并入本插件，只读路由改收「会话 + 裸文件名」，识图路径成为可改设置、出厂默认只读 |
 | [ADR-0008](decisions/ADR-0008-seq-single-meaning.md) | accepted | `seq` 只表示会话持久事件序号；流式 delta 不再输出它（`index` 承载 chunk 位置）——同一字段名不再有两种语义 |
 | [ADR-0009](decisions/ADR-0009-single-winner-interactions.md) | **accepted** | 审批/提问的单胜方：身份比对与迟到响应 `not-pending` 已有；**并行下发**（进入即委托，两端竞速，落败端收走自己的卡）——「abort 下游收起 WebUI 弹窗」仍不可证，由「用户点掉陈旧卡 + 409」兜底 |
+| [ADR-0010](decisions/ADR-0010-kernel-endpoint-unification.md) | **proposed** | 内核端点归一（B2 全量换源）：桥不再手抄内核端点 DTO，31 条换源为描述符驱动、内核没有的 4 条语义永久留桥，手机协议零改动 |
 
 ## 稳定任务 ID
 
-任务 ID 采用 `<AREA>-NNN`。当前区域为 `BOOT`、`DOC`、`BRAND`、`LICENSE`、`FS`、`AUTH`、`NET`、`CHAT`、`APPROVAL`、`MODEL`、`IMAGE`、`UI`、`SDK`、`APP`、`PARITY`、`TEST` 和 `REL`。
+任务 ID 采用 `<AREA>-NNN`。当前区域为 `BOOT`、`DOC`、`BRAND`、`LICENSE`、`FS`、`AUTH`、`NET`、`CHAT`、`APPROVAL`、`MODEL`、`IMAGE`、`UI`、`SDK`、`APP`、`PARITY`、`TEST`、`REL` 和 `MOB`。

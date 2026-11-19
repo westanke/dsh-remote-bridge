@@ -561,6 +561,94 @@ base64 膨胀 4/3，所以单条路径的原始文件实际上限约 **17.2 MiB*
 `docs:check` 四段全过（12 文档 / 39 tasks / 9 ADRs / STRUCTURE 84 锚点 / INTERFACES 87 锚点）；
 双产物 build 成功（host `lib/index.js` 628.64 kB、client `lib/client.cjs` 772.91 kB）。
 
+## 未发布 · 内核端点归一（B2 全量换源）阶段 0：地基四件（issue #26，2026-11-19）
+
+> 这是 issue #26 九阶段施工的第一阶段。本阶段**不动手机协议**：REST 路径零改动、
+> 帧名零改动、App 不用发版。方案与施工卡全文在 issue #26 的正文与附录 1/2/3；
+> 方向性决策见 [ADR-0010](decisions/ADR-0010-kernel-endpoint-unification.md)。
+
+**现象**（四个地基问题，都是「以后会骗人」的类型）：
+
+1. **CI 矩阵与 `engines.dsh` 不一致**：`package.json` 声明 `>=0.2.2-rc.1 <0.3.0`，
+   而集成 job 的 `actions/checkout` 仍钉在 `687f282e`（= 0.2.1-rc.2）。
+   后果不是「CI 红了」，而是**CI 假绿** —— 后续任何依赖 0.2.2 新服务的改动
+   都能在这条基线上通过，而在用户机器上炸。
+2. **隧道把管理面暴露到公网**：`cloudflared` 原来是**整端口转发**主监听
+   （`spawn(exe, ['tunnel','--url',\`http://127.0.0.1:${port}\`,…])`），
+   而管理面 `/manage/**` 与数据面同在主端口上 ⇒ 隧道一通，管理面就在公网可达。
+   今天唯一挡它的是「隧道进程在跑就禁用管理面」这一条**进程内状态判据**，
+   而外部反向代理 / SSH 转发绕得过去（判据 0 不知道它在跑）—— `SECURITY.md`
+   的残余风险第 1 条记的就是这个实测（经裸 TCP 转发 `POST /manage/pairings` → 201）。
+3. **手机状态没跟着消息走**：消息帧缺 `clientTimeZone`/`locale`，跨时区的会话
+   时间显示与本地化提示不对。桥侧早已就位（`ws-basic.ts` 透传），缺的是 App。
+4. **债务台账漏登 6 个超预算文件**：`server.ts` 1040 / `cloudflared.ts` 707 /
+   `bff-schedule.ts` 684 / `i18n.tsx` 675 / `ws-protocol.ts` 636 / `plugin-inventory.ts` 605
+   —— 台账上表只登记了 12 个超预算文件里的 6 个。按 `AGENTS.md` §3.2
+   「新增超预算文件必须先入表再写码」，台账不记全，这条纪律就是空的。
+
+**根因**：
+
+- 问题 1 是**两个数字各自演化**：`engines.dsh` 升级时，CI 里的上游 checkout 没跟着走
+  （那段注释还写着「本仓真正推荐的内核是 0.2.1-rc.2 / engines.dsh 声明 >=0.2.0-rc.2」——
+  注释本身也过期了）。
+- 问题 2 是**纵深防御的层次搞错了**：把「谁能访问管理面」寄托在**请求头/Host/Origin/回环地址**
+  这类可伪造的信号上，然后指望「隧道在跑」这条状态兜底。但隧道把公网流量转成
+  `127.0.0.1` 出站，回环判据被洗白；而外部的裸转发根本不会让桥知道「有隧道」。
+  判据能修的地方已经修完了（四层），再加固就是自欺。
+- 问题 4 是**台账靠手工维护**，没有「`src/` 下每个 >600 行文件都必须在表里」的机检。
+
+**修法**（同一提交）：
+
+1. **CI 矩阵改两档**：`profile-install` job 的 `strategy.matrix` 新增 `dsh` 轴，
+   `0.2.2-rc.1` 与 `0.2.2-rc.4` 各一档（`engines.dsh` 声明区间的下界 + 上界附近各测一次），
+   上游 checkout 的 `ref` 由矩阵给出，**钉 commit 不钉 tag**（tag 可移动）；
+   真机 smoke 步骤开头打一行 `dsh under test: <version> (<ref>)`（矩阵展开后同名 job 有两档，
+   不打标签分不出哪档过）。同时删掉那段过期注释、把 README 双站的「开发基线」改成 0.2.2-rc.4。
+2. **隧道端口分离**：新增 `src/host/tunnel-listener.ts`（215 行）——
+   一个**只绑 `127.0.0.1`、端口由系统分配**的独立监听，只放行两样东西：
+   `/api/v1` 与 `/api/v1/**`（走同一个 `router.handle`），以及 `/ws/mobile` 的 upgrade
+   （丢进**同一个** `MobileGatewayWsHandler` 实例，鉴权与连接上限完全一致）。
+   其它一切 `/manage/**` 请求回 **`404 ROUTE_NOT_FOUND`** —— 不是 403：
+   403 等于承认「这条路由存在，只是不给你」。进分派前还会 `delete req.headers['x-dsh-workspace-admin']`，
+   于是经隧道**永远拿不到回环管理员身份**。`cloudflared` 只指向这个端口，端口号由代码定死
+   （`status().tunnelPort`），`/manage/cloudflare/create` 不接受调用方指定；端口未就绪回
+   `503 TUNNEL_PORT_UNAVAILABLE`，**绝不回落主端口**。
+   - 为什么放行 `/api/v1/**` 而不是只放 WS：手机端用**同一个基地址**同时承载
+     REST（`base + /api/v1/...`）与 WebSocket（`base + /ws/mobile`）；
+     只放 `/ws/mobile` 会让经隧道的 REST 全挂。这是一条**行为取舍**，
+     写在这里而不是只写在 PR 里。
+   - `TunnelListener.stop()` 有一处必须踩的坑：隧道端口常年挂着手机端长连 WS，
+     而 `server.close()` 的回调要等**所有连接**关完才触发 ⇒ 插件卸载会挂死。
+     故 `webSockets.close()` 提前、`closeAllConnections()` 与 `server.close()` 同时发起、
+     再用 1 秒兜底定时器（`unref`）收尾 —— 与主端口 `closeCurrent()` 同一教训。
+3. **手机状态**：桥侧核对结论是**零改动**（`ws-basic.ts:38-70` 已在透传），
+   本条只留记录，App 侧改动在姊妹仓。
+4. **台账补登**：按 `wc -l` 实测补 6 行，每行写「为什么是债」+「清账阶段」；
+   补登后 `src/` 下全部 >600 行文件（12 个）都已入表。顺带据实订正了两处过期描述：
+   `server.ts` 那行原承诺「阶段 0.2 先拆 `listener.ts`/`socket-registry.ts` 再加隧道端口」，
+   实际做法相反（把隧道端口整块抽成新文件，`server.ts` 只留 ~18 行接线），
+   已用删除线标掉旧承诺并写清「债本身未清」；另发现 `DEBT-003`（「`@patch` 四要素无脚本校验」）
+   早已被 `tests/patch-discipline.spec.ts` 覆盖，条目待订正。
+
+**验证**：
+
+- `tests/admin-loopback-escalation.spec.ts` **17 → 20 例**，新增两条互为对照：
+  - `has no management route at all on the tunnel port (端口分离，issue #26 阶段 0.2)`：
+    经隧道专用端口请求 `/manage/status`、`/manage/roots`、`/manage/audit`、
+    `POST /manage/config/text`、`POST /manage/pairings`、`/manage/cloudflare/status`
+    —— 全部 `404 ROUTE_NOT_FOUND`，**即便请求伪造了 `X-Dsh-Workspace-Admin: 1`**；
+    且同一端口上带 admin 头访问 `/api/v1/roots` 得 `401 AUTH_REQUIRED`
+    （钉住「隧道端口不产生回环管理员身份」）。
+  - `keeps the data plane working on the tunnel port (issue #26 阶段 0.2)`：
+    同一端口上 `/api/v1/healthz` 200、无令牌 401、配对取得的令牌 200，
+    并且 `new WebSocket('ws://…/ws/mobile','dsh-mobile-v1')` 能握手并在 500ms 内收到
+    `hello` 帧 —— 证明手机端那条链路没被端口分离切断。
+- 全量 `vitest run`：**83 个文件 / 866 个用例全绿**。
+- `docs:check`：12 份项目文档 / 53 个任务 / **10 个 ADR**（新增 ADR-0010）/
+  STRUCTURE 117 锚点（`src/` 全部登记）/ INTERFACES 92 锚点 / 根 README 双站一致。
+- **真机端到端未做**：隧道端口经**真实 cloudflared** 的连通性（含 Cloudflare 边缘的
+  WebSocket 升级）尚未验证；本阶段只用裸 TCP 转发器等价模拟。
+
 ## 未发布 · 发版脚本的 tag 推送（issue #25，2026-11-19）
 
 **现象**：一键发版 `bash scripts/release.sh` 跑完，**两站 Release 建好了、npm 也发上去了**，

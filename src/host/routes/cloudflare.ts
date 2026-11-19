@@ -168,11 +168,21 @@ export async function createTunnel(options: RouterOptions,
         },
       )
     }
-    // 转发到「配置的监听端口」（不是实际绑定的 127.0.0.1 探测端口）。
-    // oc隧道入口即桥接给客户端连，client 连的是 wss:// 边缘 → cloudflared → localhost:port。
+    // 转发到**隧道专用端口**（issue #26 阶段 0.2），不是主端口。
+    //
+    // 为什么：cloudflared 把公网流量转成 127.0.0.1 出站 ⇒ 主端口上的四层回环判据
+    // 在隧道方向上全部失效（见 PITFALLS §隧道让回环判据失效）。以前是「整端口转发」，
+    // 于是隧道下 `/manage/**` 也可达，只靠「隧道开着就把管理面关门」那一层顶着。
+    // 现在隧道只指向一个**只放行数据面**的端口（`/ws/mobile` + `/api/v1/**`），
+    // 管理面在这个端口**拓扑上不存在** —— 不是靠请求头判据挡，是压根没有那条路由。
+    //
+    // 端口由 `RemoteApiServer` 自己在 `start()` 里监听（系统分配），隧道起来之前就已在。
     const remoteStatus = options.remote.status()
-    const port = remoteStatus.configuredPort ?? DEFAULT_PORT
-    const state = await options.tunnels!.startQuick(exe, port)
+    const tunnelPort = remoteStatus.tunnelPort ?? 0
+    if (tunnelPort <= 0) {
+      throw new ApiError(503, 'TUNNEL_PORT_UNAVAILABLE', 'The tunnel data port is not listening yet. Retry in a moment.')
+    }
+    const state = await options.tunnels!.startQuick(exe, tunnelPort)
 
     // 一键「开隧道并出令牌」（2.5.2）：这次请求发生在隧道**起来之前**，管理面尚未被
     // 判据 0 关门。若调用方请求了 configText，就在这里等随机域名出来并直接带出令牌

@@ -298,6 +298,27 @@ export function attachEmbeddedRoutes(webServer, router, remote, extraRoutes?): (
 `enable(rootIds, scopes)` / `disable()` / `configure(host, port)` —— 全部返回或操作
 `RemoteOperationView`。`attachEmbeddedRoutes` 负责挂 `/dsh-workspace-api` 与图片路由。
 
+`status()` 里另有**可选**字段 `tunnelPort`（issue #26 阶段 0.2）：隧道专用数据端口的实际端口，
+未启动时为 `0`。`start()` 会一并起那个监听，`stop()` 一并停。
+
+### 4.2b `src/host/tunnel-listener.ts`
+
+```ts
+export interface TunnelListenerMobile  // ownsPath / connectionCount / connectionLimit / onConnection
+export interface TunnelListenerOptions // { handle, mobile, maxPayloadBytes? }
+export class TunnelListener {
+  get port(): number
+  start(): Promise<number>
+  stop(): Promise<void>
+}
+```
+
+隧道专用数据端口（issue #26 阶段 0.2）：只绑 `127.0.0.1`、端口由系统分配，
+只放行 `/api/v1/**` 与 `/ws/mobile`；`/manage/**`、`/dsh-workspace-api/**`、
+`/api/v1/events` 在这个端口上**不存在**（`404`）。放行前剥掉
+`X-Dsh-Workspace-Admin`，所以经隧道永远拿不到回环管理员身份。`mobile` 传的是主端口
+同一个 `MobileGatewayWsHandler` 实例 ⇒ 鉴权/子协议/连接上限完全一致。
+
 ### 4.3 `src/host/router.ts`
 
 ```ts
@@ -478,6 +499,9 @@ export const PLUGIN_VERSION: string          // shared/version.ts，与 package.
 | `export function attachEmbeddedRoutes` | `src/host/server.ts` | function |
 | `export class ApiRouter` | `src/host/router.ts` | class |
 | `export interface RemoteControl` | `src/host/router.ts` | interface |
+| `export class TunnelListener` | `src/host/tunnel-listener.ts` | class |
+| `export interface TunnelListenerOptions` | `src/host/tunnel-listener.ts` | interface |
+| `export interface TunnelListenerMobile` | `src/host/tunnel-listener.ts` | interface |
 | `export function matchJobRoute` | `src/host/router.ts` | function |
 | `export interface Dsh02HostServices` | `src/host/dsh-0.2-bridge.ts` | interface |
 | `export function createDsh02ApiProxy` | `src/host/dsh-0.2-bridge.ts` | function |

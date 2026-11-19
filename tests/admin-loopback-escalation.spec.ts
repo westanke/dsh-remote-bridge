@@ -6,6 +6,7 @@ import { TestCleanup } from './test-cleanup.ts'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
+import { WebSocket } from 'ws'
 import { AuthService, adminRefusal } from '../src/host/auth.ts'
 import { CloudflaredTunnelManager } from '../src/host/cloudflared.ts'
 import { DshChatAdapter } from '../src/host/chat-adapter.ts'
@@ -64,6 +65,10 @@ interface Harness {
   port: number
   /** 隧道的等价物：外部连接进来，本机再向 127.0.0.1:port 发起连接。 */
   proxyPort: number
+  /** 隧道专用端口（issue #26 阶段 0.2）：cloudflared 只指向它。 */
+  tunnelPort: number
+  /** 隧道的等价物（指向隧道专用端口）：公网 → 边缘 → 隧道端口。 */
+  tunnelProxyPort: number
   /** `bindAll` 为真时服务实际绑定的端口（此时 `port` 那条回环路径仍在）。 */
   boundPort: number
   database: WorkspaceDatabase
@@ -123,6 +128,10 @@ async function startTunnelTopology(
   }
   await remote.start()
   const port = remote.status().port
+  // 隧道专用端口（issue #26 阶段 0.2）：独立监听、只绑回环、只放行数据面。
+  const tunnelPort = remote.status().tunnelPort ?? 0
+  expect(tunnelPort).toBeGreaterThan(0)
+  expect(tunnelPort).not.toBe(port)
 
   // cloudflared 的等价物：公网 → 边缘 → 本机回环。转发器不做任何头改写，
   // 这正是 cloudflared quick tunnel 的行为（它不剥客户端头）。
@@ -135,15 +144,29 @@ async function startTunnelTopology(
   await new Promise<void>(resolve => proxy.listen(0, '127.0.0.1', () => resolve()))
   const proxyPort = (proxy.address() as { port: number }).port
 
+  // 隧道真正的等价物（issue #26 阶段 0.2）：cloudflared 指向的是**隧道专用端口**，
+  // 不是主端口。这个转发器模拟的就是那条链路。
+  const tunnelProxy: TcpServer = createTcpProxy(client => {
+    const upstream = connectLoopback(tunnelPort)
+    client.pipe(upstream).pipe(client)
+    client.on('error', () => upstream.destroy())
+    upstream.on('error', () => client.destroy())
+  })
+  await new Promise<void>(resolve => tunnelProxy.listen(0, '127.0.0.1', () => resolve()))
+  const tunnelProxyPort = (tunnelProxy.address() as { port: number }).port
+
   return {
     port,
     proxyPort,
+    tunnelPort,
+    tunnelProxyPort,
     boundPort: port,
     database,
     rootId: root.id,
     close: async () => {
       await remote.stop()
       await new Promise<void>(resolve => { proxy.close(() => resolve()) })
+      await new Promise<void>(resolve => { tunnelProxy.close(() => resolve()) })
     },
   }
 }
@@ -167,6 +190,41 @@ function viaTunnel(harness: Harness, pathname: string, options: {
     const request = http.request({
       host: '127.0.0.1',
       port: harness.proxyPort,
+      method: options.method ?? 'GET',
+      path: pathname,
+      headers: {
+        // 公网域名/任意 Host 在隧道场景里都会出现；这里刻意给一个非回环 Host。
+        host: 'bridge.example.com',
+        ...options.headers,
+      },
+      timeout: 5000,
+    }, (response: IncomingMessage) => {
+      const chunks: Buffer[] = []
+      response.on('data', (chunk: Buffer) => chunks.push(chunk))
+      response.on('end', () => resolve({ status: response.statusCode ?? 0, body: Buffer.concat(chunks).toString('utf8') }))
+    })
+    request.on('timeout', () => { request.destroy(); resolve({ status: -1, body: 'TIMEOUT' }) })
+    request.on('error', (error: Error) => resolve({ status: -1, body: error.message }))
+    if (options.body !== undefined) request.write(options.body)
+    request.end()
+  })
+}
+
+/**
+ * 从**隧道**发一个请求：TCP 先连「指向隧道专用端口」的转发器。
+ *
+ * 这条链路就是真实 cloudflared Quick Tunnel 的链路（issue #26 阶段 0.2 之后）：
+ * 边缘 → cloudflared → 127.0.0.1:<隧道专用端口>。
+ */
+function viaTunnelPort(harness: Harness, pathname: string, options: {
+  method?: string
+  headers?: Record<string, string>
+  body?: string
+} = {}): Promise<{ status: number; body: string }> {
+  return new Promise(resolve => {
+    const request = http.request({
+      host: '127.0.0.1',
+      port: harness.tunnelProxyPort,
       method: options.method ?? 'GET',
       path: pathname,
       headers: {
@@ -344,6 +402,99 @@ describe('【真 bug｜高危｜远程提权】隧道拓扑下的管理面越权
       // 数据面上的管理身份同样照常可用。
       const apiRoots = await asDesktopBrowser(harness, '/api/v1/roots')
       expect(apiRoots.status).toBe(200)
+    } finally {
+      await harness.close()
+    }
+  })
+
+  /**
+   * 【issue #26 阶段 0.2】隧道专用端口上，管理面**根本不存在**。
+   *
+   * 这是「端口分离」的验收：以前 cloudflared 整端口转发主端口，于是隧道下
+   * `/manage/**` 也可达，只靠「隧道开着就把管理面关门」（判据 0）顶着 ——
+   * 而那一层判据本身是被隧道洗白的（见 PITFALLS §隧道让回环判据失效）。
+   *
+   * 现在隧道只指向一个**只放行数据面**的端口 ⇒ 管理面在这个端口不是「被拒绝」，
+   * 而是**没有这条路由** ⇒ 404。404 而不是 403 是有意的：403 至少承认了这条路由存在。
+   *
+   * 关键点：这里**不带**任何 admin 头也不带凭据 —— 就算带上，它也拿不到 200/403 的
+   * 管理语义，因为那个路由压根不在这条链路上。
+   */
+  it('has no management route at all on the tunnel port (端口分离，issue #26 阶段 0.2)', async () => {
+    const harness = await startTunnelTopology({ tunnelActive: true })
+    try {
+      for (const [pathname, method, body] of [
+        ['/manage/status', 'GET', undefined],
+        ['/manage/roots', 'GET', undefined],
+        ['/manage/audit', 'GET', undefined],
+        ['/manage/config/text', 'POST', '{}'],
+        ['/manage/pairings', 'POST', '{}'],
+        ['/manage/cloudflare/status', 'GET', undefined],
+      ] as const) {
+        const response = await viaTunnelPort(harness, pathname, {
+          method,
+          // 即便公网请求自称「本机管理员」，这条链路也不认。
+          headers: {
+            'x-dsh-workspace-admin': '1',
+            ...(body === undefined ? {} : { 'content-type': 'application/json' }),
+          },
+          ...(body === undefined ? {} : { body }),
+        })
+        expect(response.status, pathname).toBe(404)
+        expect(errorCode(response.body), pathname).toBe('ROUTE_NOT_FOUND')
+      }
+      // 顺带钉住「隧道端口不产生回环管理员身份」：数据面上带 admin 头也拿不到 200。
+      const apiRoots = await viaTunnelPort(harness, '/api/v1/roots', {
+        headers: { 'x-dsh-workspace-admin': '1' },
+      })
+      expect(apiRoots.status).toBe(401)
+    } finally {
+      await harness.close()
+    }
+  })
+
+  /**
+   * 【issue #26 阶段 0.2】隧道专用端口上，数据面照旧可用。
+   *
+   * 为什么这条必须存在：手机端用**同一个 baseUrl** 同时承载 REST（base + `/api/v1/...`）
+   * 与 WS（base + `/ws/mobile`）。若隧道端口只放行 `/ws/mobile`，经隧道的全部 REST 调用
+   * 都会失败 —— 端口分离就变成了「把手机打挂」。
+   */
+  it('keeps the data plane working on the tunnel port (issue #26 阶段 0.2)', async () => {
+    const harness = await startTunnelTopology({ tunnelActive: true })
+    try {
+      // 公开的健康检查不需要凭据：它是隧道可用性的第一道探测。
+      const health = await viaTunnelPort(harness, '/api/v1/healthz')
+      expect(health.status).toBe(200)
+      // 设备令牌保护的端点：没有令牌 ⇒ 401（有凭据 ⇒ 正常放行，见下面）。
+      const roots = await viaTunnelPort(harness, '/api/v1/roots')
+      expect(roots.status).toBe(401)
+      expect(errorCode(roots.body)).toBe('AUTH_REQUIRED')
+
+      // 有凭据就放行：这条证明「放行数据面」不是「把数据面也堵死」。
+      const pairing = harness.database.createPairing([harness.rootId], ['files.read'])
+      const credentials = harness.database.exchangePairing(pairing.code, 'Phone')
+      const authorized = await viaTunnelPort(harness, '/api/v1/roots', {
+        headers: { authorization: `Bearer ${credentials.token}` },
+      })
+      expect(authorized.status).toBe(200)
+
+      // `/ws/mobile` 也必须能在隧道端口上握手 —— 这是手机端的主通道，
+      // 它坏了等于隧道白建。鉴权口径与主端口**同一份**（同一个 handler 实例）。
+      const socket = new WebSocket(`ws://127.0.0.1:${harness.tunnelProxyPort}/ws/mobile`, 'dsh-mobile-v1', {
+        headers: { Authorization: `Bearer ${credentials.token}` },
+      })
+      const frames: Array<{ kind?: string }> = []
+      socket.on('message', data => { frames.push(JSON.parse(data.toString()) as { kind?: string }) })
+      await new Promise<void>((resolve, reject) => {
+        socket.once('open', resolve)
+        socket.once('error', reject)
+      })
+      for (let index = 0; index < 50 && !frames.some(frame => frame.kind === 'hello'); index += 1) {
+        await new Promise(resolve => setTimeout(resolve, 10))
+      }
+      expect(frames.some(frame => frame.kind === 'hello')).toBe(true)
+      socket.close()
     } finally {
       await harness.close()
     }

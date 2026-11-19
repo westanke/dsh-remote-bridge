@@ -46,6 +46,22 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
+        # 与 package.json 的 engines.dsh（>=0.2.2-rc.1 <0.3.0）对齐：
+        # 下界（0.2.2-rc.1）+ 上界附近（0.2.2-rc.4）各测一档。
+        #
+        # 为什么必须测**两档**：inject 是硬依赖（缺一个服务整个插件永久 INACTIVE），
+        # 而矩阵停在单档时，「这一档过」并不能证明「engines.dsh 声明的区间内都过」。
+        # 只测一档 = 把区间承诺缩成一个点。
+        #
+        # ref 钉 commit（不钉 tag）：tag 是可移动的引用，钉 commit 才能保证
+        # 「今天这一档过」明天还指向同一份代码。两个 commit 由
+        # `git ls-remote --tags upstream` 核对过，分别对应上游 tag
+        # dsh-v0.2.2-rc.1 / dsh-v0.2.2-rc.4。
+        dsh:
+          - version: 0.2.2-rc.1
+            ref: 66491b05e3f05ad35bcdd4f6cd7ed26041d9e3db
+          - version: 0.2.2-rc.4
+            ref: 3f321d32bfe382212a8ed8785c1d47a5a300aa23
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -69,16 +85,19 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: deepseek-ai/deepseek-harness
-          # 上游 0.2.1-rc.2 的 release commit。
+          # 上游内核 tag（矩阵 dsh 轴给出），与 engines.dsh 的区间一致。
           #
-          # 2026-10-20 从 47f9438（0.2.0-rc.2 基线）换过来：那个基线上的
-          # **web profile 自身起不来 sessionController**（smoke-profile-install 报
-          # "pending (waiting for services: sessionController, workspaceController,
-          # settingsController, credentialsController)"）—— 依赖没齐，entry 永远
-          # INACTIVE，与插件本身无关。而本仓真正推荐的内核是 0.2.1-rc.2
-          # （engines.dsh 声明 >=0.2.0-rc.2 <0.3.0，0.2.1 是完整功能那一版），
-          # CI 就该测**当前推荐的那个**。
-          ref: 687f282e8625c6b8d11ff58211a90524be2e4317
+          # 2026-10-20 从 47f9438（0.2.0-rc.2 基线）换到 0.2.1-rc.2 的原因：
+          # 那个基线上的 **web profile 自身起不来 sessionController**
+          # （smoke-profile-install 报 "pending (waiting for services:
+          # sessionController, workspaceController, settingsController,
+          # credentialsController)"）—— 依赖没齐，entry 永远 INACTIVE，与插件本身无关。
+          #
+          # 2026-11-19 按 issue #26 阶段 0.1 把矩阵扩成 engines.dsh 声明区间的
+          # **两档**（0.2.2-rc.1 下界 + 0.2.2-rc.4 上界附近）：engines.dsh 早已
+          # 声明 >=0.2.2-rc.1 <0.3.0，矩阵却还停在 0.2.1-rc.2 ⇒ 「声明支持区间」
+          # 与「实际测过的区间」不一致，后面任何 inject 改动都会在 CI 上骗人。
+          ref: ${{ matrix.dsh.ref }}
           path: deepseek-harness
       - working-directory: deepseek-harness
         run: pnpm install --frozen-lockfile
@@ -91,6 +110,9 @@ jobs:
         run: |
           set -euo pipefail
           export DSH_HOME="$RUNNER_TEMP/daw-runtime-home"
+          # 把被测内核版本打进日志：矩阵展开后同一个 job 名下有两档，
+          # 只看「web smoke ok」分不出是哪一档过的。
+          echo "dsh under test: ${{ matrix.dsh.version }} (${{ matrix.dsh.ref }})"
           (cd deepseek-harness && pnpm dsh plugin --profile web add "$GITHUB_WORKSPACE/artifacts/${{ steps.tarball.outputs.file }}")
           (cd deepseek-harness && node --import tsx/esm apps/cli/src/bin.ts web --port 43992 --no-open) \
             >"$RUNNER_TEMP/dsh-web.log" 2>&1 &

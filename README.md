@@ -432,8 +432,10 @@ pnpm pack
 `npm pack` 的产物约 **0.64 MB**（v2.6.1 实测 669,434 字节，SHA-256 `9bf0189b…2cd35`）：2.2.0 删除独立页及其编辑器依赖、并关闭 source map 之后从 1.72 MB 降下来，之后随投影透传、权限 BFF 与五维加固小幅增长。
 
 v2.5.0 在 DSH **0.2.1-rc.2** 上完成真机验证：14/14 宿主服务全部可注入、三个 jobs 端点实测通过、
-权限档位目录返回内核真实三档。开发基线为上游 `dsh-v0.2.1-rc.2`（commit `687f282e8625c6b8d11ff58211a90524be2e4317`），
-兼容范围见上文 `engines.dsh`。CI 覆盖 Windows、Ubuntu 和 macOS。
+权限档位目录返回内核真实三档。**当前开发基线**为上游 `dsh-v0.2.2-rc.4`
+（commit `3f321d32bfe382212a8ed8785c1d47a5a300aa23`），兼容范围见上文 `engines.dsh`。
+CI 覆盖 Windows、Ubuntu 和 macOS **各两档内核**（`0.2.2-rc.1` 与 `0.2.2-rc.4`），
+即 `engines.dsh` 声明区间的下界与上界附近各测一次（issue #26 阶段 0.1）。
 
 **v2.12.1 的验证状态**：82 个测试文件 / **858 个用例**全绿、`typecheck`/`docs:check`/构建通过。
 这一版修两处**实测出来的缺陷**，对外契约（wire schema / REST / Kotlin SDK）**零变更**，App 零改动。

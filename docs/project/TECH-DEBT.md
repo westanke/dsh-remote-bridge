@@ -25,9 +25,31 @@
 | `src/host/ws-handler.ts` | 882 | **`/ws/mobile` 的总装**：鉴权三入口（配对码 / 令牌 / Bearer 连接）、`handleMessage` 解码与分发、13 个域处理器委派、背压发送队列（含可重建帧挑选与 resync 补发）、hello 全在一个类里。2026-10-31 拆出 5 个基础帧到 `ws-basic.ts`、连接上限与心跳到 `ws-connection-policy.ts`（wc -l：HEAD 984 → 861，净 −123；原登记的 974 已过期）。**仍超预算**：issue #4 要求「只留鉴权 + 分发 + 发送路径」并 <600 行，而这三块实测约 430 行、加状态机/挂载/字段脚手架约 250 行，文件下限约 680 行——**`<600` 在该边界下不可达**，属 issue 估算偏乐观，不是拆分未尽 | 已拆 `ws-basic.ts` + `ws-connection-policy.ts`；下一刀：把 ping/subscribe/unsubscribe 三个连接级基础帧与协议常量（`KNOWN_UNSUPPORTED_FRAMES` / `headerValue` / `decodeBase64Utf8`）外移，估 861 → ~780，仍超 600；要真到 600 须放宽「发送路径留在主类」这条边界 |
 | `src/host/ws-file-transfer.ts` | 719 | **上传/下载的文件搬运全在一个类**：`file-resolve` / `file-download-open/chunk` / `file-upload-open/chunk/finish/cancel` 六个帧的校验、spool 落盘、背压与超时回收都在这里（HEAD 已 672，本轮之前就超预算但**未入表**，按「既有文件越线，处置同新增超预算」补登）。2026-11-19 issue #23 流式附件通道 +47：`uploadFinish` 改成「先试流式、不能流式才回落 base64」+ `ChatAdapterLike` 的可选流式方法 + 头注释改写 | 拆 `src/host/ws-upload.ts`（上传三帧）与 `src/host/ws-download.ts`（下载两帧），`ws-file-transfer.ts` 退回 `file-resolve` 与分发 |
 | `src/host/dsh-0.2-bridge.ts` | 629 | **0.2.x 适配层的组装根**：`createDsh02ApiProxy` 工厂把会话/模型/权限/附件/审批/提问各面装配成 `SettingsApiProxy`，内部闭包不少（HEAD 已 616，本轮之前就超预算但**未入表**，按「既有文件越线，处置同新增超预算」补登）。2026-11-19 issue #23 流式附件通道 +13：`sessions.uploadAttachmentStream` 一段 + import | 链路实现已拆到 `src/host/bridge/` 下十文件，这里只剩装配；再拆的话按「一个链路一个文件」继续外移闭包 |
+| `src/host/server.ts` | 1 058 | **远程监听器的总装**：HTTP server 的建/停/重绑（`createBoundServer` / `closeCurrent` / `rebind`）、两条 WS 通道的 upgrade 分流（`/ws/mobile` 与 `/api/v1/events`）、心跳与连接上限、背压广播队列、`/dsh-workspace-api` 前缀路由注册，都在这一个类里（HEAD 已 1 040，本轮之前就超预算但**未入表**，按「既有文件越线，处置同新增超预算」补登）。2026-11-19 issue #26 阶段 0.2 实测只 +18 行（`tunnelListener` 字段 + 构造 + 起停两行 + `status()` 一行），**端口判据没有堆在这里** —— 隧道专用监听抽成了独立文件 `src/host/tunnel-listener.ts`（215 行，在预算内） | 拆 `src/host/listener.ts`（建/停/重绑与 upgrade 分流）与 `src/host/socket-registry.ts`（背压队列 + 心跳 + 连接上限），`server.ts` 退回装配根。~~阶段 0.2 的隧道端口改造要与这刀同批做~~ —— **实际做法相反且更好**：阶段 0.2 先把隧道端口整块抽到 `tunnel-listener.ts`（新文件，零存量风险），`server.ts` 只留 ~18 行接线，于是「先拆再改」变成「改出新文件」，这一刀的紧迫性下降但债本身未清 |
+| `src/host/cloudflared.ts` | 707 | **隧道子进程的下载与生命周期全在一个文件**：`cloudflared` 二进制的多源下载（deb / GitHub 备源）、SHA-256 校验、平台架构判定、Quick Tunnel 子进程的拉起与地址提取、以及一组对外的错误键与阶段键（HEAD 已 707，本轮之前就超预算但**未入表**，按「既有文件越线，处置同新增超预算」补登） | 拆 `src/host/tunnel-download.ts`（下载源选择 + 校验 + 解包落盘）与 `src/host/tunnel-process.ts`（子进程拉起 + 地址提取 + 退出处理），`cloudflared.ts` 退回「编排 + 对外状态」。阶段 0.2 只改 `startQuick` 的 `--url` 指向，不动下载面 ⇒ 两刀不冲突 |
+| `src/host/bff-schedule.ts` | 684 | **REST 定时任务对等面的全部实现**：`catalog/create/edit/run/view/deleteInactive` 的内核翻译、经典 cron 形态与 0.2.2 七种 `timing` kind 的双向折算、`target` 派生 `sessionId`、cron/时区两套校验器，全在一个类里（HEAD 已 684，本轮之前就超预算但**未入表**，按「既有文件越线，处置同新增超预算」补登） | 拆 `src/host/bff-schedule-timing.ts`（七种 kind ↔ 经典 cron 的折算与两个校验器）与 `src/host/bff-schedule-target.ts`（target 派生），`bff-schedule.ts` 退回端点翻译 |
+| `src/client/i18n.tsx` | 675 | **中英文案表与切换控件全在一个文件**：`zh` 文案表（约 300 行）、`MessageKey` 派生类型、翻译函数、locale 的读写与订阅、以及 `LanguageToggle` 组件（HEAD 已 675，本轮之前就超预算但**未入表**，按「既有文件越线，处置同新增超预算」补登） | 拆 `src/client/i18n-zh.ts`（文案表）+ `src/client/i18n.tsx`（函数与组件）。文案表是纯数据、零依赖 ⇒ 可直接搬，不改行为 |
+| `src/host/ws-protocol.ts` | 636 | **线路协议的唯一真值来源**：路径与子协议常量、大小与超时预算、`ClientFrameType` / `ServerFrameKind` 两个联合类型、40 余个帧的 TS 形状、以及编解码与 requestId 回显的纯函数，全在一个文件里（HEAD 已 636，本轮之前就超预算但**未入表**，按「既有文件越线，处置同新增超预算」补登）。**它同时是 DEBT-005 的载体** —— 两个联合类型与 handler 实际行为的差集就记在下方 | 拆 `src/host/ws-protocol-frames.ts`（帧形状与联合类型）+ `src/host/ws-protocol-consts.ts`（常量与预算），`ws-protocol.ts` 退回编解码与纯函数。**与 issue #26 阶段 1 同批做**：阶段 1 要把两个联合类型补到与 handler 一致并删掉两处契约白名单，先拆再补可以避免在一个 636 行的文件里同时改结构与内容 |
+| `src/host/plugin-inventory.ts` | 605 | **插件清单的读取与启停全在一个文件**：profile 名解析、`DSH_HOME` 定位、清单读取（扫 profile 目录）、更新检查、状态判定（loaded/installed/official）、以及 `togglePlugin` 的启停实现与错误类型（HEAD 已 605，本轮之前就超预算但**未入表**，按「既有文件越线，处置同新增超预算」补登） | 拆 `src/host/plugin-inventory-read.ts`（解析 + 读取 + 状态判定）与 `src/host/plugin-inventory-toggle.ts`（启停），`plugin-inventory.ts` 退回 re-export 与编排 |
 
 > 这几个是**已登记的债，不是许可**。新增超预算文件必须先入本表再写码。
 >
+> **2026-11-19 issue #26 阶段 0.4 台账补登**（`wc -l` 实测，`find src -name '*.ts' -o -name '*.tsx' | xargs wc -l`）：
+> 本轮把**漏登的 6 个超预算文件**补进上表 —— `server.ts` 1 040 / `cloudflared.ts` 707 /
+> `bff-schedule.ts` 684 / `i18n.tsx` 675 / `ws-protocol.ts` 636 / `plugin-inventory.ts` 605。
+> 补登前，上表只覆盖 12 个文件里的 6 个，另 6 个一直**不在账上** ⇒
+> 按 `AGENTS.md` §3.2「新增超预算文件必须先入台账再写码」，纪律对它们是不生效的
+> （看不见的债等于没有债）。
+> 补登后 `src/` 下**全部 >600 行的文件都已入表**（12 个）：
+> `chat-adapter.ts` 2 110 / `server.ts` 1 040 / `ws-handler.ts` 882 / `settings-adapter.ts` 731 /
+> `ws-file-transfer.ts` 719 / `cloudflared.ts` 707 / `bff-schedule.ts` 684 / `bridge/chat.ts` 677 /
+> `i18n.tsx` 675 / `ws-protocol.ts` 636 / `dsh-0.2-bridge.ts` 629 / `plugin-inventory.ts` 605；
+> 其余最大的是 `bridge/kernel-services.ts` 592，在预算内不入表。
+> **清账阶段与 issue #26 的阶段一一对应**：`ws-protocol.ts` → 阶段 1，`server.ts` →
+> 阶段 0.2，`dsh-0.2-bridge.ts` → 阶段 4，`chat-adapter.ts` → 阶段 9（issue #9）。
+> 另 4 个（`cloudflared.ts` / `bff-schedule.ts` / `i18n.tsx` / `plugin-inventory.ts`）与
+> issue #26 的阶段无直接耦合，清账阶段单列在本表各行。
+> 预算（600 行/文件）**未变** —— 本轮补的是**可见性**，不是放宽。>
 > **2026-10-17 按事实更新行数**（原来是 1 730 / 1 245 / 1 233）：C 批四项改动分别落在
 > `chat-adapter.ts`（连接即重放、归档列表查询、`historyFormatVersion`，+139）、
 > `dsh-0.2-bridge.ts`（能力位核对与 `seq` 隔离的说明注释、`pendingAll`，+56）、

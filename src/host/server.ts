@@ -23,6 +23,7 @@ import {
   setWsConnections,
 } from './metrics.ts'
 import type { ApiRouter, RemoteControl, RemoteOperationView } from './router.ts'
+import { TunnelListener } from './tunnel-listener.ts'
 import { stringifyWire } from './wire-json.ts'
 
 interface RemoteApiServerOptions {
@@ -156,6 +157,8 @@ export class RemoteApiServer implements RemoteControl {
   private readonly socketQueueLimit: number
   private readonly highWaterMarkBytes: number
   private readonly heartbeatIntervalMs: number
+  /** 隧道专用监听（issue #26 阶段 0.2）：只放行数据面。 */
+  private readonly tunnelListener: TunnelListener
 
   constructor(private readonly options: RemoteApiServerOptions) {
     const fallbackHost = normalizeListenerHost(options.remoteHost ?? DEFAULT_REMOTE_HOST)
@@ -194,6 +197,15 @@ export class RemoteApiServer implements RemoteControl {
         maxPayloadBytes: Math.max(1, options.maxPayloadBytes ?? DEFAULT_MAX_PAYLOAD_BYTES),
       },
     )
+    // 隧道专用监听端口（issue #26 阶段 0.2）：只放行数据面（`/ws/mobile` + `/api/v1/**`），
+    // 管理面在这个端口**拓扑上不存在** ⇒ 隧道打不到它。
+    // 端口在隧道起来之前就已在监听，`createTunnel` 直接把这个端口号交给 cloudflared，
+    // 于是「隧道指向哪个端口」由代码定死，而不是由调用方传参决定。
+    this.tunnelListener = new TunnelListener({
+      handle: options.handle,
+      mobile: this.wsMobile,
+      maxPayloadBytes: Math.max(1, options.maxPayloadBytes ?? DEFAULT_MAX_PAYLOAD_BYTES),
+    })
   }
 
   /**
@@ -228,6 +240,9 @@ export class RemoteApiServer implements RemoteControl {
     this.unsubscribeEvents = this.options.events.subscribe(event => { this.enqueueBroadcast(event) })
     this.startHeartbeat()
     this.options.chat.startEvents(this.eventsAbort.signal, event => { this.options.events.emit(event) })
+    // 隧道专用端口：与主端口**同时**在监听。隧道起来时它已经在那儿等着，
+    // 不用「先起隧道再开端口」，也不用把端口号从命令行传给调用方。
+    await this.tunnelListener.start()
   }
 
   async stop(): Promise<void> {
@@ -244,6 +259,7 @@ export class RemoteApiServer implements RemoteControl {
     // 等排空，但**有上限**：一条读不动的连接不该让插件卸载挂死。
     await this.drainAll(STOP_DRAIN_TIMEOUT_MS)
     await this.closeCurrent()
+    await this.tunnelListener.stop()
     await this.wsMobile.stop()
     this.webSockets.close()
     setWsConnections(0)
@@ -257,6 +273,8 @@ export class RemoteApiServer implements RemoteControl {
       configuredHost: this.configuredHost,
       configuredPort: this.configuredPort,
       remoteEnabled: this.remoteEnabled,
+      // 隧道专用端口（issue #26 阶段 0.2）：cloudflared 指向的就是它。
+      tunnelPort: this.tunnelListener.port,
       ...(operation === undefined ? {} : { operation: publicOperation(operation) }),
     }
   }
