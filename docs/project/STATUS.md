@@ -1,6 +1,22 @@
 # 当前状态
 
-- 日期：2026-11-19（**已发版 v2.12.1：大文件上传流式化 + 隧道工具 schema 修形**；`main` 上另有未发版的 issue #26 阶段 0 / 1 / 2 / 3a / 3b / 3c / 3d / 4 / 5 / 6 / 7 / 8）
+- 日期：2026-11-19（**已发版 v2.12.1：大文件上传流式化 + 隧道工具 schema 修形**；`main` 上另有未发版的 issue #26 阶段 0 / 1 / 2 / 3a / 3b / 3c / 3d / 4 / 5 / 6 / 7 / 8 / 9）
+- **已完成（未发布，issue #26 阶段 9 / `MOB-013`，承接旧 issue #9）· `chat-adapter.ts` 按端点族拆分**：
+  ①**纯搬移、零行为变化**：2 110 行单文件 → 装配根 `src/host/chat-adapter.ts`（**92**）+
+  `src/host/chat-contracts.ts`（**570**）+ `src/host/chat/` 五族（`access.ts` 555 / `sessions.ts` 515 /
+  `hitl.ts` 374 / `content.ts` 204 / `models-commands.ts` 163），**六个模块全部 ≤600 行**。
+  ②**公开面没有变宽**：每族是 `export const xxxMethods = { async m(this: ChatAdapterInternals, …) }`
+  对象，装配根在 class 之后 `Object.assign` 到原型；`interface DshChatAdapter` 的合并声明只含
+  五个 `*Methods` 的公开方法 —— 13 个原 `private` 辅助只能在 `ChatAdapterInternals` /
+  `*InternalMethods` 上见到。类名、构造签名、公开方法签名逐字不变；31 个 `src/` + 25 个
+  `tests/` 导入方**一行未改**，对外仍可从 `chat-adapter.ts` 导入全部旧导出（`export *` +
+  具名 re-export；旧 34 个导出 0 缺失，新增 12 个只是可见性放开）。
+  ③**验收**：`npx tsc --noEmit` exit 0；`npx vitest run` **92 文件 / 987 用例全绿**、
+  **未改任何 `tests/` 文件**；搬运校验脚本逐块归一化比对 **65 项一致 / 0 项不一致**
+  （49 个类方法 + 10 个家族内 helper + contracts 顶层 478 行 + 5 个纯函数），类头块与原
+  484–518 行**逐字节相同**（`sessionVisibility` 的 2 秒 TTL 长注释原样保留）；
+  `npx tsx scripts/check-project-docs.ts` 双向锚点零差异。**未做**：真机（本阶段无 wire 改动），
+  Kotlin SDK 无改动。
 - **已完成（未发布，issue #26 阶段 8 / `MOB-012`）· 收敛：删掉只回 `NOT_IMPLEMENTED` 的 5 个声明**：
   ①**删的是声明不是功能**：`search` / `defaults` / `set-default` / `queue-update` / `directories`
   在词表里活了几个阶段，行为一直是「结构化 `NOT_IMPLEMENTED` + REST 兜底指引」。声明一个永远不工作的帧

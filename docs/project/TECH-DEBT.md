@@ -19,7 +19,6 @@
 
 | 文件 | 行数 | 为什么是债 | 清账阶段 |
 |---|---|---|---|
-| `src/host/chat-adapter.ts` | 2 110 | 会话链路适配：列表/历史/发送/取消/workspace/agent-preset + 审批/提问适配全在一个文件（2026-11-17 工具调用实时透传 +163：delta 两种新 kind + tool/call、tool/result 透传分支与注释；同日 `hasReplyContent` +44：辅助函数 + 长注释，区分中途提交与最终回答；2026-11-19 issue #23 流式附件通道 +59：`DshApiProxy.sessions.uploadAttachmentStream?` 可选成员 + `DshChatAdapter.uploadAttachmentStream` 薄壳 + 为什么要用稳定 code 原样透传的注释；台账原记 1 844 已过期，按 `wc -l` 纠正） | 按端点族拆（issue #9） |
 | `src/host/settings-adapter.ts` | 731 | 提供商与模型目录、通用设置命名空间两件事挤在一个类；SEC-H11 的重定向闸门也落在这里 | 拆 `providers-adapter.ts` 与 `namespaces-adapter.ts` |
 | `src/host/bridge/chat.ts` | 677 | 审批桥 `ApprovalBridge` 与提问桥 `QuestionBridge` 挤在一个文件。2026-11-11（issue #13）把审批侧从「接管 = 否决下游」改成「进入即委托 + 两端竞速」，新增三类结算结果（`answered` / `aborted` / `timeout`）、内核结论判定 `isKernelApprovalOutcome`、定时器外提与三条结算分支，文件从 543 → 656（+113），**越过 600 预算**；2026-11-19 复核时台账记的 656 已过期（`wc -l` 实测 677，本轮未改这个文件） | 拆 `src/host/bridge/approval.ts` 与 `src/host/bridge/question.ts`（两个类互不依赖，只共用 `sessionIdOfAgent` / `FrameHub` / `Dsh02HostServices` 三个入参），chat.ts 退回组装门面；纯搬移不改行为 |
 | `src/host/ws-handler.ts` | 955 | **`/ws/mobile` 的总装**：鉴权三入口（配对码 / 令牌 / Bearer 连接）、`handleMessage` 解码与分发、13 个域处理器委派、背压发送队列（含可重建帧挑选与 resync 补发）、hello 全在一个类里。2026-10-31 拆出 5 个基础帧到 `ws-basic.ts`、连接上限与心跳到 `ws-connection-policy.ts`（wc -l：HEAD 984 → 861，净 −123；原登记的 974 已过期）。2026-11-19 阶段 5 又 +58（通用内核调用面接线：`offersKernelSubprotocol`、每连接一套 `KernelCallHandler`、目录帧在 hello 之后推送、teardown dispose）；阶段 7 再 +11（插件族 `KernelFrameHandler` 挂进每连接 handlers，并与 `KernelCallHandler` 共用同一个 `KernelCallService`，删掉 4 条 `KNOWN_UNSUPPORTED_FRAMES` 插件兜底）。**仍超预算**：issue #4 要求「只留鉴权 + 分发 + 发送路径」并 <600 行，而这三块实测约 430 行、加状态机/挂载/字段脚手架约 250 行，文件下限约 680 行——**`<600` 在该边界下不可达**，属 issue 估算偏乐观，不是拆分未尽 | 已拆 `ws-basic.ts` + `ws-connection-policy.ts`；下一刀：把 ping/subscribe/unsubscribe 三个连接级基础帧与协议常量（`KNOWN_UNSUPPORTED_FRAMES` / `headerValue` / `decodeBase64Utf8`）外移，估 861 → ~780，仍超 600；要真到 600 须放宽「发送路径留在主类」这条边界 |
@@ -45,10 +44,15 @@
 > `ws-file-transfer.ts` 719 / `cloudflared.ts` 707 / `bff-schedule.ts` 684 / `bridge/chat.ts` 677 /
 > `i18n.tsx` 675 / `ws-protocol.ts` 636 / `plugin-inventory.ts` 605 / ~~`dsh-0.2-bridge.ts` 629~~；
 > **issue #26 阶段 4 清掉一个**：`dsh-0.2-bridge.ts` 775 → **304**（≤450 达标），按「债务消失即删条目」
-> 从上表移除 —— 上表现存 **11 个**文件。同批 `bridge/kernel-services.ts` 592 → 122（契约类型搬进
+> 从上表移除。
+> **issue #26 阶段 9 清掉一个**：`chat-adapter.ts` 2 110 → **92**（装配根）+ `chat/` 五族
+> （`access.ts` 555 / `sessions.ts` 515 / `hitl.ts` 374 / `content.ts` 204 / `models-commands.ts` 163）
+> + `chat-contracts.ts` 570，**六个模块全部 ≤600**；纯搬移零行为变化（49 个方法 + 10 个模块级函数
+> 逐块归一化比对一致，987 个既有用例一行未改全绿），按「债务消失即删条目」从上表移除 ——
+> 上表现存 **10 个**文件。同批 `bridge/kernel-services.ts` 592 → 122（契约类型搬进
 > `bridge/kernel-contracts.ts` 474），两者都在预算内。
 > **清账阶段与 issue #26 的阶段一一对应**：`ws-protocol.ts` → 阶段 1，`server.ts` →
-> 阶段 0.2，~~`dsh-0.2-bridge.ts` → 阶段 4~~（**阶段 4 已清账**），`chat-adapter.ts` → 阶段 9（issue #9）。
+> 阶段 0.2，~~`dsh-0.2-bridge.ts` → 阶段 4~~（**阶段 4 已清账**），~~`chat-adapter.ts` → 阶段 9~~（**阶段 9 已清账**，issue #9 / MOB-013）。
 > 另 4 个（`cloudflared.ts` / `bff-schedule.ts` / `i18n.tsx` / `plugin-inventory.ts`）与
 > issue #26 的阶段无直接耦合，清账阶段单列在本表各行。
 > 预算（600 行/文件）**未变** —— 本轮补的是**可见性**，不是放宽。>

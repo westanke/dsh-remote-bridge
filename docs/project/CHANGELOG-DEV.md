@@ -561,6 +561,45 @@ base64 膨胀 4/3，所以单条路径的原始文件实际上限约 **17.2 MiB*
 `docs:check` 四段全过（12 文档 / 39 tasks / 9 ADRs / STRUCTURE 84 锚点 / INTERFACES 87 锚点）；
 双产物 build 成功（host `lib/index.js` 628.64 kB、client `lib/client.cjs` 772.91 kB）。
 
+## 未发布 · 内核端点归一（B2 全量换源）阶段 9：`chat-adapter.ts` 按端点族拆分（issue #26 / MOB-013，2026-11-19）
+
+> 承接旧 issue #9。`src/host/chat-adapter.ts` 2 110 行，是本仓最后一笔「用户可见行为全在一个
+> 文件里」的债（`TECH-DEBT.md` 台账在册）。本阶段**纯搬移、零行为变化**：不新增/删除任何端点、
+> 不改任何 wire schema、不改任何一行 `tests/` —— 唯一的目标是让六个模块都回到 600 行预算内。
+
+- **为什么是现在**：阶段 3a–8 一直在改这个文件（换源、delta 透传、流式附件、命令面 …），
+  每天多一处「改 A 必须读完整 2 110 行」。拆分放在换源收口之后，失败可归因（行为若有变化，
+  只可能是搬错了，不可能是内核换源带来的）。
+- **新布局**（`wc -l` 实测，全部 ≤600）：
+  `src/host/chat-adapter.ts` **92**（装配根）+ `src/host/chat-contracts.ts` **570**（契约面）
+  + `src/host/chat/access.ts` **555** / `sessions.ts` **515** / `hitl.ts` **374** /
+  `content.ts` **204** / `models-commands.ts` **163**。
+- **搬移手法**：每族一个 `export const xxxMethods = { async m(this: ChatAdapterInternals, …) { … } }`
+  对象（方法体逐字搬运，只把缩进适配、并在首参位置加 `this` 标注），装配根 `Object.assign` 到
+  `DshChatAdapter.prototype`。`ChatAdapterInternals`（`chat-contracts.ts`）汇总五个 `*Methods`
+  接口 + 各家族的 `*InternalMethods` + 四个私有字段的 `this` 视图。
+- **公开面没有变宽**：13 个原 `private` 辅助（`requireSession` / `rememberVisibility` /
+  `commandAgent` / `captureApproval` / `hasPendingApproval` / `reusableBlankId` / `blankSession*` /
+  `requireWorkspace` / `visibleWorkspaces` / `requireAuthorizedRoot` / `authorizedRoots` /
+  `sessionRootId`）只出现在 `ChatAdapterInternals` 与各家族的 `*InternalMethods` 上，
+  **不进** `interface DshChatAdapter` 的合并声明；类名、构造签名、公开方法签名逐字不变，
+  31 个 `src/` + 25 个 `tests/` 导入方一行未改。
+- **导出面只增不减**：旧文件 34 个导出全部仍可从 `src/host/chat-adapter.ts` 导入
+  （`export *` + 具名 re-export）；新增 12 个是**可见性放开**（`ChatAdapterInternals`、
+  `isRecord` / `matchRoot` / `approvalRisk` / `clampInt` / `principalKey` / `DEFINITION_TO_BUILTIN` /
+  `SESSION_VISIBILITY_*`、三个 `Dsh*Summary` 类型），不构成新契约。
+- **验收**：`npx tsc --noEmit` exit 0；`npx vitest run` **92 文件 / 987 用例全绿**、**未改任何
+  `tests/` 文件**；搬运校验脚本逐块归一化比对 **65 项一致 / 0 项不一致**（49 个类方法 +
+  10 个家族内 helper + contracts 顶层 478 行 + 5 个纯函数；允许差异仅「去 `private`、加
+  `this: ChatAdapterInternals`、对象成员末尾逗号」三种）；类头块与原 484–518 行**逐字节相同**
+  （`sessionVisibility` 的 2 秒 TTL 长注释原样保留）；导出面比对 **0 缺失**。
+  运行时经 `tsx` 导入装配根：17 个值导出、`DshChatAdapter` 是 class、prototype 49 个方法 + 构造。
+- **文档同批**：`STRUCTURE.md`（装配根描述 + 新增 `chat/` 目录与 6 个文件锚点 + 量级表）、
+  `INTERFACES.md`（§4.5 改为「装配根 + 五族」并列出家族↔方法映射，5 行锚点改指新文件、
+  新增 7 行锚点）、`TECH-DEBT.md`（按「债务消失即删条目」移除 chat-adapter 行，上表现存 10 个）、
+  `STATUS.md` / `TESTING.md` / `ROADMAP.md`（`MOB-013` → done）。`docs:check` 双向锚点零差异。
+- **未做**：真机（本阶段无行为面，wire schema 一行未动）；Kotlin SDK 无改动。
+
 ## 未发布 · 内核端点归一（B2 全量换源）阶段 8：删掉只回 `NOT_IMPLEMENTED` 的 5 个声明（issue #26，2026-11-19）
 
 > 阶段 1 把所有帧收进类型系统时，有 5 个客户端帧**声明了但没有行为**：`search` / `directories` /

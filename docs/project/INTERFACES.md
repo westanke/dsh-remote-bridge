@@ -383,9 +383,24 @@ export type PromptContentPartLike / FileUploadsLike / AttachmentStoreLike / Sess
 **这个文件的任何内核适配补丁都必须带 `@patch` 四要素**（for/why/until/test），
 `tests/patch-discipline.spec.ts` 校验五要素齐全且 `test` 指向的用例真实存在。
 
-### 4.5 `src/host/chat-adapter.ts`
+### 4.5 `src/host/chat-adapter.ts` 与 `src/host/chat/` 五族
 
-类 `DshChatAdapter`（`chat-adapter.ts:364`）的公开方法，全部以 `principal: Principal` 开头做授权：
+`DshChatAdapter` 的公开方法，全部以 `principal: Principal` 开头做授权。issue #26 阶段 9 起
+`chat-adapter.ts` 是**装配根**（`chat-adapter.ts:39` 的 class 骨架 + `chat-adapter.ts:77` 的同名
+`interface` 合并声明 + `Object.assign`），方法体按端点族在五个模块里，`this` 统一标注为
+`ChatAdapterInternals`（`chat-contracts.ts:553`）：
+
+| 家族文件 | 方法 |
+| --- | --- |
+| `chat/access.ts` | `isSessionAuthorized` / `startEvents` + 私有 `requireSession` / `rememberVisibility` / `requireWorkspace` / `visibleWorkspaces` / `requireAuthorizedRoot` / `authorizedRoots` / `sessionRootId` / `commandAgent` |
+| `chat/sessions.ts` | `listSessions` / `listWorkspaces` / `createWorkspace` / `renameWorkspace` / `deleteWorkspace` / `createSessionInWorkspace` / `createSession` / `history` / `subagentHistory` / `cancel` / `renameSession` / `forkSession` / `archiveSession` / `sessionWait` / `sessionProjections` |
+| `chat/content.ts` | `prompt` / `uploadAttachment` / `uploadAttachmentStream` / `readAttachment` / `readHandoffImage` |
+| `chat/hitl.ts` | `listPendingApprovals` / `replayPendingApprovals` / `replayPendingQuestions` / `decideApproval` / `listUserQuestions` / `answerUserQuestion` / `cancelUserQuestion` |
+| `chat/models-commands.ts` | `listAgentPresets` / `listPermissionPresets` / `selectAgentPreset` / `models` / `selectModel` / `listCommands` / `executeCommand` |
+
+私有方法（`requireSession` 等）**不在** `DshChatAdapter` 的合并接口里，只出现在
+`ChatAdapterInternals` 与各家族的 `*InternalMethods` 上；跨模块导入仍可照旧从
+`src/host/chat-adapter.ts` 拿全部旧导出（`export *` + 具名 re-export）。
 
 ```txt
 listSessions(principal, { archived? })        listWorkspaces(principal)      createWorkspace(principal, rootId, relativePath)
@@ -406,8 +421,10 @@ listCommands(principal, sessionId)            executeCommand(principal, sessionI
 isSessionAuthorized(principal, sessionId)     startEvents(signal, emit)
 ```
 
-模块级导出：`unwrapDsh`（拆 DSH RPC 壳并映射错误）、`normalizeDshEvent`（帧归一）、
-`turnFailureOf`、`approvalReplayEvents`、`questionReplayEvents`、`redactApprovalText`。
+模块级导出（拆分后仍在 `src/host/chat-adapter.ts` 的导出面上，实体位置见括号）：
+`unwrapDsh`（拆 DSH RPC 壳并映射错误，`chat-contracts.ts`）、`normalizeDshEvent`（帧归一，`chat/access.ts`）、
+`turnFailureOf`（`chat/access.ts`）、`approvalReplayEvents` / `questionReplayEvents`（`chat/hitl.ts`）、
+`redactApprovalText`（`chat-contracts.ts`）、`isRecord` / `matchRoot` / `approvalRisk`（`chat-contracts.ts`）。
 
 ### 4.6 `src/host/database.ts`
 
@@ -536,10 +553,16 @@ export const PLUGIN_VERSION: string          // shared/version.ts，与 package.
 | `export function createDsh02ApiProxy` | `src/host/dsh-0.2-bridge.ts` | function |
 | `export async function readHandoffImageFile` | `src/host/dsh-0.2-bridge.ts` | function |
 | `export function normalizePermissionCatalog` | `src/host/dsh-0.2-bridge.ts` | function |
-| `export interface DshApiProxy` | `src/host/chat-adapter.ts` | interface |
-| `export class DshChatAdapter` | `src/host/chat-adapter.ts` | class |
-| `export function unwrapDsh` | `src/host/chat-adapter.ts` | function |
-| `export function normalizeDshEvent` | `src/host/chat-adapter.ts` | function |
+| `export interface DshApiProxy` | `src/host/chat-contracts.ts` | interface |
+| `export class DshChatAdapter` | `src/host/chat-adapter.ts` | class（装配根） |
+| `export interface ChatAdapterInternals` | `src/host/chat-contracts.ts` | interface（五族混入对象的 `this`） |
+| `export function unwrapDsh` | `src/host/chat-contracts.ts` | function |
+| `export function normalizeDshEvent` | `src/host/chat/access.ts` | function |
+| `export const accessMethods` | `src/host/chat/access.ts` | const（混入对象） |
+| `export const sessionsMethods` | `src/host/chat/sessions.ts` | const（混入对象） |
+| `export const contentMethods` | `src/host/chat/content.ts` | const（混入对象） |
+| `export const hitlMethods` | `src/host/chat/hitl.ts` | const（混入对象） |
+| `export const modelsCommandsMethods` | `src/host/chat/models-commands.ts` | const（混入对象） |
 | `export const FILE_UPLOAD_STREAM_UNSUPPORTED` | `src/host/bridge/file-upload-stream.ts` | const |
 | `export interface KernelEndpoint` | `src/host/bridge/kernel-endpoints.ts` | interface |
 | `export function describeKernelEndpoint` | `src/host/bridge/kernel-endpoints.ts` | function |
@@ -619,7 +642,7 @@ export const PLUGIN_VERSION: string          // shared/version.ts，与 package.
 | `export class SpeechHandler` | `src/host/ws-speech.ts` | class |
 | `export function createHostRemoteServices` | `src/host/ws-host-services.ts` | function |
 | `export interface HostRemoteHandle` | `src/host/ws-host-services.ts` | interface |
-| `sessionProjections` | `src/host/chat-adapter.ts` | method（读会话投影基线，agent-team/subagents 用） |
+| `sessionProjections` | `src/host/chat/sessions.ts` | method（读会话投影基线，agent-team/subagents 用） |
 | `export class FilesHandler` | `src/host/ws-files.ts` | class |
 | `FilesHandler.handleDirectoryCreate` | `src/host/ws-files.ts` | method |
 | `export class FileTransferHandler` | `src/host/ws-file-transfer.ts` | class（分块下载/上传，连接隔离 + 并发上限 + SHA-256） |
