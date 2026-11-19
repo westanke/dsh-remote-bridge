@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import type { KernelCallGuard } from '../src/host/bridge/kernel-call.ts'
 import {
   createKernelCallService,
   type KernelCallErrorShape,
@@ -160,17 +161,20 @@ function valueOf(result: KernelCallResult): unknown {
 }
 
 /** 内存版幂等存储：与生产实现同契约（`read` 未命中 undefined，`save` 覆盖）。 */
+/** 会话可见性一律放行 —— 这些用例验的是执行器，不是授权根。 */
+const ALLOW_ALL_SESSIONS: KernelCallGuard = { sessionVisible: async () => true }
+
 class MemoryIdempotency implements KernelIdempotencyStore {
-  private readonly entries = new Map<string, { status: number; body: unknown }>()
+  private readonly entries = new Map<string, { status: number; body: unknown; createdAt: number }>()
   readonly saves: { readonly deviceId: string; readonly key: string; readonly status: number; readonly body: unknown }[] = []
 
-  read(deviceId: string, key: string): { status: number; body: unknown } | undefined {
+  read(deviceId: string, key: string): { status: number; body: unknown; createdAt: number } | undefined {
     return this.entries.get(`${deviceId}\u0000${key}`)
   }
 
   save(deviceId: string, key: string, status: number, body: unknown): void {
     this.saves.push({ deviceId, key, status, body })
-    this.entries.set(`${deviceId}\u0000${key}`, { status, body })
+    this.entries.set(`${deviceId}\u0000${key}`, { status, body, createdAt: Date.now() })
   }
 }
 
@@ -181,7 +185,7 @@ describe('authorization comes first', () => {
   it('denies an endpoint outside the allowlist before touching the catalog', () => {
     const { authorizer } = authorizerOf()
     const kernel = recordingCaller()
-    const service = createKernelCallService({ caller: kernel.caller, catalog: SEARCH_CATALOG, authorizer })
+    const service = createKernelCallService({ guard: ALLOW_ALL_SESSIONS, caller: kernel.caller, catalog: SEARCH_CATALOG, authorizer })
 
     // 目录里没有 `settings/describe`（真实内核里有）：仍然必须是 METHOD_NOT_ALLOWED，
     // 不能是 endpoint-unknown —— 否则响应码差异就等于告诉攻击者「这个端点存在」。
@@ -201,7 +205,7 @@ describe('authorization comes first', () => {
   it('reports an allowlisted endpoint that the catalog does not know', () => {
     const { authorizer } = authorizerOf()
     const kernel = recordingCaller()
-    const service = createKernelCallService({ caller: kernel.caller, catalog: SEARCH_CATALOG, authorizer })
+    const service = createKernelCallService({ guard: ALLOW_ALL_SESSIONS, caller: kernel.caller, catalog: SEARCH_CATALOG, authorizer })
 
     // 白名单有、目录没有 = 版本差异（换源/降级），要能与「白名单外」区分开。
     return expect(service.invoke(devicePrincipal(), { callId: 'call-unknown', endpoint: 'pluginMarket/listIndexes' }))
@@ -217,7 +221,7 @@ describe('argument validation', () => {
   it('rejects extra or missing wire keys without ever calling the kernel', () => {
     const { authorizer } = authorizerOf()
     const kernel = recordingCaller()
-    const service = createKernelCallService({ caller: kernel.caller, catalog: SEARCH_CATALOG, authorizer })
+    const service = createKernelCallService({ guard: ALLOW_ALL_SESSIONS, caller: kernel.caller, catalog: SEARCH_CATALOG, authorizer })
 
     // 多一个键：必须在本地就拒（一个字节都不发给内核），否则内核的 assertExactArguments
     // 会抛一个我们无法解释的远端错误。
@@ -243,7 +247,7 @@ describe('unary call', () => {
     const kernel = recordingCaller({
       invoke: async (namespace, method, args) => ({ namespace, method, args, answer: 42 }),
     })
-    const service = createKernelCallService({ caller: kernel.caller, catalog: SEARCH_CATALOG, authorizer })
+    const service = createKernelCallService({ guard: ALLOW_ALL_SESSIONS, caller: kernel.caller, catalog: SEARCH_CATALOG, authorizer })
 
     const result = await service.invoke(devicePrincipal(), SEARCH)
 
@@ -271,7 +275,7 @@ describe('scope enforcement', () => {
   it('maps a missing device scope to 403-shaped failures', async () => {
     const { authorizer } = authorizerOf(['files.read'])
     const kernel = recordingCaller()
-    const service = createKernelCallService({ caller: kernel.caller, catalog: SEARCH_CATALOG, authorizer })
+    const service = createKernelCallService({ guard: ALLOW_ALL_SESSIONS, caller: kernel.caller, catalog: SEARCH_CATALOG, authorizer })
 
     const result = await service.invoke(devicePrincipal([]), SEARCH)
 
@@ -298,7 +302,7 @@ describe('interaction boundary', () => {
 
     const { authorizer } = authorizerOf()
     const kernel = recordingCaller()
-    const service = createKernelCallService({
+    const service = createKernelCallService({ guard: ALLOW_ALL_SESSIONS,
       caller: kernel.caller,
       // 目录里故意放上真实存在的交互端点：可见性只能由白名单决定，不能由目录决定。
       catalog: catalogOf([
@@ -314,7 +318,7 @@ describe('interaction boundary', () => {
     expect(service.endpoints().map(entry => entry.endpoint)).toEqual(['session/search'])
 
     // 真发一笔也必须是默认拒绝，且内核一次都不会被调（不会挂起等审批）。
-    const denied = await service.invoke(devicePrincipal(), { callId: 'call-interaction', endpoint: 'session/prompt', args: { request: {} } })
+    const denied = await service.invoke(devicePrincipal(), { callId: 'call-interaction', endpoint: 'session/prompt', args: { request: { sessionId: 'session-1' } } })
     expect(denied).toEqual({
       callId: 'call-interaction',
       ok: false,
@@ -339,7 +343,7 @@ describe('cancellation', () => {
     const { authorizer } = authorizerOf()
     const kernel = recordingCaller({ invoke: hangingInvoke })
     const catalog = catalogOf([descriptor({ namespace: 'session', method: 'search', cancellation: { parameter: 'request' } })])
-    const service = createKernelCallService({ caller: kernel.caller, catalog, authorizer })
+    const service = createKernelCallService({ guard: ALLOW_ALL_SESSIONS, caller: kernel.caller, catalog, authorizer })
 
     const pendingCall = service.invoke(devicePrincipal(), SEARCH)
     // 先让第一笔进到 caller.invoke，确认它真的在飞。
@@ -371,7 +375,7 @@ describe('concurrency', () => {
         return 'first-answer'
       },
     })
-    const service = createKernelCallService({ caller: kernel.caller, catalog: SEARCH_CATALOG, authorizer })
+    const service = createKernelCallService({ guard: ALLOW_ALL_SESSIONS, caller: kernel.caller, catalog: SEARCH_CATALOG, authorizer })
 
     const first = service.invoke(devicePrincipal(), SEARCH)
     // 第二笔必须被 call/in-flight 挡住，而不是排进队列再执行一次。
@@ -397,7 +401,7 @@ describe('idempotency', () => {
       },
     })
     const idempotency = new MemoryIdempotency()
-    const service = createKernelCallService({ caller: kernel.caller, catalog: SEARCH_CATALOG, authorizer, idempotency })
+    const service = createKernelCallService({ guard: ALLOW_ALL_SESSIONS, caller: kernel.caller, catalog: SEARCH_CATALOG, authorizer, idempotency })
 
     const first = await service.invoke(devicePrincipal(), SEARCH)
     expect(valueOf(first)).toBe('answer-1')
@@ -410,7 +414,7 @@ describe('idempotency', () => {
     expect(idempotency.saves[0]?.status).toBe(200)
     expect(idempotency.saves[0]?.body).toEqual(first)
     // 键里带主体 id：不同设备/管理员用同一个 callId 不能回放彼此的答案。
-    expect(idempotency.saves[0]?.key).toBe('kernel-call:device-1:call-1')
+    expect(idempotency.saves[0]?.key).toBe('kernel-call:device-1:session/search:call-1')
   })
 
   it('scopes the replay key to the principal', async () => {
@@ -423,7 +427,7 @@ describe('idempotency', () => {
       },
     })
     const idempotency = new MemoryIdempotency()
-    const service = createKernelCallService({ caller: kernel.caller, catalog: SEARCH_CATALOG, authorizer, idempotency })
+    const service = createKernelCallService({ guard: ALLOW_ALL_SESSIONS, caller: kernel.caller, catalog: SEARCH_CATALOG, authorizer, idempotency })
 
     const admin = await service.invoke(adminPrincipal(), SEARCH)
     const device = await service.invoke(devicePrincipal(), SEARCH)
@@ -440,12 +444,12 @@ describe('idempotency', () => {
 
 describe('streaming', () => {
   const STREAM_DESCRIPTOR = descriptor({ namespace: 'messageFeedback', method: 'put', mode: 'stream' })
-  const STREAM_CALL: KernelCallRequest = { callId: 'call-stream', endpoint: 'messageFeedback/put', args: { request: {} } }
+  const STREAM_CALL: KernelCallRequest = { callId: 'call-stream', endpoint: 'messageFeedback/put', args: { request: { sessionId: 'session-1' } } }
 
   it('stops at streamFrameLimit and marks the result truncated', async () => {
     const { authorizer } = authorizerOf()
     const kernel = recordingCaller({ stream: async () => framesOf([1, 2, 3, 4, 5]) })
-    const service = createKernelCallService({
+    const service = createKernelCallService({ guard: ALLOW_ALL_SESSIONS,
       caller: kernel.caller,
       catalog: catalogOf([STREAM_DESCRIPTOR]),
       authorizer,
@@ -463,14 +467,14 @@ describe('streaming', () => {
     expect(call.mode).toBe('stream')
     expect(call.namespace).toBe('messageFeedback')
     expect(call.method).toBe('put')
-    expect(call.args).toEqual({ request: {} })
+    expect(call.args).toEqual({ request: { sessionId: 'session-1' } })
     expect(service.pending()).toBe(0)
   })
 
   it('returns the whole stream when it fits under the limit', async () => {
     const { authorizer } = authorizerOf()
     const kernel = recordingCaller({ stream: async () => framesOf(['a', 'b']) })
-    const service = createKernelCallService({
+    const service = createKernelCallService({ guard: ALLOW_ALL_SESSIONS,
       caller: kernel.caller,
       catalog: catalogOf([STREAM_DESCRIPTOR]),
       authorizer,
@@ -489,7 +493,7 @@ describe('endpoints summary', () => {
   it('lists only allowlisted catalog entries, with scope and stream flags', () => {
     const { authorizer } = authorizerOf()
     const kernel = recordingCaller()
-    const service = createKernelCallService({
+    const service = createKernelCallService({ guard: ALLOW_ALL_SESSIONS,
       caller: kernel.caller,
       catalog: catalogOf([
         descriptor({ namespace: 'session', method: 'list' }),
@@ -527,7 +531,7 @@ describe('dispose', () => {
       }),
     })
     const catalog = catalogOf([descriptor({ cancellation: { parameter: 'request' } })])
-    const service = createKernelCallService({ caller: kernel.caller, catalog, authorizer })
+    const service = createKernelCallService({ guard: ALLOW_ALL_SESSIONS, caller: kernel.caller, catalog, authorizer })
 
     const first = service.invoke(devicePrincipal(), { ...SEARCH, callId: 'call-dispose-1' })
     const second = service.invoke(devicePrincipal(), { ...SEARCH, callId: 'call-dispose-2' })
@@ -539,5 +543,181 @@ describe('dispose', () => {
 
     const results = await Promise.all([first, second])
     for (const result of results) expect(errorOf(result).code).toBe('call/cancelled')
+  })
+})
+
+/**
+ * 第二维权限（issue #26 检修，审计 S1）。
+ *
+ * 内核网关只看得见 owner 主体，它自己的会话过滤恒放行 —— 跨根读能不能拦住，
+ * 全看桥这一层。这几条用例守的就是「拦住」而不是「碰巧没数据」。
+ */
+describe('session-level authorization', () => {
+  const STATE = { callId: 'call-state', endpoint: 'session/state', args: { request: { sessionId: 'session-2' } } } as const
+  const STATE_CATALOG = catalogOf([descriptor({ method: 'state' })])
+
+  it('refuses a session outside the authorized roots without calling the kernel', async () => {
+    const { authorizer } = authorizerOf()
+    const kernel = recordingCaller()
+    const service = createKernelCallService({
+      caller: kernel.caller,
+      catalog: STATE_CATALOG,
+      authorizer,
+      guard: { sessionVisible: async (_principal, sessionId) => sessionId === 'session-1' },
+    })
+    const result = await service.invoke(devicePrincipal(), STATE)
+    expect(errorOf(result).code).toBe('chat/session-not-found')
+    expect(kernel.calls).toHaveLength(0)
+  })
+
+  it('passes the check when the session is inside the authorized roots', async () => {
+    const { authorizer } = authorizerOf()
+    const kernel = recordingCaller()
+    const service = createKernelCallService({
+      caller: kernel.caller,
+      catalog: STATE_CATALOG,
+      authorizer,
+      guard: { sessionVisible: async () => true },
+    })
+    expect(valueOf(await service.invoke(devicePrincipal(), STATE))).toBe('fake-result')
+    expect(onlyCall(kernel.calls).args).toEqual({ request: { sessionId: 'session-2' } })
+  })
+
+  it('filters search hits down to the sessions this device may read', async () => {
+    const { authorizer } = authorizerOf()
+    const kernel = recordingCaller({
+      invoke: async () => ({
+        items: [{ sessionId: 'session-1', snippet: 'mine' }, { sessionId: 'session-2', snippet: 'theirs' }],
+        hasMore: true,
+      }),
+    })
+    const service = createKernelCallService({
+      caller: kernel.caller,
+      catalog: SEARCH_CATALOG,
+      authorizer,
+      guard: { sessionVisible: async (_principal, sessionId) => sessionId === 'session-1' },
+    })
+    const value = valueOf(await service.invoke(devicePrincipal(), SEARCH)) as {
+      items: readonly { sessionId: string }[]
+      hasMore: boolean
+    }
+    expect(value.items.map(item => item.sessionId)).toEqual(['session-1'])
+    // hasMore 描述的是「过滤前还有更多」，原样保留 —— 否则客户端会以为搜完了。
+    expect(value.hasMore).toBe(true)
+  })
+
+  it('denies a session endpoint whose args carry no session id', async () => {
+    const { authorizer } = authorizerOf()
+    const kernel = recordingCaller()
+    const service = createKernelCallService({
+      caller: kernel.caller,
+      catalog: STATE_CATALOG,
+      authorizer,
+      guard: { sessionVisible: async () => true },
+    })
+    // 参数形状本身由 assertKernelArguments 与内核同文案校验；这里故意构造一个
+    // 「键对了但取不出 sessionId」的请求，证明第二维不会因为取不到 id 而放行。
+    const result = await service.invoke(devicePrincipal(), {
+      callId: 'call-nosession',
+      endpoint: 'session/state',
+      args: { request: { sessionId: '' } },
+    })
+    expect(errorOf(result).code).toBe('chat/session-not-found')
+    expect(kernel.calls).toHaveLength(0)
+  })
+})
+
+describe('deadline', () => {
+  it('settles a hung call with call/timeout instead of hanging forever', async () => {
+    const { authorizer } = authorizerOf()
+    const kernel = recordingCaller({
+      // 永不结算：模拟内核里卡住的命令。
+      invoke: async (_namespace, _method, _args, signal) => await new Promise((_resolve, reject) => {
+        signal?.addEventListener('abort', () => reject(new Error('aborted')), { once: true })
+      }),
+    })
+    const service = createKernelCallService({
+      caller: kernel.caller,
+      catalog: catalogOf([descriptor({ method: 'state' })]),
+      authorizer,
+      guard: ALLOW_ALL_SESSIONS,
+      timeoutMs: 20,
+    })
+    const result = await service.invoke(devicePrincipal(), {
+      callId: 'slow', endpoint: 'session/state', args: { request: { sessionId: 'session-1' } },
+    })
+    expect(errorOf(result).code).toBe('call/timeout')
+    expect(service.pending()).toBe(0)
+  })
+})
+
+describe('idempotency hardening', () => {
+  const STATE_CATALOG = catalogOf([descriptor({ method: 'state' }), descriptor({ method: 'search' })])
+
+  it('does not replay one endpoint’s result for a different endpoint with the same callId', async () => {
+    const { authorizer } = authorizerOf()
+    const kernel = recordingCaller({
+      invoke: async (_namespace, method) => (method === 'state' ? 'state-value' : 'search-value'),
+    })
+    const idempotency = new MemoryIdempotency()
+    const service = createKernelCallService({
+      caller: kernel.caller,
+      catalog: STATE_CATALOG,
+      authorizer,
+      guard: ALLOW_ALL_SESSIONS,
+      idempotency,
+    })
+    const first = await service.invoke(devicePrincipal(), {
+      callId: 'same', endpoint: 'session/state', args: { request: { sessionId: 'session-1' } },
+    })
+    const second = await service.invoke(devicePrincipal(), SEARCH)
+    expect(valueOf(first)).toBe('state-value')
+    // 证明第二笔真的执行了：拿到的不是第一笔的回放。
+    expect(valueOf(second)).toBe('search-value')
+    expect(kernel.calls).toHaveLength(2)
+  })
+
+  it('does not cache failures — a transient error must be retryable', async () => {
+    const { authorizer } = authorizerOf()
+    let attempt = 0
+    const kernel = recordingCaller({
+      invoke: async () => {
+        attempt += 1
+        if (attempt === 1) throw Object.assign(new Error('boom'), { code: 'gateway/service-unavailable' })
+        return 'second-time-lucky'
+      },
+    })
+    const idempotency = new MemoryIdempotency()
+    const service = createKernelCallService({
+      caller: kernel.caller,
+      catalog: STATE_CATALOG,
+      authorizer,
+      guard: ALLOW_ALL_SESSIONS,
+      idempotency,
+    })
+    const request = { callId: 'retry', endpoint: 'session/state', args: { request: { sessionId: 'session-1' } } } as const
+    expect(errorOf(await service.invoke(devicePrincipal(), request)).code).toBe('gateway/service-unavailable')
+    expect(idempotency.saves).toHaveLength(0)
+    expect(valueOf(await service.invoke(devicePrincipal(), request))).toBe('second-time-lucky')
+  })
+
+  it('ignores a cache entry older than the 24h window', async () => {
+    const { authorizer } = authorizerOf()
+    const kernel = recordingCaller({ invoke: async () => 'fresh' })
+    const stale: KernelIdempotencyStore = {
+      read: () => ({ status: 200, body: { callId: 'old', ok: true, value: 'stale' }, createdAt: Date.now() - 25 * 60 * 60 * 1000 }),
+      save: () => undefined,
+    }
+    const service = createKernelCallService({
+      caller: kernel.caller,
+      catalog: STATE_CATALOG,
+      authorizer,
+      guard: ALLOW_ALL_SESSIONS,
+      idempotency: stale,
+    })
+    const value = valueOf(await service.invoke(devicePrincipal(), {
+      callId: 'old', endpoint: 'session/state', args: { request: { sessionId: 'session-1' } },
+    }))
+    expect(value).toBe('fresh')
   })
 })

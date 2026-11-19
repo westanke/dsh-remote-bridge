@@ -50,6 +50,36 @@ export interface KernelAllowlistEntry {
   readonly scope: DeviceScope
   /** 一句话说明，仅用于能力发现，不参与鉴权。 */
   readonly summary: string
+  /**
+   * 权限的**第二维**：这个端点会碰到哪些会话。
+   *
+   * 只有 scope 是不够的：设备 `chat.read` 只说明「能读聊天」，能读**哪些**会话由
+   * `chat.isSessionAuthorized(principal, sessionId)` 决定（根授权 + 会话归属）。
+   * 内核网关那侧看不到设备主体（桥用的是 owner peer），所以这一维只能在这里、
+   * 在桥里判 —— 漏掉它就是一设备跨根读（见 `docs/project/SECURITY.md` 断言 2）。
+   */
+  readonly sessions?: (args: Readonly<Record<string, unknown>>) => readonly string[]
+  /**
+   * 结果里带 `{ items: [{ sessionId }] }` 的读端点：调用后按可见性过滤。
+   *
+   * 用于内核**自己**会按会话过滤、但过滤依据是 owner 主体的端点（`session/search`）。
+   * 桥拿着 owner 身份问内核，内核看见的是「全部」，所以结果必须再过一遍桥的判据。
+   */
+  readonly filtersSessions?: true
+}
+
+/**
+ * 从 wire 参数里取 `request.sessionId` —— 会话类端点的统一形状。
+ *
+ * 取不到就返回空数组：参数形状本身由 `assertKernelArguments` 与内核同文案地校验，
+ * 这里不重复报错；**空数组 = 这一维无从判断，按放行处理**的是不行的，所以调用方
+ * （`kernel-call.ts`）对「声明了 `sessions` 却取不到 id」的端点按不放行处理。
+ */
+function requestSession(args: Readonly<Record<string, unknown>>): readonly string[] {
+  const request = args.request
+  if (typeof request !== 'object' || request === null) return []
+  const sessionId = (request as { sessionId?: unknown }).sessionId
+  return typeof sessionId === 'string' && sessionId.length > 0 ? [sessionId] : []
 }
 
 /** 白名单里的命名空间**永不**外放，即使加了白名单条目也不生效。 */
@@ -81,17 +111,16 @@ export const KERNEL_DENIED_NAMESPACES: readonly string[] = [
  */
 export const KERNEL_ALLOWLIST: readonly KernelAllowlistEntry[] = [
   // —— 会话只读 ——
-  { endpoint: 'session/search', scope: 'chat.read', summary: 'Search visible Sessions by text.' },
-  { endpoint: 'session/state', scope: 'chat.read', summary: 'Read one Session state snapshot without resuming it.' },
+  { endpoint: 'session/search', scope: 'chat.read', summary: 'Search Session content within the roots this device may read.', filtersSessions: true },
+  { endpoint: 'session/state', scope: 'chat.read', summary: 'Read one Session state snapshot without resuming it.', sessions: requestSession },
   { endpoint: 'session/canOpenWorkspacePath', scope: 'chat.read', summary: 'Check whether a workspace path may be opened.' },
-  { endpoint: 'session/workspacePathApplications', scope: 'chat.read', summary: 'List pending workspace path requests.' },
   // —— 消息反馈（写入，但只影响标记）——
-  { endpoint: 'messageFeedback/list', scope: 'chat.read', summary: 'List feedback marks for a message.' },
-  { endpoint: 'messageFeedback/put', scope: 'chat.write', summary: 'Set a feedback mark on a message.' },
-  { endpoint: 'messageFeedback/delete', scope: 'chat.write', summary: 'Remove a feedback mark from a message.' },
+  { endpoint: 'messageFeedback/list', scope: 'chat.read', summary: 'List feedback marks for a message.', sessions: requestSession },
+  { endpoint: 'messageFeedback/put', scope: 'chat.write', summary: 'Set a feedback mark on a message.', sessions: requestSession },
+  { endpoint: 'messageFeedback/delete', scope: 'chat.write', summary: 'Remove a feedback mark from a message.', sessions: requestSession },
   // —— 会话收藏（可逆）——
-  { endpoint: 'workspace/pinSession', scope: 'chat.write', summary: 'Pin a Session in the workspace list.' },
-  { endpoint: 'workspace/unpinSession', scope: 'chat.write', summary: 'Unpin a Session in the workspace list.' },
+  { endpoint: 'workspace/pinSession', scope: 'chat.write', summary: 'Pin a Session in the workspace list.', sessions: requestSession },
+  { endpoint: 'workspace/unpinSession', scope: 'chat.write', summary: 'Unpin a Session in the workspace list.', sessions: requestSession },
   { endpoint: 'session/initializeDefaultModel', scope: 'chat.write', summary: 'Persist the first available model for a Session.' },
   // —— 插件市场与产品分析（只读）——
   { endpoint: 'productAnalytics/enabled', scope: 'settings.read', summary: 'Report whether product analytics is enabled.' },
@@ -133,6 +162,8 @@ export interface KernelFrameCall {
   readonly endpoint: string
   /** 把载荷翻译成描述符 wire 键；省略表示无参端点。 */
   readonly args?: (payload: Readonly<Record<string, unknown>>) => Record<string, unknown>
+  /** 载荷里必须出现的字符串键；缺一个就回 `BAD_REQUEST`，不进内核。 */
+  readonly requiredPayload?: readonly string[]
 }
 
 /** 只挑出**存在**的键：避免把 `undefined` 写成 `"key": null` 被内核 strict codec 拒。 */
@@ -148,10 +179,29 @@ function pick(payload: Readonly<Record<string, unknown>>, keys: readonly string[
 export const KERNEL_FRAME_CALLS: readonly KernelFrameCall[] = [
   { frame: 'plugin-catalog', endpoint: 'pluginManager/listBundles' },
   { frame: 'plugin-inspect', endpoint: 'pluginManager/inspect', args: payload => pick(payload, ['spec', 'options']) },
-  { frame: 'plugin-install', endpoint: 'pluginManager/installBundle', args: payload => pick(payload, ['spec', 'options']) },
+  // 手机可以用 `installId` **指定**这次安装的 id（内核的 `options.requestId`）；
+  // 不给就由内核自己铸一个。没有这条通路，`plugin-install-status` 的 `installId`
+  // 就没有来源 —— 客户端拿到一次成功回执，却永远查不到这次安装。
+  {
+    frame: 'plugin-install',
+    endpoint: 'pluginManager/installBundle',
+    requiredPayload: ['spec'],
+    args: payload => {
+      const options = typeof payload.options === 'object' && payload.options !== null
+        ? { ...(payload.options as Record<string, unknown>) }
+        : {}
+      if (typeof payload.installId === 'string') options.requestId = payload.installId
+      return Object.keys(options).length === 0 ? { spec: payload.spec } : { spec: payload.spec, options }
+    },
+  },
   // 手机说的 `installId` 就是内核的 `requestId`；帧自己的 `requestId` 是回显用的，
   // 两者同名会互相混淆，所以在载荷里改叫 `installId`。
-  { frame: 'plugin-install-status', endpoint: 'pluginManager/waitForInstall', args: payload => ({ requestId: payload.installId }) },
+  {
+    frame: 'plugin-install-status',
+    endpoint: 'pluginManager/waitForInstall',
+    requiredPayload: ['installId'],
+    args: payload => ({ requestId: payload.installId }),
+  },
   { frame: 'plugin-detail', endpoint: 'pluginManager/readBundleDetail', args: payload => pick(payload, ['name', 'language', 'options']) },
   { frame: 'plugin-remove', endpoint: 'pluginManager/removeBundle', args: payload => pick(payload, ['name']) },
   { frame: 'plugin-update', endpoint: 'pluginManager/updateBundle', args: payload => pick(payload, ['name', 'version', 'options']) },

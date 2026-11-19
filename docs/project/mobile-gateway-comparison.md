@@ -239,3 +239,68 @@ REST 兜底」，不自带识别模型或调度器。
 ---
 
 > 文档来源声明：对比数据来自 `dsh-plugin-mobile-gateway` v0.11.1 `package/PROTOCOL.md`（1467 行）与 `package/lib/index.mjs`，下载自 npm registry tarball `https://registry.npmjs.org/dsh-plugin-mobile-gateway/-/dsh-plugin-mobile-gateway-0.11.1.tgz`（sha512 je77m6JXDNFz371PvhwtHpWNVnJk5OnSyH5+ke8bZM5zukE1wE4ve1LW8f9oxZQX7kToy1LNwfcQQO3x+HpEhg==），解压至 `/media/wangke/OFFICE/workspace/dsh-study/mobile-gateway-latest/package/`。GitHub 仓库无 release/tag，页面抓取超时，故以 npm 发布版为准。
+
+---
+
+## 8. 2026-11-19 复审（竞品 v0.12.2，issue #26 完工后）
+
+> 触发：issue #26 九阶段落地后，对代码做一次全量检修，并把竞品从 v0.11.1 重新对到
+> **v0.12.2**（`npm pack dsh-plugin-mobile-gateway@0.12.2`，解包至 `~/.dsh/mgw/package`，
+> `PROTOCOL.md` 1 677 行 / `lib/*.mjs` 41 个 / `docs/` 40+）。帧清单用脚本从
+> `lib/*.mjs` 的 `msg.type === '…'` 与 `kind: '…'` 两处提取（本仓 HEAD 侧用
+> `src/host/ws-protocol.ts` 的联合类型）：**竞品客户端 85 / 服务端 91，我方 83 / 84**。
+
+### 8.1 上一版结论里被推翻的三条
+
+| 上一版的结论（§7 待办 2） | 复审实测 | 结论 |
+|---|---|---|
+| 「search：内核无搜索通道」 | 内核有 `session/search`（`SessionSearchRequest={query}`，结果 `{items:[{sessionId,snippet}],hasMore}`，limit 20 / snippet ≤240 code point），且**已在本仓白名单**（`kernel-allowlist.ts`） | 结论**过时**：能力在，缺的只是 `search` 帧（阶段 8 删声明时按「没人实现」处理）。要补是一条纯桥侧改动 |
+| 「queue-update：内核无按 itemId 编辑 RPC」 | 内核有 `session/updateQueue`（`{sessionId,itemId,action:{kind:'edit'\|'remove'\|'steer'}}`），队列快照在 `session/control` 的 `projections.values.inbox` | 结论**过时**：能力在，缺的是 `session-queues`/`session-queue`/`queue-update` 三帧与 `session/control` 调用 |
+| 「defaults/set-default：属内核无通道」 | 读侧本仓 REST 已有默认模型；写侧被 `settingsWriteNamespaces` 的**策略**默认关（不是能力真空），内核 `agentPresets/read` + 默认模型设置都在 | 说法**含混**：应表述为「策略未开」，不是「内核没有」 |
+| 「directories 不做」 | 竞品走 `fsp.readdir` 列**任意宿主绝对路径** | **维持不做**，但性质是**取舍**（与「仅授权根可见」冲突），不是能力缺失 —— 本文档从此按取舍记录 |
+
+### 8.2 真正的功能缺口（按价值/成本排序）
+
+| # | 缺口 | 竞品实现 | 成本 | 建议 |
+|---|---|---|---|---|
+| 1 | `search` 帧 | `api.sessions.search` → 内核 `session/search` | 6–10 h | **做**：白名单已有端点，只缺帧 + 服务端同名应答 + 文档 |
+| 2 | 队列读/写 | `session-queues`/`session-queue`/`queue-item-updated`/`queue-update` + `session/control` | 12–30 h | **做**：`session/control` 与 `session/updateQueue` 都在内核，属「用户可感知」缺失 |
+| 3 | 子会话继续对话/打断 | `message`/`history`/`subscribe` 带 `parentSessionId`+`subagentMode`；`subagents/interruptByUser` | 15–25 h | 做（当前 REST 405，`src/host/routes/chat.ts:282`） |
+| 4 | `defaults` / `set-default` | 读默认模型、写默认模型 | 4–12 h | 读侧先做；写侧取决于是否放开 `settingsWriteNamespaces` |
+| 5 | workspace-changes summary/diff | 依赖宿主 `/api/changes.*` | 20–30 h | 缓（要新宿主面，不是纯桥） |
+| 6 | 插件 4 条（`cancelInstall` / 版本豁免 2 条 / `setPluginEnabled`） | 同名内核端点 | 8–12 h | 做（成本最低，纯白名单 + 帧表扩展） |
+| 7 | `agent-team-set-enabled` | `agentTeams/setEnabled` | 6–8 h | 可做 |
+| 8 | turn-outline / tool-result-images / message-quotes | 各有专门投影/落库 | 6–16 h 各 | 排后 |
+| 9 | **device-tools（手机系统连接器）** | 29 个 Agent 工具 / 8 帧（register·result·cancelled / status·registered·permissions·invoke·cancel）/ 能力位 `device-tools-v1` | **80–150 h** | 独立里程碑：这不是「补一帧」，是新增一条「手机作为工具执行端」的信任链 |
+| 10 | WebRTC 升级 / split-channels / network-diagnostics | 竞品 App 侧本身未接入 | — | 暂缓 |
+| 11 | 多网关身份 / systemd 常驻 | — | 12–20 h / 8–12 h | 排后 |
+
+### 8.3 能力位对照（竞品 22 个 `-v1`）
+
+`agent-team-mode-v1`、`agent-team-v1`、`assistant-stream-v1`、`device-tools-v1`、
+`dsh-mobile-control-v1`、`dsh-mobile-conversation-v1`、`dsh-mobile-v1`、`file-references-v1`、
+`file-upload-v1`、`message-quotes-v1`、`negotiate-v1`、`network-diagnostics-v1`、
+`plugin-management-v1`、`plugin-updates-v1`、`question-approval-v2`、`schedule-management-v2`、
+`speech-input-v1`、`subagent-conversations-v1`、`tool-result-images-v1`、`turn-outline-v1`、
+`webrtc-upgrade-v1`、`workspace-changes-v1`（另有 `queue-control`、`history-format-version`、
+`projection-baseline` 等非 `-v1` 位）。本仓 39 个位见 `src/host/capabilities.ts`；
+按位对齐后**缺位集中在 §8.2 的 1/2/3/9/10**，其余为命名差异而非能力差异。
+
+### 8.4 架构差异（不是缺陷，别照抄）
+
+- 竞品是**单条 WS 承载全部业务**；本仓是 **47 条 REST + WS 增量面**。竞品的 `negotiate`/`transport-select`
+  三帧是为「同一连接可切 REST/WS/双通道」设计的，本仓不需要这条切换面。
+- 竞品的鉴权模型是「网关 token 即设备」，本仓是「配对码 → 设备 token + scope + 授权根」三层；
+  因此竞品能做的事（如 `directories` 列任意路径）在本仓**结构上不允许**。
+- 本仓的 `kernel-call` 通用面是竞品没有的：竞品每加一个功能就要加一帧，本仓只要端点进白名单。
+
+### 8.5 复审后的检修结论
+
+三份只读审计（内核调用面 / 换源回归 / 竞品对照）落地了 11 处缺陷修复（白名单第二维、
+幂等三修、`installId` 来源、设备撤销即时生效、降级判据补 `kernel/endpoint-unknown`、
+空目录回退、取消/超时语义），详见
+[CHANGELOG-DEV.md](CHANGELOG-DEV.md) 的「issue #26 完工检修」段与
+[SECURITY.md](SECURITY.md) 的 2026-11-19 检修补充。
+
+**下一批候选**（按 §8.2 优先级）：`search` 帧 → 队列读写 → 子会话写 → 插件 4 条 →
+`agent-team-set-enabled`；device-tools 单独立项，不在本仓 issue #26 的范围内。

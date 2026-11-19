@@ -391,7 +391,7 @@ export class WorkspaceDatabase {
     return this.auditTable.list(limit)
   }
 
-  readIdempotent(deviceId: string, key: string): { status: number; body: unknown } | undefined {
+  readIdempotent(deviceId: string, key: string): { status: number; body: unknown; createdAt: number } | undefined {
     return this.idempotency.read(deviceId, key)
   }
 

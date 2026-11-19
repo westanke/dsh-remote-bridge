@@ -561,6 +561,40 @@ base64 膨胀 4/3，所以单条路径的原始文件实际上限约 **17.2 MiB*
 `docs:check` 四段全过（12 文档 / 39 tasks / 9 ADRs / STRUCTURE 84 锚点 / INTERFACES 87 锚点）；
 双产物 build 成功（host `lib/index.js` 628.64 kB、client `lib/client.cjs` 772.91 kB）。
 
+## 未发布 · issue #26 完工检修：白名单第二维、幂等/超时/取消三修、设备撤销即时生效（2026-11-19）
+
+> 触发：用户要求「把代码再检查一遍，对照 `dsh-plugin-mobile-gateway` 的功能看看，自己看看
+> 有遗漏或者 bug 方面检修一次」。三份只读审计（内核调用面 / 换源回归 / 竞品对照）落地成 11 处
+> 修复，全部带回归用例。**线上可见的是安全与可靠性，不是新功能。**
+
+- **S1（严重）kernel-call 缺授权根维度**：白名单原先只有一维 `scope`，而桥用的是 owner peer
+  ⇒ 内核自己的 `remoteAccess.allows()` 对 owner 恒真，于是默认配对设备（`chat.read`）能跨授权根
+  读 `session/state`、`session/search` 与会话级 `messageFeedback/*`。修法：白名单条目加
+  `sessions`/`filtersSessions` 第二维，执行侧注入 `KernelCallGuard.sessionVisible`
+  （= `chat.isSessionAuthorized`）：不可见一律 `chat/session-not-found` 且**不碰内核**，
+  `session/search` 结果逐条过滤（`hasMore` 不变）。同批把 `session/workspacePathApplications`
+  移出白名单 —— `chat.read` 即可拿任意宿主绝对路径做存在性探测。
+- **M1 幂等串台**：键加 endpoint（`kernel-call:<principal>:<endpoint>:<callId>`）、只缓存成功
+  （瞬时失败可重试）、24 h 窗口改由读取侧判（清理器此前在生产上没有调用方）。
+- **M3 `plugin-install-status` 的 `installId` 无来源**：帧层加 `requiredPayload`，`plugin-install`
+  把 `installId` 落到 `options.requestId`，缺参回 `BAD_REQUEST` 而不是把 `undefined` 送进内核。
+- **M4 设备撤销/降权对已建连接不即时生效**：`handleMessage` 每帧复核 principal（`refreshDevicePrincipal`），
+  撤销即 `close(4001,'Device revoked')`；kernel-call 是后果最重的面（`settings.write` 可装插件）。
+- **R1/R2 降级失效（换源回归）**：`permissionPresets.catalog` 与 `userQuestions.answer` 的
+  「服务缺席」判据只认 `gateway/service-unavailable`，端点不在目录时抛的是
+  `kernel/endpoint-unknown` ⇒ 500。修法：`isKernelServiceUnavailable` 两个码都认，
+  `questionAnswerOutcome` 把后者归到 `'unavailable'`。
+- **R3 空目录不回退**：apply 期目录为空时不再当作「有网关但什么都没有」，而是回退进程内传输 ——
+  否则登记表未就绪会让所有换源入口集体 `kernel/endpoint-unknown`。
+- **L1/L2/L4 语义修正**：`cancel()` 只对声明了 `cancellation` 的端点生效（其余回 `call/not-found`，
+  不再假装已取消）；单次调用 30 s 硬上限（`call/timeout`）；`ws-kernel-frames.ts` 的 callId
+  注释改为与实现一致（requestId 只是可读前缀，不承担唯一性）。
+- **验收**：`npx tsc --noEmit` exit 0；`npx vitest run` **92 文件 / 1 000 用例全绿**；
+  `pnpm docs:check` 三段全绿（STRUCTURE 134 / INTERFACES 145 锚点）；新增坑位两条
+  （`端点缺席 ≠ 服务缺席`、`幂等表：键不带端点、失败也落表、窗口只靠清理器`）。
+- ⚠️ **真机未跑**：本批改的是授权/幂等/取消语义，单人无第二台设备与内核 CLI 会话，
+  6 项真机清单**仍未执行**；「已修」只表示单测与类型门禁通过。
+
 ## 未发布 · 内核端点归一（B2 全量换源）阶段 9：`chat-adapter.ts` 按端点族拆分（issue #26 / MOB-013，2026-11-19）
 
 > 承接旧 issue #9。`src/host/chat-adapter.ts` 2 110 行，是本仓最后一笔「用户可见行为全在一个

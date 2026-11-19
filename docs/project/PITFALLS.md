@@ -1270,3 +1270,68 @@ list 方法逐条过它）。桥今天唯一 peer 是 owner（`src/host/ws-host-
 回归锚：`tests/kernel-endpoints.spec.ts:249` 固定 `workspace/follow` 的
 `{ wires: [], stream: true, cancellation: true }`；`tests/kernel-invoke.spec.ts:156-161`
 流式与多余参数拒收。
+
+---
+
+### 端点缺席 ≠ 服务缺席
+
+降级判据只认一个错误码，就会把「能力不存在」升级成整块 500。
+
+**症状**：某个可选能力（权限档位、提问回答）在裁剪过的 profile / 老内核上整块报系统错误，
+而不是回落到换源前的降级行为。单测全绿 —— 因为进程内传输把「服务缺席」刻意映射成
+`gateway/service-unavailable`，而真实网关给的是另一个码。
+
+**根因**：换源把「服务缺席」的判据从 `optionalService() === null` 换成了
+`error.code === 'gateway/service-unavailable'`，但**端点不在目录里**时抛的是
+`KernelEndpointUnknownError`（`code = 'kernel/endpoint-unknown'`，
+`src/host/bridge/kernel-invoke.ts:48-55`）。两种情形对降级逻辑是同义的，只认前者就会
+rethrow → 500（issue #26 检修审计 R1/R2）。
+
+**现在怎么办（铁律）**：
+
+1. 判断「这个可选能力现在有没有」一律用 `isKernelServiceUnavailable(error)`
+   （`kernel-invoke.ts:257-268`，两个码都认），不要自己比错误码字符串。
+2. 同样地，`questionAnswerOutcome`（`kernel-deltas.ts:242-263`）把
+   `kernel/endpoint-unknown` 归到 `'unavailable'` —— 落到桥的挂起表，等价于换源前的
+   `service === null`。
+3. 新增任何「服务缺席 ⇒ 降级」的分支时，必须补一条用例：**目录里没有这个端点** +
+   `caller.invoke` 零调用 + 断言降级结果。只测「服务在」等于没测这条路径。
+4. 反向也要守住：`SCOPE_REQUIRED`/`BAD_ANSWER` 这类真错误**不许**被吞成降级，
+   否则越权会伪装成「能力不存在」。
+
+**铁律**：`kernel/endpoint-unknown` 与 `gateway/service-unavailable` 在降级语义上必须
+等价；只认一个码就是把「能力不存在」升级成「整块功能 500」。
+
+回归锚：`tests/dsh-0.2-bridge.spec.ts` › falls back to the kernel-default presets when the
+gateway lacks the endpoint；`tests/kernel-deltas.spec.ts` › treats a missing endpoint as an
+unavailable service for question answers。
+
+### 幂等表：键不带端点、失败也落表、窗口只靠清理器
+
+**症状**：同一个 `callId` 换个端点重试，客户端收到 `ok:true` 但写操作**没执行**（回放的是
+上一条应答）；或者一次瞬时失败之后，带同一 `callId` 重试永远拿到失败，直到人工清库。
+
+**根因**（`src/host/bridge/kernel-call.ts` 旧实现）：键是
+`kernel-call:${principalId}:${callId}`（不含 endpoint）；`:181` 除 `call/cancelled` 外
+**所有失败**都写进表（status 500）；`IdempotencyTable.read` 的 SQL 不带 `created_at`
+条件，而唯一 pruner `createIdempotencyPruner`（`retention.ts:146-163`）在生产上**没有定时
+调用方** —— 于是「24 h 窗口」只是一句注释。
+
+**现在怎么办（铁律）**：
+
+1. 键必须含端点：`kernel-call:${principalId}:${endpoint}:${callId}`。缺了它，「同一 callId
+   幂等」这条承诺就会跨端点串台。
+2. **只缓存成功**。失败多半是瞬时的（服务未起、取消、超时），缓存失败等于把一次抖动
+   放大成 24 小时不可恢复。
+3. 窗口由**读取侧**判（`KernelIdempotencyStore.read` 返回 `createdAt`，
+   `kernel-call.ts` 比 `IDEMPOTENCY_TTL_MS`），不要假设清理器跑过。
+4. 取消/超时不进幂等：重试应当真的重试。
+5. 幂等表只解决「同一连接/同一 callId」，不解决并发互斥（服务按连接创建）；跨连接的
+   同一 callId 仍可能各执行一次 —— 要强互斥得把在飞表提到进程级。
+
+**铁律**：幂等三件套（键含语义、只存成功、读侧判窗口）缺一条，都会变成「静默丢写」
+或「永久失败」。
+
+回归锚：`tests/kernel-call.spec.ts` › does not replay one endpoint's result for a different
+endpoint with the same callId / does not cache failures — a transient error must be retryable /
+ignores a cache entry older than the 24h window。

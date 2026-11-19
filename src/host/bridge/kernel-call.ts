@@ -79,8 +79,21 @@ export interface KernelEndpointSummary {
 
 /** `idempotency` 表的最小面（`db/idempotency.ts` 的 `IdempotencyTable` 满足它）。 */
 export interface KernelIdempotencyStore {
-  read(deviceId: string, key: string): { status: number; body: unknown } | undefined
+  read(deviceId: string, key: string): { status: number; body: unknown; createdAt: number } | undefined
   save(deviceId: string, key: string, status: number, body: unknown): void
+}
+
+/** 幂等回放窗口：24 小时（与 REST 面一致）。**由读取侧判**，不依赖后台清理。 */
+const IDEMPOTENCY_TTL_MS = 24 * 60 * 60 * 1000
+
+/**
+ * 权限的**第二维**：会话可见性。
+ *
+ * 内核网关那侧只看得见 owner 主体（桥用 owner peer），所以「这台设备能不能碰这个
+ * 会话」必须由桥来答 —— 判据与 REST/事件面同源（`chat.isSessionAuthorized`）。
+ */
+export interface KernelCallGuard {
+  sessionVisible(principal: Principal, sessionId: string): Promise<boolean>
 }
 
 export interface KernelCallServiceOptions {
@@ -92,8 +105,19 @@ export interface KernelCallServiceOptions {
   readonly authorizer: KernelScopeAuthorizer
   /** 可选：幂等回放（有数据库时传 `IdempotencyTable`）。 */
   readonly idempotency?: KernelIdempotencyStore
+  /**
+   * 会话可见性判据（第二维权限）。**必填**：白名单里有会话类端点，缺了它那些端点
+   * 就无法判定「这台设备能不能碰这个会话」，而内核那侧恒放行（owner 主体）。
+   */
+  readonly guard: KernelCallGuard
   /** 流式端点最多收集多少帧（默认 64）。 */
   readonly streamFrameLimit?: number
+  /**
+   * 单次调用的上限（默认 30 s）。REST 面有同类的 `RPC_TIMEOUT_MS`，这里不能没有：
+   * 内核某条命令卡住时，客户端会拿到一帧永不返回的 `kernel-call` —— 既不能重试
+   * （同 callId 会被在飞行表挡住），又不能取消（不知道卡在哪一步）。
+   */
+  readonly timeoutMs?: number
 }
 
 /** 通用调用面的服务实例（**按连接**创建）。 */
@@ -110,6 +134,9 @@ export interface KernelCallService {
 }
 
 const DEFAULT_STREAM_FRAME_LIMIT = 64
+
+/** 默认单次调用上限：比 REST 的 10 s 宽，因为 `pluginManager/installBundle` 会真下载。 */
+const DEFAULT_TIMEOUT_MS = 30_000
 
 /** 同一 `callId` 已有一笔在飞行。 */
 class KernelCallInFlightError extends Error {
@@ -129,12 +156,34 @@ class KernelCallCancelledError extends Error {
   }
 }
 
-export function createKernelCallService(options: KernelCallServiceOptions): KernelCallService {
-  const { caller, catalog, authorizer, idempotency } = options
-  const streamFrameLimit = options.streamFrameLimit ?? DEFAULT_STREAM_FRAME_LIMIT
-  const inflight = new Map<string, AbortController>()
+/** 超过 `timeoutMs` 仍未结算。客户端应当把它当成「结果未知」而不是「没执行」。 */
+class KernelCallTimeoutError extends Error {
+  readonly code = 'call/timeout'
+  constructor() {
+    super('The kernel call did not settle before the deadline.')
+    this.name = 'KernelCallTimeoutError'
+  }
+}
 
-  const idempotencyKey = (principalId: string, callId: string): string => `kernel-call:${principalId}:${callId}`
+export function createKernelCallService(options: KernelCallServiceOptions): KernelCallService {
+  const { caller, catalog, authorizer, idempotency, guard } = options
+  const streamFrameLimit = options.streamFrameLimit ?? DEFAULT_STREAM_FRAME_LIMIT
+  const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS
+  // 在飞表里连「这个端点支不支持取消」一起记：对没声明 `cancellation` 的端点，
+  // 说一句「已取消」而内核照跑，比明确说「停不了」更危险（客户端会以为状态对上了）。
+  const inflight = new Map<string, { controller: AbortController; cancellable: boolean }>()
+
+  // 键里必须带 endpoint：不带的话，同一个 callId 先调 A 成功后调 B 会回放 A 的结果 ——
+  // 客户端以为 B 成功了，而 B 压根没执行（写操作静默丢失）。
+  const idempotencyKey = (principalId: string, endpoint: string, callId: string): string =>
+    `kernel-call:${principalId}:${endpoint}:${callId}`
+
+  /** 会话不在本设备授权范围内时的统一应答（与 REST 的 SESSION_NOT_FOUND 同文案，不区分越权与否）。 */
+  const sessionNotFound = (callId: string): KernelCallResult => ({
+    callId,
+    ok: false,
+    error: { code: 'chat/session-not-found', message: 'Session not found or not authorized for this device.' },
+  })
 
   async function invoke(
     principal: Principal,
@@ -151,38 +200,116 @@ export function createKernelCallService(options: KernelCallServiceOptions): Kern
       return { callId, ok: false, error: kernelRpcError(error) }
     }
     // 2. 幂等回放：同一个 callId 的重试拿上次的答案，不再执行一次。
-    const cacheKey = idempotencyKey(principal.id, callId)
+    const cacheKey = idempotencyKey(principal.id, endpoint, callId)
     const replay = idempotency?.read(principal.id, cacheKey)
-    if (replay !== undefined) return replay.body as KernelCallResult
+    // 过期的缓存不能回放：`retention` 的清理器在生产上并没有被定时调用，
+    // 所以「24 小时」必须由读取侧自己判，否则一条两年前的应答会永远有效。
+    if (replay !== undefined && Date.now() - replay.createdAt <= IDEMPOTENCY_TTL_MS) {
+      return replay.body as KernelCallResult
+    }
     // 3. 同一 callId 同时来两次：拒绝第二笔（客户端 bug 或恶意重放）。
     if (inflight.has(callId)) {
       return { callId, ok: false, error: kernelRpcError(new KernelCallInFlightError()) }
     }
     const controller = new AbortController()
-    inflight.set(callId, controller)
-    const signal = outerSignal === undefined ? controller.signal : AbortSignal.any([outerSignal, controller.signal])
+    const timeout = AbortSignal.timeout(timeoutMs)
+    inflight.set(callId, { controller, cancellable: false })
+    const signal = [controller.signal, timeout, ...(outerSignal === undefined ? [] : [outerSignal])].length === 1
+      ? controller.signal
+      : AbortSignal.any([controller.signal, timeout, ...(outerSignal === undefined ? [] : [outerSignal])])
     try {
       // 4. 目录查找：白名单有、内核没有 ⇒ endpoint-unknown（版本差异）。
       const descriptor = requireKernelEndpoint(catalog.byName, endpoint)
+      const inFlight = inflight.get(callId)
+      if (inFlight !== undefined) inFlight.cancellable = descriptor.cancellation !== undefined
       // 5. 参数在本地先验，一个字节都不发给内核。
       assertKernelArguments(descriptor, args)
-      const value = descriptor.stream === true
-        ? await collectStream(descriptor.namespace, descriptor.method, args, descriptor.cancellation ? signal : undefined)
-        : await invokeUnary(descriptor.namespace, descriptor.method, args, descriptor.cancellation ? signal : undefined)
-      const result: KernelCallResult = { callId, ok: true, value }
+      // 5b. 第二维权限：这个端点碰到的会话，都在本设备的授权根内吗？
+      //     声明了 `sessions` 却拿不到 id、或没有 guard，一律按不可见处理。
+      if (entry.sessions !== undefined) {
+        const ids = entry.sessions(args)
+        if (ids.length === 0) return sessionNotFound(callId)
+        for (const sessionId of ids) {
+          if (!(await guard.sessionVisible(principal, sessionId))) return sessionNotFound(callId)
+        }
+      }
+      const operation = descriptor.stream === true
+        ? collectStream(descriptor.namespace, descriptor.method, args, descriptor.cancellation ? signal : undefined)
+        : invokeUnary(descriptor.namespace, descriptor.method, args, descriptor.cancellation ? signal : undefined)
+      // 截止时间必须在这里兜：没声明 `cancellation` 的端点根本不看 signal，
+      // 只靠 AbortSignal 会让「内核卡住」变成一帧永不返回的应答。
+      const settled = await settleWithin(operation, timeoutMs)
+      if (settled.timedOut) {
+        controller.abort()
+        throw new KernelCallTimeoutError()
+      }
+      const value = settled.value
+      const visible = entry.filtersSessions === true ? await filterSessionHits(principal, value) : value
+      const result: KernelCallResult = { callId, ok: true, value: visible }
+      // 只缓存成功：失败多是瞬时的（服务还没起来、被取消），缓存下来等于把一次抖动
+      // 变成 24 小时不可恢复。
       idempotency?.save(principal.id, cacheKey, 200, result)
       return result
     } catch (error) {
-      const normalised = signal.aborted && !(error instanceof KernelCallDeniedError)
-        ? kernelRpcError(new KernelCallCancelledError())
+      if (error instanceof KernelCallTimeoutError) {
+        return { callId, ok: false, error: kernelRpcError(error) }
+      }
+      const aborted = signal.aborted && !(error instanceof KernelCallDeniedError)
+      const normalised = aborted
+        ? kernelRpcError(timeout.aborted && !controller.signal.aborted
+          ? new KernelCallTimeoutError()
+          : new KernelCallCancelledError())
         : kernelRpcError(error)
-      const result: KernelCallResult = { callId, ok: false, error: normalised }
-      // 取消/超时不进幂等：重试应当真的重试，而不是回放一次被取消的结果。
-      if (normalised.code !== 'call/cancelled') idempotency?.save(principal.id, cacheKey, 500, result)
-      return result
+      // 失败不进幂等：取消/超时/服务瞬时不可用都该重试，而不是回放一次失败。
+      return { callId, ok: false, error: normalised }
     } finally {
       inflight.delete(callId)
     }
+  }
+
+  /**
+   * 给一个 Promise 加硬截止时间。
+   *
+   * 到点了就返回 `{ timedOut: true }`，**不管**原 Promise 后续如何（它可能永远不结算，
+   * 也可能在 10 分钟后才 reject）—— 后者必须被吞掉，否则一个迟到 rejection 会变成
+   * 进程级 unhandledRejection（DSH 宿主装了 fail-loud，会直接 exit）。
+   */
+  async function settleWithin<T>(promise: Promise<T>, ms: number): Promise<{ timedOut: true } | { timedOut: false; value: T }> {
+    let timer: NodeJS.Timeout | undefined
+    const deadline = new Promise<{ timedOut: true }>(resolve => {
+      timer = setTimeout(() => resolve({ timedOut: true }), ms)
+      timer.unref?.()
+    })
+    try {
+      const outcome = await Promise.race([promise.then(value => ({ timedOut: false as const, value })), deadline])
+      return outcome
+    } finally {
+      if (timer !== undefined) clearTimeout(timer)
+      // 输的那一侧不能变成未处理拒绝。
+      promise.catch(() => undefined)
+    }
+  }
+
+  /**
+   * 把内核返回的命中按会话可见性过滤。
+   *
+   * 内核会自己按「调用方主体」过滤，但调用方是 owner（桥的 peer）—— 内核眼里所有
+   * 会话都可见。所以这一层过滤不是重复劳动，而是**唯一**真实生效的过滤。
+   * `hasMore` 原样保留：它描述的是「过滤前还有更多」，客户端继续翻页仍能拿到东西。
+   */
+  async function filterSessionHits(principal: Principal, value: unknown): Promise<unknown> {
+    if (typeof value !== 'object' || value === null) return value
+    const items = (value as { items?: unknown }).items
+    if (!Array.isArray(items)) return value
+    const kept: unknown[] = []
+    for (const item of items) {
+      const sessionId = typeof item === 'object' && item !== null
+        ? (item as { sessionId?: unknown }).sessionId
+        : undefined
+      if (typeof sessionId !== 'string') continue
+      if (await guard.sessionVisible(principal, sessionId)) kept.push(item)
+    }
+    return { ...(value as object), items: kept }
   }
 
   async function invokeUnary(
@@ -231,9 +358,12 @@ export function createKernelCallService(options: KernelCallServiceOptions): Kern
   }
 
   function cancel(callId: string): boolean {
-    const controller = inflight.get(callId)
-    if (controller === undefined) return false
-    controller.abort()
+    const entry = inflight.get(callId)
+    if (entry === undefined) return false
+    // 端点没声明 `cancellation`（内核不会停）：不要装作取消了 —— 返回 false，
+    // 客户端收到的就是「没有这一笔可取消」，与真实状态一致。
+    if (!entry.cancellable) return false
+    entry.controller.abort()
     return true
   }
 
@@ -241,7 +371,7 @@ export function createKernelCallService(options: KernelCallServiceOptions): Kern
     invoke,
     cancel,
     dispose: () => {
-      for (const controller of inflight.values()) controller.abort()
+      for (const entry of inflight.values()) entry.controller.abort()
       inflight.clear()
     },
     pending: () => inflight.size,

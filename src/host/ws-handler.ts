@@ -501,6 +501,11 @@ export class MobileGatewayWsHandler {
           read: (deviceId, key) => this.database.readIdempotent(deviceId, key),
           save: (deviceId, key, status, body) => this.database.saveIdempotent(deviceId, key, status, body),
         },
+        // 第二维权限：会话可见性与 REST/事件面同源。没有它，默认配对设备能跨根读
+        // 别人的会话（内核看到的是 owner 主体，它自己的过滤恒真）。
+        guard: {
+          sessionVisible: (principal, sessionId) => this.chat.isSessionAuthorized(principal, sessionId),
+        },
       })
       : undefined
     const kernelCall = new KernelCallHandler(
@@ -629,6 +634,36 @@ export class MobileGatewayWsHandler {
     this.sendFrame(webSocket, { kind: 'hello', data })
   }
 
+  /**
+   * 用数据库里的当前设备记录刷新连接身份；设备已被撤销/删除时返回 false。
+   *
+   * 只对设备主体做：admin 主体不来自设备表，没有「撤销」这一说。
+   * 刷新后 scope/rootIds 立刻按最新值生效 —— 降权不需要重连。
+   */
+  private async refreshDevicePrincipal(state: MobileSocketState): Promise<boolean> {
+    if (state.principal.kind !== 'device') return true
+    const device = this.database.getActiveDevice(state.principal.id)
+    if (device === undefined) return false
+    const current = state.principal
+    const scopes = new Set(device.scopes)
+    const rootIds = new Set(device.rootIds)
+    const unchanged = device.name === current.name
+      && scopes.size === current.scopes.size
+      && [...scopes].every(scope => current.scopes.has(scope))
+      && rootIds.size === current.rootIds.size
+      && [...rootIds].every(rootId => current.rootIds.has(rootId))
+    if (!unchanged) {
+      state.principal = {
+        kind: 'device',
+        id: device.id,
+        name: device.name,
+        scopes,
+        rootIds,
+      }
+    }
+    return true
+  }
+
   private stateOf(webSocket: WebSocket): MobileSocketState {
     const state = this.sockets.get(webSocket)
     if (state === undefined) throw new ApiError(4001, 'NOT_AUTHENTICATED', 'WebSocket not authenticated.')
@@ -654,6 +689,13 @@ export class MobileGatewayWsHandler {
    * `ApiError(404, 'SESSION_NOT_FOUND')`。所以分发必须整体包在 try/catch 里。
    */
   private async handleMessage(webSocket: WebSocket, state: MobileSocketState, text: string): Promise<void> {
+    // 撤销/降权对**已建立**的连接也必须立刻生效（审计 M4）。`/api/v1/events` 一直
+    // 每事件复核一次（`server.ts` 的 refreshPrincipal），WS 这条却没做 —— 而 WS 上
+    // 恰好有最重的面（`settings.write` 能装插件）。代价是一次按主键的读，不是全表扫。
+    if (!(await this.refreshDevicePrincipal(state))) {
+      webSocket.close(4001, 'Device revoked')
+      return
+    }
     const frame = decodeFrame(text)
     if (frame === null || typeof frame !== 'object' || Array.isArray(frame)) {
       this.sendError(webSocket, 'INVALID_FRAME', 'Frame must be a JSON object.')

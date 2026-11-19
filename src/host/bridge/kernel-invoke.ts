@@ -254,8 +254,18 @@ export async function streamKernelEndpoint(
  * 回应是「降级」而不是「报错」（`permissionPresets.catalog` 给的是内核声明的默认
  * 档位），那类调用点用它来分辨「服务没了」与「调用真的错了」。
  */
+/**
+ * 「这个可选服务这次不在」——两种不可区分的情形都算。
+ *
+ * - `gateway/service-unavailable`：服务在登记表里、但取不到实现（profile 没装插件）；
+ * - `kernel/endpoint-unknown`：端点压根不在目录里（老版本内核 / profile 裁剪）。
+ *
+ * 对降级逻辑来说两者是同义：既然拿不到，就该回落到换源前的行为，而不是把一次
+ * 「能力不存在」变成 500。
+ */
 export function isKernelServiceUnavailable(error: unknown): boolean {
-  return (error as { code?: unknown } | null | undefined)?.code === 'gateway/service-unavailable'
+  const code = (error as { code?: unknown } | null | undefined)?.code
+  return code === 'gateway/service-unavailable' || code === 'kernel/endpoint-unknown'
 }
 
 export function kernelRpcError(error: unknown): { code: string; message: string } {

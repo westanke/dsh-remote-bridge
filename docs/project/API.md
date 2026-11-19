@@ -801,13 +801,21 @@ v2.8 新增。独立于现有 `/api/v1/events`（单向广播，保留不动）�
     的 `offersKernelSubprotocol` 读请求头），握手回给客户端的子协议仍是 `dsh-mobile-v1`。
     已发布 App 的清单里没有它 ⇒ 帧词表与行为**与今天逐字相同**，新帧名不会出现在老连接上。
   - **白名单是唯一执法点**（`src/host/bridge/kernel-allowlist.ts`）：通用调用面只接
-    `KERNEL_ALLOWLIST` 里的 14 条 unary 端点，其余一律 `METHOD_NOT_ALLOWED`，且文案与
+    `KERNEL_ALLOWLIST` 里的 23 条 unary 端点，其余一律 `METHOD_NOT_ALLOWED`，且文案与
     「内核根本没这个端点」完全同形（先拒后查目录 —— 让错误码无法当存在性探针）。
     `terminal` / `sandbox` / `dynamicCordisRunner` / `workspaceFiles` / `fileUploads` /
     `settings` / `credentials` / `account` / `liveshareShares` / `cuaAccess` / `forgePanel` /
     `agentTeams` 十二个命名空间**钉死在桥内**，无论内核是否新增端点都不外放。
-    每条端点的 scope 与 REST 侧同一份判据（`auth.ts` 的 `requireScope`/`requireRoot`），
-    且执行器跑在 `interactions:'none'` 的 owner peer 上 —— 被脚本化的客户端不能替人点「允许」。
+    每条端点的 scope 与 REST 侧同一份判据（`auth.ts` 的 `requireScope`），**另有第二维**：
+    会话类端点（`session/state`、`messageFeedback/*`、`workspace/pin*`）必须通过
+    `chat.isSessionAuthorized` —— 内核网关那侧看到的是 owner 主体，它自己的会话过滤恒放行，
+    这一维只能由桥来判（见 SECURITY.md 断言 2）。`session/search` 的结果在返回前按同一判据
+    过滤（`hasMore` 原样保留，客户端翻页语义不变）。
+    执行器跑在 `interactions:'none'` 的 owner peer 上 —— 被脚本化的客户端不能替人点「允许」。
+    `kernel-call` 的单次调用有 30 s 硬上限（`call/timeout`），没声明 `cancellation` 的端点
+    在 `kernel-call-cancel` 时回 `call/not-found` 而不是假装取消；
+    `plugin-install` 可用 `installId` 指定内核的 `options.requestId`，
+    `plugin-install-status` 必须带同一个 `installId`（缺了本地回 `BAD_REQUEST`）。
   - 不允许 URL query 带 token，避免令牌进入 URL 日志。
 - 配对码：一次性，10 分钟有效期（复用 `/api/v1/pairings/exchange` 产出的 code），256-bit，Base64URL 载荷；设备令牌不过期，撤销即时生效。
 - 鉴权：`dsh-pair`/`dsh-auth`/`bearer.<token>` 均复用 `principal()`，与 `/api/v1` 同一套判据；`allowAdmin: true` 允许 loopback admin；连接上限 32（鉴权后计数，Upgrade 前判定，超出回 HTTP `429` + `Retry-After: 5`）。
@@ -918,7 +926,7 @@ v2.8 新增。独立于现有 `/api/v1/events`（单向广播，保留不动）�
 | `speech-catalog` / `speech-subscribed` / `speech-unsubscribed` / `speech-state` / `speech-configured` / `speech-preparing` / `speech-preparation-cancelled` / `speech-transcript` / `speech-cancelled` | 语音输入响应与就绪状态推送；内核无该服务时 catalog 回 `available:false, code:'speech/unavailable'`，其余回 `error` |
 | `schedule-catalog` / `schedule-list` / `schedule-history` / `schedule-update` / `schedule-delete` | 定时任务响应；内核无 schedule Remote 时回 `error code:'schedule/unavailable'`，引导 REST 兜底 |
 | `schedule-create` / `schedule-edit` / `schedule-view` / `schedule-run` / `schedule-delete-inactive` | 阶段 7 直通帧的**同名应答**：`{request}` 原样交给内核 `schedule/create|edit|view|run|deleteInactive`，`data` 为 `{ok:true, value}` 或 `{ok:false, error:{code,message}}`（+ `requestId` 回显）。错误走结果帧而不是 `error` 帧：这五条是请求-应答，客户端按 kind 找回调 |
-| `plugin-catalog` / `plugin-detail` / `plugin-inspect` / `plugin-install` / `plugin-install-status` / `plugin-remove` / `plugin-update` / `plugin-versions` / `plugin-registries` / `plugin-settings` | 插件族**同名应答**（`plugin-catalog`/`inspect`/`install`/`settings` 四条此前只回 `NOT_IMPLEMENTED`，阶段 7 起为真实现）：请求经 `kernel-allowlist.ts` 的 `KERNEL_FRAME_CALLS` 落到 `pluginManager/*`，与 `kernel-call` 帧共用同一个 `KernelCallService`（默认拒绝 + 同一套设备 scope 判据），`data` 同样是 `{ok, value\|error}` 信封 |
+| `plugin-catalog` / `plugin-detail` / `plugin-inspect` / `plugin-install` / `plugin-install-status` / `plugin-remove` / `plugin-update` / `plugin-versions` / `plugin-registries` / `plugin-settings` | 插件族**同名应答**（`plugin-settings` 的载荷是 `{name, enabled}`，落点是 `pluginManager/setBundleEnabled` —— **会触发该 bundle 的 reload**；`plugin-install` 可在 `options` 里带 `requestId`/`installId`，`plugin-install-status` 必须带 `installId`，缺参回 `BAD_REQUEST` error 帧）（`plugin-catalog`/`inspect`/`install`/`settings` 四条此前只回 `NOT_IMPLEMENTED`，阶段 7 起为真实现）：请求经 `kernel-allowlist.ts` 的 `KERNEL_FRAME_CALLS` 落到 `pluginManager/*`，与 `kernel-call` 帧共用同一个 `KernelCallService`（默认拒绝 + 同一套设备 scope 判据），`data` 同样是 `{ok, value\|error}` 信封 |
 | `kernel-call-result` | 通用内核调用结果（**仅 `dshrb-v1`**）：`{callId, ok, value?, error?{code,message}}`。**不带 `data.requestId`**，按 `callId` 关联（见上面 exclusion 清单）；幂等命中的重试拿到的是上次结果的原样回放 |
 | `kernel-endpoints` | 能力目录快照（**仅 `dshrb-v1`**）：鉴权通过后即推一次，内容是「桥白名单 ∩ 内核目录」的 `{endpoint, scope, stream, wires, summary}[]` —— 不是内核全量端点（全量等于把攻击面列给客户端），客户端据此知道能调什么、需要什么 scope、`args` 该带哪些键（`wires` 取自内核描述符，客户端不必硬编码键名）。元素形状由后续阶段冻结，客户端需容忍未知字段与未知端点 |
 

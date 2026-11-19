@@ -359,8 +359,11 @@ issue #26 把桥手抄的 31 条内核语义入口换成了「内核端点 + 描
 1. **白名单之外的内核端点不可达。** 通用调用面只接受白名单里的端点，其余一律
    `METHOD_NOT_ALLOWED`，且错误码与白名单内**同样形状** —— 不能让客户端靠错误码差异
    枚举出「内核有这个端点、只是桥没开」。
-2. **设备 scope 不可绕过。** 缺 scope 一律 403；白名单要求的 scope 与 `auth.ts`
-   的 `requireScope` / `requireRoot` 是同一份判据，没有「先查后判」的绕过路径。
+2. **设备 scope 与授权根都不可绕过。** 缺 scope 一律 403；白名单要求的 scope 与 `auth.ts`
+   的 `requireScope` 是同一份判据。**第二维**是会话可见性：会话类端点先过
+   `chat.isSessionAuthorized(principal, sessionId)`，`session/search` 的结果在返回前按同一判据
+   过滤 —— 内核网关看到的是 owner 主体，它自己的过滤恒放行，所以这一维只有桥能判。
+   已建立的连接同样受约束：设备被撤销/降权后，下一条帧就会被复核并 `close(4001,'Device revoked')`。
 3. **`kernel-call` 路径不产生交互。** owner peer 以 `interactions:'none'` 建立，
    通用调用面拿不到审批/提问交互入口 —— 一个被脚本化的客户端不能替人点「允许」。
 4. **桥不再持有内核端点的 DTO 副本。** 门面里没有端点名常量表；端点名的唯一来源是
@@ -370,12 +373,27 @@ issue #26 把桥手抄的 31 条内核语义入口换成了「内核端点 + 描
    或语义更差（见 [ADR-0010](decisions/ADR-0010-kernel-endpoint-unification.md) 的落地登记表），
    它们仍在桥里，且流式上传的内存峰值不退化。
 
+> **2026-11-19 检修补充（issue #26 后续）**：一审发现三处「单测测不到、线上会中」的缺口，
+> 已修并各带回归用例 —— ①跨根读会话（上面断言 2 的第二维）②幂等键不含 endpoint 且失败也落表
+> （同 callId 换个端点会回放上一条的结果；瞬时失败被缓存 24 h）③`retention` 的清理器没有生产
+> 定时调用方，24 h 窗口必须由读取侧判。另修：`plugin-install-status` 缺 `installId` 时不再发
+> `{requestId: undefined}`、未声明 `cancellation` 的端点不再假装「已取消」、整链补 30 s 截止时间。
+> 路径探测端点 `session/workspacePathApplications` 已**移出**白名单（`chat.read` 即可拿任意宿主
+> 绝对路径做存在性探测，属不必要的攻击面）。
+>
+> **按设计保留的两处暴露面**（不是漏，写在这里避免下次审计再报一遍）：①`kernel-endpoints`
+> 帧会把白名单内每个端点的 `wires`/`scope`/`stream`/`summary` 广播给**任何**协商到 `dshrb-v1`
+> 的连接（默认配对设备也算）—— 这是为了让客户端不必硬编码 wire 键，代价是低权限设备能看见
+> 「白名单里有什么」（看不见内核全量，也看不见被拒端点）；②`ws-host.ts` 的 `canOpenPath`
+> 仍恒 `false`（桌面侧「能否打开路径」的能力探测），与白名单里的 `session/canOpenWorkspacePath`
+> 不是同一件事，前者不改。
+
 **认领**（删掉哪条，红的就是哪条）：
 
 | 断言 | 测试 |
 |---|---|
 | 1 | `tests/kernel-allowlist.spec.ts` › raises one indistinguishable error for a real-but-unlisted endpoint and for a nonexistent one；`tests/kernel-call.spec.ts` › denies an endpoint outside the allowlist before touching the catalog / reports an allowlisted endpoint that the catalog does not know |
-| 2 | `tests/kernel-allowlist.spec.ts` › does not swallow a scope failure；`tests/kernel-call.spec.ts` › maps a missing device scope to 403-shaped failures |
+| 2 | `tests/kernel-allowlist.spec.ts` › does not swallow a scope failure；`tests/kernel-call.spec.ts` › maps a missing device scope to 403-shaped failures / refuses a session outside the authorized roots without calling the kernel / filters search hits down to the sessions this device may read；`tests/mobile-gateway-ws.spec.ts` › closes an established connection once the device is revoked |
 | 3 | `tests/kernel-call.spec.ts` › never lets the call surface reach an interaction（owner peer 由 `ws-host-services.ts` 以 `interactions:'none'` 建立） |
 | 4 | `tests/kernel-deltas.spec.ts` › machine check（门面 ≤450 行；门面零端点名常量表） |
 | 5 | `tests/dsh-0.2-bridge.spec.ts` › claims an approval request… / cancels a bridged front-of-house question…；`tests/handoff-hardening.spec.ts` › reads the bytes of an existing handoff file…；`tests/ws-file-transfer.spec.ts` › hands the kernel a byte stream… / falls back to the base64 path… |

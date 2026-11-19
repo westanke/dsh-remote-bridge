@@ -13,10 +13,16 @@ import { DatabaseSync } from 'node:sqlite'
 export class IdempotencyTable {
   constructor(private readonly db: DatabaseSync) {}
 
-  read(deviceId: string, key: string): { status: number; body: unknown } | undefined {
-    const row = this.db.prepare('SELECT status,response_json FROM idempotency WHERE device_id = ? AND key = ?')
-      .get(deviceId, key) as { status: number; response_json: string } | undefined
-    return row === undefined ? undefined : { status: row.status, body: JSON.parse(row.response_json) }
+  /**
+   * 读一条回放记录。`createdAt` 一并返回，**由调用方判过期**：`prune` 只在
+   * 启动期与保留策略里跑，不是「24 小时后一定不存在」，所以「窗口」必须由读侧把关。
+   */
+  read(deviceId: string, key: string): { status: number; body: unknown; createdAt: number } | undefined {
+    const row = this.db.prepare('SELECT status,response_json,created_at FROM idempotency WHERE device_id = ? AND key = ?')
+      .get(deviceId, key) as { status: number; response_json: string; created_at: number } | undefined
+    return row === undefined
+      ? undefined
+      : { status: row.status, body: JSON.parse(row.response_json), createdAt: row.created_at }
   }
 
   save(deviceId: string, key: string, status: number, body: unknown): void {

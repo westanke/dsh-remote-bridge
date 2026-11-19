@@ -209,7 +209,11 @@ export async function apply(ctx: HostContext, config: Config = {}): Promise<void
   // 换源后的门面（issue #26 阶段 3a）：会话/工作区读侧走内核端点，所以网关必须在
   // 构造门面**之前**就绪。`services` 为 undefined 时不传 —— 门面退回进程内传输
   // （同一套端点语义，最后一跳直连宿主方法），会话读取不会因为可选服务缺席而整片 500。
-  const kernelGateway = hostRemote.services === undefined
+  // 目录为空时同样回退进程内传输（issue #26 检修，审计 R3）：`readTypertRegistry` 在
+  // apply 期可能还没装好登记表，此时 endpoint 全都不在目录里 —— 若仍把真网关传下去，
+  // 每个换源入口都会得到 `kernel/endpoint-unknown`，整片 500。空目录说明「现在还不知道
+  // 内核有什么」，那就按「没有网关」处理，等下次启动再试。
+  const kernelGateway = hostRemote.services === undefined || kernelCatalog.endpoints.length === 0
     ? undefined
     : { caller: hostRemote.services, catalog: kernelCatalog }
   const apiProxy = createDsh02ApiProxy(ctx, {

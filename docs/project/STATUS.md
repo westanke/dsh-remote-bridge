@@ -1,6 +1,32 @@
 # 当前状态
 
-- 日期：2026-11-19（**已发版 v2.12.1：大文件上传流式化 + 隧道工具 schema 修形**；`main` 上另有未发版的 issue #26 阶段 0 / 1 / 2 / 3a / 3b / 3c / 3d / 4 / 5 / 6 / 7 / 8 / 9）
+- 日期：2026-11-19（**已发版 v2.12.1：大文件上传流式化 + 隧道工具 schema 修形**；`main` 上另有未发版的 issue #26 阶段 0 / 1 / 2 / 3a / 3b / 3c / 3d / 4 / 5 / 6 / 7 / 8 / 9，以及完工检修一批）
+- **已完成（未发布，issue #26 完工检修，2026-11-19）· 对照竞品与三份审计的缺陷修复**：
+  ①**S1 严重｜kernel-call 缺授权根维度**：白名单原来只有 `scope` 一维，桥用 owner peer ⇒
+  内核 `remoteAccess.allows()` 对 owner 恒真（`dsh-typert-protocol` 的 `principalOf(owner)` 为
+  undefined），默认配对设备（含 `chat.read`）可跨根读 `session/state` / `session/search` 与会话级
+  `messageFeedback/*`。修法：白名单条目加 `sessions`/`filtersSessions` 第二维 +
+  `KernelCallGuard.sessionVisible`（= `chat.isSessionAuthorized`）；不可见回
+  `chat/session-not-found` 且不碰内核，`session/search` 结果逐条过滤。同批把
+  `session/workspacePathApplications` 移出白名单（`chat.read` 可探测任意宿主路径存在性），
+  白名单 **24 → 23**。
+  ②**幂等三修**：键加 endpoint、只缓存成功、24 h 窗口由读取侧判（此前清理器在生产上没有调用方）。
+  ③**`plugin-install-status` 的 `installId` 有来源了**：帧层 `requiredPayload` + `plugin-install`
+  把 `installId` 落到 `options.requestId`，缺参回 `BAD_REQUEST`。
+  ④**设备撤销/降权即时生效**：`handleMessage` 每帧复核 principal，撤销即 `close(4001,'Device revoked')`。
+  ⑤**换源回归两处**：`isKernelServiceUnavailable` 同时认 `gateway/service-unavailable` 与
+  `kernel/endpoint-unknown`（原先后者会让权限档位/提问回答整块 500）；
+  目录为空时**回退进程内传输**（原先会把所有换源入口变成 `kernel/endpoint-unknown`）。
+  ⑥**取消/超时语义**：`cancel()` 只对声明 `cancellation` 的端点生效（其余 `call/not-found`），
+  单次调用 30 s 硬上限（`call/timeout`）。
+  ⑦**验收**：`npx tsc --noEmit` exit 0；`npx vitest run` **92 文件 / 1 000 用例全绿**；
+  `docs:check` 三段绿（STRUCTURE 134 / INTERFACES 145）；新增回归用例 8 条
+  （kernel-call 22 / ws-kernel-frames 10 / dsh-0.2-bridge 58 / kernel-deltas 15 /
+  mobile-gateway-ws 101）。⚠️ **真机未跑、REST 逐字段快照未做**，未通过前不得宣称已验证。
+  ⑧**未修但已确认（下批候选）**：`session/search` 帧仍不在词表（内核有端点、竞品有帧）、
+  队列读写（`session/control` + `session/updateQueue`）、子会话写、`defaults`/`set-default`、
+  插件 4 条（`cancelInstall`/版本豁免/setPluginEnabled）、`agentTeams/setEnabled`、
+  device-tools（竞品 29 工具 / 8 帧，属独立里程碑）。
 - **已完成（未发布，issue #26 阶段 9 / `MOB-013`，承接旧 issue #9）· `chat-adapter.ts` 按端点族拆分**：
   ①**纯搬移、零行为变化**：2 110 行单文件 → 装配根 `src/host/chat-adapter.ts`（**92**）+
   `src/host/chat-contracts.ts`（**570**）+ `src/host/chat/` 五族（`access.ts` 555 / `sessions.ts` 515 /

@@ -247,7 +247,8 @@ export function questionAnswerOutcome(error: unknown): QuestionAnswerOutcome {
   if (key === 'REPLY_QUEUED') return 'reply-queued'
   if (key === 'BAD_ANSWER') return 'answer-invalid'
   if (key === 'CALLER_NOT_LIVE' || key === 'DELEGATED_CALLER') return 'retry-pending'
-  if (key === 'gateway/service-unavailable') return 'unavailable'
+  // 端点不在目录（老内核/裁剪 profile）与服务缺席同义：都该回落到桥的挂起表。
+  if (key === 'gateway/service-unavailable' || key === 'kernel/endpoint-unknown') return 'unavailable'
   return 'rethrow'
 }
 

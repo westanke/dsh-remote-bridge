@@ -262,6 +262,12 @@
   能力面按**客户端声明**判定（`ws-handler.ts` 的 `offersKernelSubprotocol`），握手回执仍是
   `dsh-mobile-v1`；能力位 `kernel-call-v1` 只在「白名单 ∩ 内核目录 非空」时才发。
   已发布客户端清单里没有它 ⇒ 帧词表与行为逐字不变（发这两帧只会拿到 `NOT_IMPLEMENTED`）。
+  授权是**两维**的：`scope`（设备 scope，`auth.ts` 的 `requireScope`）与会话可见性
+  （`KernelCallGuard.sessionVisible` → `chat.isSessionAuthorized`，即授权根）。白名单里带
+  `sessions` 的端点先判会话可见性（不可见回 `chat/session-not-found`，**不碰内核**），
+  `filtersSessions` 端点对结果逐条过滤（`hasMore` 不变）。单次调用 30 s 硬上限
+  （`call/timeout`）；`cancel()` 只对声明了 `cancellation` 的端点生效，其余回 `call/not-found`。
+  幂等键含端点（`kernel-call:<principal>:<endpoint>:<callId>`）、只缓存成功、24 h 窗口由读取侧判。
 - **插件族与排程直通（issue #26 阶段 7）**：十种插件帧（`plugin-catalog/inspect/install/settings`
   升级 + `plugin-detail/install-status/remove/update/versions/registries` 新增）与五种排程帧
   （`schedule-create/edit/view/run/delete-inactive`）的应答**与请求同名**，`data` 统一是
@@ -593,6 +599,9 @@ export const PLUGIN_VERSION: string          // shared/version.ts，与 package.
 | `export function createKernelCallService` | `src/host/bridge/kernel-call.ts` | function |
 | `export interface KernelCallService` | `src/host/bridge/kernel-call.ts` | interface |
 | `export type KernelCallResult` | `src/host/bridge/kernel-call.ts` | type |
+| `export interface KernelCallGuard` | `src/host/bridge/kernel-call.ts` | interface |
+| `export interface KernelIdempotencyStore` | `src/host/bridge/kernel-call.ts` | interface |
+| `export interface KernelEndpointSummary` | `src/host/bridge/kernel-call.ts` | interface |
 | `export class KernelCallHandler` | `src/host/ws-kernel-call.ts` | class |
 | `export interface KernelGateway` | `src/host/bridge/proxy-options.ts` | interface |
 | `export function createLocalKernelGateway` | `src/host/bridge/kernel-local.ts` | function |

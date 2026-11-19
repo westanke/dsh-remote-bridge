@@ -37,10 +37,24 @@ export class KernelFrameHandler {
     }
 
     const requestId = typeof frame.requestId === 'string' ? frame.requestId : undefined
+    // 载荷缺必填键时本地就拒：不发给内核，也不占用一个 callId。
+    const missing = (call.requiredPayload ?? []).find(key => typeof frame[key] !== 'string')
+    if (missing !== undefined) {
+      this.sendFrame({
+        kind: 'error',
+        data: {
+          code: 'BAD_REQUEST',
+          message: `${frame.type} requires a "${missing}" string.`,
+          requestType: frame.type,
+          ...(requestId === undefined ? {} : { requestId }),
+        },
+      })
+      return true
+    }
     const result = await this.service.invoke(principal, {
-      // 帧进来的每一笔都是独立调用：`requestId` 是手机侧的关联键，拿来做 callId 的
-      // 可读前缀即可 —— 真正唯一性靠 `randomUUID()`，重复的 requestId 不会互相顶掉
-      // 在飞行表（`kernel-call` 帧的 callId 由客户端自己保证唯一）。
+      // 每帧都是一次独立调用。`requestId` 只做**可读前缀**，不承担唯一性：
+      // 客户端重复用同一个 requestId 时，两帧会落到同一个 callId 上（第二次在飞行中
+      // 被拒或回放第一次的结果）—— 客户端要幂等就用同一个 requestId，这正是想要的。
       callId: `frame:${frame.type}:${requestId ?? randomUUID()}`,
       endpoint: call.endpoint,
       args: payloadOf(frame, call),

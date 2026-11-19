@@ -86,6 +86,31 @@ describe('kernel frame handler (issue #26 stage 7)', () => {
     }])
   })
 
+  it('rejects a plugin frame whose required payload key is missing', async () => {
+    const { handler, sent, invoke } = harness()
+    expect(await handler.handle(ADMIN, { type: 'plugin-install-status', requestId: 'r5' })).toBe(true)
+    expect(invoke).not.toHaveBeenCalled()
+    expect(sent).toEqual([{
+      kind: 'error',
+      data: {
+        code: 'BAD_REQUEST',
+        message: 'plugin-install-status requires a "installId" string.',
+        requestType: 'plugin-install-status',
+        requestId: 'r5',
+      },
+    }])
+  })
+
+  it('lets the client choose the install id that the status frame later polls', async () => {
+    const { handler, invoke } = harness()
+    await handler.handle(ADMIN, { type: 'plugin-install', requestId: 'r6', spec: 'npm:katex', installId: 'install-9' })
+    // 安装与查询必须能对上：不给这条通路，客户端拿到成功回执却永远查不到这次安装。
+    expect(requestOf(invoke)).toMatchObject({
+      endpoint: 'pluginManager/installBundle',
+      args: { spec: 'npm:katex', options: { requestId: 'install-9' } },
+    })
+  })
+
   it('only routes through endpoints the allowlist permits', async () => {
     // 安全断言：帧表是「客户端能打到哪」的第二张网 —— 任何人往 KERNEL_FRAME_CALLS
     // 里加一条没进白名单的端点，这一条会先红，而不是等到线上被 METHOD_NOT_ALLOWED 拒。
@@ -98,7 +123,9 @@ describe('kernel frame handler (issue #26 stage 7)', () => {
     const { KERNEL_FRAME_CALLS } = await import('../src/host/bridge/kernel-allowlist.ts')
     const { handler, sent, invoke } = harness()
     for (const call of KERNEL_FRAME_CALLS) {
-      const handled = await handler.handle(ADMIN, { type: call.frame, requestId: `r-${call.frame}` })
+      // 必填载荷键各给一个占位：缺键的拒绝路径由下面单独的用例守。
+      const required = Object.fromEntries((call.requiredPayload ?? []).map(key => [key, 'placeholder']))
+      const handled = await handler.handle(ADMIN, { type: call.frame, requestId: `r-${call.frame}`, ...required })
       expect(handled, `${call.frame} must be handled`).toBe(true)
       expect(sent.at(-1)?.kind).toBe(call.frame)
     }

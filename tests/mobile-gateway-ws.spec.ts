@@ -2451,6 +2451,26 @@ describe('mobile gateway WebSocket (/ws/mobile) — kernel-call plane', () => {
     return database.exchangePairing(pairing.code, 'Mobile device')
   }
 
+  // issue #26 检修（审计 M4）：撤销必须对**已建立**的连接立刻生效。
+  // 之前只有 `/api/v1/events` 每事件复核身份，WS 这条一直用连接时的快照 ——
+  // 而 WS 上挂着最重的面（`settings.write` 能装插件）。
+  it('closes an established connection once the device is revoked', async () => {
+    const { database, root, url } = await startHarness()
+    const credentials = await ticket(database, root.id)
+    const socket = connect(url, {
+      protocols: 'dsh-mobile-v1',
+      headers: { Authorization: `Bearer ${credentials.token}` },
+    })
+    const { frames } = collect(socket)
+    await nextKind(frames, 'hello')
+
+    database.revokeDevice(credentials.device.id)
+
+    const closed = new Promise<number>(resolve => socket.once('close', code => resolve(code)))
+    socket.send(JSON.stringify({ type: 'ping', requestId: 'p1' }))
+    await expect(closed).resolves.toBe(4001)
+  })
+
   it('announces the allowlist right after hello and forwards one call', async () => {
     const calls: Array<{ namespace: string; method: string; args: unknown }> = []
     const handle: HostRemoteHandle = {

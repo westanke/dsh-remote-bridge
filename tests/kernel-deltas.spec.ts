@@ -204,6 +204,16 @@ describe('machine check: the facade holds no kernel-endpoint table (stage 4.4)',
     expect(offenders).toEqual([])
   })
 
+  // issue #26 检修（审计 R2）：端点不在目录里（老内核/裁剪 profile）时，
+  // 降级逻辑必须与服务缺席同义 —— 否则用户点「回答」看到的是 500，而不是「已失效」。
+  it('treats a missing endpoint as an unavailable service for question answers', () => {
+    expect(questionAnswerOutcome({ code: 'kernel/endpoint-unknown' })).toBe('unavailable')
+    expect(questionAnswerOutcome({ code: 'gateway/service-unavailable' })).toBe('unavailable')
+    // 真正的权限/参数错误仍然上抛，不能被吞成降级。
+    expect(questionAnswerOutcome({ code: 'BAD_ANSWER' })).toBe('answer-invalid')
+    expect(questionAnswerOutcome({ code: 'SCOPE_REQUIRED' })).toBe('rethrow')
+  })
+
   it('keeps the endpoint vocabulary in the three allowed modules', () => {
     const allowed = new Set([
       join(HERE, '..', 'src', 'host', 'bridge', 'kernel-invoke.ts'),

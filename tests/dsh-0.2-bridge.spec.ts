@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 import { FALLBACK_PERMISSION_CATALOG, createDsh02ApiProxy, handoffLocaleOf, type Dsh02HostServices } from '../src/host/dsh-0.2-bridge.ts'
+import { createKernelEndpointCatalog } from '../src/host/bridge/kernel-endpoints.ts'
 
 /**
  * Contract tests for the DSH 0.2.x bridge.
@@ -889,6 +890,42 @@ describe('dsh 0.2.x bridge: contract shapes', () => {
     expect(value).toEqual(FALLBACK_PERMISSION_CATALOG)
     // `read-only` 是合法 sandbox 模式但没有对应 preset，放进来等于给一个点了必失败的选项。
     expect(JSON.stringify(value)).not.toContain('read-only')
+  })
+
+  // 换源后的同一条容错（issue #26 检修，审计 R1）：真网关在、但目录里**没有**
+  // 这个端点（profile 裁剪 / 老内核）。这时抛的是 `kernel/endpoint-unknown`，
+  // 不是 `gateway/service-unavailable` —— 两者都必须落到降级清单，否则一次
+  // 「能力不存在」会变成 500，手机设置页整块打不开。
+  it('falls back to the kernel-default presets when the gateway lacks the endpoint', async () => {
+    const { host } = makeHost()
+    const api = createDsh02ApiProxy(host, {
+      kernel: {
+        caller: {
+          invoke: async () => {
+            throw new Error('the proxy must not call the kernel for a missing endpoint')
+          },
+          stream: async () => {
+            throw new Error('the proxy must not call the kernel for a missing endpoint')
+          },
+        },
+        catalog: createKernelEndpointCatalog({
+          local: {
+            list: () => [{
+              namespace: 'session',
+              method: 'search',
+              parameters: [{ name: 'request', wire: 'request', source: 'json' }],
+            }],
+            get: () => undefined,
+            hasSeen: () => true,
+          },
+        }),
+      },
+    })
+
+    const response = await api.permissionPresets.catalog({ rpcId: 'r', payload: {} })
+
+    const value = response.result.ok ? response.result.value : null
+    expect(value).toEqual(FALLBACK_PERMISSION_CATALOG)
   })
 
   it('prefers the kernel catalog when permissionPresets is available', async () => {
