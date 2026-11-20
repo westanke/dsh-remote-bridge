@@ -381,6 +381,9 @@ paths:
         '404': { $ref: '#/components/responses/Error' }
   /chat/workspaces:
     get:
+      deprecated: true
+      x-dsh-replaced-by: 'workspaces'
+      x-dsh-removal-not-before: '3.0.0'
       operationId: listChatWorkspaces
       description: Lists DSH WebUI workspaces whose canonical directory is inside a root granted to the device. Server absolute paths are not returned.
       responses:
@@ -457,6 +460,9 @@ paths:
         '404': { $ref: '#/components/responses/Error' }
   /chat/agent-presets:
     get:
+      deprecated: true
+      x-dsh-replaced-by: 'agent-presets'
+      x-dsh-removal-not-before: '3.0.0'
       operationId: listAgentPresets
       description: Lists the same Agent presets offered by DSH WebUI without exposing their composition files.
       responses:
@@ -473,6 +479,9 @@ paths:
                     items: { $ref: '#/components/schemas/AgentPreset' }
   /chat/permission-presets:
     get:
+      deprecated: true
+      x-dsh-replaced-by: 'permission-options'
+      x-dsh-removal-not-before: '3.0.0'
       operationId: listPermissionPresets
       description: >-
         Lists the permission presets a session can switch between (the catalog behind
@@ -729,6 +738,9 @@ paths:
         '403': { $ref: '#/components/responses/Error' }
   /chat/sessions:
     get:
+      deprecated: true
+      x-dsh-replaced-by: 'sessions'
+      x-dsh-removal-not-before: '3.0.0'
       operationId: listChatSessions
       parameters:
         - name: archived
@@ -754,6 +766,9 @@ paths:
                     type: array
                     items: { $ref: '#/components/schemas/ChatSession' }
     post:
+      deprecated: true
+      x-dsh-replaced-by: 'session-create'
+      x-dsh-removal-not-before: '3.0.0'
       operationId: createChatSession
       requestBody:
         required: true
@@ -787,6 +802,9 @@ paths:
         '201': { description: DSH session created or idempotently returned. }
   /chat/sessions/{sessionId}:
     patch:
+      deprecated: true
+      x-dsh-replaced-by: 'session-rename'
+      x-dsh-removal-not-before: '3.0.0'
       operationId: renameChatSession
       parameters:
         - name: sessionId
@@ -807,6 +825,9 @@ paths:
         '404': { $ref: '#/components/responses/Error' }
   /chat/sessions/{sessionId}/fork:
     post:
+      deprecated: true
+      x-dsh-replaced-by: 'fork'
+      x-dsh-removal-not-before: '3.0.0'
       operationId: forkChatSession
       description: Forks the session at the latest completed boundary, or at the supplied event sequence.
       parameters:
@@ -834,6 +855,9 @@ paths:
         '404': { $ref: '#/components/responses/Error' }
   /chat/sessions/{sessionId}/archive:
     post:
+      deprecated: true
+      x-dsh-replaced-by: 'session-archive'
+      x-dsh-removal-not-before: '3.0.0'
       operationId: archiveChatSession
       description: Archives the session from default workspace views while preserving its log.
       parameters:
@@ -846,6 +870,9 @@ paths:
         '404': { $ref: '#/components/responses/Error' }
   /chat/sessions/{sessionId}/wait:
     post:
+      deprecated: true
+      x-dsh-replaced-by: 'session-wait'
+      x-dsh-removal-not-before: '3.0.0'
       operationId: waitChatSession
       description: |
         Long-polls the session state (DSH 0.2.2 `session/wait`): blocks until the
@@ -989,6 +1016,9 @@ paths:
         required: true
         schema: { type: string }
     get:
+      deprecated: true
+      x-dsh-replaced-by: 'history'
+      x-dsh-removal-not-before: '3.0.0'
       operationId: listMessages
       parameters:
         - name: beforeSeq
@@ -1023,6 +1053,9 @@ paths:
                   historyFormatVersion: { type: integer, minimum: 1 }
         '404': { $ref: '#/components/responses/Error' }
     post:
+      deprecated: true
+      x-dsh-replaced-by: 'message'
+      x-dsh-removal-not-before: '3.0.0'
       operationId: sendMessage
       requestBody:
         required: true
@@ -1154,6 +1187,9 @@ paths:
         '404': { $ref: '#/components/responses/Error' }
   /chat/sessions/{sessionId}/approvals:
     get:
+      deprecated: true
+      x-dsh-replaced-by: 'event (replay) + approval-resolved'
+      x-dsh-removal-not-before: '3.0.0'
       operationId: listPendingApprovals
       description: Lists pending DSH approvals for an authorized session. Tool details are redacted and bounded; private DSH RPC identifiers are never exposed.
       parameters:
@@ -1176,6 +1212,9 @@ paths:
         '404': { $ref: '#/components/responses/Error' }
   /chat/sessions/{sessionId}/approvals/{approvalId}/decision:
     post:
+      deprecated: true
+      x-dsh-replaced-by: 'approval-response'
+      x-dsh-removal-not-before: '3.0.0'
       operationId: decideApproval
       description: Allows a pending tool request once or rejects it. Persistent approval is intentionally unsupported.
       parameters:
@@ -1201,6 +1240,9 @@ paths:
         '409': { $ref: '#/components/responses/Error' }
   /chat/sessions/{sessionId}/questions:
     get:
+      deprecated: true
+      x-dsh-replaced-by: 'event (replay) + question-response'
+      x-dsh-removal-not-before: '3.0.0'
       operationId: listUserQuestions
       description: |
         Lists questions an agent is waiting on, from two sources merged together:
@@ -1257,6 +1299,9 @@ paths:
         '404': { $ref: '#/components/responses/Error' }
   /chat/sessions/{sessionId}/questions/{callId}/answer:
     post:
+      deprecated: true
+      x-dsh-replaced-by: 'question-answer'
+      x-dsh-removal-not-before: '3.0.0'
       operationId: answerUserQuestion
       description: |
         Answers one question set. Answers for a question the bridge holds open are
@@ -1297,6 +1342,9 @@ paths:
         '503': { $ref: '#/components/responses/Error' }
   /chat/sessions/{sessionId}/commands:
     get:
+      deprecated: true
+      x-dsh-replaced-by: 'commands'
+      x-dsh-removal-not-before: '3.0.0'
       operationId: listSessionCommands
       description: Lists the DSH host slash commands currently available to this authorized session.
       parameters:
@@ -1318,6 +1366,9 @@ paths:
                     items: { $ref: '#/components/schemas/CommandDescriptor' }
         '404': { $ref: '#/components/responses/Error' }
     post:
+      deprecated: true
+      x-dsh-replaced-by: 'command-execute'
+      x-dsh-removal-not-before: '3.0.0'
       operationId: executeSessionCommand
       description: Executes a listed slash command through the DSH host command registry. The line is never sent to the model as a chat message.
       parameters:
@@ -1348,6 +1399,9 @@ paths:
         '409': { $ref: '#/components/responses/Error' }
   /chat/sessions/{sessionId}/models:
     get:
+      deprecated: true
+      x-dsh-replaced-by: 'models'
+      x-dsh-removal-not-before: '3.0.0'
       operationId: listSessionModels
       parameters:
         - name: sessionId
@@ -1381,6 +1435,9 @@ paths:
               schema: { $ref: '#/components/schemas/SessionModels' }
         '404': { $ref: '#/components/responses/Error' }
     put:
+      deprecated: true
+      x-dsh-replaced-by: 'select-model'
+      x-dsh-removal-not-before: '3.0.0'
       operationId: selectSessionModel
       parameters:
         - name: sessionId
@@ -1405,6 +1462,9 @@ paths:
         '409': { $ref: '#/components/responses/Error' }
   /chat/sessions/{sessionId}/agent-preset:
     put:
+      deprecated: true
+      x-dsh-replaced-by: 'select-agent-preset'
+      x-dsh-removal-not-before: '3.0.0'
       operationId: selectSessionAgentPreset
       description: Changes the Agent preset only while the DSH session is blank. DSH locks the preset after the first accepted prompt.
       parameters:
@@ -1434,6 +1494,9 @@ paths:
         '409': { $ref: '#/components/responses/Error' }
   /chat/runs/{id}/cancel:
     post:
+      deprecated: true
+      x-dsh-replaced-by: 'session-cancel'
+      x-dsh-removal-not-before: '3.0.0'
       operationId: cancelRun
       description: In v1 the run id is the owning DSH session id.
       parameters:

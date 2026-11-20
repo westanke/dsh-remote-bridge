@@ -2,8 +2,8 @@
 
 <p align="center">
   <strong>人已经出门，电脑还锁着 —— 掏出手机，继续用这台机器。</strong><br>
-  把 DSH 内核的私有 remote 协议翻译成版本化 REST，配上手机客户端
-  dsh-companion 与 dsh-Chat，
+  把 DSH 内核的私有 remote 协议翻译成 WebSocket 帧（首选）与版本化 REST（老协议，逐步下线），
+  配上手机客户端 dsh-companion 与 dsh-Chat，
   聊天、会话、文件、设备全程留在同一台机器上。
 </p>
 
@@ -23,7 +23,7 @@
   <img alt="License" src="https://img.shields.io/badge/license-AGPL--3.0-2da44e">
 </p>
 
-`dsh-remote-bridge` 是 DeepSeek Harness（DSH）的远程访问桥接插件：它把 DSH 内核的私有 remote 协议翻译成版本化的 REST 接口，让 dsh-companion（[GitHub](https://github.com/westanke/dsh-companion) · [Gitee](https://gitee.com/westanke/dsh-companion)）与 dsh-Chat（[GitHub](https://github.com/westanke/dsh-Chat) · [Gitee](https://gitee.com/westanke/dsh-Chat)）等受信任客户端在离开电脑后仍能使用同一套聊天、工作区与文件能力；桌面端在你的 DSH 设置里提供一个「手机设置」，内联折叠卡片：主列表五张（远程访问 / 外网隧道 / 设备 / 回收站 / App 下载），另有默认收起的「高级设置」组收纳根目录、识图与插件三项，每张卡片各自折叠、可多张同时展开。
+`dsh-remote-bridge` 是 DeepSeek Harness（DSH）的远程访问桥接插件：它把 DSH 内核的私有 remote 协议翻译成**两个设备协议面**——`/ws/mobile` 的双向帧（新能力只在这里落，v2.8 起）与版本化 REST `/api/v1`（老协议：已冻结、只减不增、逐步下线），让 dsh-companion（[GitHub](https://github.com/westanke/dsh-companion) · [Gitee](https://gitee.com/westanke/dsh-companion)）与 dsh-Chat（[GitHub](https://github.com/westanke/dsh-Chat) · [Gitee](https://gitee.com/westanke/dsh-Chat)）等受信任客户端在离开电脑后仍能使用同一套聊天、工作区与文件能力；桌面端在你的 DSH 设置里提供一个「手机设置」，内联折叠卡片：主列表五张（远程访问 / 外网隧道 / 设备 / 回收站 / App 下载），另有默认收起的「高级设置」组收纳根目录、识图与插件三项，每张卡片各自折叠、可多张同时展开。
 
 **它适合谁**：把 DSH 当主力工具、但不想被「必须坐在电脑前」绑住的人。远程访问**默认关闭**，未启用时只监听回环地址——装完不会自动把机器暴露到局域网。
 
@@ -285,7 +285,17 @@ allowPrivateProviderHosts:
 
 “移除 DSH 工作区”只删除 WebUI 中的登记，服务器目录、文件和会话日志不会被删除。“归档会话”只将会话从默认列表隐藏，日志仍会保留。
 
-## 对外接口
+## 对外接口（两个协议面）
+
+**第一协议面是 WebSocket 帧**（新能力只在这里落）：
+
+```text
+ws://HOST:PORT/ws/mobile
+```
+
+握手子协议 `dsh-mobile-v1`（首次配对再加 `dsh-pair.<code>`，之后 `dsh-auth.<token>` 或 `Authorization: Bearer`）；客户端发 `{type:…}`、服务端回 `{kind:…}`，连接即推 `hello` 携带能力位。帧清单与语义见 [API.md 的移动端网关](./docs/project/API.md#移动端网关-websocket-wsmobile)；`dshrb-v1` 另开通用内核调用面。
+
+**REST 是老协议**：已冻结、只减不增，逐端点弃用表（替代帧 + 最早移除版本 3.0.0）见 [API.md 的「协议面状态」](./docs/project/API.md)。下表保留给未升级的客户端与没有帧等价物的能力。
 
 REST 基址：
 
@@ -321,7 +331,8 @@ Authorization: Bearer DEVICE_TOKEN
 | `PUT /chat/sessions/{id}/agent-preset` | 在首条消息前切换 Agent |
 | `POST /chat/runs/{id}/cancel` | 取消正在运行的会话 |
 | `GET/POST/PATCH/DELETE /settings/...` | 管理供应商、凭据状态、模型发现和自定义供应商 |
-| `WS /events` | 接收聊天增量、运行、审批和文件变更事件 |
+| `WS /ws/mobile` | **第一协议面**：双向帧（消息、历史、审批、提问、文件、插件、排程、语音） |
+| `WS /events` | 老协议：单向事件流，仅作断线兜底 |
 
 完整字段、响应和错误模型见 [OpenAPI 3.1](./docs/api/openapi.yaml)，实时事件格式见 [AsyncAPI](./docs/api/asyncapi.yaml)。仓库同时提供 [Kotlin SDK](./kotlin-sdk/README.md)。
 

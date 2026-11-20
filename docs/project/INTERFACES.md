@@ -18,7 +18,8 @@
 
 | 层 | 代表接口 | 权威文件 |
 | --- | --- | --- |
-| 对外 REST（设备/第三方） | `GET /api/v1/…`、`POST /api/v1/…` | `docs/api/openapi.yaml`、[API.md](API.md) |
+| **移动端网关（第一协议面，新能力落点）** | `/ws/mobile` 的 `{type}` / `{kind}` 帧 | `docs/api/asyncapi.yaml`、[API.md](API.md) §移动端网关 |
+| 对外 REST（老协议，逐步下线） | `GET/POST /api/v1/…` | `docs/api/openapi.yaml`、[API.md](API.md) |
 | 对外管理面（仅回环） | `GET/POST /manage/…` | 本文 §3.2、`workspace.tsx` 调用处 |
 | 事件流（WebSocket） | `/api/v1/events` 的 `WorkspaceEvent` | `docs/api/asyncapi.yaml` |
 | 只读图片路由 | `GET /plugin/dsh-remote-bridge/raw` | [ARCHITECTURE.md](ARCHITECTURE.md)、`image-handoff.ts` |
@@ -240,19 +241,21 @@
 - 载荷：`{ bridgeVersion, capabilities: string[] }`（`capabilities.ts` 的 `connectionReadyData()`）。
 - 能力位的**清单与数量以 `src/host/capabilities.ts`（`BRIDGE_CAPABILITIES`）源码为准**，
   不在文档里抄数字（AGENTS.md §3.2）；命名固定 `<能力>-v<主版本>`；只增不撤，语义变更升 `-v2`。
-- **每项必须能指出契约依据**（一个 OpenAPI 路径+方法，或一个 AsyncAPI 事件），
-  `tests/capabilities.spec.ts` 逐条核对。
+- **每项必须能指出契约依据**（一个 AsyncAPI 帧，或一个 OpenAPI operation；已标
+  `deprecated: true` 的端点只算**历史依据**，新增能力位不得再指向它），`tests/capabilities.spec.ts` 逐条核对。
 - 客户端只把 `approvals-v1` / `questions-v1` 当必需项（详见
   `dsh-companion` 的 `BridgeCapabilities.kt`）；其余全是特性探测。
 - **运行时探测面**（无 REST/AsyncAPI 字面量可指）：`kernel-endpoint-catalog-v1` 与
   `kernel-call-v1`（issue #26 阶段 2）依据写 `{}`，语义由 `tests/kernel-endpoints.spec.ts`
   的 `kernelCapabilityFlags` 用例与 `tests/capabilities.spec.ts` 两侧钉住：
   **目录非空才给目录位**；调用面要等端点白名单（阶段 5），在此之前恒不给。
-- 最高频的新增动作：加 REST 路由 → 加能力位 → 写依据 → 跑 `capabilities.spec`。
+- 最高频的新增动作：加帧 → 加能力位 → 写依据 → 跑 `capabilities.spec`（**新能力不再加 REST 路由**，见 [AGENTS.md](../../AGENTS.md) §1.1）。
 
 ### 3.5 移动端网关 WebSocket (/ws/mobile)
 
-- 端点：`/ws/mobile`（双向请求/响应，挂主 HTTP server upgrade），与 `/api/v1/events` 并存；端口默认 `3090`。
+- 端点：`/ws/mobile`（双向请求/响应，挂主 HTTP server upgrade），端口默认 `3090`。
+  **这是第一协议面**：新能力只在这里落帧；`/api/v1/events` 是老协议，仅作断线兜底
+  （弃用与例外见 [API.md](API.md) 的「协议面状态与弃用表」）。
 - 子协议（`Sec-WebSocket-Protocol`）：`dsh-mobile-v1, dsh-pair.<code>`（首次配对，随请求带 `X-DSH-Device-ID`；成功后推 `paired` 再推 `hello`）；`dsh-mobile-v1, dsh-auth.<token>` 或 HTTP 头 `Authorization: Bearer <token>`（后续连接）。不允许 URL query 带 token。
 - **协商与位置无关**（issue #26 阶段 2）：`server.ts` 的 `handleProtocols` 只认 `dsh-mobile-v1`
   （`pickMobileSubprotocol`），客户端把 `dsh-auth.*` 排前面也照样连得上；协商结果恒为
@@ -284,7 +287,8 @@
   `src/host/ws-protocol.ts` 的 `ServerFrameKind` 联合类型，逐条说明见 [API.md](API.md) 的
   「服务端→客户端帧」表，两侧一致性由 `docs:check` 的帧对账段与
   `tests/mobile-frame-contract.spec.ts` 共同钉住（issue #26 阶段 1 起白名单为空 = 零差异）。
-  三个易错点：① `search` 只有客户端帧（服务端回 `error NOT_IMPLEMENTED`）；
+  三个易错点：① `search` 已在 issue #26 阶段 8 从词表删除（再发只回 `UNKNOWN_TYPE`，
+  不是 `NOT_IMPLEMENTED`）；
   ② 审批/提问的**主动推送走 `event` 帧**（`chat.approval.*` / `chat.userQuestions/*` 载荷），
   不是 `approval-requested` / `question-requested` 这类专用 kind；③ `connection-resync-required`
   是真帧（反压溢出后提示全量重同步）。

@@ -4,6 +4,82 @@
 
 绑定设置接受本机数值 IPv4/IPv6 地址，例如 `0.0.0.0`、`192.168.1.20` 或 `::`；它不接受域名。绑定 `0.0.0.0` 后，客户端仍可使用解析到该服务器的域名连接。监听配置属于回环管理 API，不是对外 `/api/v1` 契约的一部分。
 
+## 协议面状态与弃用表（2026-11-20 起）
+
+桥对外有**两个设备协议面**，新能力只做新的那个（宪法见 [AGENTS.md](../../AGENTS.md) §1.1）：
+
+| 面 | 端点 | 状态 |
+|---|---|---|
+| **移动端网关（新）** | `ws://HOST:PORT/ws/mobile`，子协议 `dsh-mobile-v1`（`dshrb-v1` 另开通用内核调用面） | **新能力的唯一落点**。v2.8 起 |
+| REST（老） | `http://HOST:PORT/api/v1` | **老协议，逐步下线**：已冻结、只减不增 |
+| 事件流（老） | `GET /api/v1/events`（SSE，单向） | 老协议，仅作 WS 断线/降级的兜底 |
+| 管理面 | `/manage/*`（仅回环） | 永久保留，不是设备契约 |
+
+**新代码一律用帧。** 下面给出「哪条 REST 已被哪一帧替代」「最早什么时候移除」；
+帧本身的说明见 [移动端网关 WebSocket](#移动端网关-websocket-wsmobile)。
+
+### 1. 已弃用：REST → 帧（最早 3.0.0 移除）
+
+这些 operation 在 [`openapi.yaml`](../api/openapi.yaml) 里已标 `deprecated: true`，并带
+`x-dsh-replaced-by`（替代帧）与 `x-dsh-removal-not-before: '3.0.0'`。它们**仍然可用**，
+但行为不再承诺，新代码不要调用；客户端迁移到帧之前的老版本继续工作。
+
+| REST（老） | 替代帧（新） | 说明 |
+| --- | --- | --- |
+| `GET /chat/workspaces` | `workspaces` | 工作区发现 |
+| `GET /chat/agent-presets` | `agent-presets` | Agent Preset 清单 |
+| `GET /chat/permission-presets` | `permission-options` | 权限/审批档位候选 |
+| `GET /chat/sessions` | `sessions` | 含 `archived` 归档列表 |
+| `POST /chat/sessions` | `session-create` | `reuseBlank` 语义一致 |
+| `PATCH /chat/sessions/{sessionId}` | `session-rename` | 改名 |
+| `POST /chat/sessions/{sessionId}/fork` | `fork` | 分叉 |
+| `POST /chat/sessions/{sessionId}/archive` | `session-archive` | 归档 |
+| `POST /chat/sessions/{sessionId}/wait` | `session-wait` | 长轮询改成一问一答 |
+| `GET /chat/sessions/{sessionId}/messages` | `history` | 首屏带 `projections` |
+| `POST /chat/sessions/{sessionId}/messages` | `message` | 自动建会话；`mode: queue \| steer` |
+| `GET /chat/sessions/{sessionId}/approvals` | `event` 重放 + `approval-resolved` | 连接即重放待处理审批 |
+| `POST …/approvals/{approvalId}/decision` | `approval-response` | 仅 `allowed-once` / `rejected` |
+| `GET /chat/sessions/{sessionId}/questions` | `event` 重放 + `question-response` | 待处理提问 |
+| `POST …/questions/{callId}/answer` | `question-answer` | |
+| `GET /chat/sessions/{sessionId}/commands` | `commands` | host 斜杠命令清单 |
+| `POST /chat/sessions/{sessionId}/commands` | `command-execute` | |
+| `GET /chat/sessions/{sessionId}/models` | `models` | 模型发现 |
+| `PUT /chat/sessions/{sessionId}/model` | `select-model` | 会话模型/推理等级 |
+| `PUT /chat/sessions/{sessionId}/agent-preset` | `select-agent-preset` | 首条消息前才可切 |
+| `POST /chat/runs/{id}/cancel` | `session-cancel` | 帧按会话取消当前 run |
+
+### 2. 迁移中：帧已就绪，客户端仍在用 REST
+
+这三域是 2026-10 为 App 补的 REST 对等面（见 [BFF-REST-CONTRACT.md](BFF-REST-CONTRACT.md)）。
+帧是主路径，REST 只作回落；3.0.0 前迁完后按上表规则降级为「已弃用」。
+
+| REST（老） | 替代帧（新） | 说明 |
+| --- | --- | --- |
+| `…/attachments/uploads` 六条（分块上传） | `file-upload-open` / `chunk` / `finish` / `cancel` | 大附件 |
+| `/chat/schedules` 四条 | `schedule-*` 十个帧 | 定时任务（REST 只支持 cron 形态） |
+| `/chat/speech/*` 三条 | `speech-*` 八个帧 | 官方语音输入 |
+| `POST …/attachments`（单条 base64） | 分块上传 / `attachment` 读取 | 大文件不可靠，建议直接分块 |
+
+### 3. 永久例外：没有帧等价物，不弃用
+
+| REST | 为什么留 |
+| --- | --- |
+| `/manage/*`、`GET /image-handoff`、`GET /plugin/dsh-remote-bridge/raw` | 浏览器直连/免令牌只读，HTTP 语义本身就是需求 |
+| `GET /healthz`、`GET /debug/host-services` | 运维与排障探针 |
+| `POST /pairings/exchange`、`GET /devices/self` | 配对发生在 WS 握手之前 |
+| `/roots*`、`/trash*` | 授权根与回收站管理；`file-*` 帧只覆盖工作区文件 |
+| `GET /attachments/{attachmentId}` | 附件字节；消息里以 `file` 部件引用 |
+| `/chat/sessions/{id}/jobs` 三条 | 后台任务没有帧（`tasks` 帧是 TODO 投影，不是 jobs） |
+| `/chat/sessions/{lead}/subagents/{subagentId}/messages` | 子会话历史没有帧 |
+| `POST /chat/workspaces`、`PATCH/DELETE /chat/workspaces/{id}` | 帧只有 `workspace-create` |
+| `/settings/*` | 设置面：帧只覆盖 `providers` 只读、`plugin-*` 插件管理与 `default-model` |
+
+### 4. 给我的迁移指引
+
+1. 先连 `/ws/mobile`，用 `hello.capabilities` 判断帧是否可用；
+2. 只有「连不上 WS」或「对端老桥回 `NOT_IMPLEMENTED`」才回落 REST —— 回落原因要能说清；
+3. 3.0.0 之前把表 1、表 2 的调用全部换成帧。表 3 不需要迁移。
+
 ## 配对设备
 
 本机管理员启用远程访问后获得一次性配对码。设备在十分钟内交换令牌：
@@ -778,9 +854,9 @@ data 字段与实时路径**一致**（只多 `replayed`）；数据来自适配
 
 ## 移动端网关 WebSocket (/ws/mobile)
 
-v2.8 新增。独立于现有 `/api/v1/events`（单向广播，保留不动）的双向请求/响应通道，专供移动端客户端，协议形参考上游 `dsh-plugin-mobile-gateway`：连接即推 `hello`，客户端发 `{type: …}` 帧，服务端回 `{kind: …}` 响应帧，并可主动推送 `event` 帧（审批与提问卡片就是 `chat.approval.*` / `chat.userQuestions/*` 载荷，不是专用 kind）。
+v2.8 新增，**现在是桥的第一协议面**：新能力只在这里落帧（见上文「协议面状态与弃用表」）。独立于 `/api/v1/events`（单向广播，老协议，仅作断线兜底）的双向请求/响应通道，专供移动端客户端，协议形参考上游 `dsh-plugin-mobile-gateway`：连接即推 `hello`，客户端发 `{type: …}` 帧，服务端回 `{kind: …}` 响应帧，并可主动推送 `event` 帧（审批与提问卡片就是 `chat.approval.*` / `chat.userQuestions/*` 载荷，不是专用 kind）。
 
-**WS 优先，REST 兜底**：移动端业务（发消息、查历史、选模型、回复审批/提问、执行命令、文件下载）优先走 WS；REST `/api/v1` 保留作为兜底与管理面（`/manage/*`），两者共享同一套设备 token / loopback admin 鉴权与 scope/root/session 授权。
+**帧优先，REST 兜底**：移动端业务（发消息、查历史、选模型、回复审批/提问、执行命令、文件下载）优先走帧；REST `/api/v1` 是老协议，已冻结并逐步下线，只服务未升级的客户端与没有帧等价物的能力（例外表见「协议面状态与弃用表」§3）。两条通道共享同一套设备 token / loopback admin 鉴权与 scope/root/session 授权。
 
 ### 端点与鉴权
 
@@ -1073,6 +1149,6 @@ reason,maxAudioBytes,maxDurationSeconds}`。
 | 定时任务（cron） | **已对等（限 cron 形态）** | 创建/列表/局部改/删除/暂停恢复（0.2.2 起）；一次性、固定间隔与 rrule 提醒不可表达，不在列表出现 |
 | 官方语音输入 | **已对等** | 目录/转写/配置；内核无服务时为 200 `available:false` 而非 404 |
 
-以下 DSH WebUI 能力尚未进入稳定外部契约：会话搜索、消息队列、通用问题回答、工作区自定义排序、归档恢复、目标、子代理、技能和后台任务。
+以下 DSH WebUI 能力仍有缺口：后台任务（`jobs`）与子会话历史**没有帧**，继续走 REST（例外表 §3）；工作区自定义排序、回收站管理同样只有 REST。会话搜索走 `kernel-call` 的 `session/search`；目标与子代理已有 `goal-*` / `subagents` 帧；消息队列由 `message` 帧的 `mode` 表达，不是独立能力。
 
-App 不得直接调用 DSH 私有 `/api` 或通用 RPC 透传。每项缺失能力必须在插件中定义稳定 REST/事件 schema、对应设备 scope/root/session 授权、脱敏规则、OpenAPI/AsyncAPI、Kotlin SDK 和合约测试后才能标记为对等。
+App 不得直接调用 DSH 私有 `/api`；确需通用内核调用时只能走 `dshrb-v1` 的 `kernel-call`（23 条白名单 + 12 个拒绝命名空间 + scope 同源，见上文）。每项新能力必须在插件中定义**帧 + 能力位**、对应设备 scope/root/session 授权、脱敏规则、AsyncAPI 帧枚举、Kotlin SDK 和合约测试，才能标记为对等；确实做不成帧的，按例外表登记并写清理由。

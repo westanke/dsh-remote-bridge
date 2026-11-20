@@ -2,7 +2,7 @@
 
 <p align="center">
   <strong>You left the house. The desktop is still locked. Take out your phone and keep using that machine.</strong><br>
-  Translates DSH's private remote protocol into a versioned REST API so the phone clients
+  Translates DSH's private remote protocol into WebSocket frames (primary) plus a versioned REST API (legacy, being retired) so the phone clients
   dsh-companion and dsh-Chat keep your chats,
   sessions, files and devices on the same machine.
 </p>
@@ -23,7 +23,7 @@
   <img alt="License" src="https://img.shields.io/badge/license-AGPL--3.0-2da44e">
 </p>
 
-`dsh-remote-bridge` is the remote-access bridge plugin for DeepSeek Harness (DSH). It translates DSH's private remote protocol into a versioned REST API so dsh-companion ([GitHub](https://github.com/westanke/dsh-companion) · [Gitee](https://gitee.com/westanke/dsh-companion)) and dsh-Chat ([GitHub](https://github.com/westanke/dsh-Chat) · [Gitee](https://gitee.com/westanke/dsh-Chat)), among other trusted clients, can keep using the same chat, workspace, and file capabilities while away from the machine. On the desktop it provides a **Phone settings** section inside your DSH settings, rendering collapsible cards inline: five in the main list (Remote / Public tunnel / Devices / Trash / App download) plus a collapsed-by-default **Advanced settings** group holding Roots, Image reading and Plugins — every card folds on its own and several may stay open at once.
+`dsh-remote-bridge` is the remote-access bridge plugin for DeepSeek Harness (DSH). It translates DSH's private remote protocol into **two device protocol surfaces**: the bidirectional `/ws/mobile` frames (every new capability lands only here, since v2.8) and the versioned REST `/api/v1` (legacy: frozen, shrink-only, being retired) so dsh-companion ([GitHub](https://github.com/westanke/dsh-companion) · [Gitee](https://gitee.com/westanke/dsh-companion)) and dsh-Chat ([GitHub](https://github.com/westanke/dsh-Chat) · [Gitee](https://gitee.com/westanke/dsh-Chat)), among other trusted clients, can keep using the same chat, workspace, and file capabilities while away from the machine. On the desktop it provides a **Phone settings** section inside your DSH settings, rendering collapsible cards inline: five in the main list (Remote / Public tunnel / Devices / Trash / App download) plus a collapsed-by-default **Advanced settings** group holding Roots, Image reading and Plugins — every card folds on its own and several may stay open at once.
 
 **Who it is for**: people who use DSH as their main tool but do not want to be tied to the desk. Remote access is **off by default** — until you enable it, the plugin listens on loopback only, so installing it never exposes the machine to the LAN by itself.
 
@@ -251,7 +251,17 @@ External requests use `rootId + relativePath`, never an absolute server path.
 
 Removing a DSH workspace removes only its WebUI registration. Directories, files, and session logs remain. Archiving a session hides it from the default list while preserving its log.
 
-## Public API
+## Public API (two protocol surfaces)
+
+**The primary surface is WebSocket frames** — every new capability lands only here:
+
+```text
+ws://HOST:PORT/ws/mobile
+```
+
+Handshake subprotocol `dsh-mobile-v1` (plus `dsh-pair.<code>` when pairing for the first time, then `dsh-auth.<token>` or `Authorization: Bearer`). Clients send `{type:…}`, the server replies `{kind:…}`, and `hello` arrives on connect with the capability bits. Frames and semantics: [API.md, mobile gateway](./docs/project/API.md#移动端网关-websocket-wsmobile). `dshrb-v1` opens the generic kernel-call surface.
+
+**REST is legacy**: frozen, shrink-only. The per-endpoint deprecation table (replacement frame plus earliest removal in 3.0.0) is in [API.md's protocol-surface section](./docs/project/API.md). The table below remains for not-yet-updated clients and capabilities that have no frame equivalent.
 
 REST base URL:
 
@@ -287,7 +297,8 @@ Authorization: Bearer DEVICE_TOKEN
 | `PUT /chat/sessions/{id}/agent-preset` | Select an Agent before the first message |
 | `POST /chat/runs/{id}/cancel` | Cancel a running session |
 | `GET/POST/PATCH/DELETE /settings/...` | Providers, credential status, model discovery, and custom providers |
-| `WS /events` | Chat deltas, runs, approvals, and file events |
+| `WS /ws/mobile` | **Primary surface**: bidirectional frames (messages, history, approvals, questions, files, plugins, schedules, speech) |
+| `WS /events` | Legacy: one-way event stream, kept only as a reconnect fallback |
 
 See the [OpenAPI 3.1 contract](./docs/api/openapi.yaml), [AsyncAPI contract](./docs/api/asyncapi.yaml), and included [Kotlin SDK](./kotlin-sdk/README.md) for exact schemas.
 

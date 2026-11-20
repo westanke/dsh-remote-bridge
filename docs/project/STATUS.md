@@ -1,6 +1,15 @@
 # 当前状态
 
 - 日期：2026-11-19（**已发版 v2.12.1：大文件上传流式化 + 隧道工具 schema 修形**；`main` 上另有未发版的 issue #26 阶段 0 / 1 / 2 / 3a / 3b / 3c / 3d / 4 / 5 / 6 / 7 / 8 / 9、完工检修一批，以及真机测试期修的两个 bug）
+- **已完成（未发布，2026-11-20）· 协议面两级制：帧是唯一落点，REST 进弃用表**：
+  按用户 2026-11-20 的口径（「REST 协议将逐步下线」）把文档制度补齐：`AGENTS.md` 新增 §1.1
+  （四条铁律 + 三步弃用法 + 最早移除 3.0.0），§3.5 由方向说明改写为施工口径；`API.md` 新增
+  「协议面状态与弃用表」（已弃用 21 条 REST → 替代帧 / 迁移中 13 条 / 永久例外 / 迁移指引）；
+  `openapi.yaml` 给这 21 个 operation 标 `deprecated` + `x-dsh-replaced-by` +
+  `x-dsh-removal-not-before`；`COMPATIBILITY.md` 加迁移矩阵；BFF 契约与 README 双站同步口径，
+  `mobile-gateway-comparison.md` 标历史文档。**纯文档/契约标注，运行时零改动**。
+  验收：`docs:check` 三段全绿（12 文档 / 53 tasks / 10 ADR / 锚点 134·145 双向一致），
+  `capabilities` / `mobile-frame-contract` / `kernel-allowlist` 42 用例通过。
 - **已完成（未发布，2026-11-20）· 客户端清单并列收录 dsh-Chat**：
   桥先前只承认 dsh-companion 一个受信任客户端。按「同一个桥、多个客户端」的定位补上第二个：
   `README.md`/`README.en.md` 客户端清单与下载页扩成两客户端（各 GitHub + Gitee 两条），

@@ -18,6 +18,7 @@
 | 知道某文件/目录干什么、新文件该放哪 | `docs/project/STRUCTURE.md` |
 | 知道某模块导出什么、接口签名长什么样 | `docs/project/INTERFACES.md` |
 | 知道某个接口长什么样 | `docs/project/API.md` + `docs/api/openapi.yaml` + `docs/api/asyncapi.yaml` |
+| 加新能力 / 改协议面 | **先读 §1.1**：新能力只进 `/ws/mobile` 帧，REST 只减不增 |
 | 知道为什么这么设计 | `docs/project/ARCHITECTURE.md` → `docs/project/decisions/`（9 条 ADR） |
 | 改 wire schema | 先改 `API.md` + OpenAPI + AsyncAPI + Kotlin SDK + 测试，**再**改实现 |
 | 改代码前避坑 | `docs/project/PITFALLS.md`（名字 = 触发词 = 锚点） |
@@ -30,7 +31,8 @@
 
 ## 1. 本项目是什么（一句话与边界）
 
-- **定位**：把 DSH 内核的私有 remote 协议翻译成**版本化 REST**，供手机与第三方客户端远程访问；
+- **定位**：把 DSH 内核的私有 remote 协议翻译成**两个对外协议面** —— `/ws/mobile` 的双向帧
+  （**新能力的唯一落点**，WS 优先）与版本化 REST `/api/v1`（**老协议，逐步下线**，只服务已发布客户端）；
   同时在 DSH WebUI 设置里提供「📱 手机设置」面板（**只做设置**：主列表 5 张卡 +
   默认收起的「高级设置」组 3 张，见 `docs/project/STRUCTURE.md` 的 `client/cards/` 一节）。
 - **上游**：`Hakunm/dsh-workspace` v1.0.0（AGPL-3.0），本仓库是它的延续与改名
@@ -54,6 +56,36 @@
 
 > 改名前已核过：`/dsh-workspace-api` 前缀与 `dsh-workspace` 目录**刻意保留旧名**，
 > 看到它们不是改名没改干净。页面 `/dsh-workspace`（2.2.0 已删）与 REST 前缀是两回事。
+
+### 1.1 两个协议面：帧是唯一落点，REST 只减不增（2026-11-20 用户定）
+
+桥对外**只有两个设备协议面**，新能力只进新的那个：
+
+| 面 | 长什么样 | 状态 | 权威契约 |
+|---|---|---|---|
+| **移动端网关（新）** | `ws://HOST:PORT/ws/mobile`：客户端发 `{type:…}` 帧、服务端回 `{kind:…}` 帧，`hello` 携带能力位；子协议 `dsh-mobile-v1`，`dshrb-v1` 另开通用内核调用面 | **首选；新能力的唯一落点**。v2.8 起 | `docs/api/asyncapi.yaml` + `API.md` §移动端网关 |
+| **REST（老）** | `http://HOST:PORT/api/v1` | **老协议，逐步下线**：已冻结，只减不增 | `docs/api/openapi.yaml` + `API.md` |
+| 事件流（老） | `GET /api/v1/events`（SSE，单向） | 老协议；只作 WS 断线/降级的兜底 | `docs/api/asyncapi.yaml` |
+| 管理面 | `/manage/*`（仅回环） | 永久保留，不是设备契约 | `API.md` |
+
+**四条铁律**：
+
+1. **新能力 = 帧 + 能力位**，不再新增 REST 路径。要加 REST，必须先在 issue 里说明
+   「为什么做不成帧」（例：浏览器 `<img>` 直连、只有 HTTP 语义的服务）。
+2. **REST 只减不增**。能换成帧的端点，按**三步弃用**走（另在 `CHANGELOG-DEV.md` 记一句）：
+   `openapi.yaml` 该 operation 标 `deprecated: true` → `COMPATIBILITY.md` 写替代帧与最早移除版本
+   → `API.md` 的「协议面状态」表登记。**最早移除版本 3.0.0**（弃用至少要跨一个 minor，让已发布
+   App 有迁移窗口）。
+3. **换不掉的必须登记为例外**，不许默认永远保留：浏览器直连只读图片路由、`/manage/*`、
+   没有帧等价物的读面（后台任务、待处理审批/提问列表、子会话历史、附件字节）、
+   `ADR-0010` 的 4 条永久留桥。例外清单在 `COMPATIBILITY.md`。
+4. **客户端先帧、后 REST**。回落只允许两个条件：连不上 WS，或对端老桥回 `NOT_IMPLEMENTED`；
+   回落路径必须能说清是哪一种（`API.md` 的「内核可选服务与 REST 兜底」是范例）。
+
+**能力位与传输解耦**：`<能力>-vN` 只增不撤；同一个能力从 REST 迁到帧**不重命名**能力位，
+只把 `tests/capabilities.spec.ts` 的 `EVIDENCE` 从 OpenAPI 路径改为 AsyncAPI 帧（两侧都认）。
+
+**给客户端的弃用表**在 `API.md`「协议面状态」；**版本口径、例外表与迁移矩阵**在 `COMPATIBILITY.md`。
 
 ---
 
@@ -195,6 +227,36 @@ docs/api/            ← OpenAPI + AsyncAPI（wire schema 的权威）
 - 明细只写在 `STRUCTURE.md` / `INTERFACES.md` 一处；本文件**不抄文件清单和签名**
   （抄了必然漂，见 §3.2 行数那段的教训）。
 - 锚点区的标题与标记是**机器契约**，改格式要同批改 `scripts/check-project-docs.ts`。
+
+### 3.5 协议演进的施工口径
+
+方向与铁律在 §1.1，这里只写「动一次要改哪几处」——**不要在 issue 里重新论证方向**。
+
+**弃用一条 REST**（同一提交四件事，缺一件就是「口头弃用」）：
+
+1. `docs/api/openapi.yaml`：该 operation 加 `deprecated: true`、`x-dsh-replaced-by: <帧名>`、
+   `x-dsh-removal-not-before: '3.0.0'`；
+2. `docs/project/API.md` 的「协议面状态」表加一行（替代帧、最早移除版本、登记成例外的要写理由）；
+3. `docs/project/COMPATIBILITY.md` 的迁移矩阵同步；
+4. `docs/project/CHANGELOG-DEV.md` 的「未发布」段写一句「REST `X` 已弃用，改用帧 `Y`」。
+
+**移除一条 REST**：只许在大版本（≥ 3.0.0），且三条前置缺一不可 —— `ROADMAP.md` 已公告至少一个
+minor、`openapi.yaml` 里 `deprecated` 已存在至少一个 minor、两个客户端仓（`dsh-companion` /
+`dsh-Chat`）确认不再调用。**「发了公告」不等于「没人用」**：动手前 grep 姊妹仓的
+`DshClientBff.kt` / `MobileWsTransport.kt`，再跑一遍 `pnpm test`。
+
+**新增一帧**：§3.1 的五处同步 + 能力位（`src/host/capabilities.ts`）+ AsyncAPI 的
+`MobileClientFrame.type.enum`（`docs:check` 的帧对账会红）+ `INTERFACES.md` §3.5。
+
+**判断「换得掉」**：客户端已有帧路径，且帧的授权、上限、错误语义与 REST 等价。不等价就登记例外，
+不要为了「端点数量好看」硬换 —— 换出功能缺口比多留一条端点贵得多。
+
+**为什么有这条**：`API.md` 原来的「WS 优先，REST 兜底」只说了运行时取舍，没说**长期方向**，
+于是每次「加个端点吧」都像低成本选项，两年后就是两套并行契约各自漂移。§1.1 把默认值定死，
+这一节保证它可执行：**弃用 = openapi + API.md + COMPATIBILITY + CHANGELOG 四件套**。
+
+> 用户 2026-11-20 原话：「在桥的宪法中加一条『REST 协议将逐步下线，客户端能弃用该协议的弃用，
+> 能用已有的其他协议替换的替换』。」
 
 ---
 

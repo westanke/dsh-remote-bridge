@@ -6,6 +6,13 @@ info:
     Live file and authorized DSH chat events. Reconnect clients must refresh
     REST state; unbounded replay is not provided.
 
+    **Protocol surface**: the `/ws/mobile` frames are the bridge's primary
+    device protocol — every new capability lands here. The `/api/v1` REST
+    surface is legacy: frozen, shrink-only and being retired. Deprecated REST
+    operations are flagged in `docs/api/openapi.yaml` with `deprecated: true`,
+    `x-dsh-replaced-by` and `x-dsh-removal-not-before`, and listed per endpoint
+    in `docs/project/API.md` ("protocol surface status").
+
     `chat.turn.failed` carries the terminal failure of a model turn (rate
     limit, quota exhausted, invalid API key, signed-out stop). Without it a
     remote client sees an ordinary `chat.turn.end` and keeps waiting on a run

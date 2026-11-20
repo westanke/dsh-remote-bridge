@@ -1,5 +1,10 @@
 # dsh-remote-bridge vs dsh-plugin-mobile-gateway 功能/能力对比分析
 
+> **历史文档（v2.7.1 时期）**：「remote-bridge 仅单向广播、REST 为主」的结论**已过时**。
+> v2.8 起桥有 `/ws/mobile` 双向帧，v2.13.0 起它是**第一协议面**，REST 已冻结并逐步下线
+> （见 [AGENTS.md](../../AGENTS.md) §1.1、[API.md](API.md) 的「协议面状态与弃用表」）。
+> 本文件只留作改造过程记录，**不是当前契约**。
+
 > 数据来源：`dsh-remote-bridge` 本地仓 v2.7.1（`src/host/server.ts`、`src/host/chat-adapter.ts`、`docs/project/API.md` 等）；`dsh-plugin-mobile-gateway` 上游 `Clarklevis1995/dsh-plugin-mobile-gateway` **v0.11.1** （`package/PROTOCOL.md`、`package/lib/index.mjs`，npm registry tarball，解压至 `/media/wangke/OFFICE/workspace/dsh-study/mobile-gateway-latest/package/`）。
 >
 > 注意：之前基于本地旧副本 v0.10.1 做过一次对比（commit f7b5c44，已写入 `/ws/mobile` WS 基础能力）。本文以 npm 发布最新版 **v0.11.1** 为新基准重新对比，v0.11.1 相对 v0.10.1 大幅新增：普通文件分块上传（SHA-256 校验、进度确认、取消、断线清理）、file-references-v1、deliverables/presented、assistant-stream、llm/retry 事件、session-stats、session-archives/title-changed、tasks-updated/goal-updated/projection-baseline/schedule-changed 推送、schedule 定时任务、plugin management、speech 输入、agent-team/子会话、session-create、fork、split-channels、设备名称、agent-preset 会话锁定、protocol v3、pairing v2 Base64URL。
