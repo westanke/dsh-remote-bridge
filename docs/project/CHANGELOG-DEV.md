@@ -21,7 +21,9 @@
   不得直连 WS」的旧立场。
 - `docs/project/INTERFACES.md`：分层表把 `/ws/mobile` 列为第一协议面；§3.4 依据允许指向 AsyncAPI 帧
   且禁用已弃用端点；§3.5 修正「`search` 只有客户端帧」为「阶段 8 已删除，再发只回 `UNKNOWN_TYPE`」。
-- README 双站：定位句与「对外接口」补 `/ws/mobile` 为第一协议面、REST 为老协议；接口表加 WS 两行。
+- README 双站：定位句与「对外接口」补 `/ws/mobile` 为第一协议面、REST 为老协议；接口表加 WS 两行；
+  新增「为什么换成 WebSocket 帧」小节（轮询 vs 主动推、路径膨胀与双契约漂移、断线续传、
+  大文件分块，附代价与 REST 保留边界）。
 
 **验收**：`pnpm docs:check`（四段）+ `pnpm test` 全绿。
 **未做**：3.0.0 的实际移除（按 §3.5 三条前置，至少跨一个 minor）、`dsh-companion` 三域对等面迁帧。

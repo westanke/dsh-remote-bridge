@@ -261,7 +261,18 @@ ws://HOST:PORT/ws/mobile
 
 Handshake subprotocol `dsh-mobile-v1` (plus `dsh-pair.<code>` when pairing for the first time, then `dsh-auth.<token>` or `Authorization: Bearer`). Clients send `{type:…}`, the server replies `{kind:…}`, and `hello` arrives on connect with the capability bits. Frames and semantics: [API.md, mobile gateway](./docs/project/API.md#移动端网关-websocket-wsmobile). `dshrb-v1` opens the generic kernel-call surface.
 
-**REST is legacy**: frozen, shrink-only. The per-endpoint deprecation table (replacement frame plus earliest removal in 3.0.0) is in [API.md's protocol-surface section](./docs/project/API.md). The table below remains for not-yet-updated clients and capabilities that have no frame equivalent.
+### Why frames instead of REST
+
+REST is request/response: the client must know a path for every operation, and the server can never speak first. Phones need the opposite —
+
+- **Approvals, questions and streaming replies must wake the client.** Over REST you poll: slowly, or for nothing; a frame connection lets the server push.
+- **Every capability used to cost a new path.** Path × method × error codes × docs, written again each time, and two parallel contracts drift. A frame costs one `type`, announced at runtime through the capability bits in `hello`.
+- **Reconnects must resume.** History replays by `seq` and `connection-resync-required` says plainly that state must be rebuilt; REST clients had to invent that.
+- **Large files should not be base64.** Frames chunk transfers (512 KiB down / 256 KiB up) with a sha256 check on the last chunk; REST upload is one base64 blob or a second upload session.
+
+The cost is real: long connections need heartbeats and reaping, tunnels and reverse proxies must survive upgrades and idle timeouts, and the implementation is more complex. That is why REST has not disappeared: old clients still use it, and read surfaces with no frame equivalent (background jobs, pending approvals/questions, subagent history, attachment bytes) stay. See [API.md's protocol-surface table](./docs/project/API.md#协议面状态与弃用表2026-11-20-起).
+
+**REST is legacy**: frozen, shrink-only. The per-endpoint deprecation table (replacement frame plus earliest removal in 3.0.0) is in [API.md's protocol-surface section](./docs/project/API.md). The table below remains for not-yet-updated clients and capabilities that have no frame equivalent. **Published clients are unaffected**: the 21 deprecated operations keep working until 3.0.0.
 
 REST base URL:
 
