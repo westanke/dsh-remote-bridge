@@ -17,7 +17,7 @@
 
 <p align="center">
   <a href="./README.en.md">English</a> ·
-  <img alt="Version" src="https://img.shields.io/badge/version-v2.13.0-087f8c">
+  <img alt="Version" src="https://img.shields.io/badge/version-v2.14.0-087f8c">
   <img alt="DSH plugin" src="https://img.shields.io/badge/DeepSeek_Harness-plugin-1f2328">
   <img alt="Platforms" src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-586069">
   <img alt="License" src="https://img.shields.io/badge/license-AGPL--3.0-2da44e">
@@ -86,10 +86,10 @@ dsh plugin --profile web add dsh-remote-bridge
 dsh plugin --profile web add dsh-remote-bridge --registry https://registry.npmmirror.com
 
 # ② GitHub Release 的 tarball
-dsh plugin --profile web add https://github.com/westanke/dsh-remote-bridge/releases/download/v2.13.0/dsh-remote-bridge-v2.13.0.tgz
+dsh plugin --profile web add https://github.com/westanke/dsh-remote-bridge/releases/download/v2.14.0/dsh-remote-bridge-v2.14.0.tgz
 
 # ③ Gitee Release 的 tarball（国内访问更快）
-dsh plugin --profile web add https://gitee.com/westanke/dsh-remote-bridge/releases/download/v2.13.0/dsh-remote-bridge-v2.13.0.tgz
+dsh plugin --profile web add https://gitee.com/westanke/dsh-remote-bridge/releases/download/v2.14.0/dsh-remote-bridge-v2.14.0.tgz
 
 npx @deepseek-ai/dsh web
 ```
@@ -105,7 +105,7 @@ npx @deepseek-ai/dsh web
 从 GitHub Release 下载离线安装包时，可直接安装 tarball：
 
 ```sh
-dsh plugin --profile web add ./dsh-remote-bridge-v2.13.0.tgz
+dsh plugin --profile web add ./dsh-remote-bridge-v2.14.0.tgz
 ```
 
 ## 第一次使用
@@ -462,7 +462,7 @@ pnpm check
 pnpm pack
 ```
 
-`pnpm check` 覆盖类型检查、文档一致性与测试；当前 **92 个测试文件 / 1003 个用例**，外加 **9 个浏览器层用例**（Playwright 实测量出的计算样式，含 375px 窄屏契约），全部通过。
+`pnpm check` 覆盖类型检查、文档一致性与测试；当前 **93 个测试文件 / 1021 个用例**，外加 **9 个浏览器层用例**（Playwright 实测量出的计算样式，含 375px 窄屏契约），全部通过。
 
 `npm pack` 的产物约 **0.64 MB**（v2.6.1 实测 669,434 字节，SHA-256 `9bf0189b…2cd35`）：2.2.0 删除独立页及其编辑器依赖、并关闭 source map 之后从 1.72 MB 降下来，之后随投影透传、权限 BFF 与五维加固小幅增长。
 
@@ -471,6 +471,14 @@ v2.5.0 在 DSH **0.2.1-rc.2** 上完成真机验证：14/14 宿主服务全部�
 （commit `3f321d32bfe382212a8ed8785c1d47a5a300aa23`），兼容范围见上文 `engines.dsh`。
 CI 覆盖 Windows、Ubuntu 和 macOS **各两档内核**（`0.2.2-rc.1` 与 `0.2.2-rc.4`），
 即 `engines.dsh` 声明区间的下界与上界附近各测一次（issue #26 阶段 0.1）。
+
+**v2.14.0 的验证状态**：93 个测试文件 / **1021 个用例**全绿、`typecheck`/`docs:check`/构建通过。
+这一版补齐 dsh-Chat 的队列管理与目标 activation（issue IKX1ZM）：新增 `session-queues` /
+`queue-update` / `goals-get` 三帧与 `queue-item-updated` / `goal-updated` 两条推送（能力位
+`mobile-queue-v1` / `mobile-goal-activation-v1`）。队列读会话投影 `inbox`（冷会话的内核
+`session/state` 里 `queue` 是 `null`，投影才稳定），写代理内核 `session/updateQueue`；目标
+activation 走内核 `goals/get`（投影故意不含这个字段），清除后带墓碑语义不闪回。顺带修掉一处
+既有缺陷：goal 写的越权检查漏了 `await`，从来没有做过会话授权判定。未做：真机四步回归。
 
 **v2.13.0 的验证状态**：92 个测试文件 / **1003 个用例**全绿、`typecheck`/`docs:check`/构建通过；
 安卓真机（vivo V2080A / Android 11 / 内核 0.2.2-rc.4）跑通 15 项功能面。这一版把桥手抄的
@@ -557,7 +565,7 @@ DSH **0.2.1-rc.3** 隔离实例上**实跑验过**，不是静态推断：插件
 
 ## 项目信息
 
-- 当前版本：`v2.13.0`
+- 当前版本：`v2.14.0`
 - **v2.9.0 是团队成员（子会话）可读版**：手机端的团队面板此前只能看到成员与子会话的名字，点开读不到
   任何内容 —— 因为 `sessions.list` 会把 `origin === 'subagent'` 的行整批滤掉（桥自己的
   `dsh-0.2-bridge.ts:2327`，注释写明「暴露出来只会得到点开就崩的行」），子会话 id 打 `/messages`

@@ -17,7 +17,7 @@
 
 <p align="center">
   <a href="./README.md">中文</a> ·
-  <img alt="Version" src="https://img.shields.io/badge/version-v2.13.0-087f8c">
+  <img alt="Version" src="https://img.shields.io/badge/version-v2.14.0-087f8c">
   <img alt="DSH plugin" src="https://img.shields.io/badge/DeepSeek_Harness-plugin-1f2328">
   <img alt="Platforms" src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-586069">
   <img alt="License" src="https://img.shields.io/badge/license-AGPL--3.0-2da44e">
@@ -92,10 +92,10 @@ dsh plugin --profile web add dsh-remote-bridge
 dsh plugin --profile web add dsh-remote-bridge --registry https://registry.npmmirror.com
 
 # 2. tarball from the GitHub release
-dsh plugin --profile web add https://github.com/westanke/dsh-remote-bridge/releases/download/v2.13.0/dsh-remote-bridge-v2.13.0.tgz
+dsh plugin --profile web add https://github.com/westanke/dsh-remote-bridge/releases/download/v2.14.0/dsh-remote-bridge-v2.14.0.tgz
 
 # 3. tarball from the Gitee release (faster from mainland China)
-dsh plugin --profile web add https://gitee.com/westanke/dsh-remote-bridge/releases/download/v2.13.0/dsh-remote-bridge-v2.13.0.tgz
+dsh plugin --profile web add https://gitee.com/westanke/dsh-remote-bridge/releases/download/v2.14.0/dsh-remote-bridge-v2.14.0.tgz
 
 npx @deepseek-ai/dsh web
 ```
@@ -112,7 +112,7 @@ Restart DSH after installation, then open settings — The section is titled **�
 To install a downloaded release archive:
 
 ```sh
-dsh plugin --profile web add ./dsh-remote-bridge-v2.13.0.tgz
+dsh plugin --profile web add ./dsh-remote-bridge-v2.14.0.tgz
 ```
 
 ## First connection
@@ -400,11 +400,23 @@ pnpm check
 pnpm pack
 ```
 
-`pnpm check` covers type-checking, documentation consistency, and tests. It currently passes **92 test files / 1003 cases**, plus **9 browser-layer cases** (Playwright measuring real computed styles, including the 375px narrow-viewport contract).
+`pnpm check` covers type-checking, documentation consistency, and tests. It currently passes **93 test files / 1021 cases**, plus **9 browser-layer cases** (Playwright measuring real computed styles, including the 375px narrow-viewport contract).
 
 `npm pack` produces roughly a **0.64 MB** archive (v2.6.1 measured 669,434 bytes, SHA-256 `9bf0189b…2cd35`): 2.2.0 dropped the standalone page and its editor dependencies and turned source maps off, down from 1.72 MB; it has since grown slightly with projection passthrough, the permission BFF, and the five-dimension hardening.
 
 v2.5.0 was verified on DSH **0.2.1-rc.2** on real hardware: all 14/14 host services injected, the three jobs endpoints exercised, and the permission catalog returned the kernel's real three presets. **The current development baseline** is upstream `dsh-v0.2.2-rc.4` (commit `3f321d32bfe382212a8ed8785c1d47a5a300aa23`); see `engines.dsh` above for the supported range. CI covers Windows, Ubuntu, and macOS on **two kernel versions each** (`0.2.2-rc.1` and `0.2.2-rc.4`) — the lower bound and the near-upper bound of the range declared in `engines.dsh` (issue #26, phase 0.1).
+
+**v2.14.0 verification status**: 93 test files / **1021 cases** green; `typecheck`, `docs:check`,
+and the build all pass. This release catches dsh-Chat up on queue management and goal activation
+(issue IKX1ZM): three new frames (`session-queues`, `queue-update`, `goals-get`) and two pushes
+(`queue-item-updated`, `goal-updated`), gated by the `mobile-queue-v1` and
+`mobile-goal-activation-v1` capability flags. The queue is read from the session `inbox` projection
+(a cold session's kernel `session/state` reports `queue: null`, so the projection is the stable
+source) and written through the kernel's `session/updateQueue`; goal activation comes from the
+kernel's `goals/get`, because the projection deliberately omits that field, and a cleared goal
+returns a tombstone so clients never see it flash back. Also fixes a pre-existing defect: the goal
+write authorization check was missing `await` and therefore never ran. Not covered: the four-step
+real-device pass.
 
 **v2.13.0 verification status**: 92 test files / **1003 cases** green; `typecheck`, `docs:check`,
 and the build all pass. Fifteen functional surfaces were exercised on real hardware (vivo V2080A /
@@ -524,7 +536,7 @@ inside the zero-change set, and 4 slots retained with 0 removed.
 
 ## Project
 
-- Version: `v2.13.0`
+- Version: `v2.14.0`
 - **v2.9.0 makes teammates (sub-sessions) readable**: the phone's team panel could list members and
   sub-sessions but could not open a single one, because `sessions.list` filters out every row with
   `origin === 'subagent'` (the bridge's own `dsh-0.2-bridge.ts:2327`, with a comment explaining that

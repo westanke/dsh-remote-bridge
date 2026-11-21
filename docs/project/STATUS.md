@@ -71,7 +71,7 @@
   子会话写、`defaults`/`set-default`、插件 4 条（`cancelInstall`/版本豁免/setPluginEnabled）、
   `agentTeams/setEnabled`、device-tools（竞品 29 工具 / 8 帧，属独立里程碑）。
   ~~队列读写~~ 已于 2026-11-21 落地（见下条 issue IKX1ZM）。
-- **已完成（未发布，issue IKX1ZM / `MOB-014`，2026-11-21）· 队列帧 + 目标 activation（dsh-Chat 对齐）**：
+- **已完成（v2.14.0，issue IKX1ZM / `MOB-014`，2026-11-21）· 队列帧 + 目标 activation（dsh-Chat 对齐）**：
   ①**队列（能力位 `mobile-queue-v1`）**：新增 `src/host/ws-queues.ts` —— `session-queues` 读会话投影
   `inbox`（`next-turn`/`next-step`）归一成 `QueueEntry[]`（`inboxId`/`slot`/`mode`/`text`/`resendable`/
   `sourceKind`），`queue-update` 代理内核 `session/updateQueue`（`remove`/`steer`/`edit`），成功回
