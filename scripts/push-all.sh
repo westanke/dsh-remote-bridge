@@ -56,8 +56,16 @@ fi
 PAIRS=("gitee:Gitee" "atomgit:AtomGit")
 [ "$INCLUDE_GITHUB" = "1" ] && PAIRS+=("origin:GitHub")
 
-force_args=()
-[ "$FORCE" = "1" ] && force_args=(--force-with-lease)
+# 为什么不用「空数组 + "${a[@]}"」：bash 3.2（macOS 自带）在 `set -u` 下把**空数组**的
+# 展开当成 unbound variable 直接退出（2026-11-21 GitHub macOS runner 实锤；ubuntu 的 bash 5 没事）。
+# 改成 if/else 就没有「可能为空的数组」，两端行为一致。
+push_ref() {
+  if [ "$FORCE" = "1" ]; then
+    git push --force-with-lease "$1" "$2"
+  else
+    git push "$1" "$2"
+  fi
+}
 
 fail=0
 
@@ -71,7 +79,7 @@ say ""
 for pair in "${PAIRS[@]}"; do
   r="${pair%%:*}"; label="${pair##*:}"
   say "→ $label ($r)"
-  if git push "${force_args[@]}" "$r" "$BRANCH"; then
+  if push_ref "$r" "$BRANCH"; then
     ok "$label 分支推送成功"
   else
     bad "$label 分支推送失败"
@@ -109,7 +117,7 @@ if [ "$PUSH_TAGS" = "1" ]; then
         say "  $label: $t 已存在，跳过"
         continue
       fi
-      if git push "${force_args[@]}" "$r" "refs/tags/$t" >/dev/null 2>&1; then
+      if push_ref "$r" "refs/tags/$t" >/dev/null 2>&1; then
         ok "$label: $t 推送成功"
       else
         bad "$label: $t 推送失败"
