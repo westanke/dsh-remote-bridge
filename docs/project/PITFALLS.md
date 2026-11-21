@@ -1051,7 +1051,10 @@ rejected（NO_PROVIDER，手机是唯一界面）→ 自拒起 10 分钟自愈�
    `{"repo":"<repo>","number":"<编号>","state":"closed"}`（JSON body 可用）。
 2. 评论走 `POST /repos/{owner}/{repo}/issues/{number}/comments`（读同款路径）；
    token 统一放 query 或 header，`-F` 与 `-d @file` 混用会静默失败（multipart 混 urlencoded）。
-3. 项目管理型（project 型）issue 的写 API 未公开，仍只能网页操作。
+3. **新建 issue 同理**（2026-11-21 又踩一次，开 dsh-Chat 对接单）：`POST /repos/{owner}/issues`
+   （同样没有 repo 段），body 带 `{"repo":"<repo>","title":…,"body":…}` 才 201；
+   按官方 swagger 写 `/repos/{owner}/{repo}/issues` 回 404 `{"message":"project or enterprise"}`。
+4. 项目管理型（project 型）issue 的写 API 未公开，仍只能网页操作。
 
 ---
 
