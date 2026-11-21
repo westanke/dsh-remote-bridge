@@ -1,3 +1,9 @@
+## 未发布 · kernel-call 白名单放行 `skills/list`（dsh-Chat 斜杠面板技能分组）
+
+`KERNEL_ALLOWLIST` 增一条只读端点 `skills/list`（scope `chat.read`，`sessions: requestSession`
+按会话过滤）：客户端要按当前会话组合列技能，走既有 `kernel-call` 帧即可，不新开专用帧、不动
+asyncapi 帧表。白名单 23 → 24 条，`tests/kernel-allowlist.spec.ts` 的钉数用例同步。
+
 ## v2.14.0 · 队列帧 + 目标 activation（issue IKX1ZM，2026-11-21）
 
 **为什么有这一段**：dsh-Chat 的排队管理（气泡上有「撤回 / 改插话 / 改文本 / 立即发送」）和目标双维

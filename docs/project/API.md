@@ -887,7 +887,7 @@ v2.8 新增，**现在是桥的第一协议面**：新能力只在这里落帧�
     的 `offersKernelSubprotocol` 读请求头），握手回给客户端的子协议仍是 `dsh-mobile-v1`。
     已发布 App 的清单里没有它 ⇒ 帧词表与行为**与今天逐字相同**，新帧名不会出现在老连接上。
   - **白名单是唯一执法点**（`src/host/bridge/kernel-allowlist.ts`）：通用调用面只接
-    `KERNEL_ALLOWLIST` 里的 23 条 unary 端点，其余一律 `METHOD_NOT_ALLOWED`，且文案与
+    `KERNEL_ALLOWLIST` 里的 24 条 unary 端点，其余一律 `METHOD_NOT_ALLOWED`，且文案与
     「内核根本没这个端点」完全同形（先拒后查目录 —— 让错误码无法当存在性探针）。
     `terminal` / `sandbox` / `dynamicCordisRunner` / `workspaceFiles` / `fileUploads` /
     `settings` / `credentials` / `account` / `liveshareShares` / `cuaAccess` / `forgePanel` /
@@ -1172,4 +1172,4 @@ reason,maxAudioBytes,maxDurationSeconds}`。
 
 以下 DSH WebUI 能力仍有缺口：后台任务（`jobs`）与子会话历史**没有帧**，继续走 REST（例外表 §3）；工作区自定义排序、回收站管理同样只有 REST。会话搜索走 `kernel-call` 的 `session/search`；目标与子代理已有 `goal-*` / `subagents` 帧；消息队列由 `message` 帧的 `mode` 表达，不是独立能力。
 
-App 不得直接调用 DSH 私有 `/api`；确需通用内核调用时只能走 `dshrb-v1` 的 `kernel-call`（23 条白名单 + 12 个拒绝命名空间 + scope 同源，见上文）。每项新能力必须在插件中定义**帧 + 能力位**、对应设备 scope/root/session 授权、脱敏规则、AsyncAPI 帧枚举、Kotlin SDK 和合约测试，才能标记为对等；确实做不成帧的，按例外表登记并写清理由。
+App 不得直接调用 DSH 私有 `/api`；确需通用内核调用时只能走 `dshrb-v1` 的 `kernel-call`（24 条白名单 + 12 个拒绝命名空间 + scope 同源，见上文）。每项新能力必须在插件中定义**帧 + 能力位**、对应设备 scope/root/session 授权、脱敏规则、AsyncAPI 帧枚举、Kotlin SDK 和合约测试，才能标记为对等；确实做不成帧的，按例外表登记并写清理由。

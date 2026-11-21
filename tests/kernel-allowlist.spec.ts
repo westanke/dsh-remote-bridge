@@ -69,8 +69,8 @@ function authorizerOf(granted: readonly DeviceScope[] = DEVICE_SCOPES): {
 }
 
 describe('KERNEL_ALLOWLIST', () => {
-  it('pins exactly 23 unique endpoints, each named ns/method with a known device scope', () => {
-    expect(KERNEL_ALLOWLIST).toHaveLength(23)
+  it('pins exactly 24 unique endpoints, each named ns/method with a known device scope', () => {
+    expect(KERNEL_ALLOWLIST).toHaveLength(24)
     const endpoints = KERNEL_ALLOWLIST.map(entry => entry.endpoint)
     // 重复登记会让索引「先出现的为准」变成静默覆盖，白名单规模悄悄缩水。
     expect(new Set(endpoints).size).toBe(endpoints.length)
@@ -247,7 +247,7 @@ describe('single path principle', () => {
  * 与真实内核的对照。
  *
  * 这段**只在装了 DSH 的机器上跑**（CI 上没有内核，`skipIf` 让它整体跳过）。
- * 守的是「白名单点名的端点不是自说自话」：23 条全部存在于本机 0.2.2-rc.4 的
+ * 守的是「白名单点名的端点不是自说自话」：24 条全部存在于本机 0.2.2-rc.4 的
  * 生成登记表里。内核哪天把端点改名/下架，这里先红，而不是等手机上收到
  * `kernel/endpoint-unknown`。
  */

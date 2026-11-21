@@ -114,6 +114,8 @@ export const KERNEL_ALLOWLIST: readonly KernelAllowlistEntry[] = [
   { endpoint: 'session/search', scope: 'chat.read', summary: 'Search Session content within the roots this device may read.', filtersSessions: true },
   { endpoint: 'session/state', scope: 'chat.read', summary: 'Read one Session state snapshot without resuming it.', sessions: requestSession },
   { endpoint: 'session/canOpenWorkspacePath', scope: 'chat.read', summary: 'Check whether a workspace path may be opened.' },
+  // 会话可见技能目录（dsh-Chat 斜杠面板的「技能」分组；只读、按会话过滤）。
+  { endpoint: 'skills/list', scope: 'chat.read', summary: 'List the user-invocable skills visible to one Session composition.', sessions: requestSession },
   // —— 消息反馈（写入，但只影响标记）——
   { endpoint: 'messageFeedback/list', scope: 'chat.read', summary: 'List feedback marks for a message.', sessions: requestSession },
   { endpoint: 'messageFeedback/put', scope: 'chat.write', summary: 'Set a feedback mark on a message.', sessions: requestSession },
