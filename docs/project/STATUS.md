@@ -68,9 +68,30 @@
   （kernel-call 22 / ws-kernel-frames 10 / dsh-0.2-bridge 59 / kernel-deltas 15 /
   mobile-gateway-ws 101）。⚠️ **真机未跑、REST 逐字段快照未做**，未通过前不得宣称已验证。
   ⑧**未修但已确认（下批候选）**：`session/search` 帧仍不在词表（内核有端点、竞品有帧）、
-  队列读写（`session/control` + `session/updateQueue`）、子会话写、`defaults`/`set-default`、
-  插件 4 条（`cancelInstall`/版本豁免/setPluginEnabled）、`agentTeams/setEnabled`、
-  device-tools（竞品 29 工具 / 8 帧，属独立里程碑）。
+  子会话写、`defaults`/`set-default`、插件 4 条（`cancelInstall`/版本豁免/setPluginEnabled）、
+  `agentTeams/setEnabled`、device-tools（竞品 29 工具 / 8 帧，属独立里程碑）。
+  ~~队列读写~~ 已于 2026-11-21 落地（见下条 issue IKX1ZM）。
+- **已完成（未发布，issue IKX1ZM / `MOB-014`，2026-11-21）· 队列帧 + 目标 activation（dsh-Chat 对齐）**：
+  ①**队列（能力位 `mobile-queue-v1`）**：新增 `src/host/ws-queues.ts` —— `session-queues` 读会话投影
+  `inbox`（`next-turn`/`next-step`）归一成 `QueueEntry[]`（`inboxId`/`slot`/`mode`/`text`/`resendable`/
+  `sourceKind`），`queue-update` 代理内核 `session/updateQueue`（`remove`/`steer`/`edit`），成功回
+  `queue-updated` 带重读的整份队列；内核错误码原样透传，老内核回 `unsupported`。**不用
+  `session/state`**：冷会话那里 `queue` 是 `null`，投影才是唯一稳定来源。
+  ②**目标 activation（能力位 `mobile-goal-activation-v1`）**：`ws-goals.ts` 新增 `goals-get`（代理
+  内核 `goals/get`，回 `GoalView | null` + 顶层 `activation`）；`goal-clear` 现在把内核返回的墓碑
+  `ref`（revision = 清除前 + 1）与 `clearedAt` 一并回给客户端。
+  ③**推送**：新增 `src/host/ws-pushes.ts` 的 `SessionPushes` —— 按会话去抖 80 ms 后整份重读、
+  按连接签名去重、按订阅集合过滤、逐连接授权判定；`queue-item-updated` 随 turn start/end/failed、
+  消息提交、`agent/inbox/spliced`、本地写成功与新订阅首屏；`goal-updated` 随 `goal/*` 事件与写成功，
+  并带移动端最关心的 `activation`；`goal-clear` 之后用**墓碑**（同 id 且 revision ≤ 墓碑）把
+  迟到的旧快照压成 `goal:null` + `clearedAt`，客户端不闪回。
+  ④**顺带修的既有 bug**：`GoalsHandler.mutateGoal` 的越权检查写成了
+  `if (!this.chat.isSessionAuthorized(...))`（漏 `await`，`!Promise` 恒 false ⇒ goal 写从来没做过
+  会话授权判定），已改为 `if (!(await ...))`。
+  ⑤**首屏**：`history` 在 `beforeSeq` 缺省时额外带 `queue`，翻页不带。
+  ⑥**验收**：`npx tsc --noEmit` exit 0；`npx vitest run` **93 文件 / 1 021 用例全绿**（新增
+  `tests/ws-queues.spec.ts` 9 例 + `mobile-gateway-ws.spec.ts` 队列/目标 9 例）；`docs:check` 三段绿
+  （STRUCTURE 136 / INTERFACES 145）。⚠️ **真机 dsh-Chat 未跑**，四步排队/目标回归未做，未通过前不得宣称已验证。
 - **已完成（未发布，issue #26 阶段 9 / `MOB-013`，承接旧 issue #9）· `chat-adapter.ts` 按端点族拆分**：
   ①**纯搬移、零行为变化**：2 110 行单文件 → 装配根 `src/host/chat-adapter.ts`（**92**）+
   `src/host/chat-contracts.ts`（**570**）+ `src/host/chat/` 五族（`access.ts` 555 / `sessions.ts` 515 /

@@ -1065,10 +1065,12 @@ describe('mobile gateway WebSocket (/ws/mobile) — host snapshot', () => {
       }
       throw new Error(`Timed out waiting for UNKNOWN_TYPE for ${type}`)
     }
-    // 阶段 8（issue #26 / MOB-012）：这 5 个「只回结构化 NOT_IMPLEMENTED」的声明已从词表删除，
+    // 阶段 8（issue #26 / MOB-012）：这 4 个「只回结构化 NOT_IMPLEMENTED」的声明已从词表删除，
     // 声明没了 → 「能力暂缺」这个状态不该再存在，现在与拼错的帧同路（UNKNOWN_TYPE）。
     // 仍然带着旧形状的载荷发，证明处理器也不再按旧形状接它们。
-    for (const type of ['search', 'defaults', 'set-default', 'queue-update', 'directories']) {
+    // （`queue-update` 原本也在这批里，issue IKX1ZM 带着真实现回到了词表 —— 见
+    // 「队列与目标 activation」那组用例。）
+    for (const type of ['search', 'defaults', 'set-default', 'directories']) {
       socket.send(JSON.stringify({ type, query: 'x', sessionId: 'sess-1', itemId: 'message-1', action: 'remove' }))
       const error = await waitForUnknownType(type)
       expect(error.code).toBe('UNKNOWN_TYPE')
@@ -1603,6 +1605,260 @@ describe('mobile gateway WebSocket (/ws/mobile) — tasks, goal & session stats 
     await nextKind(frames, 'goal')
     const reply = frames.find(frame => frame.kind === 'goal')?.data as { goal?: unknown }
     expect(reply.goal).toBeDefined()
+    socket.close()
+  })
+})
+
+describe('mobile gateway WebSocket (/ws/mobile) — queue & goal activation (issue IKX1ZM)', () => {
+  async function authed(database: WorkspaceDatabase, rootId: string, url: string) {
+    const pairing = database.createPairing([rootId], ['chat.read', 'chat.write'] as never)
+    const credentials = database.exchangePairing(pairing.code, 'Mobile device')
+    const socket = connect(url, {
+      protocols: 'dsh-mobile-v1',
+      headers: { Authorization: `Bearer ${credentials.token}` },
+    })
+    const { frames } = collect(socket)
+    await new Promise<void>((resolve, reject) => {
+      socket.once('open', resolve)
+      socket.once('error', reject)
+    })
+    await nextKind(frames, 'hello')
+    return { socket, frames }
+  }
+
+  /** 投影里的 inbox：两个槽位各放一项，其中一项带非文本块（验 resendable）。 */
+  const INBOX = {
+    'next-turn': [
+      { id: 'msg-q1', content: [{ type: 'text', text: '先看一眼日志' }], source: { kind: 'user' } },
+      {
+        id: 'msg-q2',
+        content: [{ type: 'text', text: '顺便跑测试' }, { type: 'image', mimeType: 'image/png' }],
+        source: { kind: 'user' },
+      },
+    ],
+    'next-step': [
+      { id: 'msg-s1', content: [{ type: 'text', text: '插一句' }], source: { kind: 'user' } },
+    ],
+  }
+
+  /** 起一个 projections 带 inbox 的 harness（只替换 sessions.projections，其余照旧）。 */
+  async function startWithInbox() {
+    return startHarness({
+      apiOverrides: api => ({
+        sessions: {
+          ...api.sessions,
+          projections: async (request: { rpcId: string }) => ({
+            rpcId: request.rpcId,
+            result: { ok: true, value: { kind: 'sequenced', asOfSeq: 7, values: { inbox: INBOX } } },
+          }),
+        },
+      }),
+    })
+  }
+
+  /** 记录内核 Remote 调用（session/updateQueue 与 goals/get 共用），参数按原样留证。 */
+  function kernelRemote(responder: (method: string, args: Record<string, unknown>) => unknown) {
+    const calls: Array<{ namespace: string; method: string; args: Record<string, unknown> }> = []
+    const handle: HostRemoteHandle = {
+      invoke: async (namespace, method, args) => {
+        calls.push({ namespace, method, args: args ?? {} })
+        return responder(method, args ?? {}) as never
+      },
+      stream: async () => (async function* () { yield {} })(),
+    }
+    return { handle, calls }
+  }
+
+  it('maps the inbox projection into QueueEntry[] with next-step first and a stable inboxId', async () => {
+    const { database, root, url } = await startWithInbox()
+    const { socket, frames } = await authed(database, root.id, url)
+    socket.send(JSON.stringify({ type: 'session-queues', sessionId: 'sess-1', requestId: 'q1' }))
+    await nextKind(frames, 'session-queues')
+    const reply = frames.find(frame => frame.kind === 'session-queues')?.data as
+      { sessionId?: string; requestId?: string; queue?: Array<Record<string, unknown>> }
+    expect(reply.sessionId).toBe('sess-1')
+    expect(reply.requestId).toBe('q1')
+    expect(reply.queue?.map(entry => entry.inboxId)).toEqual(['msg-s1', 'msg-q1', 'msg-q2'])
+    expect(reply.queue?.[0]).toMatchObject({
+      inboxId: 'msg-s1',
+      requestId: 'msg-s1',
+      slot: 'next-step',
+      mode: 'steer',
+      text: '插一句',
+      resendable: true,
+      sourceKind: 'user',
+    })
+    // 带图片的项不可原样重发；text 只拼文本块。
+    expect(reply.queue?.[2]).toMatchObject({ slot: 'next-turn', mode: 'queue', text: '顺便跑测试', resendable: false })
+    socket.close()
+  })
+
+  it('proxies queue-update to the kernel session/updateQueue and answers with the fresh queue', async () => {
+    const remote = kernelRemote((_method) => ({ accepted: true }))
+    const { database, root, url } = await startHarness({
+      hostRemote: remote.handle,
+      apiOverrides: api => ({
+        sessions: {
+          ...api.sessions,
+          projections: async (request: { rpcId: string }) => ({
+            rpcId: request.rpcId,
+            result: { ok: true, value: { kind: 'sequenced', asOfSeq: 7, values: { inbox: INBOX } } },
+          }),
+        },
+      }),
+    })
+    const { socket, frames } = await authed(database, root.id, url)
+    socket.send(JSON.stringify({ type: 'queue-update', sessionId: 'sess-1', inboxId: 'msg-q1', action: 'remove', requestId: 'u1' }))
+    await nextKind(frames, 'queue-updated')
+    const reply = frames.find(frame => frame.kind === 'queue-updated')?.data as
+      { accepted?: boolean; requestId?: string; queue?: Array<{ inboxId: string }> }
+    expect(reply.accepted).toBe(true)
+    expect(reply.requestId).toBe('u1')
+    expect(reply.queue?.map(entry => entry.inboxId)).toEqual(['msg-s1', 'msg-q1', 'msg-q2'])
+    expect(remote.calls[0]).toEqual({
+      namespace: 'session',
+      method: 'updateQueue',
+      args: { request: { sessionId: 'sess-1', itemId: 'msg-q1', action: { kind: 'remove' } } },
+    })
+    socket.close()
+  })
+
+  it('sends edit text as a text content block and rejects edit without text', async () => {
+    const remote = kernelRemote(() => ({ accepted: true }))
+    const { database, root, url } = await startHarness({ hostRemote: remote.handle })
+    const { socket, frames } = await authed(database, root.id, url)
+    socket.send(JSON.stringify({ type: 'queue-update', sessionId: 'sess-1', inboxId: 'msg-q1', action: 'edit', text: '  改过的  ' }))
+    await nextKind(frames, 'queue-updated')
+    expect(remote.calls[0]?.args).toEqual({
+      request: {
+        sessionId: 'sess-1',
+        itemId: 'msg-q1',
+        action: { kind: 'edit', content: [{ type: 'text', text: '改过的' }] },
+      },
+    })
+
+    socket.send(JSON.stringify({ type: 'queue-update', sessionId: 'sess-1', inboxId: 'msg-q1', action: 'edit', text: '   ' }))
+    await nextKind(frames, 'error')
+    const error = frames.filter(frame => frame.kind === 'error').pop()?.data as
+      { code?: string; requestType?: string; message?: string }
+    expect(error.code).toBe('bad-request')
+    expect(error.requestType).toBe('queue-update')
+    expect(error.message).toContain('text is required for edit')
+    socket.close()
+  })
+
+  it('requires inboxId and a known action', async () => {
+    const { database, root, url } = await startHarness({ hostRemote: kernelRemote(() => ({ accepted: true })).handle })
+    const { socket, frames } = await authed(database, root.id, url)
+    socket.send(JSON.stringify({ type: 'queue-update', sessionId: 'sess-1', action: 'remove' }))
+    await nextKind(frames, 'error')
+    socket.send(JSON.stringify({ type: 'queue-update', sessionId: 'sess-1', inboxId: 'msg-q1', action: 'teleport' }))
+    await new Promise(resolve => setTimeout(resolve, 50))
+    const errors = frames.filter(frame => frame.kind === 'error').map(frame => frame.data as { code?: string; message?: string })
+    expect(errors[0]?.message).toContain('inboxId is required')
+    expect(errors[1]?.message).toContain("action must be one of")
+    socket.close()
+  })
+
+  it('answers unsupported for queue writes when the kernel has no Remote, but still serves reads', async () => {
+    const { database, root, url } = await startWithInbox()
+    const { socket, frames } = await authed(database, root.id, url)
+    socket.send(JSON.stringify({ type: 'queue-update', sessionId: 'sess-1', inboxId: 'msg-q1', action: 'steer' }))
+    await nextKind(frames, 'error')
+    expect((frames.find(frame => frame.kind === 'error')?.data as { code?: string }).code).toBe('unsupported')
+
+    socket.send(JSON.stringify({ type: 'session-queues', sessionId: 'sess-1' }))
+    await nextKind(frames, 'session-queues')
+    const reply = frames.find(frame => frame.kind === 'session-queues')?.data as { queue?: unknown[] }
+    expect(reply.queue).toHaveLength(3)
+    socket.close()
+  })
+
+  it('reads activation from the kernel goals/get Remote, and unsupported without it', async () => {
+    const remote = kernelRemote(() => ({ id: 'goal-1', revision: 8, objective: '目标', phase: 'paused', activation: 'disarmed' }))
+    const paused = await startHarness({ hostRemote: remote.handle })
+    {
+      const { socket, frames } = await authed(paused.database, paused.root.id, paused.url)
+      socket.send(JSON.stringify({ type: 'goals-get', sessionId: 'sess-1', requestId: 'g1' }))
+      await nextKind(frames, 'goals-get')
+      const reply = frames.find(frame => frame.kind === 'goals-get')?.data as
+        { activation?: string; requestId?: string; goal?: { activation?: string; revision?: number } }
+      expect(reply.activation).toBe('disarmed')
+      expect(reply.goal?.activation).toBe('disarmed')
+      expect(reply.goal?.revision).toBe(8)
+      expect(reply.requestId).toBe('g1')
+      expect(remote.calls[0]).toEqual({ namespace: 'goals', method: 'get', args: { agentId: 'sess-1' } })
+      socket.close()
+    }
+
+    const bare = await startHarness({ hostRemote: undefined })
+    const { socket, frames } = await authed(bare.database, bare.root.id, bare.url)
+    socket.send(JSON.stringify({ type: 'goals-get', sessionId: 'sess-1' }))
+    await nextKind(frames, 'error')
+    expect((frames.find(frame => frame.kind === 'error')?.data as { code?: string }).code).toBe('unsupported')
+    socket.close()
+  })
+
+  it('reports a null goal as disarmed when the kernel returns no goal', async () => {
+    const remote = kernelRemote(() => undefined)
+    const { database, root, url } = await startHarness({ hostRemote: remote.handle })
+    const { socket, frames } = await authed(database, root.id, url)
+    socket.send(JSON.stringify({ type: 'goals-get', sessionId: 'sess-1' }))
+    await nextKind(frames, 'goals-get')
+    const reply = frames.find(frame => frame.kind === 'goals-get')?.data as { activation?: string; goal?: unknown }
+    expect(reply.goal).toBeNull()
+    expect(reply.activation).toBe('disarmed')
+    socket.close()
+  })
+
+  it('pushes a queue snapshot after subscribe (first screen for the new subscriber)', async () => {
+    const { database, root, url } = await startWithInbox()
+    const { socket, frames } = await authed(database, root.id, url)
+    // 订阅前先等一下，确认推送不是「连接建立就无脑发」。
+    socket.send(JSON.stringify({ type: 'subscribe', sessionId: 'sess-1' }))
+    await nextKind(frames, 'subscribed')
+    await nextKind(frames, 'queue-item-updated')
+    const pushed = frames.find(frame => frame.kind === 'queue-item-updated')?.data as
+      { sessionId?: string; queue?: Array<{ inboxId: string }>; requestId?: string }
+    expect(pushed.sessionId).toBe('sess-1')
+    expect(pushed.queue?.map(entry => entry.inboxId)).toEqual(['msg-s1', 'msg-q1', 'msg-q2'])
+    // 推送不是任何请求的应答：不带 requestId（见 REQUEST_ID_ECHO_EXCLUDED_KINDS）。
+    expect(pushed.requestId).toBeUndefined()
+    socket.close()
+  })
+
+  it('carries the queue on the first history screen only, not on paged history', async () => {
+    const { database, root, url } = await startHarness({
+      apiOverrides: api => ({
+        sessions: {
+          ...api.sessions,
+          history: async (request: { rpcId: string; payload: { beforeSeq?: number } }) => ({
+            rpcId: request.rpcId,
+            result: {
+              ok: true,
+              value: {
+                events: [],
+                hasMore: false,
+                ...(request.payload.beforeSeq === undefined
+                  ? { projections: { values: { inbox: INBOX } } }
+                  : {}),
+              },
+            },
+          }),
+        },
+      }),
+    })
+    const { socket, frames } = await authed(database, root.id, url)
+    socket.send(JSON.stringify({ type: 'history', sessionId: 'sess-1' }))
+    await nextKind(frames, 'history')
+    const first = frames.find(frame => frame.kind === 'history')?.data as { queue?: Array<{ inboxId: string }> }
+    expect(first.queue?.map(entry => entry.inboxId)).toEqual(['msg-s1', 'msg-q1', 'msg-q2'])
+
+    socket.send(JSON.stringify({ type: 'history', sessionId: 'sess-1', beforeSeq: 3 }))
+    await new Promise(resolve => setTimeout(resolve, 80))
+    const pages = frames.filter(frame => frame.kind === 'history').map(frame => frame.data as { queue?: unknown })
+    expect(pages).toHaveLength(2)
+    expect(pages[1]?.queue).toBeUndefined()
     socket.close()
   })
 })

@@ -1,3 +1,45 @@
+## 未发布 · 队列帧 + 目标 activation（issue IKX1ZM，2026-11-21）
+
+**为什么有这一段**：dsh-Chat 的排队管理（气泡上有「撤回 / 改插话 / 改文本 / 立即发送」）和目标双维
+（`phase` + `activation`）一直没有帧可依 —— 客户端只能轮询投影，队列甚至读不到；目标暂停后重进
+会话又看不到「已暂停」。issue IKX1ZM 把这两块按「帧是唯一落点」补齐。
+
+**新增帧（5 个 kind，能力位 2 个）**：
+
+- `session-queues`（client→server `{sessionId}`）→ `session-queues`（`{sessionId, queue: QueueEntry[]}`）：
+  读会话投影 `inbox` 的 `next-turn`/`next-step` 两个槽位并归一。**不用内核 `session/state`**：
+  冷会话那里 `queue` 是 `null`，投影才是稳定来源。
+- `queue-update`（`{sessionId, inboxId|requestId, action:'remove'|'steer'|'edit', text?}`）→
+  `queue-updated`（`{sessionId, accepted:true, queue}`）：代理内核 `session/updateQueue`
+  （`{request:{sessionId,itemId,action}}`），成功后重读并回整份队列；内核错误码原样透传
+  （如 `QUEUE_TOO_LATE`/`TURN_ENDED`），老内核回 `unsupported`。
+- `goals-get`（`{sessionId}`）→ `goals-get`（`{sessionId, goal: GoalView|null, activation}`）：
+  代理内核 `goals/get`。目标投影里**故意不含** activation，这个字段只能走 Remote。
+- 推送 `queue-item-updated`（`{sessionId, queue}`）与 `goal-updated`
+  （`{sessionId, goal, activation, clearedAt?}`）：整份快照、不带 `requestId`、进
+  `REQUEST_ID_ECHO_EXCLUDED_KINDS` 与 `REBUILDABLE_SERVER_KINDS`（反压丢帧照旧可重拉）。
+- 能力位：`mobile-queue-v1`、`mobile-goal-activation-v1`（依据是上面这些帧名，见
+  `tests/capabilities.spec.ts` 的 `EVIDENCE`）。
+
+**行为要点**：
+
+- 推送按会话去抖 80 ms 后**整份重读**再扇出；每连接按会话记住上次载荷签名，内容没变不重推，
+  新连接订阅时自然拿到首屏快照；未订阅的会话不推；逐连接 `isSessionAuthorized` 判定，异常按不可见。
+- `goal-clear` 回内核的墓碑 `ref`（revision = 清除前 + 1）与 `clearedAt`；清除后内核事件流还没追上时
+  读到的旧快照会被墓碑压成 `goal:null` + `clearedAt`，客户端不会闪回目标。
+- `history` 首屏（`beforeSeq` 缺省）额外带 `queue`，翻页不带。
+
+**顺带修复**：`GoalsHandler.mutateGoal` 的越权检查漏了 `await`
+（`if (!this.chat.isSessionAuthorized(...))` 对 Promise 取反恒为 false），**goal 写从来没做过会话
+授权判定**。已改为 `if (!(await ...))`，并有 `ws-goals` 断言认领。
+
+**验收**：`npx tsc --noEmit` exit 0；`npx vitest run` **93 文件 / 1 021 用例全绿**（新增
+`tests/ws-queues.spec.ts` 9 例、`mobile-gateway-ws.spec.ts` 队列/目标 9 例）；`docs:check` 三段绿。
+**Kotlin SDK**：无改动 —— SDK 目前只封了 `kernel-call` 一族，`goal-*`/`tasks` 本来就不在 SDK 面内
+（与 MOB-012 删帧时同一条结论，`grep` 可证），新帧封装等客户端真要消费时再加。
+**未做**：真机 dsh-Chat 四步回归（排队气泡带 inboxId / 撤回回填 / 改插话 / 立即发送；目标暂停重进
+显示已暂停、恢复继续、清除不闪回；daemon 重启后 disarmed）—— 真机没跑之前不得宣称「已能在手机上用」。
+
 ## 未发布 · 协议面两级制：帧是唯一落点，REST 进弃用表（2026-11-20）
 
 **为什么有这一段**：v2.8 起桥就有了 `/ws/mobile` 双向帧，但文档口径一直停在「WS 优先、REST 兜底」——

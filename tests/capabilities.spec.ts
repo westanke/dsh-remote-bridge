@@ -73,6 +73,12 @@ const EVIDENCE: Record<string, { openapi?: string[]; asyncapi?: string[] }> = {
   'mobile-tasks-v1': {},
   'mobile-goal-read-v1': {},
   'mobile-session-stats-v1': {},
+  // 队列与目标 activation（issue IKX1ZM）：这两位**有**契约字面量可指 ——
+  // 它们不是纯行为面，而是 AsyncAPI 里真有的帧名。
+  // queue-update 读的是 inbox 投影、写的是内核 session/updateQueue；goals-get 代理
+  // 内核 goals/get（GoalProjection 故意不含 activation，投影给不了这个字段）。
+  'mobile-queue-v1': { asyncapi: ['session-queues', 'queue-update', 'queue-item-updated'] },
+  'mobile-goal-activation-v1': { asyncapi: ['goals-get', 'goal-updated'] },
   // 这两条是**行为保证**，不新增路径/事件，因此没有契约字面量可指：
   // 它们的依据在源码（history-budget.ts / chat-adapter 的 replay 方法）与 API.md 的说明里。
   'history-byte-budget-v1': {},

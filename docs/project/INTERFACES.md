@@ -658,7 +658,13 @@ export const PLUGIN_VERSION: string          // shared/version.ts，与 package.
 | `attachHostServices` | `src/host/ws-handler.ts` | method（注入全局模型目录与文件浏览依赖） |
 | `attachRemoteServices` | `src/host/ws-handler.ts` | method（注入内核可选 typert 远程服务，定时任务/语音代理） |
 | `export class TeamHandler` | `src/host/ws-team.ts` | class |
-| `export class GoalsHandler` | `src/host/ws-goals.ts` | class（投影读 + goals Remote 写） |
+| `export class GoalsHandler` | `src/host/ws-goals.ts` | class（投影读 + goals Remote 写；goals-get 读 activation，goal-clear 回墓碑 ref） |
+| `export type GoalChangeNotice` | `src/host/ws-goals.ts` | type（目标变更回调：clear 带墓碑，其余不带） |
+| `export class QueueHandler` | `src/host/ws-queues.ts` | class（session-queues 读 inbox 投影，queue-update 代理内核 session/updateQueue） |
+| `export function queueEntriesFromInbox` | `src/host/ws-queues.ts` | function（inbox 投影值 → QueueEntry[]，坏项丢弃） |
+| `export interface QueueEntry` | `src/host/ws-queues.ts` | interface（inboxId/requestId/slot/mode/text/resendable/sourceKind） |
+| `export class SessionPushes` | `src/host/ws-pushes.ts` | class（队列/目标快照推送：去抖 + 每连接签名去重 + 订阅过滤 + 墓碑） |
+| `export interface PushTarget` | `src/host/ws-pushes.ts` | interface（一条推送连接的稳定句柄） |
 | `export class ScheduleHandler` | `src/host/ws-schedule.ts` | class |
 | `export class SpeechHandler` | `src/host/ws-speech.ts` | class |
 | `export function createHostRemoteServices` | `src/host/ws-host-services.ts` | function |

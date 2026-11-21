@@ -60,6 +60,8 @@ import type { KernelEndpointCatalog } from './bridge/kernel-endpoints.ts'
 import { SpeechHandler } from './ws-speech.ts'
 import { MobileBasicFrames, type MobileDeviceView } from './ws-basic.ts'
 import { MobileConnectionPolicy } from './ws-connection-policy.ts'
+import { QueueHandler } from './ws-queues.ts'
+import { SessionPushes, type PushTarget } from './ws-pushes.ts'
 import type { HostRemoteHandle } from './ws-host-services.ts'
 import { MobileEventBridge, makeEventAuthorizer, makeSessionFilter } from './ws-event-bridge.ts'
 
@@ -115,6 +117,13 @@ interface MobileSocketState {
    * - 非空 = 只收这些会话的事件（无 sessionId 的全局/文件帧仍放行）。
    */
   subscribed: Set<string> | undefined
+  /**
+   * 队列/目标推送用的稳定句柄（issue IKX1ZM）。
+   *
+   * 每条连接一个、随连接走：`SessionPushes` 按它做「每个连接各自去重」——
+   * 全局签名会让后订阅的连接永远收不到当前快照。
+   */
+  pushTarget: PushTarget
   /** 基础帧处理器 + 域处理器实例（每条连接一套，由 acceptSocket 构造）。 */
   handlers: {
     basic: MobileBasicFrames
@@ -124,6 +133,8 @@ interface MobileSocketState {
     commands: CommandsHandler
     presets: PresetsHandler
     goals: GoalsHandler
+    /** 队列读写（issue IKX1ZM）。 */
+    queues: QueueHandler
     team: TeamHandler
     files?: FilesHandler
     settings?: SettingsHandler
@@ -306,12 +317,29 @@ export class MobileGatewayWsHandler {
     this.heartbeatIntervalMs = Math.max(1, options.heartbeatIntervalMs ?? DEFAULT_MOBILE_HEARTBEAT_INTERVAL_MS)
     this.queueLimit = Math.max(1, options.queueLimit ?? DEFAULT_MOBILE_QUEUE_LIMIT)
     this.maxPayloadBytes = Math.max(1, options.maxPayloadBytes ?? DEFAULT_MOBILE_MAX_PAYLOAD_BYTES)
+    // 队列/目标状态推送器（issue IKX1ZM）：进程级单一实例，事件桥 deliver 时喂它。
+    // 必须在事件桥之前建好 —— 桥的投递回调里要调它。
+    this.pushes = new SessionPushes({
+      chat,
+      // 函数而非值：attachRemoteServices 晚于构造注入（见 SessionPushesOptions 注释）。
+      hostRemote: () => this.hostRemote,
+      targets: () => {
+        const targets: PushTarget[] = []
+        for (const state of this.sockets.values()) targets.push(state.pushTarget)
+        return targets
+      },
+    })
     // 事件桥：授权过滤后把 bridge 事件以 {kind:'event', data:event} 主动推给每条连接。
     this.eventBridge = new MobileEventBridge<WebSocket>(
       events,
       makeEventAuthorizer(chat),
       // 统一线路信封：所有帧都是 {kind, data}，所以桥事件作为 data 透传。
-      (conn, event) => this.sendFrame(conn, { kind: 'event', data: event }),
+      (conn, event) => {
+        // 队列/目标状态另有**快照**推送（issue IKX1ZM）：事件本身照旧透传，
+        // 推送器在授权之后、投递之前顺手把「这次变化后的整份队列/目标」扇出一次。
+        this.pushes.onEvent(event)
+        this.sendFrame(conn, { kind: 'event', data: event })
+      },
     )
     // 语音处理器在构造期就存在：缺内核服务时也能回结构化 unavailable，服务后到时再 setRemote。
     // audioLimit 按真实帧上限算（issue #10）：SpeechHandler 自带的 64 MiB 默认值
@@ -326,6 +354,8 @@ export class MobileGatewayWsHandler {
   }
 
   private readonly eventBridge: MobileEventBridge<WebSocket>
+  /** 队列/目标快照推送（issue IKX1ZM）。 */
+  private readonly pushes: SessionPushes
   /** 连接生命周期策略（上限 + 心跳），见 ws-connection-policy.ts。 */
   private readonly connectionPolicy: MobileConnectionPolicy<MobileSocketState>
 
@@ -545,6 +575,16 @@ export class MobileGatewayWsHandler {
       frame => this.sendFrame(webSocket, frame),
       { enabled: kernelCallEnabled },
     )
+    // 推送句柄在 state 之前建：`subscribed()` 现查 sockets 表（state 一登记就能读到）。
+    const pushTarget: PushTarget = {
+      principal,
+      subscribed: () => this.sockets.get(webSocket)?.subscribed,
+      send: frame => {
+        // 连接可能已关：timer 里的推送不必再撞一次 stateOf 的异常。
+        if (!this.sockets.has(webSocket)) return
+        this.sendFrame(webSocket, frame)
+      },
+    }
     const state: MobileSocketState = {
       principal,
       device: deviceView,
@@ -557,6 +597,7 @@ export class MobileGatewayWsHandler {
       isAlive: true,
       dropped: 0,
       subscribed: undefined,
+      pushTarget,
       handlers: {
         basic: new MobileBasicFrames(this.chat, frame => this.sendFrame(webSocket, frame), principal, deviceView),
         sessions: new SessionHandler(this.chat, (frame) => this.sendFrame(webSocket, frame), this.database),
@@ -564,7 +605,23 @@ export class MobileGatewayWsHandler {
         models: new ModelsHandler(this.chat, (frame) => this.sendFrame(webSocket, frame)),
         commands: new CommandsHandler(this.chat, (frame) => this.sendFrame(webSocket, frame)),
         presets: new PresetsHandler(this.chat, (frame) => this.sendFrame(webSocket, frame)),
-        goals: new GoalsHandler(this.chat, (frame) => this.sendFrame(webSocket, frame), this.hostRemote),
+        // 目标写成功后立即推一次（issue IKX1ZM）：等在跟随流里的 goal/* 事件会让
+        // 「暂停」按钮点完停一拍；clear 还要把墓碑交给推送器压住过期快照。
+        goals: new GoalsHandler(
+          this.chat,
+          (frame) => this.sendFrame(webSocket, frame),
+          this.hostRemote,
+          (sessionId, tombstone) => {
+            if (tombstone === undefined) this.pushes.noteGoal(sessionId)
+            else this.pushes.noteGoalCleared(sessionId, tombstone)
+          },
+        ),
+        queues: new QueueHandler({
+          chat: this.chat,
+          sendFrame: (frame) => this.sendFrame(webSocket, frame),
+          hostRemote: this.hostRemote,
+          onQueueChanged: sessionId => this.pushes.noteQueue(sessionId),
+        }),
         team: new TeamHandler(this.chat, (frame) => this.sendFrame(webSocket, frame)),
         // 定时任务处理器始终存在：缺内核服务时由其内部回 schedule/unavailable。
         schedule: new ScheduleHandler(this.hostRemote, (frame) => this.sendFrame(webSocket, frame)),
@@ -805,6 +862,7 @@ export class MobileGatewayWsHandler {
     if (await handlers.commands.handle(state.principal, clientFrame)) return
     if (await handlers.presets.handle(state.principal, clientFrame)) return
     if (await handlers.goals.handle(state.principal, clientFrame)) return
+    if (await handlers.queues.handle(state.principal, clientFrame)) return
     if (await handlers.team.handle(state.principal, clientFrame)) return
     if (await handlers.host.handle(state.principal, clientFrame)) return
     if (await handlers.schedule.handle(state.principal, clientFrame)) return
@@ -864,6 +922,9 @@ export class MobileGatewayWsHandler {
     this.sendFrame(webSocket, { kind: 'subscribed', data: { sessionId } })
     // 与上游一致：订阅后紧接着补推该会话仍待处理的提问/审批（replayed:true）。
     void this.replayPendingInteractions(webSocket, state.principal, sessionId)
+    // 队列/目标的首屏快照：新连接没有「上次签名」，推一次即得到当前状态
+    // （issue IKX1ZM —— 否则订阅后要等下一次变化才看得到已经在排的队）。
+    this.pushes.warm([sessionId])
   }
 
   private handleUnsubscribe(webSocket: WebSocket, _frame: ClientFrame): void {
@@ -992,6 +1053,8 @@ export class MobileGatewayWsHandler {
   async stop(timeoutMs = 1000): Promise<void> {
     this.connectionPolicy.clearHeartbeat()
     this.eventBridge.dispose()
+    // 推送定时器也要停：否则测试收尾后仍有一条 setTimeout 在跑。
+    this.pushes.dispose()
     const closures: Array<Promise<void>> = []
     for (const webSocket of [...this.sockets.keys()]) {
       closures.push(new Promise(resolve => {

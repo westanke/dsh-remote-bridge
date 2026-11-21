@@ -45,7 +45,7 @@
 | 目录/工作区操作 | 无 | WS directories/directory-create/workspace-create（父路径必须绝对且存在；目录不存在 directory-create-failed；已存在 directory-exists） | **缺失：WS 文件系统** |
 | 会话生命周期 | REST cancel/rename/archive/fork | WS session-create/session-cancel/session-archive/session-rename/fork/session-title-changed/session-archives | **部分缺失（REST 有，WS 无）** |
 | 分支/子会话 | REST fork | WS fork（sessionId+atSeq+historyFormatVersion，子会话继承 cwd/模型/血缘/标题/工作区）；session-create 提前创建空会话 | **缺失：WS fork/session-create** |
-| 队列/目标控制 | 无 | WS queue-update（edit/remove/steer，move into current turn）；session-queues/session-queue 推送 | **缺失：WS 队列控制** |
+| 队列/目标控制 | 无 | WS queue-update（edit/remove/steer，move into current turn）；session-queues/session-queue 推送 | **已补齐（2026-11-21，issue IKX1ZM）**：`session-queues`/`queue-update`/`queue-item-updated`；竞品的 `move into current turn` 仍无对应动作 |
 | HITL 提问 | REST question-answer/question-cancel | WS question-answer/question-cancel + server→client question-requested/response/resolved（replay 重放；rpcId 去重；bad-response 不能重发为普通聊天消息） | **缺失：WS HITL 提问** |
 | HITL 审批 | REST approval-response | WS approval-response + server→client approval-requested/response/resolved（outcome allowed-once\|rejected；无“始终允许”；displayReason 多语言；replay 重放） | **缺失：WS 审批** |
 | 任务/目标投影 | REST | WS tasks/goal/goal-edit/goal-pause/goal-resume/goal-clear（asOfSeq）；tasks-updated/goal-updated 推送；turn-outline-updated | **缺失：WS 目标/任务** |
@@ -227,8 +227,8 @@ src/host/
 
 仍待办（按优先级）：
 1. gateway mode 状态机、独立 LAN 监听、pairing v2 Base64URL、split-channels（`X-DSH-Device-Name` 设备名头已做，仅校验不落库；hello 的 `port`/`clients`、`pong.at` 已对齐）。
-2. ~~queue 编辑/删除/steer（queue-update）~~ 内核无按 itemId 编辑 RPC（插队用 `message` 帧 `mode:'steer'`）；~~search~~ 内核无搜索通道；~~directories/directory-create~~ directory-create 已实现（授权根内），directories 因与本桥授权根模型冲突不做（浏览用 file-list）。这三个帧名在**阶段 8（issue #26 / MOB-012）已从词表删除**，再发回 `UNKNOWN_TYPE`；session-title-changed 主动推送仍待办。
-3. tasks-updated/goal-updated/projection-baseline/schedule-changed 主动推送、turn-outline、llm/retry 事件透传。
+2. ~~queue 编辑/删除/steer（queue-update）~~ **已实现**（issue IKX1ZM，2026-11-21）：内核 `session/updateQueue` 从 0.2.x 起就有，队列快照读投影 `inbox`；~~search~~ 内核无搜索通道；~~directories/directory-create~~ directory-create 已实现（授权根内），directories 因与本桥授权根模型冲突不做（浏览用 file-list）。后两个帧名在**阶段 8（issue #26 / MOB-012）已从词表删除**，再发回 `UNKNOWN_TYPE`；session-title-changed 主动推送仍待办。
+3. ~~tasks-updated/~~goal-updated（**已实现**，issue IKX1ZM：`goal-updated` 带 activation、`goal-clear` 走墓碑不闪回）/projection-baseline/schedule-changed 主动推送、turn-outline、llm/retry 事件透传。
 4. Cloudflare Tunnel 管理面 WS 化、多网关身份、插件管理 WS 化（plugin-*）。
 5. 跨仓 kotlin-sdk / dsh-companion 消费新 WS 帧（wire schema 五处同步，见 §5 风险 5）。
 
@@ -260,7 +260,7 @@ REST 兜底」，不自带识别模型或调度器。
 | 上一版的结论（§7 待办 2） | 复审实测 | 结论 |
 |---|---|---|
 | 「search：内核无搜索通道」 | 内核有 `session/search`（`SessionSearchRequest={query}`，结果 `{items:[{sessionId,snippet}],hasMore}`，limit 20 / snippet ≤240 code point），且**已在本仓白名单**（`kernel-allowlist.ts`） | 结论**过时**：能力在，缺的只是 `search` 帧（阶段 8 删声明时按「没人实现」处理）。要补是一条纯桥侧改动 |
-| 「queue-update：内核无按 itemId 编辑 RPC」 | 内核有 `session/updateQueue`（`{sessionId,itemId,action:{kind:'edit'\|'remove'\|'steer'}}`），队列快照在 `session/control` 的 `projections.values.inbox` | 结论**过时**：能力在，缺的是 `session-queues`/`session-queue`/`queue-update` 三帧与 `session/control` 调用 |
+| 「queue-update：内核无按 itemId 编辑 RPC」 | 内核有 `session/updateQueue`（`{sessionId,itemId,action:{kind:'edit'\|'remove'\|'steer'}}`）；队列快照在投影 `inbox`（**不是** `session/control` —— 那要长连 follow） | 结论**过时**，且已于 2026-11-21 补齐（issue IKX1ZM）：`session-queues`/`queue-update`/`queue-item-updated` 均已实现并带能力位 `mobile-queue-v1` |
 | 「defaults/set-default：属内核无通道」 | 读侧本仓 REST 已有默认模型；写侧被 `settingsWriteNamespaces` 的**策略**默认关（不是能力真空），内核 `agentPresets/read` + 默认模型设置都在 | 说法**含混**：应表述为「策略未开」，不是「内核没有」 |
 | 「directories 不做」 | 竞品走 `fsp.readdir` 列**任意宿主绝对路径** | **维持不做**，但性质是**取舍**（与「仅授权根可见」冲突），不是能力缺失 —— 本文档从此按取舍记录 |
 
@@ -269,7 +269,7 @@ REST 兜底」，不自带识别模型或调度器。
 | # | 缺口 | 竞品实现 | 成本 | 建议 |
 |---|---|---|---|---|
 | 1 | `search` 帧 | `api.sessions.search` → 内核 `session/search` | 6–10 h | **做**：白名单已有端点，只缺帧 + 服务端同名应答 + 文档 |
-| 2 | 队列读/写 | `session-queues`/`session-queue`/`queue-item-updated`/`queue-update` + `session/control` | 12–30 h | **做**：`session/control` 与 `session/updateQueue` 都在内核，属「用户可感知」缺失 |
+| ~~2~~ | ~~队列读/写~~ | `session-queues`/`queue-item-updated`/`queue-update` | — | **已完成（issue IKX1ZM，2026-11-21）**：`ws-queues.ts` + `ws-pushes.ts`，读投影 `inbox`、写代理 `session/updateQueue`；没有 `session-queue`（单条）帧 —— 快照整份给，客户端不需要单条读 |
 | 3 | 子会话继续对话/打断 | `message`/`history`/`subscribe` 带 `parentSessionId`+`subagentMode`；`subagents/interruptByUser` | 15–25 h | 做（当前 REST 405，`src/host/routes/chat.ts:282`） |
 | 4 | `defaults` / `set-default` | 读默认模型、写默认模型 | 4–12 h | 读侧先做；写侧取决于是否放开 `settingsWriteNamespaces` |
 | 5 | workspace-changes summary/diff | 依赖宿主 `/api/changes.*` | 20–30 h | 缓（要新宿主面，不是纯桥） |
@@ -307,5 +307,5 @@ REST 兜底」，不自带识别模型或调度器。
 [CHANGELOG-DEV.md](CHANGELOG-DEV.md) 的「issue #26 完工检修」段与
 [SECURITY.md](SECURITY.md) 的 2026-11-19 检修补充。
 
-**下一批候选**（按 §8.2 优先级）：`search` 帧 → 队列读写 → 子会话写 → 插件 4 条 →
+**下一批候选**（按 §8.2 优先级）：`search` 帧 → 子会话写 → 插件 4 条 →（队列读写已于 issue IKX1ZM 完成）
 `agent-team-set-enabled`；device-tools 单独立项，不在本仓 issue #26 的范围内。

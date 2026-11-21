@@ -685,6 +685,12 @@ components:
             - goal-clear
             - agent-team
             - subagents
+            # 队列与目标 activation（issue IKX1ZM，ws-queues.ts / ws-goals.ts）。
+            # session-queues / queue-update 读写的都是 inbox 投影，写代理内核
+            # session/updateQueue；goals-get 代理内核 goals/get（投影不含 activation）。
+            - session-queues
+            - queue-update
+            - goals-get
             # HITL（ws-hitl.ts）
             - question-answer
             - question-cancel
@@ -717,7 +723,8 @@ components:
             - kernel-call-cancel
             # 内核能力缺失时回 NOT_IMPLEMENTED + REST 兜底。阶段 8（issue #26 / MOB-012）
             # 起只剩插件族这几个；曾经「只回兜底」的 search / directories / defaults /
-            # set-default / queue-update 已从词表删除（再发就是 UNKNOWN_TYPE）。
+            # set-default 已从词表删除（再发就是 UNKNOWN_TYPE），queue-update 则在
+            # issue IKX1ZM 里带着真实现回来（见上面的「队列与目标 activation」）。
             - plugin-catalog
             - plugin-inspect
             - plugin-install
@@ -753,9 +760,8 @@ components:
         `paired`, `pong`, `subscribed`, `event`, the HITL pushes
         (`question-requested`, `approval-requested`, `approval-resolved`,
         `question-resolved`), the speech pushes (`speech-state`,
-        `speech-transcript`, `speech-preparing`), the projection/queue pushes
-        (`tasks-updated`, `goal-updated`, `session-title-changed`,
-        `queue-item-updated`) and the chunked-transfer pushes
+        `speech-transcript`, `speech-preparing`), the state pushes
+        (`goal-updated`, `queue-item-updated`) and the chunked-transfer pushes
         (`file-download-chunk`, `file-upload-chunk-accepted`). They may arrive at
         any time. The exclusion set lives in `REQUEST_ID_ECHO_EXCLUDED_KINDS`
         (`src/host/ws-protocol.ts`) — see "requestId correlation" on the `mobile`
@@ -834,6 +840,13 @@ components:
             - agent-team
             - subagents
             - host
+            # 队列与目标 activation（issue IKX1ZM）。前两种是请求应答，
+            # 后两种是**主动推送**（整份快照；进 REQUEST_ID_ECHO_EXCLUDED_KINDS）。
+            - session-queues
+            - queue-updated
+            - queue-item-updated
+            - goals-get
+            - goal-updated
             # HITL
             - question-response
             - approval-response

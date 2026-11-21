@@ -22,6 +22,9 @@ interface GoalRef {
   revision: number
 }
 
+/** 目标写成功后的通知（推送给订阅连接用；clear 额外给墓碑）。 */
+export type GoalChangeNotice = (sessionId: string, tombstone?: { id: string; revision: number; clearedAt: string }) => void
+
 /** 任务/目标/统计处理器。 */
 export class GoalsHandler {
   constructor(
@@ -29,6 +32,11 @@ export class GoalsHandler {
     private readonly sendFrame: SendFrame,
     /** 可选内核 goals Remote；缺省时写帧回 unsupported（读帧仍可用）。 */
     private readonly hostRemote: HostRemoteHandle | undefined,
+    /**
+     * 写成功后的即时通知（issue IKX1ZM）：目标是**进程内 activation + 落库快照**两半，
+     * 跟随流的 `goal/*` 事件要过一小段才到，等它才推会让「暂停」按钮点完停一拍。
+     */
+    private readonly onGoalChanged?: GoalChangeNotice,
   ) {}
 
   /** 处理目标/任务/统计相关客户端帧。返回 true 表示已认领。 */
@@ -38,6 +46,9 @@ export class GoalsHandler {
       case 'tasks':
       case 'goal':
         await this.readProjection(principal, frame, type === 'tasks' ? 'todos' : 'goal', type)
+        return true
+      case 'goals-get':
+        await this.readActivation(principal, frame)
         return true
       case 'session-stats':
       case 'context-usage':
@@ -51,6 +62,52 @@ export class GoalsHandler {
         return true
       default:
         return false
+    }
+  }
+
+  /**
+   * 读目标 activation（`goals-get`，issue IKX1ZM）。
+   *
+   * 为什么不能像 `goal` 帧那样读投影：内核 `GoalProjection` **故意不含 activation**
+   * （`GoalActivation` 是进程内状态，不持久），只有 `goals/get` 这个 Remote 能给。
+   * 返回 `{goal: GoalView|null, activation}`：`goal` 原样透传内核结构（自带 activation），
+   * 顶层再给一份便于「没有目标」时客户端也有确定值可读。
+   */
+  private async readActivation(principal: Principal, frame: ClientFrame): Promise<void> {
+    const sessionId = requireString(frame, 'sessionId')
+    if (sessionId === undefined) {
+      this.badRequest('goals-get', 'goals-get requires a sessionId.')
+      return
+    }
+    if (this.hostRemote === undefined) {
+      this.sendFrame({
+        kind: 'error',
+        data: {
+          code: 'unsupported',
+          message: 'goal activation is unavailable in this DSH host',
+          requestType: 'goals-get',
+          sessionId,
+          ...echoRequestId(frame),
+        },
+      })
+      return
+    }
+    try {
+      if (!(await this.chat.isSessionAuthorized(principal, sessionId))) {
+        throw new ApiError(403, 'SESSION_FORBIDDEN', 'Session is outside authorized roots.')
+      }
+      const goal = (await this.hostRemote.invoke('goals', 'get', { agentId: sessionId })) ?? null
+      this.sendFrame({
+        kind: 'goals-get',
+        data: {
+          sessionId,
+          goal,
+          activation: goal !== null && (goal as { activation?: unknown }).activation === 'armed' ? 'armed' : 'disarmed',
+          ...echoRequestId(frame),
+        },
+      })
+    } catch (error) {
+      this.forwardError('goals-get', sessionId, error)
     }
   }
 
@@ -148,7 +205,9 @@ export class GoalsHandler {
     try {
       // 会话级授权（与 Remote 调用同一边界）：内核 goals 服务以 agentId 寻址，
       // 先确认本连接能访问该会话，避免越权写别人的目标。
-      if (!this.chat.isSessionAuthorized(principal, sessionId)) {
+      // 注意必须 `await`：`isSessionAuthorized` 是异步判定，漏掉 await 时
+      // `!Promise` 恒为 false，这一步会变成一句永远不生效的注释式检查。
+      if (!(await this.chat.isSessionAuthorized(principal, sessionId))) {
         throw new ApiError(403, 'SESSION_FORBIDDEN', 'Session is outside authorized roots.')
       }
       if (type === 'goal-edit') {
@@ -170,12 +229,28 @@ export class GoalsHandler {
           kind: 'goal-edit',
           data: { sessionId, ...(result?.ref === undefined ? {} : { ref: result.ref }), ...echoRequestId(frame) },
         })
+        this.onGoalChanged?.(sessionId)
         return
       }
 
       if (type === 'goal-clear') {
-        await this.hostRemote.invoke('goals', 'clear', { agentId: sessionId, ref })
-        this.sendFrame({ kind: 'goal-clear', data: { sessionId, cleared: true, ...echoRequestId(frame) } })
+        // 内核 clear 返回**墓碑 ref**（id 不变、revision = 清除前 + 1）。把它带回给客户端
+        // 并登记给推送器：清除后、跟随流追上之前若有推送读到旧快照，会被墓碑压住，
+        // 客户端就不会看到目标闪回（issue IKX1ZM 的「清除后闪回」）。
+        const result = await this.hostRemote.invoke('goals', 'clear', { agentId: sessionId, ref }) as { ref?: GoalRef } | undefined
+        const tombstone = result?.ref === undefined
+          ? undefined
+          : { id: result.ref.id, revision: result.ref.revision, clearedAt: new Date().toISOString() }
+        this.sendFrame({
+          kind: 'goal-clear',
+          data: {
+            sessionId,
+            cleared: true,
+            ...(tombstone === undefined ? {} : { ref: { id: tombstone.id, revision: tombstone.revision }, clearedAt: tombstone.clearedAt }),
+            ...echoRequestId(frame),
+          },
+        })
+        this.onGoalChanged?.(sessionId, tombstone)
         return
       }
 
@@ -184,6 +259,7 @@ export class GoalsHandler {
         kind: type,
         data: { sessionId, ...(result?.ref === undefined ? {} : { ref: result.ref }), ...echoRequestId(frame) },
       })
+      this.onGoalChanged?.(sessionId)
     } catch (error) {
       this.forwardError(type, sessionId, error)
     }

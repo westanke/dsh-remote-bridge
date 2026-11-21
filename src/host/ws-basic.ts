@@ -10,6 +10,7 @@
  */
 import type { DeviceScope, Principal } from '../shared/contracts.ts'
 import type { DshChatAdapter } from './chat-adapter.ts'
+import { queueEntriesFromInbox } from './ws-queues.ts'
 import type { ClientFrame, SendFrame } from './ws-protocol.ts'
 
 /** 发帧回调：与 ws-handler 的 `sendFrame` 同签名（连接由闭包捕获，本类不持 socket）。 */
@@ -93,6 +94,13 @@ export class MobileBasicFrames {
     if (beforeSeq !== undefined) opts.beforeSeq = beforeSeq
     if (maxMessages !== undefined) opts.maxMessages = maxMessages
     const { events, hasMore, projections } = await this.chat.history(this.principal, sessionId, opts)
+    // 队列首屏（issue IKX1ZM）：队列的数据源就是投影里的 `inbox`，history 首屏既然已经
+    // 带了整份投影，就顺手归一成 `queue: QueueEntry[]` —— 客户端不必先发一次
+    // `session-queues` 才能画出排队气泡（真机上那是「打开会话先闪一下空队列」）。
+    // 翻页（带 beforeSeq）不带：那时 projections 本就不在帧里。
+    const queue = beforeSeq === undefined && projections !== undefined
+      ? queueEntriesFromInbox(inboxOf(projections))
+      : undefined
     this.send({
       kind: 'history',
       data: {
@@ -105,6 +113,7 @@ export class MobileBasicFrames {
         // 只对首屏（没有 beforeSeq）附带：翻历史页要投影没有意义，而这一帧有 1 MiB 上限，
         // 每页都塞一份纯属浪费额度。
         ...(beforeSeq !== undefined || projections === undefined ? {} : { projections }),
+        ...(queue === undefined ? {} : { queue }),
       },
     })
   }
@@ -120,4 +129,12 @@ export class MobileBasicFrames {
     const result = await this.chat.uploadAttachment(this.principal, sessionId, data, name)
     this.send({ kind: 'attachment', data: { receiptId: result.receiptId, name: result.name } })
   }
+}
+
+/** 从 history 帧的 `projections` 里取 `inbox` 投影（结构不对就返回 undefined）。 */
+function inboxOf(projections: unknown): unknown {
+  if (projections === null || typeof projections !== 'object') return undefined
+  const values = (projections as { values?: unknown }).values
+  if (values === null || typeof values !== 'object') return undefined
+  return (values as Record<string, unknown>).inbox
 }

@@ -799,6 +799,16 @@ assistant 消息，只有最后那条含正文。桥此前只送了 `role`，客
 `available:false` → 引导去插件管理装语音包）与「桥不支持语音」（位不在 → 隐藏入口）。
 把「没装语音包」也当成不发位，这两种状态就糊成一个了。
 
+**2026-11-21 新增的两个位**（issue IKX1ZM；依据是帧本身，不是 REST 路径）：
+
+| 能力位 | 契约依据（AsyncAPI 帧） | 运行时降级 |
+| --- | --- | --- |
+| `mobile-queue-v1` | `session-queues` / `queue-update` / `queue-item-updated` | 读（队列快照）只依赖会话投影，始终可用；写（`queue-update`）需要内核 `session/updateQueue` Remote，缺席时回 `unsupported`，读面不受影响。**位照发** —— 「能排队、能不能改队」由 `queue-update` 的错误回答区分 |
+| `mobile-goal-activation-v1` | `goals-get` / `goal-updated` | 两者都要内核 `goals` Remote；缺席时回 `unsupported` 并保持 `mobile-goal-read-v1` 的投影读面可用。**位照发**，理由同上：投影读给的是「有没有目标」，activation 只能在真有 Remote 时问到 |
+
+为什么这两位不按「没 Remote 就不发位」处理：它们各自包住**读/写两面**，写在缺 Remote 时本来就有
+结构化的 `unsupported` 应答（老内核），把读面也一起藏起来反而让客户端连「队列里有几条」都看不见。
+
 ### 历史格式版本（`historyFormatVersion`）
 
 `GET /chat/sessions/{id}/messages` 的响应**总是**带 `historyFormatVersion`（当前 `1`）：
@@ -944,6 +954,9 @@ v2.8 新增，**现在是桥的第一协议面**：新能力只在这里落帧�
 | `session-stats` | 会话执行统计（输入框统计条） | `sessionId`；读投影 `sessionStats`/`tokenUsage`/`contextPressure` |
 | `tasks` / `goal` | 任务列表/当前目标基线（只读会话投影） | `sessionId`；回 `asOfSeq` + `todos`/`goal`，未写入过为 `null` |
 | `goal-edit` / `goal-pause` / `goal-resume` / `goal-clear` | 当前目标写操作（compare-and-set） | `sessionId`, `ref:{id,revision}`，edit 另带 `objective?`/`maxGoalRounds?`；代理内核 goals Remote，老内核回 `unsupported` 走 REST |
+| `session-queues` | 读当前会话的排队队列（issue IKX1ZM） | `sessionId`；读会话投影 `inbox`（`next-turn`/`next-step` 两个槽位）并归一成 `queue: QueueEntry[]`，**不**走内核 `session/state`（冷会话那里 `queue` 是 `null`）。无会话返回 `SESSION_NOT_FOUND` |
+| `queue-update` | 改一条排队项（撤回/改插话/改文本） | `sessionId` + `inboxId`（或别名 `requestId`）+ `action:'remove'\|'steer'\|'edit'`，edit 必带非空 `text`；代理内核 `session/updateQueue`（`{request:{sessionId,itemId,action}}`），成功回 `queue-updated` 带重读的整份 `queue`；内核错误码原样透传（如 `QUEUE_TOO_LATE`/`TURN_ENDED`），老内核回 `unsupported` |
+| `goals-get` | 读当前目标**含 activation**（issue IKX1ZM） | `sessionId`（内核侧 `agentId`）；代理内核 `goals/get`，回 `{goal: GoalView\|null, activation:'armed'\|'disarmed'}`。`goal` 投影**故意不含** activation，所以这个能力只能走 Remote；老内核回 `unsupported` |
 | `plugin-catalog` / `plugin-inspect` / `plugin-install` / `plugin-settings` | 插件管理（paired 控制连接） | — |
 | `agent-presets` / `session-agent-preset` / `select-agent-preset` | Agent 预设 | `agent-presets` 列清单；`session-agent-preset`（`sessionId`+`agentPresetId`，锁定后不可改）与 `select-agent-preset`（`sessionId`+`agentPresetId`，为会话选一个预设）**均已实现**，二者应答都是 `kind:'sent'` + `data.type` 为同名帧（配对应看 `data.type`，别只看 kind） |
 | `question-answer` / `question-cancel` | HITL 提问回应 | answer：`callId`/`rpcId`,`answers[]`；cancel：`sessionId`+`rpcId`（上游）或 `callId`（本桥），回 `{kind:'question-response',action:'answer'\|'cancel',accepted}`。cancel 只能作废本桥接管、正阻塞 agent 的前台提问；内核无 continued 提问取消通道 |
@@ -970,11 +983,15 @@ v2.8 新增，**现在是桥的第一协议面**：新能力只在这里落帧�
 | `schedule-delete-inactive` | 清理已停用/已结束的定时任务（无参，issue #26 阶段 7） | `{}`（无参）；响应为同 kind 帧，`data` 为 `{ok:true, value}` 或 `{ok:false, error:{code,message}}`（+ `requestId` 回显）；需 `chat.*` scope |
 
 > **阶段 8（issue #26 / MOB-012）删掉的声明**：`search` / `defaults` / `set-default` /
-> `queue-update` / `directories` 曾经声明在词表里，但只会回结构化 `NOT_IMPLEMENTED`
+> `directories` 曾经声明在词表里，但只会回结构化 `NOT_IMPLEMENTED`
 > （内核没有对应通道，或 `directories` 与「仅授权根可见」的安全模型冲突）。声明一个永远不工作的帧
-> 等于把「能力暂缺」当承诺，所以这 5 个名字已从 `ClientFrameType` 与 AsyncAPI enum 删除；
+> 等于把「能力暂缺」当承诺，所以这 4 个名字已从 `ClientFrameType` 与 AsyncAPI enum 删除；
 > 再发送它们与拼错帧同路，回 `UNKNOWN_TYPE`。仍声明、但当前连接/内核缺能力的帧（插件族在
 > 没协商 `dshrb-v1` 或宿主无 `pluginManager` 时）继续回 `NOT_IMPLEMENTED`。
+>
+> `queue-update` 当时也在这一批里（内核那时没有队列写通道）；issue IKX1ZM 起内核已有
+> `session/updateQueue`，这条帧带着真实现回到词表 —— 该 case 不再是「死声明」，而是能力位
+> `mobile-queue-v1` 下的正常帧。
 
 ### 服务端→客户端帧（{kind: …}）
 
@@ -992,7 +1009,11 @@ v2.8 新增，**现在是桥的第一协议面**：新能力只在这里落帧�
 | `session-created` / `session-archived` / `session-renamed` / `session-waited` / `fork` / `workspace-create` | 会话与工作区生命周期（`session-created` 带 `{sessionId, rootId \| workspaceId, agentPreset?}`） |
 | `error` | 错误（不回显绝对路径）；**带** `data.requestId` 与 `data.requestType`——前者钉到具体在途请求，后者说明是哪类请求。分发**前**的拒绝（`UNKNOWN_TYPE`/`INVALID_FRAME`/`MISSING_TYPE`）没有 `requestType`（没有处理器可署名）；`UNKNOWN_TYPE` 仍带 `requestId`（若请求给了） |
 | `event` | 内部事件透传（与 `/api/v1/events` 同源，受 scope/授权过滤）；推送帧，不带 `requestId` |
-| `tasks` / `goal` / `goal-edit` / `goal-pause` / `goal-resume` / `goal-clear` | 任务/目标投影（tasks/goal 读基线，goal-* 为写应答带新 `ref` 或 `cleared:true`）。**没有** `tasks-updated` / `goal-updated` 推送帧：投影变化要客户端轮询读帧（issue #26 阶段 1 删掉了这两条死声明） |
+| `tasks` / `goal` / `goal-edit` / `goal-pause` / `goal-resume` / `goal-clear` | 任务/目标投影（tasks/goal 读基线，goal-* 为写应答带新 `ref` 或 `cleared:true`）。`goal-clear` 另带 `clearedAt` 与内核返回的墓碑 `ref`（revision = 清除前 + 1）。目标变化现在有推送帧 `goal-updated`（见下），不再要求客户端轮询 |
+| `session-queues` / `queue-updated` | 队列读/写的同名应答：`{sessionId, queue: QueueEntry[]}`，`queue-updated` 另带 `accepted:true`。`QueueEntry = {inboxId, requestId, slot:'next-turn'\|'next-step', mode:'queue'\|'steer', text, resendable, sourceKind}`；`text` 是所有 text 块的 `\n` 拼接，`resendable` 表示「内容全是文本、可原样重发」 |
+| `goals-get` | 目标 activation 应答：`{sessionId, goal: GoalView\|null, activation:'armed'\|'disarmed'}`（`goal` 为内核视图，自带 activation；无目标时 `null` + `disarmed`） |
+| `queue-item-updated` | **主动推送**（整份快照，不带 `requestId`）：`{sessionId, queue}`。时机：一轮 turn 的开始/结束/失败、消息提交、`agent/inbox/spliced`、本地 `queue-update` 成功、以及新订阅时补一次首屏。未订阅的会话不推；内容与上次相同不重复推 |
+| `goal-updated` | **主动推送**（整份快照，不带 `requestId`）：`{sessionId, goal, activation, clearedAt?}`。时机：`goal/*` 事件（含 `goal/change`、`goal/activation-changed`）、`goal-*` 写成功、新订阅补首屏。`goal-clear` 之后内核日志追上前读到旧快照时，桥用墓碑（同 id 且 revision ≤ 墓碑）把它压成 `goal:null` 并带 `clearedAt`，客户端不会闪回 |
 | `session-stats` / `context-usage` | 会话统计与上下文占用投影响应 |
 | `question-response` | HITL 提问回执（`{action, accepted}`）；**主动推送走 `event` 帧**（`chat.userQuestions/*` 载荷），不是专用 kind |
 | `approval-response` / `approval-resolved` | HITL 审批回执（outcome `allowed-once`\|`rejected`，不支持始终允许）；**主动推送走 `event` 帧**（`chat.approval.*` 载荷） |

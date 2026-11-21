@@ -138,6 +138,13 @@ export type ClientFrameType =
   | 'goal-pause'
   | 'goal-resume'
   | 'goal-clear'
+  // 队列读写与目标 activation 读（issue IKX1ZM，能力位 mobile-queue-v1 /
+  // mobile-goal-activation-v1）。队列快照来自内核 `projections.values.inbox`，
+  // 写操作代理内核 `session/updateQueue`；`goals-get` 也代理内核 `goals/get`
+  // —— 目标投影故意不含 activation（进程内状态），只有该 Remote 能给。
+  | 'session-queues'
+  | 'queue-update'
+  | 'goals-get'
   | 'plugin-catalog'
   | 'plugin-inspect'
   | 'plugin-install'
@@ -274,6 +281,14 @@ export type ServerFrameKind =
   | 'goal-pause'
   | 'goal-resume'
   | 'goal-clear'
+  // 队列快照与目标 activation（issue IKX1ZM）。`session-queues` / `queue-updated` /
+  // `goals-get` 是请求应答，`queue-item-updated` / `goal-updated` 是主动推送
+  // （进 {@link REQUEST_ID_ECHO_EXCLUDED_KINDS}，不进 requestId 回显）。
+  | 'session-queues'
+  | 'queue-updated'
+  | 'queue-item-updated'
+  | 'goals-get'
+  | 'goal-updated'
   | 'question-response'
   | 'approval-response'
   | 'approval-resolved'
@@ -503,6 +518,38 @@ export interface GoalClearFrame extends ClientFrame {
   sessionId: string
 }
 
+/**
+ * 队列快照客户端帧（issue IKX1ZM）。
+ *
+ * 应答 kind 同名 `session-queues`，`data.queue` 是整份 `QueueEntry[]`。
+ */
+export interface SessionQueuesFrame extends ClientFrame {
+  type: 'session-queues'
+  sessionId: string
+}
+
+/**
+ * 队列变动客户端帧：撤回 / 插话 / 改文本（issue IKX1ZM）。
+ *
+ * `inboxId` 是服务端在 `session-queues` 里给的待处理项 id（缺省时用 `requestId`
+ * 兜底 —— 两者在桥的映射里同源）。代理内核 `session/updateQueue`
+ * （`{sessionId,itemId,action:{kind:'edit'|'remove'|'steer'}}`），`edit` 必须带 `text`。
+ */
+export interface QueueUpdateFrame extends ClientFrame {
+  type: 'queue-update'
+  sessionId: string
+  inboxId?: string
+  requestId?: string
+  action: 'remove' | 'steer' | 'edit'
+  text?: string
+}
+
+/** 目标 activation 读取客户端帧：透传内核 `goals/get`。 */
+export interface GoalsGetFrame extends ClientFrame {
+  type: 'goals-get'
+  sessionId: string
+}
+
 /** 命令列表客户端帧。 */
 export interface CommandsFrame extends ClientFrame {
   type: 'commands'
@@ -709,6 +756,12 @@ const REQUEST_ID_ECHO_EXCLUDED: readonly ServerFrameKind[] = [
   // kernel-endpoints 是目录快照广播，主动推送、不回答某一次请求。
   'kernel-call-result',
   'kernel-endpoints',
+  // 队列/目标的**状态推送**（issue IKX1ZM）：它们不是任何一次请求的应答 ——
+  // 同一次 turn 里可能发给多条订阅连接，且可能发生在某个请求的异步上下文里
+  // （handler await 之后 push），不排除就会把别人的 requestId 回显上去，
+  // 客户端会把推送误当成某个未决请求的结果。
+  'queue-item-updated',
+  'goal-updated',
 ]
 
 /**
@@ -746,6 +799,11 @@ const REBUILDABLE_SERVER_KINDS: ReadonlySet<string> = new Set<ServerFrameKind>([
   // 只有 `event` 丢得起：它的载荷都在 REST 历史与状态里，重拉即可补齐。
   // 之前还列着四个 `*-updated` 推送 kind —— 它们从没被发送过（DEBT-005 的另一种形态）。
   'event',
+  // 队列/目标推送是**整份快照**（不是增量），丢了用 `session-queues` / `goals-get`
+  // 重取一次即可，所以同样可丢。前提是载荷必须保持「快照」语义：若将来改成增量，
+  // 必须从这里删掉，否则反压时会静默丢一次变更（issue IKX1ZM）。
+  'queue-item-updated',
+  'goal-updated',
 ])
 
 /** 该服务端帧是否属于「丢了可以重拉补齐」的类型（反压溢出时优先丢它）。 */

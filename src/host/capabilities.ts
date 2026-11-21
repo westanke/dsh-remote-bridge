@@ -95,6 +95,12 @@ export const BRIDGE_CAPABILITIES: readonly string[] = [
   'mobile-tasks-v1', // WS tasks：当前任务列表（todos 投影），只读
   'mobile-goal-read-v1', // WS goal：当前目标投影（读基线）；写操作还需内核 goals Remote
   'mobile-session-stats-v1', // WS session-stats / context-usage：统计条与上下文占用投影
+  // —— 队列与目标 activation（issue IKX1ZM，2026-11-21）——
+  // 与上面三位不同，这两位**不是**「读投影」那么简单：一写、一 Remote 读。
+  'mobile-queue-v1', // WS session-queues / queue-update / queue-item-updated：
+  //   读 = inbox 投影，写 = 内核 session/updateQueue，推送 = 变化后重读整份快照
+  'mobile-goal-activation-v1', // WS goals-get / goal-updated 的 activation 字段：
+  //   只有内核 goals/get 能给（GoalProjection 故意不含 activation），所以是运行时探测面
   // —— 后台任务（ctx.jobController，2026-10-20 加）——
   // 远程场景下「任务跑飞了停不掉」是真焦虑：人不在电脑前，卡住的 bash 任务只能干等。
   'job-list-v1', // GET /chat/sessions/{sessionId}/jobs
