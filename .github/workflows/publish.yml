@@ -69,7 +69,22 @@ jobs:
       # 第 1 步同口径。build 产出的 lib/ 进 tarball（files[] 里有 lib/**）。
       - run: pnpm check
 
+      # 幂等：版本已经在本机 `scripts/release.sh` 里发布过时，镜像过来的 tag 不该把工作流刷红。
+      # npm 对已存在的版本回 403（不能覆盖），那不是缺陷；跳过 publish、留给下面的回读确认。
+      - name: skip when this version is already published
+        id: already
+        shell: bash
+        run: |
+          ver="${GITHUB_REF_NAME#v}"
+          if npm view "dsh-remote-bridge@$ver" version 2>/dev/null | grep -qx "$ver"; then
+            echo "published=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::dsh-remote-bridge@$ver 已在 registry 上（本机发过），跳过 publish"
+          else
+            echo "published=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: publish to npm (trusted publishing / OIDC)
+        if: steps.already.outputs.published != 'true'
         # 用 npm@12 与 scripts/publish-npm.sh 保持一致：本地 npm 版本可能不支持
         # staged 发布，npm@12 两条路都支持。npm@12 同样内置 OIDC（lib/utils/oidc.js），
         # 换来的短时效令牌会写进 opts，PUT 请求带 `authorization: Bearer <oidc token>`。

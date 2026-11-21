@@ -747,8 +747,18 @@ curl -s -H "Authorization: Bearer $TOK" \
 `$VAR，` 在本机是有效代码，在 macOS 上是 unbound variable —— 这类错误只有 CI 矩阵的
 macOS 作业能抓。
 
-**回归**：`tests/shell-portability.spec.ts` 静态扫 `scripts/**/*.sh`，
-`$VAR` 紧跟非 ASCII 就红（静态断言足够，真跑 bash 3.2 需要 macOS 或容器）。
+**同一台 bash 3.2 上的第二个陷阱：空数组的 `"${a[@]}"`**。2026-11-21 修完上面那条，
+macOS 作业换了个位置继续红：`scripts/push-all.sh: line 74: force_args[@]: unbound variable`。
+`force_args=()` 在 `FORCE!=1` 时是空数组，bash 5 展开成零个词、什么也不发生；
+bash 3.2 在 `set -u` 下把它当**未定义变量**直接退出。修法是别留「可能为空的数组」——
+`if [ "$FORCE" = 1 ]; then git push --force-with-lease …; else git push …; fi` 分两行写，
+或者在 `if/else` 里各展开一次；非要用数组就写 `${a[@]+"${a[@]}"}`。
+
+**回归**：`tests/shell-portability.spec.ts` 静态扫 `scripts/**/*.sh` 与
+`.github/workflows/*.yml`：`$VAR` 紧跟非 ASCII 就红，`[ … ] && arr=(…)` 造出的数组
+被裸 `"${arr[@]}"` 展开也红（静态断言足够，真跑 bash 3.2 需要 macOS 或容器）。
+同文件还顺手钉了 Windows：测试里拼路径必须用 `fileURLToPath`，`new URL(…).pathname`
+在 Windows 上是 `/D:/a/…`，拼出来 `D:\D:\a\…` 整片 ENOENT。
 
 ---
 
