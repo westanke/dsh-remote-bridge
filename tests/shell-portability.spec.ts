@@ -27,6 +27,7 @@ import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 
 const SCRIPTS = new URL('../scripts/', import.meta.url).pathname
+const WORKFLOWS = new URL('../.github/workflows/', import.meta.url).pathname
 
 function shellScripts(dir: string): string[] {
   const out: string[] = []
@@ -42,6 +43,26 @@ function shellScripts(dir: string): string[] {
 const BARE_VAR_BEFORE_MULTIBYTE = /\$[A-Za-z_][A-Za-z0-9_]*(?=[^\x00-\x7F])/
 
 describe('shell scripts stay bash 3.2 portable', () => {
+  it('workflow 里的 run: 段落同样不许出现裸 $VAR 紧贴非 ASCII', () => {
+    // 作业换 runner（或默认 shell 变成 macOS 的 bash 3.2）时，同一行会立刻炸；
+    // mirror-sync.yml 的 `echo "…（源：$SRC_LABEL）"` 就是这么被找出来的。
+    const violations: string[] = []
+    for (const entry of readdirSync(WORKFLOWS)) {
+      if (!entry.endsWith('.yml') && !entry.endsWith('.yaml')) continue
+      const file = join(WORKFLOWS, entry)
+      readFileSync(file, 'utf8')
+        .split('\n')
+        .forEach((line, index) => {
+          const match = BARE_VAR_BEFORE_MULTIBYTE.exec(line)
+          if (match === null) return
+          violations.push(
+            `.github/workflows/${entry}:${index + 1}  ${match[0]} 紧跟非 ASCII —— 改成 \${${match[0].slice(1)}}`,
+          )
+        })
+    }
+    expect(violations).toEqual([])
+  })
+
   it('never puts a bare $VAR directly before a non-ASCII character', () => {
     const violations: string[] = []
     for (const file of shellScripts(SCRIPTS)) {

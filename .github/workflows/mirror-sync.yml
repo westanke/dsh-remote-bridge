@@ -61,7 +61,7 @@ jobs:
           : "${MIRROR_PAT:?仓库 secret MIRROR_PAT 未配置（需带 repo + workflow scope 的 PAT）}"
           git remote set-url --push origin "https://x-access-token:${MIRROR_PAT}@github.com/${GITHUB_REPOSITORY}.git"
           git push --mirror origin
-          echo "✅ 镜像完成（源：$SRC_LABEL）"
+          echo "✅ 镜像完成（源：${SRC_LABEL}）"
 
   releases:
     needs: mirror              # 必须先有 tag，否则 GitHub 会乱造 tag
