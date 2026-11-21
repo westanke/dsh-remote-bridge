@@ -714,6 +714,44 @@ ubuntu 不会暴露这条。
 
 ---
 
+### bash 3.2 把中文吃进变量名
+
+**症状**：GitHub Actions 上 `core (macos-latest, *)` 与 `profile-install (macos-latest, *)`
+从某次提交起每轮都红，ubuntu / windows 全绿；失败断言只有两行：
+
+```text
+scripts/push-all.sh: line 68: BRANCH（: unbound variable
+  expected 1 to be +0   ← tests/release-tag-push.spec.ts
+```
+
+`profile-install` 的红色**不是**第二个缺陷：它第 7 步 `pnpm pack` 触发 `prepack` →
+整条门禁，`release-tag-push.spec.ts` 红了，打包也红。
+
+**根因**：脚本里 `say "推送分支 $BRANCH（${#PAIRS[@]} 个远端…）"` —— `$BRANCH` 紧贴全角括号。
+bash 5（ubuntu / 本机）把非 ASCII 字节当变量名的边界，能正常展开；macOS runner 自带的
+**bash 3.2** 把多字节字符算进变量名，于是它找的是 `BRANCH（…` 这个不存在的变量，
+`set -u` 下直接 `unbound variable` 退出。
+
+**拿不到日志时怎么定位**（本机到 `productionresultssa1.blob.core.windows.net` 不通，
+`/actions/jobs/<id>/logs` 只返回 302 到那个域名）：改用 **check-run 注解**，它带断言原文：
+
+```sh
+curl -s -H "Authorization: Bearer $TOK" \
+  "https://api.github.com/repos/<owner>/<repo>/commits/<sha>/check-runs?per_page=40" \
+  | jq -r '.check_runs[] | select(.conclusion=="failure") | .id'
+curl -s -H "Authorization: Bearer $TOK" \
+  "https://api.github.com/repos/<owner>/<repo>/check-runs/<id>/annotations"
+```
+
+**铁律**：脚本里凡是要拼接中文标点（`（`、`：`、`，`、`…`）的变量，一律写 `${VAR}`。
+`$VAR，` 在本机是有效代码，在 macOS 上是 unbound variable —— 这类错误只有 CI 矩阵的
+macOS 作业能抓。
+
+**回归**：`tests/shell-portability.spec.ts` 静态扫 `scripts/**/*.sh`，
+`$VAR` 紧跟非 ASCII 就红（静态断言足够，真跑 bash 3.2 需要 macOS 或容器）。
+
+---
+
 ### 目录结构与接口说明漂移
 
 **症状**：两种表现，都很像「没问题」：
