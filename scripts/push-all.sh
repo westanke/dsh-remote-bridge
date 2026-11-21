@@ -65,7 +65,7 @@ fail=0
 # 2026-10-19（姊妹仓）修：此前分支与 tag 是 if/else **互斥**的 —— 带 PUSH_TAGS=1 就永远不推分支。
 # 实际后果：脚本报「tag 推送失败」，而分支也停在旧提交；远端看起来「只推了一半」，
 # 下次再推还要重新判断。发版时最危险的就是这种「以为推完了」。
-say "推送分支 $BRANCH（${#PAIRS[@]} 个远端，各自独立）…"
+say "推送分支 ${BRANCH}（${#PAIRS[@]} 个远端，各自独立）…"
 [ "$FORCE" = "1" ] && say "（FORCE=1：走 --force-with-lease 强制覆盖）"
 say ""
 for pair in "${PAIRS[@]}"; do

@@ -32,10 +32,10 @@ set_remote() {
     if [ "$cur" = "$url" ]; then
       say "  $name 已就位：$url"
     else
-      git remote set-url "$name" "$url" && ok "$name 改为：$url（原：$cur）"
+      git remote set-url "$name" "$url" && ok "$name 改为：${url}（原：${cur}）"
     fi
   else
-    git remote add "$name" "$url" && ok "新增 $name：$url"
+    git remote add "$name" "$url" && ok "新增 ${name}：$url"
   fi
 }
 

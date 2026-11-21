@@ -40,7 +40,7 @@ BARE="artifacts/dsh-remote-bridge-${VER}.tgz"
 DASHED="artifacts/dsh-remote-bridge-v${VER}.tgz"
 [ -f "$BARE" ] || { bad "没找到 $BARE"; exit 1; }
 cp "$BARE" "$DASHED"
-ok "产物：$BARE 与 $DASHED（同一份内容，两个名字）"
+ok "产物：$BARE 与 ${DASHED}（同一份内容，两个名字）"
 
 SIZE=$(stat -c%s "$BARE")
 SHA=$(sha256sum "$BARE" | cut -d' ' -f1)

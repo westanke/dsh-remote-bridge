@@ -66,7 +66,7 @@ for i in $(seq 1 32); do
   sleep 15
 done
 
-bad "等了 8 分钟 registry 仍查不到 ${VER}（publish 退出码 $PUB_RC）"
+bad "等了 8 分钟 registry 仍查不到 ${VER}（publish 退出码 ${PUB_RC}）"
 say "排查顺序：① npm whoami 是否仍是发布者；② 版本号是否已被占用（npm view $PKG versions）；"
-say "③ 账号是否被要求走 staged 发布（npm@12 stage list $PKG）。"
+say "③ 账号是否被要求走 staged 发布（npm@12 stage list ${PKG}）。"
 exit 1

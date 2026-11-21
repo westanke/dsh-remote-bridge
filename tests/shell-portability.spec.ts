@@ -1,0 +1,69 @@
+/**
+ * shell 脚本的跨平台可移植性：`$VAR` 后面紧跟非 ASCII 字符会被 bash 3.2 当成变量名的一部分。
+ *
+ * 事故（2026-11-21，GitHub Actions）：`core (macos-latest, *)` 与
+ * `profile-install (macos-latest, *)` 从 2026-11-15 起每轮都红，ubuntu / windows 全绿；
+ * 失败断言只有两行，来自 `tests/release-tag-push.spec.ts`：
+ *
+ * ```text
+ * scripts/push-all.sh: line 68: BRANCH（: unbound variable
+ *   expected 1 to be +0
+ * ```
+ *
+ * 根因是 `say "推送分支 $BRANCH（${#PAIRS[@]} 个远端…）"` —— `$BRANCH` 后面紧贴全角括号。
+ * bash 5（ubuntu/本机）在变量名边界上把非 ASCII 字节当定界符，能正常展开；
+ * macOS runner 自带的 **bash 3.2** 把多字节字符算进了变量名，于是找的是
+ * `BRANCH（…` 这个不存在的变量 —— 在 `set -u` 下直接 `unbound variable` 退出。
+ * `profile-install` 的失败不是另一个缺陷：它的第 7 步是 `pnpm pack`，而 `prepack`
+ * 会跑整条门禁，同一个用例把打包也带红了。
+ *
+ * 修法是所有 `$VAR` 在非 ASCII 前一律写成 `${VAR}`。本文件钉住这条，防止复发：
+ * 静态扫 `scripts/**\/*.sh`，只要又出现裸 `$VAR` 紧跟非 ASCII 就红，
+ * 并给出文件、行号与改法。静态断言就够 —— 这条规则与运行时无关，
+ * 而真跑 bash 3.2 需要 macOS 或容器，CI 的 Linux 作业里做不到。
+ */
+import { readdirSync, readFileSync, statSync } from 'node:fs'
+import { join } from 'node:path'
+import { describe, expect, it } from 'vitest'
+
+const SCRIPTS = new URL('../scripts/', import.meta.url).pathname
+
+function shellScripts(dir: string): string[] {
+  const out: string[] = []
+  for (const entry of readdirSync(dir)) {
+    const full = join(dir, entry)
+    if (statSync(full).isDirectory()) out.push(...shellScripts(full))
+    else if (entry.endsWith('.sh')) out.push(full)
+  }
+  return out
+}
+
+/** `$VAR` 后面紧跟一个非 ASCII 字符 —— bash 3.2 会把它吃进变量名。 */
+const BARE_VAR_BEFORE_MULTIBYTE = /\$[A-Za-z_][A-Za-z0-9_]*(?=[^\x00-\x7F])/
+
+describe('shell scripts stay bash 3.2 portable', () => {
+  it('never puts a bare $VAR directly before a non-ASCII character', () => {
+    const violations: string[] = []
+    for (const file of shellScripts(SCRIPTS)) {
+      const lines = readFileSync(file, 'utf8').split('\n')
+      lines.forEach((line, index) => {
+        const match = BARE_VAR_BEFORE_MULTIBYTE.exec(line)
+        if (match !== null) {
+          const relative = file.slice(SCRIPTS.length)
+          violations.push(
+            `scripts/${relative}:${index + 1}  ${match[0]} 紧跟非 ASCII —— 改成 \${${match[0].slice(1)}}`,
+          )
+        }
+      })
+    }
+    expect(violations).toEqual([])
+  })
+
+  it('keeps the release scripts that CI exercises free of the pattern', () => {
+    // 这两支脚本会被 `tests/release-tag-push.spec.ts` 真跑，也是 macOS 上最先撞到的那两个。
+    for (const name of ['push-all.sh', 'release.sh']) {
+      const text = readFileSync(join(SCRIPTS, name), 'utf8')
+      expect(text).not.toMatch(BARE_VAR_BEFORE_MULTIBYTE)
+    }
+  })
+})

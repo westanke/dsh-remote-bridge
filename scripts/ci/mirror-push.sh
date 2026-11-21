@@ -60,4 +60,4 @@ echo "::group::push --mirror → github.com/${GITHUB_REPOSITORY}"
 git push --mirror origin
 echo "::endgroup::"
 
-echo "✅ 镜像完成（源：$src_label）"
+echo "✅ 镜像完成（源：${src_label}）"

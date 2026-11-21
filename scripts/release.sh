@@ -39,7 +39,7 @@ warn(){ printf '\033[33m  ⚠️ %s\033[0m\n' "$*"; }
 bad() { printf '\033[31m  ❌ %s\033[0m\n' "$*"; }
 run() { if [ "$DRY_RUN" = "1" ]; then say "  [dry] $*"; else "$@"; fi; }
 
-say "═══ 发版 $PKG@$VER（tag $TAG）═══"
+say "═══ 发版 $PKG@${VER}（tag ${TAG}）═══"
 say ""
 
 # ── 0. 前置检查 ────────────────────────────────────────────────────
@@ -53,7 +53,7 @@ fi
 ok "版本号两处一致、工作区干净"
 
 BRANCH=$(git rev-parse --abbrev-ref HEAD)
-ok "分支 $BRANCH，HEAD $(git rev-parse --short HEAD)"
+ok "分支 ${BRANCH}，HEAD $(git rev-parse --short HEAD)"
 
 # 远端与凭据（Gitee/AtomGit 的 API token 存在 ~/.git-credentials 里）
 GT=$(grep -m1 "gitee.com" ~/.git-credentials 2>/dev/null | sed 's|https://[^:]*:||; s|@gitee.com||' || true)
@@ -105,7 +105,7 @@ say ""
 # ── 3. 打 tag ──────────────────────────────────────────────────────
 say "3) 打 tag $TAG"
 if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
-  ok "本地已有 $TAG，跳过"
+  ok "本地已有 ${TAG}，跳过"
   # 幂等重跑时，tag 可能指向「校验值还没回填」的旧提交（v2.6.0 就是这样）。
   # tag 一旦推出去就**不**改指（要 --force，用户明令禁止），所以这里只把话说清楚。
   # 纯只读，dry-run 也照跑 —— 这样「计划阶段」就能看出历史遗留的 tag 是否已经过期。
@@ -125,7 +125,7 @@ else
   if [ "$DRY_RUN" != "1" ] && ! git show "$TAG:artifacts/SHA256SUMS.txt" 2>/dev/null \
        | cmp -s - artifacts/SHA256SUMS.txt; then
     bad "$TAG 里的 artifacts/SHA256SUMS.txt 与工作区不一致 —— 发版中止（tag 未推送）"
-    bad "  修法：git tag -d $TAG，确认工作区干净后重跑本脚本"
+    bad "  修法：git tag -d ${TAG}，确认工作区干净后重跑本脚本"
     exit 1
   fi
   [ "$DRY_RUN" = "1" ] || ok "tag 内容校验通过（SHA256SUMS.txt 与工作区一致）"
@@ -199,7 +199,7 @@ gitee_release() {
   id=$(curl -s "https://gitee.com/api/v5/repos/$repo/releases/tags/$TAG?access_token=$GT" \
        | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>{try{console.log(JSON.parse(s).id||'')}catch{console.log('')}})")
   if [ -z "$id" ]; then
-    say "  创建 Gitee Release $TAG…"
+    say "  创建 Gitee Release ${TAG}…"
     [ "$DRY_RUN" = "1" ] && return 0
     local body
     # `sed … | head` 会在 60 行处 SIGPIPE，配合 `set -o pipefail` 直接中断发版
@@ -223,9 +223,9 @@ gitee_release() {
            -F "name=$VER" -F "prerelease=false" -F "body=$body" \
            | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>{try{console.log(JSON.parse(s).id||'')}catch{console.log('')}})")
     fi
-    [ -n "$id" ] && ok "Gitee Release 已建（id $id）" || { bad "Gitee Release 建失败"; return 1; }
+    [ -n "$id" ] && ok "Gitee Release 已建（id ${id}）" || { bad "Gitee Release 建失败"; return 1; }
   else
-    ok "Gitee Release 已存在（id $id），跳过创建"
+    ok "Gitee Release 已存在（id ${id}），跳过创建"
   fi
   # 附件：两个 tgz + SHA256SUMS，名字已在就跳过
   local have
@@ -253,7 +253,7 @@ atomgit_release() {
         "https://atomgit.com/api/v5/repos/$repo/releases?per_page=1" \
         | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>{try{const d=JSON.parse(s);console.log((d[0]||{}).tag_name||'')}catch{console.log('')}})")
   if [ "$cur" = "$TAG" ]; then
-    ok "AtomGit Release 已存在（$TAG），跳过"
+    ok "AtomGit Release 已存在（${TAG}），跳过"
   else
     [ "$DRY_RUN" = "1" ] && { say "  [dry] 创建 AtomGit Release $TAG"; return 0; }
     local payload
