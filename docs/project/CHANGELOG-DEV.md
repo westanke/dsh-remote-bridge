@@ -1,4 +1,4 @@
-## 未发布 · 多路配置码：一个 DSH1 同时带隧道 / LAN / 虚拟网（issue IKX5K7）
+## v2.16.0 · 多路配置码：一个 DSH1 同时带隧道 / LAN / 虚拟网（2026-11-22，issue IKX5K7）
 
 **为什么有这一段**：v2.15.0 之前两类入口各写各的地址 —— `POST /manage/config/text` 只探测本机
 网卡，一键开隧道只塞隧道地址（`buildConfigText` 的 `endpoints` 一旦显式给出就不再探测）。
@@ -30,11 +30,19 @@
 可达地址（DDNS + 端口映射 / IPv6）与虚拟网（`100.64/10`，已是 `VIRTUAL_NET`）。理由与边界
 写在 issue IKX5K7 与 `API.md` 的「一个码多条路」。
 
+**`open_tunnel_config` 的回执也改了（issue IKX5N7）**：描述里加硬要求「把结果里那一行
+`DSH1:` 原样放到回复第一行，不要代码块、不要重新折行，说明最多两句」；`output.render` 的
+两块顺序对调 —— 第一块改成配置文本本身，第二块才给地址/设备名与同样的提醒。原因是
+2026-11-22 真机反馈：客户端新对话里 `/tunnel` 被当普通消息交给智能体（dsh-Chat#IKX5MV），
+模型拿到文本后先写一大段说明，配置码被挤到很后面，用户以为「没回配置码」。
+
 **验证**：`tests/config-text.spec.ts` 新增 `composeCandidates` 7 例（无隧道 / 有隧道 / 去重 /
 标签回落 / 归一化 / 缺 label 兜底）；`tests/tunnel-create-config.spec.ts` 改为多路断言并新增
 4 例（`includeTunnel` 起隧道、缺省不碰隧道、隧道在跑复用、未启用回 `TUNNEL_DISABLED`）；
-`tsc --noEmit` 与 `vitest run` 全绿。**真机未验**：`dsh-companion` 在家选 LAN、出门落隧道的
-实际表现待跑。
+`tests/im-tunnel-command.spec.ts` 改两例（render 首块是配置文本、描述含 verbatim / no code
+fences 硬要求）；`tsc --noEmit` 与 `vitest run` 全绿。**真机部分验过**：dsh-Chat 新对话与
+已有会话各跑一次 `/tunnel`，桥侧 `command/done` 与审计都正常（命令派发在客户端那一层短路，
+见 IKX5MV）；`dsh-companion` 在家选 LAN、出门落隧道的实际表现在客户端改完后待跑。
 
 ## v2.15.0 · dsh-Go 原生界面：只读「接入」面板 + 状态条（2026-11-22）
 

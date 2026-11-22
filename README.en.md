@@ -499,6 +499,18 @@ simulation of the kernel's disk write (measuring `VmHWM`, the monotonic peak, fr
 `/proc/self/status`, each path in its own process, payload read in slices); the tunnel tool
 was not exercised once over IM on real hardware.
 
+**v2.16.0 verification status**: 95 test files / **1073 cases** green; `typecheck`, `docs:check`, and
+the build pass. This release turns the config text into an **ordered candidate list** (`MOB-016`,
+issue IKX5K7): one `DSH1:` now carries the tunnel, the LAN address and the virtual-network address,
+with the tunnel first (`dsh-Chat`'s `decodeDsh1` only reads `endpoints[0]`, and the tunnel works both
+at home and away); preferring LAN is the client's job — probing and ranking (`dsh-companion` already
+does it, `dsh-Chat` is tracked in IKX5KQ). New `composeCandidates()`; `POST /manage/config/text`
+accepts `includeTunnel: true` (**off by default** — generating text is a read-only action and must
+not silently open a public ingress). The `open_tunnel_config` tool now tells the model to put the
+`DSH1:` line verbatim in the first line of its reply (IKX5N7). **On-device**: in an existing dsh-Chat
+session `/tunnel` returns the full config text; sending it in a brand-new chat falls through to the
+agent because of a client-side short circuit (dsh-Chat#IKX5MV) — the bridge itself is fine.
+
 **v2.15.0 verification status**: 95 test files / **1060 cases** green; `typecheck`, `docs:check`,
 and the build pass. This release adds a read-only "Access" panel and status strip for dsh-Go
 (`MOB-015`, see *Clients and stable client API* above and [API.md](docs/project/API.md)): a `dshGo`
@@ -569,7 +581,7 @@ inside the zero-change set, and 4 slots retained with 0 removed.
 
 ## Project
 
-- Version: `v2.15.0`
+- Version: `v2.16.0`
 - **v2.9.0 makes teammates (sub-sessions) readable**: the phone's team panel could list members and
   sub-sessions but could not open a single one, because `sessions.list` filters out every row with
   `origin === 'subagent'` (the bridge's own `dsh-0.2-bridge.ts:2327`, with a comment explaining that

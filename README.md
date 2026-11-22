@@ -488,6 +488,15 @@ v2.5.0 在 DSH **0.2.1-rc.2** 上完成真机验证：14/14 宿主服务全部�
 CI 覆盖 Windows、Ubuntu 和 macOS **各两档内核**（`0.2.2-rc.1` 与 `0.2.2-rc.4`），
 即 `engines.dsh` 声明区间的下界与上界附近各测一次（issue #26 阶段 0.1）。
 
+**v2.16.0 的验证状态**：95 个测试文件 / **1073 个用例**全绿、`typecheck`/`docs:check`/构建通过。
+这一版把配置码升级成**有序候选列表**（`MOB-016`，issue IKX5K7）：一个 `DSH1:` 同时带隧道、LAN
+与虚拟网地址，隧道排第一（`dsh-Chat` 的 `decodeDsh1` 只取 `endpoints[0]`，隧道在家在外都通），
+「局域网优先」交给客户端探活排序（`dsh-companion` 已实现，`dsh-Chat` 见 IKX5KQ）。新增
+`composeCandidates()`；`POST /manage/config/text` 支持 `includeTunnel: true`（**缺省关** —— 生成
+文本是只读动作，不许它偷偷拉起公网入口）；`open_tunnel_config` 的回执改成要求模型把 `DSH1:`
+那一行原样放到回复第一行（IKX5N7）。**真机**：dsh-Chat 已有会话里 `/tunnel` 直接回完整配置码；
+新对话里 `/tunnel` 被当普通消息交给智能体是客户端那层的短路（dsh-Chat#IKX5MV），桥侧正常。
+
 **v2.15.0 的验证状态**：95 个测试文件 / **1060 个用例**全绿、`typecheck`/`docs:check`/构建通过。
 这一版给 dsh-Go 加一块只读「接入」面板 + 状态条（`MOB-015`，详见上文「连接客户端」与
 [API.md](docs/project/API.md)）：`package.json` 新增 `dshGo` 清单（原生插件协议 v1），新增
@@ -589,7 +598,7 @@ DSH **0.2.1-rc.3** 隔离实例上**实跑验过**，不是静态推断：插件
 
 ## 项目信息
 
-- 当前版本：`v2.15.0`
+- 当前版本：`v2.16.0`
 - **v2.9.0 是团队成员（子会话）可读版**：手机端的团队面板此前只能看到成员与子会话的名字，点开读不到
   任何内容 —— 因为 `sessions.list` 会把 `origin === 'subagent'` 的行整批滤掉（桥自己的
   `dsh-0.2-bridge.ts:2327`，注释写明「暴露出来只会得到点开就崩的行」），子会话 id 打 `/messages`

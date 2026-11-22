@@ -1,7 +1,7 @@
 # 当前状态
 
-- 日期：2026-11-22（**已发版 v2.15.0：dsh-Go 原生界面（只读「接入」面板 + 状态条）+ kernel-call 白名单放行 `skills/list`**；再往前 v2.12.1 是大文件上传流式化 + 隧道工具 schema 修形**；`main` 上另有未发版的 issue #26 阶段 0 / 1 / 2 / 3a / 3b / 3c / 3d / 4 / 5 / 6 / 7 / 8 / 9、完工检修一批，以及真机测试期修的两个 bug）
-- **已完成（未发布，2026-11-22）· 多路配置码：一个 DSH1 同时带隧道 / LAN / 虚拟网**（`MOB-016`，
+- 日期：2026-11-22（**已发版 v2.16.0：多路配置码（一个 DSH1 同时带隧道 / LAN / 虚拟网）+ `open_tunnel_config` 回执改形**；再往前 v2.15.0 是 dsh-Go 原生界面 + kernel-call 白名单放行 `skills/list`，v2.12.1 是大文件上传流式化 + 隧道工具 schema 修形**；`main` 上另有未发版的 issue #26 阶段 0 / 1 / 2 / 3a / 3b / 3c / 3d / 4 / 5 / 6 / 7 / 8 / 9、完工检修一批，以及真机测试期修的两个 bug）
+- **已发版（v2.16.0，2026-11-22）· 多路配置码：一个 DSH1 同时带隧道 / LAN / 虚拟网**（`MOB-016`，
   issue IKX5K7）：用户提出「一个配置码支持多种链接，优先 LAN，再 P2P，不通再 Relay，最后隧道」。
   做法是把 `endpoints` 从「一个地址」变成**有序候选列表**：新增
   `composeCandidates({ port, tunnelUrl, tunnelLabel, explicit })`（`src/host/config-text.ts`），
@@ -16,8 +16,15 @@
   **P2P 打洞与 TURN/Relay 不做**（桥是明文 HTTP/WS，拿不到 WebRTC P2P 通道；Relay 必须有服务器，
   用户口径「需要自建服务器就跳过」）；今天可用的直连是自备公网可达地址（DDNS + 端口映射 / IPv6）
   与虚拟网（`100.64/10`）。
-  验收：`composeCandidates` 7 例 + `/manage/config/text` 与隧道搭车 4 例 + 隧道搭车改为多路断言，
-  `tsc --noEmit` 与全量 `vitest run` 全绿。**真机未验**（`dsh-companion` 在家选 LAN、出门落隧道）。
+  **`open_tunnel_config` 回执（issue IKX5N7）**：描述里加硬要求「把结果里那一行 `DSH1:` 原样放
+  到回复第一行，不要代码块、不要重新折行，说明最多两句」；`output.render` 两块对调，第一块改成
+  配置文本本身。起因是 2026-11-22 真机反馈：客户端新对话里 `/tunnel` 被当普通消息交给智能体
+  （dsh-Chat#IKX5MV），模型先写一大段说明，配置码被挤到很后面，用户以为「没回配置码」。
+  验收：`composeCandidates` 7 例 + `/manage/config/text` 与隧道搭车 4 例 + 隧道搭车改为多路断言 +
+  `im-tunnel-command` 两例（render 首块是配置文本、描述含 verbatim / no code fences），
+  95 文件 / **1073 用例**全绿。**真机部分验过**：dsh-Chat 已有会话里 `/tunnel` 直接回完整配置码
+  （`command/done` 两条带全文），新对话里落回智能体是客户端短路；`dsh-companion` 在家选 LAN、
+  出门落隧道的实际表现在客户端改完后待跑。
   客户端侧：`dsh-Chat` 仍只认 `endpoints[0]`，已单列 `MOB-017` 等客户端改探活排序。
 
 - **已发版（v2.15.0，2026-11-22）· dsh-Go 原生界面：只读「接入」面板 + 状态条**（`MOB-015`）：
