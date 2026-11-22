@@ -1508,5 +1508,5 @@ sha256 也不在任何一台设备上。
 **铁律**：**任何要用户跨 IM 复制的连接凭据，长度必须压到不会坏的量级**（配对码 8 位级别），
 长文本只走「整段复制、不经转发」的路径（WebUI → 生成配置文本）。
 
-**回归锚**：`tests/im-tunnel-command.spec.ts` 断言回复含地址与配对码且**不含** `DSH1:`；
+**回归锚**：`tests/im-tunnel-command.spec.ts` 断言回复第一行就是 `<url>#<pairingCode>` 且**不含** `DSH1:`；
 `tests/tunnel-create-config.spec.ts` 断言 `openTunnelForCommand()` 只签发配对码、且不预建设备（issue #28）。

@@ -42,9 +42,8 @@ describe('/tunnel 命令', () => {
     expect(text).toContain(RESULT.pairingCode)
     // 回归锚：长文本经 IM 转发后掉字符，令牌变成「库里不存在的一枚」→ 连接必失败。
     expect(text).not.toContain('DSH1:')
-    // 用户要照抄的那两行必须各自独占一行。
-    expect(text.split('\n')).toContain(`地址：${RESULT.url}`)
-    expect(text.split('\n').some(line => line.startsWith(`配对码：${RESULT.pairingCode}`))).toBe(true)
+    // 用户要照抄的那一行必须独占第一行，且是「地址#配对码」的一行短码。
+    expect(text.split('\n')[0]).toBe(`${RESULT.url}#${RESULT.pairingCode}`)
   })
 
   it('带参数一律拒绝（刻意不提供 /tunnel stop 这类第二个入口）', async () => {
@@ -120,11 +119,12 @@ describe('/tunnel 命令', () => {
 
   it('formatTunnelReply 的输出形状稳定（IM 消息分段依赖它）', () => {
     const lines = formatTunnelReply(RESULT).split('\n')
-    expect(lines[0]).toBe('云隧道已开启。')
-    expect(lines[1]).toBe(`地址：${RESULT.url}`)
-    expect(lines[2]?.startsWith(`配对码：${RESULT.pairingCode}`)).toBe(true)
-    // 最后一句是操作说明，不夹带任何需要用户长按复制的凭据。
-    expect(lines[lines.length - 1]).toMatch(/配对并连接/)
+    // 第一行就是可直接长按复制的一行短码：地址#配对码。
+    expect(lines[0]).toBe(`${RESULT.url}#${RESULT.pairingCode}`)
+    // 第二行只讲有效期与「粘进导入框」，不夹带任何需要用户长按复制的凭据。
+    expect(lines[1]).toMatch(/导入框/)
+    expect(lines[1]).not.toContain(RESULT.pairingCode)
+    expect(lines).toHaveLength(2)
   })
 
   it('handler 返回值的 kind 只有 success / error 两种（内核只认这两种）', () => {
@@ -191,17 +191,16 @@ describe('open_tunnel_config 工具（IM 自然语言入口）', () => {
     const blocks = tool.output.render({}, { url: RESULT.url, pairingCode: RESULT.pairingCode, expiresAt: RESULT.expiresAt })
     expect(blocks).toHaveLength(2)
     expect(blocks.every(block => block.type === 'text')).toBe(true)
-    // 第一块就是要用户照抄的两行：模型容易复述它先看到的那段（issue IKX5N7）。
+    // 第一块就是要用户照抄的那一行：模型容易复述它先看到的那段（issue IKX5N7）。
     const [configBlock, noteBlock] = blocks
-    expect(configBlock?.text).toContain(RESULT.url)
-    expect(configBlock?.text).toContain(RESULT.pairingCode)
+    expect(configBlock?.text).toBe(`${RESULT.url}#${RESULT.pairingCode}`)
     expect(configBlock?.text).not.toContain('DSH1:')
     // 第二块只讲有效期与「怎么回」，不重复贴码 —— 重复贴容易被模型抄两遍。
     expect(noteBlock?.text).toMatch(/expires/i)
     expect(noteBlock?.text).toMatch(/verbatim/i)
   })
 
-  it('描述里硬性要求模型原样回「地址 + 配对码」，不再要求回长文本（issue #28）', () => {
+  it('描述里硬性要求模型原样回「地址#配对码」一行，不再要求回长文本（issue #28）', () => {
     const tool = createTunnelTool(fakeDeps(async () => RESULT))
     expect(tool.description).toMatch(/pairing code/i)
     expect(tool.description).toMatch(/no code fences/i)

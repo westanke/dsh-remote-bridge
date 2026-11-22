@@ -91,10 +91,8 @@ function pairingMinutes(expiresAt: number): number {
 /** 把结果拼成聊天消息。 */
 export function formatTunnelReply(result: TunnelCommandResult): string {
   return [
-    '云隧道已开启。',
-    `地址：${result.url}`,
-    `配对码：${result.pairingCode}（${pairingMinutes(result.expiresAt)} 分钟内有效，只能用一次）`,
-    '在 App 里填地址 + 配对码，点「配对并连接」即可。',
+    `${result.url}#${result.pairingCode}`,
+    `（一行粘进 App 的导入框即可：它会自己拆成地址与配对码；${pairingMinutes(result.expiresAt)} 分钟内有效、只能用一次）`,
   ].join('\n')
 }
 
@@ -200,9 +198,9 @@ export const TUNNEL_TOOL_DESCRIPTION =
   'start the tunnel, to get the connection info, or says they are away from the computer and ' +
   'need remote access. ' +
   'It never stops the tunnel and never touches files. ' +
-  'When you reply, give the URL and the pairing code as the very first lines — ' +
+  'When you reply, give the `<url>#<pairingCode>` line as the very first line — ' +
   'no code fences, no re-wrapping, no reformatting — and keep any explanation to at most ' +
-  'two short sentences after them, because the user has to copy them into the app.'
+  'two short sentences after it, because the user pastes that line into the app.'
 
 /** 工具的返回结构（与 `TunnelCommandResult` 同源）。 */
 export interface TunnelToolOutput {
@@ -259,14 +257,14 @@ export function createTunnelTool(deps: TunnelCommandDeps): Parameters<TunnelTool
       render: (_args, value) => [
         {
           type: 'text',
-          text: `地址：${value.url}\n配对码：${value.pairingCode}`,
+          text: `${value.url}#${value.pairingCode}`,
         },
         {
           type: 'text',
           text:
             `The pairing code expires at ${new Date(value.expiresAt).toISOString()} and works once. ` +
-            'Reply with those two lines verbatim as the very first lines of your answer, and keep ' +
-            'any extra explanation to at most two short sentences: the user has to copy them into the app.',
+            'Reply with that single line verbatim as the very first line of your answer, and keep ' +
+            'any extra explanation to at most two short sentences: the user pastes it into the app.',
         },
       ],
     },
