@@ -263,10 +263,18 @@ export async function createTunnel(options: RouterOptions,
    */
 export async function openTunnelForCommand(
   options: RouterOptions,
-): Promise<{ url: string; pairingCode: string; expiresAt: number }> {
+): Promise<{ urls: string[]; pairingCode: string; expiresAt: number }> {
     const tunnels = options.tunnels
     if (tunnels === undefined) throw new Error('隧道功能未启用。')
     const requestId = randomUUID()
+
+    /**
+     * 候选地址表：隧道在第一位，其后是这台机器此刻的局域网 / 虚拟网地址
+     * （与 WebUI「生成配置文本」同一套 `composeCandidates`，顺序也同一套理由）。
+     * 手机在家走 LAN、在外走隧道，由客户端探活择优决定，不需要用户换码。
+     */
+    const candidatesFor = (tunnelUrl: string): string[] =>
+      composeCandidates({ tunnelUrl }).map(endpoint => endpoint.baseUrl)
 
     const issuePairing = (url: string) => {
       // rootIds / scopes 与 WebUI「生成配对码」同口径：配对那一刻就把权限定死。
@@ -277,7 +285,7 @@ export async function openTunnelForCommand(
         undefined,
         { requestId },
       )
-      return { url, pairingCode: pairing.code, expiresAt: pairing.expiresAt }
+      return { urls: candidatesFor(url), pairingCode: pairing.code, expiresAt: pairing.expiresAt }
     }
 
     const current = tunnels.publicState

@@ -23,10 +23,16 @@ import {
  */
 
 const RESULT: TunnelCommandResult = {
-  url: 'https://fake-example.trycloudflare.com',
+  urls: [
+    'https://fake-example.trycloudflare.com',
+    'http://192.168.1.126:3090',
+    'http://100.64.250.1:3090',
+  ],
   pairingCode: 'AB3DE',
   expiresAt: 1_800_000_000_000,
 }
+/** 用户要照抄的那一行：多条候选地址用 `,` 连、配对码接在最后一个 `#` 后面。 */
+const SHORT_CODE = `${RESULT.urls.join(',')}#${RESULT.pairingCode}`
 
 function fakeDeps(openTunnel: () => Promise<TunnelCommandResult>) {
   return { openTunnel, logger: { info: vi.fn(), warn: vi.fn() } }
@@ -38,12 +44,15 @@ describe('/tunnel 命令', () => {
     const outcome = await command.handler({ rawInput: '' })
     expect(outcome.kind).toBe('success')
     const text = (outcome as { text: string }).text
-    expect(text).toContain(RESULT.url)
+    expect(text).toContain(RESULT.urls[0])
     expect(text).toContain(RESULT.pairingCode)
     // 回归锚：长文本经 IM 转发后掉字符，令牌变成「库里不存在的一枚」→ 连接必失败。
     expect(text).not.toContain('DSH1:')
-    // 用户要照抄的那一行必须独占第一行，且是「地址#配对码」的一行短码。
-    expect(text.split('\n')[0]).toBe(`${RESULT.url}#${RESULT.pairingCode}`)
+    // 用户要照抄的那一行必须独占第一行：多条地址 + 一个配对码。
+    expect(text.split('\n')[0]).toBe(SHORT_CODE)
+    // LAN 与虚拟网地址也要在里面 —— 否则在家还得绕隧道。
+    expect(text).toContain(RESULT.urls[1]!)
+    expect(text).toContain(RESULT.urls[2]!)
   })
 
   it('带参数一律拒绝（刻意不提供 /tunnel stop 这类第二个入口）', async () => {
@@ -120,7 +129,7 @@ describe('/tunnel 命令', () => {
   it('formatTunnelReply 的输出形状稳定（IM 消息分段依赖它）', () => {
     const lines = formatTunnelReply(RESULT).split('\n')
     // 第一行就是可直接长按复制的一行短码：地址#配对码。
-    expect(lines[0]).toBe(`${RESULT.url}#${RESULT.pairingCode}`)
+    expect(lines[0]).toBe(SHORT_CODE)
     // 第二行只讲有效期与「粘进导入框」，不夹带任何需要用户长按复制的凭据。
     expect(lines[1]).toMatch(/导入框/)
     expect(lines[1]).not.toContain(RESULT.pairingCode)
@@ -144,10 +153,14 @@ describe('open_tunnel_config 工具（IM 自然语言入口）', () => {
     expect(tool.description).toMatch(/never stops the tunnel/i)
   })
 
-  it('execute 返回 url / pairingCode / expiresAt，与命令入口同源', async () => {
+  it('execute 返回 addresses / pairingCode / expiresAt，与命令入口同源', async () => {
     const tool = createTunnelTool(fakeDeps(async () => RESULT))
     const value = await tool.execute({}, {})
-    expect(value).toEqual({ url: RESULT.url, pairingCode: RESULT.pairingCode, expiresAt: RESULT.expiresAt })
+    expect(value).toEqual({
+      addresses: RESULT.urls.join(','),
+      pairingCode: RESULT.pairingCode,
+      expiresAt: RESULT.expiresAt,
+    })
   })
 
   it('output.schema 落在内核接受的 JSON Schema 子集里（否则工具会被内核静默拒注册）', () => {
@@ -183,17 +196,21 @@ describe('open_tunnel_config 工具（IM 自然语言入口）', () => {
       expect(Object.hasOwn(schema.properties ?? {}, key), `required 里的 "${key}" 必须在 properties 中`).toBe(true)
     }
     // 三个返回值字段都得是必填 —— 少一个就意味着「隧道开了但模型看不到地址」。
-    expect([...(schema.required as string[])].sort()).toEqual(['expiresAt', 'pairingCode', 'url'])
+    expect([...(schema.required as string[])].sort()).toEqual(['addresses', 'expiresAt', 'pairingCode'])
   })
 
   it('render 只吐两段文本：地址 + 配对码在前（可直接长按复制）+ 有效期与「原样回」提醒', async () => {
     const tool = createTunnelTool(fakeDeps(async () => RESULT))
-    const blocks = tool.output.render({}, { url: RESULT.url, pairingCode: RESULT.pairingCode, expiresAt: RESULT.expiresAt })
+    const blocks = tool.output.render({}, {
+      addresses: RESULT.urls.join(','),
+      pairingCode: RESULT.pairingCode,
+      expiresAt: RESULT.expiresAt,
+    })
     expect(blocks).toHaveLength(2)
     expect(blocks.every(block => block.type === 'text')).toBe(true)
     // 第一块就是要用户照抄的那一行：模型容易复述它先看到的那段（issue IKX5N7）。
     const [configBlock, noteBlock] = blocks
-    expect(configBlock?.text).toBe(`${RESULT.url}#${RESULT.pairingCode}`)
+    expect(configBlock?.text).toBe(SHORT_CODE)
     expect(configBlock?.text).not.toContain('DSH1:')
     // 第二块只讲有效期与「怎么回」，不重复贴码 —— 重复贴容易被模型抄两遍。
     expect(noteBlock?.text).toMatch(/expires/i)

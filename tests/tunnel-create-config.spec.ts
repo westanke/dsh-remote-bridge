@@ -257,7 +257,9 @@ describe('IM /tunnel 命令的宿主入口 openTunnelForCommand', () => {
     const harness = await startHarness(false)
     try {
       const result = await harness.router.openTunnelForCommand()
-      expect(result.url).toBe('https://fake-example.trycloudflare.com')
+      // 隧道地址排第一（老客户端只认第一条），其后是 LAN / 虚拟网候选。
+      expect(result.urls[0]).toBe('https://fake-example.trycloudflare.com')
+      expect(result.urls.length).toBeGreaterThanOrEqual(1)
       // 只有短码：长文本经 IM 转发会掉字符，令牌就变成库里不存在的一枚。
       expect(result.pairingCode.length).toBeGreaterThan(0)
       expect(result.pairingCode.length).toBeLessThan(16)
@@ -276,7 +278,7 @@ describe('IM /tunnel 命令的宿主入口 openTunnelForCommand', () => {
     try {
       const first = await harness.router.openTunnelForCommand()
       const second = await harness.router.openTunnelForCommand()
-      expect(second.url).toBe(first.url)
+      expect(second.urls[0]).toBe(first.urls[0])
       // 每次调用都是新的一份凭据（旧的用过就作废，避免两个窗口共用一枚码）。
       expect(second.pairingCode).not.toBe(first.pairingCode)
       expect(harness.tunnels.startQuickCalls).toBe(1)

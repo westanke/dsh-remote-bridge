@@ -52,7 +52,11 @@ export const TUNNEL_COMMAND_DESCRIPTION = '开启 Cloudflare 隧道并返回地�
  */
 export interface TunnelCommandResult {
   /** 隧道公网地址（`https://<random>.trycloudflare.com`）。 */
-  url: string
+  /**
+   * 候选地址表，**隧道在前**（与配置文本同口径，见 `composeCandidates`）：
+   * `[0]` 是公网隧道地址，其后是局域网 / 虚拟网。老客户端只认第一条也能连。
+   */
+  urls: string[]
   /** 一次性配对码（8 位十六进制字母数字，10 分钟内有效、只能用一次）。 */
   pairingCode: string
   /** 配对码过期时刻（毫秒时间戳），用于在回复里写清有效期。 */
@@ -91,8 +95,8 @@ function pairingMinutes(expiresAt: number): number {
 /** 把结果拼成聊天消息。 */
 export function formatTunnelReply(result: TunnelCommandResult): string {
   return [
-    `${result.url}#${result.pairingCode}`,
-    `（一行粘进 App 的导入框即可：它会自己拆成地址与配对码；${pairingMinutes(result.expiresAt)} 分钟内有效、只能用一次）`,
+    `${result.urls.join(',')}#${result.pairingCode}`,
+    `（一行粘进 App 的导入框即可：它会拆成多条候选地址 + 配对码，连哪条自己探；${pairingMinutes(result.expiresAt)} 分钟内有效、只能用一次）`,
   ].join('\n')
 }
 
@@ -125,7 +129,7 @@ export function createTunnelCommand(deps: TunnelCommandDeps): {
       inFlight = true
       try {
         const result = await deps.openTunnel()
-        deps.logger?.info(`[dsh-remote-bridge] /tunnel 已开启隧道 ${result.url}`)
+        deps.logger?.info(`[dsh-remote-bridge] /tunnel 已开启隧道 ${result.urls[0] ?? '(no url)'}`)
         return { kind: 'success', text: formatTunnelReply(result) }
       } catch (cause) {
         const message = cause instanceof Error ? cause.message : String(cause)
@@ -193,7 +197,7 @@ export const TUNNEL_TOOL_NAME = 'open_tunnel_config'
  *   库里不存在的一枚），所以现在只回「地址 + 一次性配对码」两行短文本。
  */
 export const TUNNEL_TOOL_DESCRIPTION =
-  'Open the Cloudflare quick tunnel for this DSH host and return the public URL plus a ' +
+  'Open the Cloudflare quick tunnel for this DSH host and return its candidate addresses plus a ' +
   'one-time pairing code that a phone app can use to pair. Use it whenever the user asks to ' +
   'start the tunnel, to get the connection info, or says they are away from the computer and ' +
   'need remote access. ' +
@@ -204,7 +208,8 @@ export const TUNNEL_TOOL_DESCRIPTION =
 
 /** 工具的返回结构（与 `TunnelCommandResult` 同源）。 */
 export interface TunnelToolOutput {
-  url: string
+  /** 逗号分隔的候选地址表（隧道在前）；与配对码用 `#` 拼成一行短码。 */
+  addresses: string
   pairingCode: string
   expiresAt: number
 }
@@ -244,20 +249,20 @@ export function createTunnelTool(deps: TunnelCommandDeps): Parameters<TunnelTool
         type: 'object',
         additionalProperties: false,
         properties: {
-          url: { type: 'string' },
+          addresses: { type: 'string' },
           pairingCode: { type: 'string' },
           expiresAt: { type: 'number' },
         },
-        required: ['url', 'pairingCode', 'expiresAt'],
+        required: ['addresses', 'pairingCode', 'expiresAt'],
       },
       // 顺序有意为之（issue IKX5N7）：**凭据放第一块**。模型倾向于复述它先看到的
       // 那段，之前把「Tunnel is up at …」放前面时，回复往往是先一句寒暄再贴码；
-      // 现在第一块就是可直接长按复制的「地址 + 配对码」两行，第二块才给有效期与
-      // 「原样回上面那两行、别加解释」的提醒。
+      // 现在第一块就是可直接长按复制的一行短码「地址#配对码」，第二块才给有效期与
+      // 「原样回这一行、别加解释」的提醒。
       render: (_args, value) => [
         {
           type: 'text',
-          text: `${value.url}#${value.pairingCode}`,
+          text: `${value.addresses}#${value.pairingCode}`,
         },
         {
           type: 'text',
@@ -270,8 +275,12 @@ export function createTunnelTool(deps: TunnelCommandDeps): Parameters<TunnelTool
     },
     async execute() {
       const result = await deps.openTunnel()
-      deps.logger?.info(`[dsh-remote-bridge] ${TUNNEL_TOOL_NAME} 已开启隧道 ${result.url}`)
-      return { url: result.url, pairingCode: result.pairingCode, expiresAt: result.expiresAt }
+      deps.logger?.info(`[dsh-remote-bridge] ${TUNNEL_TOOL_NAME} 已开启隧道 ${result.urls[0] ?? '(no url)'}`)
+      return {
+        addresses: result.urls.join(','),
+        pairingCode: result.pairingCode,
+        expiresAt: result.expiresAt,
+      }
     },
   }
 }
