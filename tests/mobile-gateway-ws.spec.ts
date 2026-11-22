@@ -155,6 +155,56 @@ async function readDownloadChunk(
   return { data: Buffer.from(payload.data, 'base64'), eof: payload.eof, sha256: payload.sha256 }
 }
 
+describe('mobile gateway compression (permessage-deflate)', () => {
+  /**
+   * 隧道链路上最痛的一条：history 首屏序列化后 600 KB 级（实测 602 KB / 200 条消息），
+   * 过 quick tunnel 要 4.5 秒，手机侧网络更差时直接顶到客户端 30 秒超时 ——
+   * 用户看到的就是「加载历史失败：请求 history 超时」。
+   *
+   * 同一份 JSON deflate 后只有 19.5%，所以 /ws/mobile 与隧道口都必须协商压缩。
+   * 这条用例钉的是「协商真的发生了」：客户端提出 permessage-deflate 时，
+   * 握手结果里必须出现 `permessage-deflate` 扩展；没提出的客户端不受影响。
+   */
+  it('negotiates permessage-deflate when the client offers it', async () => {
+    const harness = await startHarness()
+    const pairing = harness.database.createPairing([harness.root.id], ['chat.read'] as never)
+    const credentials = harness.database.exchangePairing(pairing.code, 'Mobile device')
+    const socket = new WebSocket(harness.url, 'dsh-mobile-v1', {
+      perMessageDeflate: true,
+      headers: { Authorization: `Bearer ${credentials.token}` },
+    })
+    try {
+      await new Promise<void>((resolve, reject) => {
+        socket.once('open', resolve)
+        socket.once('error', reject)
+      })
+      expect(socket.extensions).toContain('permessage-deflate')
+    } finally {
+      socket.close()
+    }
+  })
+
+  it('stays uncompressed when the client turns compression off', async () => {
+    const harness = await startHarness()
+    const pairing = harness.database.createPairing([harness.root.id], ['chat.read'] as never)
+    const credentials = harness.database.exchangePairing(pairing.code, 'Mobile device')
+    // `ws` 客户端默认就提出 permessage-deflate，所以要显式关掉才测得到「不压」。
+    const socket = new WebSocket(harness.url, 'dsh-mobile-v1', {
+      perMessageDeflate: false,
+      headers: { Authorization: `Bearer ${credentials.token}` },
+    })
+    try {
+      await new Promise<void>((resolve, reject) => {
+        socket.once('open', resolve)
+        socket.once('error', reject)
+      })
+      expect(socket.extensions).toBe('')
+    } finally {
+      socket.close()
+    }
+  })
+})
+
 describe('mobile gateway WebSocket (/ws/mobile) — auth', () => {
   it('closes 4001 when the negotiated subprotocol is not dsh-mobile-v1', async () => {
     const { url } = await startHarness()

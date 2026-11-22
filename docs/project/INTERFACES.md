@@ -726,6 +726,7 @@ export const PLUGIN_VERSION: string          // shared/version.ts，与 package.
 | `export class MobileEventBridge` | `src/host/ws-event-bridge.ts` | class（attach/detach/setFilter/clearFilter，连接级订阅白名单） |
 | `export function makeEventAuthorizer` | `src/host/ws-event-bridge.ts` | function |
 | `export function makeSessionFilter` | `src/host/ws-event-bridge.ts` | function（subscribe 会话白名单谓词） |
+| `export const WS_PERMESSAGE_DEFLATE` | `src/host/ws-protocol.ts` | const（WS 压缩参数：threshold 1 KiB、双端 noContextTakeover） |
 | `export const WS_PATH` | `src/host/ws-protocol.ts` | const |
 | `export const WS_PROTOCOL` | `src/host/ws-protocol.ts` | const |
 | `export const PROTOCOL_PAIR_PREFIX` | `src/host/ws-protocol.ts` | const |

@@ -64,6 +64,26 @@ export const PROTOCOL_AUTH_PREFIX = 'dsh-auth.'
 
 // ───────────────────────── 常量（与 PROTOCOL.md 对齐）─────────────────────────
 
+/**
+ * WS 压缩（permessage-deflate）参数：隧道链路上这是最大的一刀。
+ *
+ * 为什么开：`history` 首屏是真机实测过的大帧 —— 一个正常长度的会话（约 8000 条事件记录、
+ * 首屏 200 条消息）序列化后 **602 KB**，过 Cloudflare quick tunnel 要 4.5 秒；手机侧网络
+ * 更差时直接顶到客户端 30 秒超时，用户看到的就是「加载历史失败：请求 history 超时」。
+ * 同一份 JSON 用 deflate 压完是 **140 KB**（比值 0.195），隧道上的传输时间因此降到 1/5 左右。
+ *
+ * 为什么不定制：`threshold` 是「小于它就不压」——1 KiB 以下的握手/ack 帧压了反而更慢；
+ * `noContextTakeover` 让每条消息独立压，服务端与手机端各自省一份滑窗内存（对手机更友好），
+ * 代价是长流式增量少一点点压缩率，而流式增量本身每帧只有几百字节，不值当为它留滑窗。
+ *
+ * 只在**客户端主动提出**时才生效（RFC 7692 的协商），不支持压缩的老客户端行为完全不变。
+ */
+export const WS_PERMESSAGE_DEFLATE = {
+  threshold: 1024,
+  serverNoContextTakeover: true,
+  clientNoContextTakeover: true,
+} as const
+
 /** 单帧最大字节数：超限由 `ws` 直接 close(1009)。 */
 export const DEFAULT_MAX_FRAME_BYTES = 1024 * 1024
 

@@ -1,3 +1,24 @@
+## 未发布 · 隧道模式不再「加载历史超时」：WS 开 permessage-deflate（2026-11-23，issue #29）
+
+**症状**（真机，dsh-Chat 1.0.28 / 桥 2.16.0）：隧道模式下打开会话报
+`加载历史失败：请求 history 超时`，点会话列表后会话页要等很久；同一会话在局域网里秒开。
+
+**根因**：不是协议错，是**首屏单帧太大 + 隧道链路慢**。`history` 首屏是 `maxMessages: 200`，
+一个正常长度的会话序列化后实测 **602 KB**（REST 同源端点 717,890 B）；过 Cloudflare quick
+tunnel 单帧传输约 **4.5 s**（WS 帧到达 6.46 s），手机在移动网络/链路抖动时还要再慢几倍，
+客户端 30 s 的通用上限被顶穿。同一份 JSON `deflateRaw` 后 **140,062 B（比值 0.195）**。
+
+**改法**：
+- `/ws/mobile` 与隧道专用入口的 `WebSocketServer` 都开 `perMessageDeflate`
+  （`WS_PERMESSAGE_DEFLATE`：`threshold: 1024`、双端 `noContextTakeover`）。只在客户端提出时
+  协商（RFC 7692），不支持压缩的老客户端行为逐字不变；`ws` 服务端默认不开，这是新加的。
+- 客户端（dsh-Chat）配套：隧道链路的 `history` 等待上限放到 90 s（局域网/直连仍 30 s），
+  首屏页 200 → 80 条（翻页仍 200 条）。见 westanke/dsh-Chat#2。
+
+**验证**：`tests/mobile-gateway-ws.spec.ts` 新增两例钉住协商（提出压缩 → `socket.extensions`
+含 `permessage-deflate`；显式关掉 → 不协商。注意 `ws` 客户端默认就提出压缩，测「不压」必须
+显式 `perMessageDeflate: false`）。真机收益要桥装新版才吃得到。
+
 ## 未发布 · IM 取隧道配置回「地址 + 一次性配对码」（2026-11-22，issue #28）
 
 **症状**（真机）：在微信里让 DSH 执行 `/tunnel`，把回复里的 `DSH1:` 长文本原样贴进 dsh-Chat，

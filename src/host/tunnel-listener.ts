@@ -32,6 +32,7 @@ import { type AddressInfo } from 'node:net'
 import { type Duplex } from 'node:stream'
 import { WebSocketServer, type WebSocket } from 'ws'
 import { stringifyWire } from './wire-json.ts'
+import { WS_PERMESSAGE_DEFLATE } from './ws-protocol.ts'
 
 /** 隧道端口只绑回环：它给公网用，但入口必须是本机进程。 */
 const TUNNEL_HOST = '127.0.0.1'
@@ -76,6 +77,9 @@ export class TunnelListener {
       noServer: true,
       clientTracking: false,
       maxPayload: Math.max(1, options.maxPayloadBytes ?? DEFAULT_MAX_PAYLOAD_BYTES),
+      // 隧道口是**最慢**的一条链路（quick tunnel 走 Cloudflare 边缘、手机多半在移动网络），
+      // 所以压缩在这里最值：history 首屏 600 KB → 约 140 KB（`WS_PERMESSAGE_DEFLATE`）。
+      perMessageDeflate: WS_PERMESSAGE_DEFLATE,
     })
   }
 

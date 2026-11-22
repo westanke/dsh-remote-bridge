@@ -13,7 +13,7 @@ import type { WorkspaceDatabase } from './database.ts'
 import { ApiError } from './errors.ts'
 import type { WorkspaceEventBus } from './event-bus.ts'
 import { MobileGatewayWsHandler } from './ws-handler.ts'
-import { pickMobileSubprotocol, WS_PATH } from './ws-protocol.ts'
+import { pickMobileSubprotocol, WS_PATH, WS_PERMESSAGE_DEFLATE } from './ws-protocol.ts'
 import { DEFAULT_REMOTE_HOST, loopbackFor, normalizeListenerHost, normalizeListenerPort } from './listener-config.ts'
 import {
   recordBroadcastEvent,
@@ -181,6 +181,9 @@ export class RemoteApiServer implements RemoteControl {
       noServer: true,
       clientTracking: false,
       maxPayload: Math.max(1, options.maxPayloadBytes ?? DEFAULT_MAX_PAYLOAD_BYTES),
+      // permessage-deflate：隧道上 history 首屏那种 600 KB 的帧压完约 140 KB（见
+      // `WS_PERMESSAGE_DEFLATE` 的说明）。只在客户端提出时协商，老客户端行为不变。
+      perMessageDeflate: WS_PERMESSAGE_DEFLATE,
       // 子协议协商（issue #26 阶段 2）：/ws/mobile 上只认 `dsh-mobile-v1`，但**不看位置** ——
       // 客户端排过序也照样连得上（理由见 `ws-protocol.ts` 的 `pickMobileSubprotocol`）。
       // 其它路径（/api/v1/events）保持 `ws` 的默认行为（回客户端清单首项），
