@@ -1481,6 +1481,11 @@ instead of the construction snapshot」；真机验证见 `STATUS.md` 2026-11-19
 `turn/end` 就**当场收敛**（`detach` + return），计时器只兜「尾帧始终不来」的会话；
 宽限期内重新 `running === true` 走 `attach()` 的命中分支复用同一条订阅（不重建、不丢帧）。
 
+**可观测性**：`detach()` 现在会在「这一轮还没送出 `turn/end` 就被释放」时留一条 warn
+（`detaching the session event relay for <id> before its turn ended…`）。它只在**真的可能丢帧**
+时出现：正常收尾 path 里 `turn/end` 已把会话移出 `openTurns`，不会误报。看到这条日志
+就说明有订阅被中途掐断（内核异常、连接断、LRU 淘汰），排查从这里起。
+
 **铁律**：中止一条「还在排水」的流之前，先问一句「最后那一帧是不是还在管道里」。
 凡「内核先写事件、再发状态」的地方，状态回调里只允许**标记**，不允许**掐断**。
 

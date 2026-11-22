@@ -182,6 +182,15 @@ export class SessionEventRelay {
    */
   private readonly pendingIdle = new Map<string, ReturnType<typeof setTimeout>>()
 
+  /**
+   * 「已经开始、但还没看到 `turn/end`」的会话。
+   *
+   * 用来在释放订阅时判断**是不是还有帧在飞**：正常收尾是「turn/end 先送出，
+   * 再释放」，所以这个集合里还留着的会话 = 被中途掐断的 —— 那正是「尾帧静默丢失」
+   * 的唯一可观测迹象，必须留一条日志（以前 detach 全程无声，只能靠猜）。
+   */
+  private readonly openTurns = new Set<string>()
+
   constructor(
     private readonly host: Dsh02HostServices,
     private readonly mux: FrameHub,
@@ -213,6 +222,7 @@ export class SessionEventRelay {
   attach(sessionId: string): void {
     // 宽限期内又跑起来了：复用现有订阅（下面命中分支会刷新 LRU），只清掉待释放的计时器。
     this.cancelIdleRelease(sessionId)
+    this.openTurns.add(sessionId)
     const existing = this.active.get(sessionId)
     if (existing !== undefined) {
       // 命中即刷新 LRU 位置（删掉再插回去，顺序移动到队尾）。
@@ -272,7 +282,17 @@ export class SessionEventRelay {
   detach(sessionId: string): void {
     this.cancelIdleRelease(sessionId)
     const controller = this.active.get(sessionId)
-    if (controller === undefined) return
+    if (controller === undefined) {
+      this.openTurns.delete(sessionId)
+      return
+    }
+    // 还在等 `turn/end` 就被释放 = 有帧留在管道里，多半会丢。留痕，别静默。
+    if (this.openTurns.delete(sessionId)) {
+      this.warn(
+        `dsh-0.2-bridge: detaching the session event relay for ${sessionId} before its turn ended; `
+        + 'frames still in flight (likely turn/end) may be dropped',
+      )
+    }
     this.active.delete(sessionId)
     controller.abort()
   }
@@ -335,9 +355,12 @@ export class SessionEventRelay {
         // （宽限只是兜底）。判据用 `pendingIdle` 而不是「无条件收」：
         // 一个会话可能在同一次订阅里连跑多轮，没收到 idle 就断流会丢下一轮的帧。
         const event = frame.event as { type?: unknown } | null
-        if (event !== null && typeof event === 'object' && event.type === 'turn/end' && this.pendingIdle.has(sessionId)) {
-          this.detach(sessionId)
-          return
+        if (event !== null && typeof event === 'object' && event.type === 'turn/end') {
+          this.openTurns.delete(sessionId)
+          if (this.pendingIdle.has(sessionId)) {
+            this.detach(sessionId)
+            return
+          }
         }
         continue
       }

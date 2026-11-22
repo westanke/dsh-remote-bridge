@@ -1272,6 +1272,27 @@ describe('dsh 0.2.x bridge: contract shapes', () => {
     controller.abort()
   })
 
+  it('warns when a subscription is torn down before its turn ended', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    try {
+      const { host, emit } = makeHost()
+      // 跟随流在 turn/end 之前就结束了（内核异常 / 连接断）：尾帧必然拿不到，
+      // 这是「静默丢帧」的唯一可观测迹象，必须留一条 warn。
+      host.sessionController.follow = vi.fn(() => (async function* () {
+        yield { type: 'snapshot', cursor: 0, records: [], hasMore: false }
+      })())
+      createDsh02ApiProxy(host)
+
+      emit('api-session/status', 'session-1', true)
+      await new Promise(resolve => setTimeout(resolve, 0))
+      expect(
+        warn.mock.calls.some(([message]) => String(message).includes('before its turn ended')),
+      ).toBe(true)
+    } finally {
+      warn.mockRestore()
+    }
+  })
+
   it('keeps the subscription through the idle grace window, then releases it', async () => {
     vi.useFakeTimers()
     try {

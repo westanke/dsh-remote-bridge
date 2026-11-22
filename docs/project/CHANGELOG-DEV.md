@@ -18,6 +18,10 @@
 - `attach()` / `detach()` 都先 `cancelIdleRelease()`：宽限期内重新 `running === true` 走
   attach 的命中分支，复用同一条订阅（不重建、不丢帧）。
 
+
+**可观测性**：`detach()` 不再静默 —— 若释放时这一轮还没送出 `turn/end`（`openTurns` 里还留着
+该会话），打一条 warn，说明尾帧可能被掐掉。正常收尾不打。
+
 **回归锚**：`tests/dsh-0.2-bridge.spec.ts` › delivers the turn/end that is still in flight when the
 run-finish status arrives / keeps the subscription through the idle grace window, then releases it。
 坑位登记见 `PITFALLS.md` §idle 即 abort 丢尾帧。
