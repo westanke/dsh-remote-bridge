@@ -165,6 +165,17 @@ dsh plugin --profile web add ./dsh-remote-bridge-v2.14.0.tgz
 - **[dsh-companion](https://github.com/westanke/dsh-companion)（[Gitee](https://gitee.com/westanke/dsh-companion)）** —— Android 客户端，上游 [dsh-android-app](https://github.com/Hakunm/dsh-android-app) 的 fork。
 - **[dsh-Chat](https://github.com/westanke/dsh-Chat)（[Gitee](https://gitee.com/westanke/dsh-Chat)）** —— 双客户端仓：Flutter 版（`app/`，Android 已发版 1.0.18+19，含 iOS 通道）与 HarmonyOS 原生 ArkTS 版（`harmony/`，2026-11-15 起步，未发版）。协议基线要求桥 ≥ 2.10.0（协议 v3，子协议 `dsh-mobile-v1`）。
 
+**另外：dsh-Go 里也有一块「接入」面板（v2.15.0 起）**。dsh-Go 有一套原生插件协议 —— 插件
+在 `package.json` 的 `dshGo` 里声明条目、在宿主进程内注册视图函数，App 直接画。我们用它放一个
+**只读**仪表盘：远程访问状态、监听端口、局域网接入地址、Cloudflare 隧道、授权根数量与已授权
+设备清单（名字 / 平台 / 型号 / 最近活跃），外加输入区一条状态条（`远程已开 · 2 台` / `仅本机`），
+点按进入面板。唯一动作是「复制接入信息」。
+
+**它是只读的，刻意如此**：开关远程访问、生成配对码、撤销设备这些写操作在 WebUI 里由设备令牌 +
+权限位 + 隧道运行时关门的鉴权守着，而 dsh-Go 连接的身份是内核客户端，与本插件的设备表**没有
+映射** —— 放一个写按钮，等于让任意 dsh-Go 客户端绕过管理面去改安全状态。要打开这个口子，得先
+有「dsh-Go 连接 → 本插件设备/权限」的对应关系，那是另一个决策（见 [SECURITY.md](docs/project/SECURITY.md)）。
+
 用手机扫描下表中任意一个码即可下载 —— 每个码都指向**对应站点的 Releases 列表页**，
 所以发新版不需要更换二维码：
 
@@ -462,7 +473,7 @@ pnpm check
 pnpm pack
 ```
 
-`pnpm check` 覆盖类型检查、文档一致性与测试；当前 **93 个测试文件 / 1021 个用例**，外加 **9 个浏览器层用例**（Playwright 实测量出的计算样式，含 375px 窄屏契约），全部通过。
+`pnpm check` 覆盖类型检查、文档一致性与测试；当前 **95 个测试文件 / 1060 个用例**，外加 **9 个浏览器层用例**（Playwright 实测量出的计算样式，含 375px 窄屏契约），全部通过。
 
 `npm pack` 的产物约 **0.64 MB**（v2.6.1 实测 669,434 字节，SHA-256 `9bf0189b…2cd35`）：2.2.0 删除独立页及其编辑器依赖、并关闭 source map 之后从 1.72 MB 降下来，之后随投影透传、权限 BFF 与五维加固小幅增长。
 
@@ -471,6 +482,14 @@ v2.5.0 在 DSH **0.2.1-rc.2** 上完成真机验证：14/14 宿主服务全部�
 （commit `3f321d32bfe382212a8ed8785c1d47a5a300aa23`），兼容范围见上文 `engines.dsh`。
 CI 覆盖 Windows、Ubuntu 和 macOS **各两档内核**（`0.2.2-rc.1` 与 `0.2.2-rc.4`），
 即 `engines.dsh` 声明区间的下界与上界附近各测一次（issue #26 阶段 0.1）。
+
+**v2.15.0 的验证状态**：95 个测试文件 / **1060 个用例**全绿、`typecheck`/`docs:check`/构建通过。
+这一版给 dsh-Go 加一块只读「接入」面板 + 状态条（`MOB-015`，详见上文「连接客户端」与
+[API.md](docs/project/API.md)）：`package.json` 新增 `dshGo` 清单（原生插件协议 v1），新增
+`src/host/dsh-go-panel.ts`，在 `apply` 尾部用 `ctx.inject(['dshGo'], …)` 注册并三层静默降级。
+面板读数全部是视图绑定（值变了只推补丁），数据来源是 10 秒轮询 + 内容签名去重（设备/隧道变化
+不在事件总线上广播）。唯一动作是复制接入信息 —— **没有任何写操作**，理由见上。清单与中英视图
+均过 App 侧官方检查器（`sdk/plugin-kit/bin/check.mjs`）判「能显示」。**dsh-Go App 真机未联调**。
 
 **v2.14.0 的验证状态**：93 个测试文件 / **1021 个用例**全绿、`typecheck`/`docs:check`/构建通过。
 这一版补齐 dsh-Chat 的队列管理与目标 activation（issue IKX1ZM）：新增 `session-queues` /
@@ -565,7 +584,7 @@ DSH **0.2.1-rc.3** 隔离实例上**实跑验过**，不是静态推断：插件
 
 ## 项目信息
 
-- 当前版本：`v2.14.0`
+- 当前版本：`v2.15.0`
 - **v2.9.0 是团队成员（子会话）可读版**：手机端的团队面板此前只能看到成员与子会话的名字，点开读不到
   任何内容 —— 因为 `sessions.list` 会把 `origin === 'subagent'` 的行整批滤掉（桥自己的
   `dsh-0.2-bridge.ts:2327`，注释写明「暴露出来只会得到点开就崩的行」），子会话 id 打 `/messages`

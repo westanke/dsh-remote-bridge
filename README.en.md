@@ -173,6 +173,21 @@ Two client repositories are listed side by side; both talk to the same bridge:
 - **[dsh-companion](https://github.com/westanke/dsh-companion) ([Gitee](https://gitee.com/westanke/dsh-companion))** — the Android client, a fork of the upstream [dsh-android-app](https://github.com/Hakunm/dsh-android-app).
 - **[dsh-Chat](https://github.com/westanke/dsh-Chat) ([Gitee](https://gitee.com/westanke/dsh-Chat))** — a dual-client repo: Flutter (`app/`, Android 1.0.18+19 released, iOS channel included) and native HarmonyOS ArkTS (`harmony/`, started 2026-11-15, unreleased). It targets bridge ≥ 2.10.0 (protocol v3, `dsh-mobile-v1` subprotocol).
 
+**There is also an "Access" panel inside dsh-Go (v2.15.0 onwards)**. dsh-Go has a native plugin
+protocol: a plugin declares entries in its `package.json` under `dshGo` and registers view functions
+in the host process, and the app draws them itself. We use it for a **read-only** dashboard —
+remote-access state, listening port, LAN access address, Cloudflare tunnel, root count, and the
+authorized device list (name / platform / model / last seen) — plus a one-line strip above the
+composer (`Remote on · 2` / `Local only`) that opens the panel when tapped. Its only action is
+"copy access info".
+
+**Read-only on purpose**: switching remote access, minting pairing codes and revoking devices are
+write operations guarded in the WebUI by device tokens, scope bits and the tunnel runtime. A dsh-Go
+connection is an ordinary kernel client and has **no mapping** to this plugin's device table, so a
+write button there would let any dsh-Go client bypass the admin surface and change security state.
+Opening that door needs a "dsh-Go connection → plugin device/permission" mapping first — a separate
+decision (see [SECURITY.md](docs/project/SECURITY.md)).
+
 Scan any code below with your phone to download — each points at the **Releases list page** of its
 host, so publishing a new version never requires regenerating them:
 
@@ -477,6 +492,17 @@ simulation of the kernel's disk write (measuring `VmHWM`, the monotonic peak, fr
 `/proc/self/status`, each path in its own process, payload read in slices); the tunnel tool
 was not exercised once over IM on real hardware.
 
+**v2.15.0 verification status**: 95 test files / **1060 cases** green; `typecheck`, `docs:check`,
+and the build pass. This release adds a read-only "Access" panel and status strip for dsh-Go
+(`MOB-015`, see *Clients and stable client API* above and [API.md](docs/project/API.md)): a `dshGo`
+manifest entry in `package.json` (native plugin protocol v1) and `src/host/dsh-go-panel.ts`,
+registered at the end of `apply` through `ctx.inject(['dshGo'], …)` with three layers of silent
+degradation. Every reading in the panel is a view binding (so a change pushes a patch, not a new
+tree), fed by a 10-second poll with content-signature dedupe (device and tunnel changes are not
+broadcast on the event bus). The only action is copying the access info — **there are no write
+operations**, for the reason above. Manifest and both views pass the app's official checker
+(`sdk/plugin-kit/bin/check.mjs`) as renderable. **No dsh-Go app on-device testing yet.**
+
 **v2.12.0 verification status**: 81 test files / **854 cases** green; `typecheck`, `docs:check`, and
 the build all pass. This release makes **tool calls visible on the realtime path**: the
 `tool-call-delta` chunks of `assistant/chunk` (streamed arguments — the data source for the
@@ -536,7 +562,7 @@ inside the zero-change set, and 4 slots retained with 0 removed.
 
 ## Project
 
-- Version: `v2.14.0`
+- Version: `v2.15.0`
 - **v2.9.0 makes teammates (sub-sessions) readable**: the phone's team panel could list members and
   sub-sessions but could not open a single one, because `sessions.list` filters out every row with
   `origin === 'subagent'` (the bridge's own `dsh-0.2-bridge.ts:2327`, with a comment explaining that

@@ -529,6 +529,24 @@ export const PLUGIN_VERSION: string          // shared/version.ts，与 package.
 
 ---
 
+### 4.11 dsh-Go 原生界面 `src/host/dsh-go-panel.ts`
+
+**不是**第三个设备协议面：这一份跑在**宿主进程内**，由 dsh-Go 的桥接服务（`ctx.dshGo`）调用，
+走的是 App 自己的 `/dsh-go/v1/*`，本插件不发一个 HTTP 请求。它只消费本插件已有的状态。
+
+| 导出 | 签名要点 |
+| --- | --- |
+| `attachDshGoPanel(ctx, source, logger?)` | `ctx.inject(['dshGo'], scoped => …)` 注册面板与状态条；没有注入器 / 桥接缺席 / 注册抛错 → 只 `warn`，**绝不让 `apply` 抛错** |
+| `AccessSource` | 四个 getter：`status()` / `tunnel()` / `roots()` / `devices()`，由 `index.ts` 接到现有实例上 |
+| `readState(source, now?)` | `AccessState`：远程未开启时 `endpoints` 为空数组（不枚举网卡） |
+| `accessView(locale)` / `accessData(state, locale)` | 视图树与数据模型；读数一律 `{$: 'data.*'}` 绑定 |
+| `stripData(state, locale)` | 状态条一行（≤ 24 字，协议上限） |
+| `copyText(state, locale)` | 「复制接入信息」的正文（≤ 8000 字） |
+| `PANEL_ID` / `STRIP_ID` | `access` / `remote` —— 必须与 `package.json` 的 `dshGo.contributes` 一致 |
+
+调用方只有 `index.ts`（`apply` 尾部，`remote.start()` 之后）。**没有写操作**：面板里出现的效果只有
+`copy` 与 `toast`，测试 `tests/dsh-go-panel.spec.ts` 对这一点有断言。
+
 ## 5. 改接口的检查清单
 
 按顺序做，**不要跳步**：
@@ -664,6 +682,18 @@ export const PLUGIN_VERSION: string          // shared/version.ts，与 package.
 | `export function queueEntriesFromInbox` | `src/host/ws-queues.ts` | function（inbox 投影值 → QueueEntry[]，坏项丢弃） |
 | `export interface QueueEntry` | `src/host/ws-queues.ts` | interface（inboxId/requestId/slot/mode/text/resendable/sourceKind） |
 | `export class SessionPushes` | `src/host/ws-pushes.ts` | class（队列/目标快照推送：去抖 + 每连接签名去重 + 订阅过滤 + 墓碑） |
+| `export function attachDshGoPanel` | `src/host/dsh-go-panel.ts` | function |
+| `export function readState` | `src/host/dsh-go-panel.ts` | function |
+| `export function accessView` | `src/host/dsh-go-panel.ts` | function |
+| `export function accessData` | `src/host/dsh-go-panel.ts` | function |
+| `export function stripData` | `src/host/dsh-go-panel.ts` | function |
+| `export function copyText` | `src/host/dsh-go-panel.ts` | function |
+| `export const PANEL_ID` | `src/host/dsh-go-panel.ts` | const |
+| `export const STRIP_ID` | `src/host/dsh-go-panel.ts` | const |
+| `export interface AccessSource` | `src/host/dsh-go-panel.ts` | interface |
+| `export interface AccessState` | `src/host/dsh-go-panel.ts` | interface |
+| `export interface DshGoHost` | `src/host/dsh-go-panel.ts` | interface |
+| `export interface DshGoService` | `src/host/dsh-go-panel.ts` | interface |
 | `export interface PushTarget` | `src/host/ws-pushes.ts` | interface（一条推送连接的稳定句柄） |
 | `export class ScheduleHandler` | `src/host/ws-schedule.ts` | class |
 | `export class SpeechHandler` | `src/host/ws-speech.ts` | class |

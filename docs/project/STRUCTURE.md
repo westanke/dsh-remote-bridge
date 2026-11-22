@@ -149,6 +149,7 @@ host services 之上重建 0.1.x 的 `apiProxy` 面容，让 `chat-adapter` / `s
 | `image-handoff.ts` | 识图路径设置、文件名词白名单、媒体类型嗅探、只读图片路由 handler |
 | `cloudflared.ts` | `CloudflaredTunnelManager`：cloudflared 二进制下载（择源）与隧道进程管理 |
 | `host-service-probe.ts` | 注入面探针：记录哪些 host service 真的注入了（**只在 apply 期间采样**） |
+| `dsh-go-panel.ts` | dsh-Go 原生界面（v2.15.0）：只读「接入」面板 + 状态条，读 `server.status` / `CloudflaredTunnelManager.publicState` / `database.listDevices`；挂载点只有 `index.ts`，与设备协议面无交叉 |
 
 ### 3.2 `src/client/` —— DSH WebUI 浏览器半边（9 个文件 + `cards/` 下的 11 个卡片文件）
 
@@ -367,6 +368,7 @@ host services 之上重建 0.1.x 的 `apiProxy` 面容，让 `chat-adapter` / `s
 | `src/host/ws-models.ts` | file | 移动端网关 WS 会话模型域（models/select-model，无会话全局目录交 ws-settings，/ws/mobile） |
 | `src/host/ws-presets.ts` | file | 移动端网关 WS agent 预设域（agent-presets/select-agent-preset，/ws/mobile） |
 | `src/host/ws-queues.ts` | file | 移动端网关 WS 队列域（issue IKX1ZM）：session-queues 读 inbox 投影归一成 QueueEntry[]，queue-update 代理内核 session/updateQueue（remove/steer/edit），成功即通知 SessionPushes 推队列快照（/ws/mobile） |
+| `src/host/dsh-go-panel.ts` | file | dsh-Go 原生界面（v2.15.0）：只读「接入」面板（状态/监听地址/接入地址/隧道/根目录数/已授权设备）+ 状态条，`ctx.inject(['dshGo'])` 注册、10 秒轮询 + 内容签名去重，唯一动作是复制接入信息（不放写操作，理由见 SECURITY.md） |
 | `src/host/ws-pushes.ts` | file | 队列/目标状态推送器（issue IKX1ZM）：按会话去抖后整份重读并扇出 queue-item-updated / goal-updated，按连接签名去重、订阅集合过滤、逐连接授权判定、goal-clear 墓碑压制闪回（/ws/mobile） |
 | `src/host/ws-protocol.ts` | file | WS 线路协议常量、帧类型与编解码（/ws/mobile） |
 | `src/host/ws-kernel-call.ts` | file | 通用内核调用面 WS 处理器（issue #26 阶段 5）：KernelCallHandler —— 只认 kernel-call / kernel-call-cancel，仅在协商到 dshrb-v1 时启用（否则回 NOT_IMPLEMENTED），连接建立即推一帧 kernel-endpoints（白名单 ∩ 目录），连接关闭 dispose 掉在飞行调用；权限与参数判定不在这里（在 kernel-allowlist / kernel-call） |

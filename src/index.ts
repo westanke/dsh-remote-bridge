@@ -3,6 +3,7 @@ import { stat } from 'node:fs/promises'
 import { AuthService } from './host/auth.ts'
 import { CloudflaredTunnelManager } from './host/cloudflared.ts'
 import { DshChatAdapter } from './host/chat-adapter.ts'
+import { attachDshGoPanel, type DshGoHost } from './host/dsh-go-panel.ts'
 import { WorkspaceDatabase } from './host/database.ts'
 import { createDsh02ApiProxy, readHandoffImageFile, type Dsh02HostServices } from './host/dsh-0.2-bridge.ts'
 import { WorkspaceEventBus } from './host/event-bus.ts'
@@ -114,7 +115,7 @@ export interface Config {
   allowPrivateProviderHosts?: readonly string[]
 }
 
-interface HostContext extends Dsh02HostServices {
+interface HostContext extends Dsh02HostServices, DshGoHost {
   webServer: Parameters<typeof attachEmbeddedRoutes>[0]
   agents: NonNullable<ConstructorParameters<typeof DshChatAdapter>[2]>['agents']
   commands: NonNullable<ConstructorParameters<typeof DshChatAdapter>[2]>['commands']
@@ -380,6 +381,19 @@ export async function apply(ctx: HostContext, config: Config = {}): Promise<void
     } catch (error) {
       ctx.logger.warn(new Error(`dsh-remote-bridge: open_tunnel_config registration failed (ignored): ${String(error)}`))
     }
+  }
+  // dsh-Go 的原生界面（只读「接入」面板 + 状态条）。三层静默失败：宿主没有注入器、
+  // 没装 dsh-go 桥接、桥接拒绝注册 —— 都不该影响本插件的主功能，细节见 dsh-go-panel.ts。
+  // 面板读的是已有实例（server.status / tunnels.publicState / database），不新增任何状态。
+  try {
+    attachDshGoPanel(ctx, {
+      status: () => remote.status(),
+      tunnel: () => tunnels.publicState,
+      roots: () => database.listRoots().length,
+      devices: () => database.listDevices(),
+    }, ctx.logger)
+  } catch (error) {
+    ctx.logger.warn(new Error(`dsh-remote-bridge: dsh-Go panel attach failed (ignored): ${String(error)}`))
   }
   ctx.effect(() => async () => {
     disposeEmbedded()

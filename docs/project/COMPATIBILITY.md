@@ -11,8 +11,15 @@
 | Linux | Ubuntu 当前 LTS runner | `ubuntu-latest` |
 | Android | Android 8.0（API 26）及以上；compile/target SDK 36 | Gradle、lint、单元/UI 测试、Android 15 端到端与签名 Release APK |
 | dsh-Chat | Flutter `app/`：Android 1.0.18+19 已发版（含 iOS 通道）；HarmonyOS ArkTS `harmony/`：2026-11-15 起步，未发版 | 与 bridge 2.12.1 联调**待实测** |
+| dsh-Go | 原生插件协议 `v: 1`；开发基线 App `1.2.0+1`（清单未写 `minApp`，桥接按自身能力裁决） | 清单与中英视图过 App 侧 `node sdk/plugin-kit/bin/check.mjs`；**真机联调待实测** |
 
 dsh-Chat 的协议基线为 bridge ≥ 2.10.0（协议 v3，子协议 `dsh-mobile-v1`），Android 产物名 `dsh-Chat-v<VER>.apk`；下载页见 [GitHub Releases](https://github.com/westanke/dsh-Chat/releases) · [Gitee Releases](https://gitee.com/westanke/dsh-Chat/releases)。收录本身不新增协议能力，也不代表上表之外已完成实测。
+
+### dsh-Go 原生界面（v2.15.0 起）
+
+`dshGo` 清单缺失 / 协议版本不认识 / `ctx.dshGo` 不可用时，**插件其余部分完全照常**：面板与状态条
+只是不出现（`attachDshGoPanel` 三层静默失败，`apply` 不抛错）。反过来，老版本本插件（< 2.15.0）
+没有 `dshGo` 字段，dsh-Go 只是看不到这个面板，不影响任何既有客户端。
 
 ## 协议面与弃用迁移矩阵（2026-11-20 起）
 
