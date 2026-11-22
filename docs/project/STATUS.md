@@ -1,6 +1,25 @@
 # 当前状态
 
 - 日期：2026-11-22（**已发版 v2.15.0：dsh-Go 原生界面（只读「接入」面板 + 状态条）+ kernel-call 白名单放行 `skills/list`**；再往前 v2.12.1 是大文件上传流式化 + 隧道工具 schema 修形**；`main` 上另有未发版的 issue #26 阶段 0 / 1 / 2 / 3a / 3b / 3c / 3d / 4 / 5 / 6 / 7 / 8 / 9、完工检修一批，以及真机测试期修的两个 bug）
+- **已完成（未发布，2026-11-22）· 多路配置码：一个 DSH1 同时带隧道 / LAN / 虚拟网**（`MOB-016`，
+  issue IKX5K7）：用户提出「一个配置码支持多种链接，优先 LAN，再 P2P，不通再 Relay，最后隧道」。
+  做法是把 `endpoints` 从「一个地址」变成**有序候选列表**：新增
+  `composeCandidates({ port, tunnelUrl, tunnelLabel, explicit })`（`src/host/config-text.ts`），
+  隧道排第一、其后本机探测到的 LAN / 虚拟网、地址去重；三个生成点（`/manage/config/text`、
+  `/manage/cloudflare/create` 搭车 `configText`、IM `/tunnel` 复用分支）统一走它，不再「只塞隧道」。
+  `POST /manage/config/text` 新增 body `includeTunnel`（缺省 `false`：只读动作不许偷偷拉起公网入口；
+  没启用隧道回 `400 TUNNEL_DISABLED`、12 秒无地址回 `504 TUNNEL_URL_TIMEOUT`）。探测端口改为
+  **实际监听端口优先**（原来回落 `3090`，改过端口的机器上候选全是死地址）。
+  **顺序口径**：隧道在前是因为 `dsh-Chat` 的 `decodeDsh1` 只取 `endpoints[0]`（老装机量在），
+  隧道在家在外都通；真正的「局域网优先」由客户端探活排序实现 —— `dsh-companion` 的
+  `EndpointSelection.rank` 已是「LAN 延迟 ≤ 最快 ×1.5 即优先，其余按延迟」。
+  **P2P 打洞与 TURN/Relay 不做**（桥是明文 HTTP/WS，拿不到 WebRTC P2P 通道；Relay 必须有服务器，
+  用户口径「需要自建服务器就跳过」）；今天可用的直连是自备公网可达地址（DDNS + 端口映射 / IPv6）
+  与虚拟网（`100.64/10`）。
+  验收：`composeCandidates` 7 例 + `/manage/config/text` 与隧道搭车 4 例 + 隧道搭车改为多路断言，
+  `tsc --noEmit` 与全量 `vitest run` 全绿。**真机未验**（`dsh-companion` 在家选 LAN、出门落隧道）。
+  客户端侧：`dsh-Chat` 仍只认 `endpoints[0]`，已单列 `MOB-017` 等客户端改探活排序。
+
 - **已发版（v2.15.0，2026-11-22）· dsh-Go 原生界面：只读「接入」面板 + 状态条**（`MOB-015`）：
   `package.json` 新增 `dshGo` 清单（协议 v1、`panels.access` placement `features`、
   `composer.strip.remote` 点击开面板），新增 `src/host/dsh-go-panel.ts` —— 面板画监听地址/端口、

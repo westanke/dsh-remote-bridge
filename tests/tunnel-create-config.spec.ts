@@ -85,7 +85,10 @@ interface Harness {
   close: () => Promise<void>
 }
 
-async function startHarness(tunnelActive: boolean): Promise<Harness & { database: WorkspaceDatabase; tunnels: ReturnType<typeof makeFakeTunnels>; router: ApiRouter }> {
+async function startHarness(
+  tunnelActive: boolean,
+  options: { withTunnels?: boolean } = {},
+): Promise<Harness & { database: WorkspaceDatabase; tunnels: ReturnType<typeof makeFakeTunnels>; router: ApiRouter }> {
   const base = await mkdtemp(path.join(os.tmpdir(), 'daw-tunnel-create-'))
   cleanup.dir(base)
   const project = path.join(base, 'project')
@@ -124,7 +127,9 @@ async function startHarness(tunnelActive: boolean): Promise<Harness & { database
     settings: { listProviders: async () => ({ items: [] }) } as never,
     remote,
     // 结构上满足 CloudflaredTunnelManager 在本文件路径上用到的成员即可。
-    tunnels: tunnels as unknown as NonNullable<ConstructorParameters<typeof ApiRouter>[0]['tunnels']>,
+    ...(options.withTunnels === false
+      ? {}
+      : { tunnels: tunnels as unknown as NonNullable<ConstructorParameters<typeof ApiRouter>[0]['tunnels']> }),
     cloudflaredBinDir: binDir,
     maxUploadBytes: 1024 * 1024,
     hostServiceReport: { pluginVersion: 'test', summary: {}, services: [] } as never,
@@ -181,11 +186,17 @@ describe('POST /manage/cloudflare/create 一键搭车出令牌', () => {
       expect(parsed.running).toBe(true)
       // 等到的地址回填进 state.url，客户端这一次调用即可渲染地址+配置，不必再轮询。
       expect(parsed.url).toBe('https://fake-example.trycloudflare.com')
-      // 配置搭车返回，且端点只有隧道地址（不能混入探测到的 LAN 网卡）。
+      // 配置搭车返回：多路候选（2.16.0）—— 隧道排第一，其后是本机探测到的 LAN / 虚拟网。
+      //
+      // 为什么 `[0]` 必须是隧道：只认一个地址的老客户端（dsh-Chat 的 decodeDsh1 取
+      // endpoints[0]）拿到的是它，放 LAN 会让出门在外的老装机全部连不上。
       expect(parsed.configText).toBeDefined()
       expect(parsed.configText?.text.startsWith('DSH1:')).toBe(true)
-      expect(parsed.configText?.endpoints).toHaveLength(1)
       expect(parsed.configText?.endpoints[0]?.baseUrl).toBe('https://fake-example.trycloudflare.com')
+      // 本机有网卡就一定有第二项；测试机可能只有回环（探测为空），那种情况长度就是 1。
+      for (const endpoint of parsed.configText?.endpoints.slice(1) ?? []) {
+        expect(endpoint.baseUrl).not.toBe('https://fake-example.trycloudflare.com')
+      }
 
       // 副作用真实落库：换出的设备令牌在 devices 表里查得到。
       const devices = harness.database.listDevices()
@@ -292,3 +303,95 @@ describe('IM /tunnel 命令的宿主入口 openTunnelForCommand', () => {
     }
   })
 })
+
+describe('POST /manage/config/text 多路配置码（2.16.0）', () => {
+  it('includeTunnel: true —— 先开隧道，再把隧道地址排进候选第一位', async () => {
+    const harness = await startHarness(false)
+    try {
+      const response = await adminRequest(harness.port, '/manage/config/text', {
+        method: 'POST',
+        body: JSON.stringify({ includeTunnel: true }),
+      })
+      expect(response.status).toBe(201)
+      const parsed = JSON.parse(response.body) as { text: string; endpoints: Array<{ baseUrl: string; label: string }> }
+      expect(harness.tunnels.startQuickCalls).toBe(1)
+      expect(parsed.text.startsWith('DSH1:')).toBe(true)
+      // 隧道在前：只认一个地址的老客户端拿到的是「在家在外都通」的那条。
+      expect(parsed.endpoints[0]?.baseUrl).toBe('https://fake-example.trycloudflare.com')
+      expect(parsed.endpoints[0]?.label).toBe('云隧道')
+      // 解出来也确实是多路（本机只有回环时退化成 1 项，不硬断言）。
+      const wire = JSON.parse(Buffer.from(parsed.text.slice('DSH1:'.length), 'base64url').toString('utf8')) as { endpoints: Array<{ baseUrl: string }> }
+      expect(wire.endpoints[0]?.baseUrl).toBe('https://fake-example.trycloudflare.com')
+      expect(wire.endpoints.length).toBe(parsed.endpoints.length)
+    } finally {
+      await harness.close()
+    }
+  })
+
+  it('不传 includeTunnel —— 生成文本不碰隧道（只读动作不许偷偷开公网入口）', async () => {
+    const harness = await startHarness(false)
+    try {
+      const response = await adminRequest(harness.port, '/manage/config/text', {
+        method: 'POST',
+        body: JSON.stringify({}),
+      })
+      expect(response.status).toBe(201)
+      expect(harness.tunnels.startQuickCalls).toBe(0)
+      const parsed = JSON.parse(response.body) as { endpoints: Array<{ baseUrl: string }> }
+      for (const endpoint of parsed.endpoints) {
+        expect(endpoint.baseUrl).not.toContain('trycloudflare.com')
+      }
+    } finally {
+      await harness.close()
+    }
+  })
+
+  it('隧道已在跑 —— 复用地址，不重复 startQuick', async () => {
+    const harness = await startHarness(false)
+    try {
+      harness.tunnels.process = { killed: false }
+      harness.tunnels.url = 'https://reused-example.trycloudflare.com'
+      const response = await adminRequest(harness.port, '/manage/config/text', {
+        method: 'POST',
+        body: JSON.stringify({ includeTunnel: true }),
+      })
+      expect(response.status).toBe(201)
+      expect(harness.tunnels.startQuickCalls).toBe(0)
+      const parsed = JSON.parse(response.body) as { endpoints: Array<{ baseUrl: string }> }
+      expect(parsed.endpoints[0]?.baseUrl).toBe('https://reused-example.trycloudflare.com')
+    } finally {
+      await harness.close()
+    }
+  })
+
+  it('宿主没启用隧道 —— includeTunnel 回 400 TUNNEL_DISABLED，不 500', async () => {
+    const harness = await startHarness(false, { withTunnels: false })
+    try {
+      const response = await adminRequest(harness.port, '/manage/config/text', {
+        method: 'POST',
+        body: JSON.stringify({ includeTunnel: true }),
+      })
+      expect(response.status).toBe(400)
+      expect(response.body).toContain('TUNNEL_DISABLED')
+    } finally {
+      await harness.close()
+    }
+  })
+})
+
+  it('隧道运行中 includeTunnel 也不能开新隧道（判据 0 关门必须排在它前面）', async () => {
+    // 安全面：includeTunnel 是一条**会拉起公网入口**的路径，不能借它绕过
+    // 「隧道一运行整个 /manage 关门」（adminRefusal 判据 0）。顺序必须是先鉴权再干活。
+    const harness = await startHarness(true)
+    try {
+      const response = await adminRequest(harness.port, '/manage/config/text', {
+        method: 'POST',
+        body: JSON.stringify({ includeTunnel: true }),
+      })
+      expect(response.status).toBe(403)
+      expect(harness.tunnels.startQuickCalls).toBe(0)
+      expect(harness.tunnels.waitForUrlCalls).toBe(0)
+    } finally {
+      await harness.close()
+    }
+  })

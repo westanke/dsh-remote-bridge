@@ -1,6 +1,6 @@
 // 设备自省与管理路由块 —— 从 router.ts 纯搬移（issue #3）。
 import { ApiError } from '../errors.ts'
-import { buildConfigText } from './cloudflare.ts'
+import { buildConfigText, ensureTunnelUrl } from './cloudflare.ts'
 import { readJson, sendJson, validateScopes, validateStringArray, optionalInteger, decodePathSegment, audit, type ApiRouteCtx, type RouteCtx } from './shared.ts'
 
 // deviceSelf：/api/v1/devices/self（原 router.ts dispatch 块，issue #3 纯搬移）
@@ -130,7 +130,14 @@ export async function manageDevicesAndAccess(ctx: RouteCtx): Promise<boolean> {
   // 「电脑 在哪里生成？」。配对码本来就在 WebUI 的这个页面生成，配置文本理应同处。
   if (method === 'POST' && pathname === '/manage/config/text') {
     const body = await readJson(req, 64_000) as Record<string, unknown>
-    sendJson(res, 201, buildConfigText(ctx.options, body, requestId))
+    // 多路配置码（2.16.0）：body.includeTunnel 为 true 时「没跑就把隧道开起来」并把它的
+    // 公网地址排进候选列表第一位，让同一份码在家（走 LAN）与在外（走隧道）都能连。
+    //
+    // 默认 false：生成文本是一个只读动作，不许它偷偷拉起一个公网入口 —— 开公网是
+    // 「一键开隧道」那个按钮的语义，得用户自己点。隧道本来就在跑时这里拿到的是复用地址。
+    const includeTunnel = body.includeTunnel === true
+    const tunnelUrl = includeTunnel ? await ensureTunnelUrl(options, requestId, 'config-text') : null
+    sendJson(res, 201, buildConfigText(ctx.options, body, requestId, { tunnelUrl }))
     return true
   }
 

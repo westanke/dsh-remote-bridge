@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto'
 import { type IncomingMessage } from 'node:http'
 import { adminRefusal } from '../auth.ts'
 import { type TunnelPublicState, ensureCloudflared, sanitizeDownloadError } from '../cloudflared.ts'
-import { DEFAULT_PORT, defaultDisplayName, detectEndpoints, encodeConfigText, type ConfigEndpoint } from '../config-text.ts'
+import { DEFAULT_PORT, composeCandidates, defaultDisplayName, encodeConfigText, type ConfigEndpoint } from '../config-text.ts'
 import { DEFAULT_DEVICE_NAME } from '../device-identity.ts'
 import { ApiError } from '../errors.ts'
 import { type RouterOptions } from '../router.ts'
@@ -83,18 +83,33 @@ export function tunnelStateFor(options: RouterOptions, req: IncomingMessage): Tu
    *
    * 刻意不返回 pairing.expiresAt：那是配对码的十分钟有效期，设备令牌本身不过期。
    */
-export function buildConfigText(options: RouterOptions, body: Record<string, unknown>, requestId: string): {
+export function buildConfigText(
+    options: RouterOptions,
+    body: Record<string, unknown>,
+    requestId: string,
+    attach: { tunnelUrl?: string | null; tunnelLabel?: string } = {},
+  ): {
     text: string
     displayName: string
     deviceName: string
     endpoints: ConfigEndpoint[]
     deviceId: string
   } {
+    // 端口口径：显式 body.port 优先，其次**实际监听端口**，最后才是 3090 默认值。
+    // 用实际端口是因为 LAN 候选只有带对端口才连得上 —— 用户改过监听端口时，
+    // 按 3090 探测出来的地址全是死的（表现是「在家也连不上」）。
+    const listening = options.remote.status().port
     const port = Number.isInteger(body.port) && Number(body.port) > 0 && Number(body.port) < 65_536
       ? Number(body.port)
-      : DEFAULT_PORT
+      : (Number.isInteger(listening) && listening > 0 ? listening : DEFAULT_PORT)
 
-    const endpoints = readRequestedEndpoints(body.endpoints) ?? detectEndpoints(port)
+    // 多路候选：隧道（若本轮带上）+ 本机 LAN / 虚拟网。顺序口径见 composeCandidates。
+    const endpoints = composeCandidates({
+      port,
+      tunnelUrl: attach.tunnelUrl ?? null,
+      explicit: readRequestedEndpoints(body.endpoints),
+      ...(attach.tunnelLabel === undefined ? {} : { tunnelLabel: attach.tunnelLabel }),
+    })
     if (endpoints.length === 0) {
       throw new ApiError(
         400,
@@ -199,14 +214,20 @@ export async function createTunnel(options: RouterOptions,
       const tunnelUrl = state.url ?? await options.tunnels!.waitForUrl()
       resolvedUrl = tunnelUrl
       if (tunnelUrl !== null) {
-        // 显式端点只用隧道地址；rootIds 与 deviceName 透传（沿用 config/text 的窄语义）。
-        configText = buildConfigText(options, 
+        // 多路候选（2.16.0）：隧道在前 + 本机 LAN / 虚拟网在后。
+        //
+        // 不再写死「只用隧道地址」——那样一份码只能在外面用，回到家还得重生成一次。
+        // 只认一个地址的老客户端仍然读 `endpoints[0]`，而 `[0]` 恒为隧道地址，行为不回归。
+        configText = buildConfigText(options,
           {
-            endpoints: [{ label: readOptionalText(createBody.endpointLabel) ?? '云隧道', baseUrl: tunnelUrl }],
             ...(createBody.rootIds === undefined ? {} : { rootIds: createBody.rootIds }),
             ...(createBody.deviceName === undefined ? {} : { deviceName: createBody.deviceName }),
           },
           requestId,
+          {
+            tunnelUrl,
+            tunnelLabel: readOptionalText(createBody.endpointLabel) ?? '云隧道',
+          },
         )
       }
     }
@@ -229,7 +250,7 @@ export async function createTunnel(options: RouterOptions,
    *
    * 1. **隧道已在运行时直接复用当前地址**，不重复 spawn（第二次 `startQuick` 会撞
    *    `TUNNEL_ALREADY_RUNNING`，而用户在 IM 里连发两条是很常见的）。
-   * 2. 配置文本的 endpoint 只用隧道地址，设备名缺省由 `buildConfigText` 决定 —— 命令
+   * 2. 配置文本是**多路候选**（隧道在前 + 本机 LAN / 虚拟网），设备名缺省由 `buildConfigText` 决定 —— 命令
    *    不接受参数，所以没有 `endpointLabel` / `rootIds` 的透传面。
    *
    * @throws 当 12 秒内没拿到公网地址，或 cloudflared 下载失败时。
@@ -241,10 +262,7 @@ export async function openTunnelForCommand(options: RouterOptions, ): Promise<{ 
 
     const current = tunnels.publicState
     if (current.running === true && current.url !== null) {
-      const reused = buildConfigText(options, 
-        { endpoints: [{ label: '云隧道', baseUrl: current.url }] },
-        requestId,
-      )
+      const reused = buildConfigText(options, {}, requestId, { tunnelUrl: current.url })
       options.database.audit('admin', 'im-command', 'cloudflare.create', undefined, undefined, {
         reused: true,
       }, requestId)
@@ -259,3 +277,32 @@ export async function openTunnelForCommand(options: RouterOptions, ): Promise<{ 
     const deviceName = typeof configText.deviceName === 'string' ? configText.deviceName : DEFAULT_DEVICE_NAME
     return { url: state.url, text, deviceName }
   }
+
+/**
+ * 拿到一个可用的隧道公网地址；隧道没跑就先开（多路配置码的 `includeTunnel` 用）。
+ *
+ * 与 `createTunnel` 的分工：那边负责开隧道并**顺带**把配置文本带出来，这边只解决
+ * 「我要一条隧道地址」——调用方自己拼文本（`/manage/config/text` 要透传 scopes / displayName）。
+ *
+ * 等待是有界的：`waitForUrl` 默认 12 秒，超时抛 `TUNNEL_URL_TIMEOUT`，不无限挂住请求。
+ */
+export async function ensureTunnelUrl(options: RouterOptions, requestId: string, actorLabel: string): Promise<string> {
+  const tunnels = options.tunnels
+  if (tunnels === undefined) {
+    throw new ApiError(400, 'TUNNEL_DISABLED', 'Tunnel support is not enabled on this host.')
+  }
+  const current = tunnels.publicState
+  if (current.running === true && current.url !== null) return current.url
+
+  const created = await createTunnel(options, {}, requestId, actorLabel)
+  const url = created.state.url ?? await tunnels.waitForUrl()
+  if (url === null) {
+    throw new ApiError(
+      504,
+      'TUNNEL_URL_TIMEOUT',
+      'Tunnel started but no public URL arrived in time. Retry in a moment.',
+      { errorKey: 'tunnelUrlPending' },
+    )
+  }
+  return url
+}

@@ -492,7 +492,7 @@ export class FileService {  // 构造 (database, emit)
 | `HISTORY_BYTE_BUDGET` / `HISTORY_EVENT_BYTE_BUDGET` / `HISTORY_KEEP_CHARS` / `clampHistoryEvents` / `applyHistoryBudget` | `history-budget.ts` | 历史字节预算 |
 | `normalizeHandoffSubdir` / `readHandoffSubdir` / `saveHandoffSubdir` / `imageHandoffView` / `declaredMediaType` / `sniffMediaType` / `loopbackHost` / `pluginPageReferer` / `sameOrigin` / `createImageRouteHandler` / `IMAGE_ROUTE` / `HANDOFF_FILE_NAME` / `HANDOFF_MEDIA_TYPES` | `image-handoff.ts` | 识图路径与只读图片路由 |
 | `CloudflaredTunnelManager` / `ensureCloudflared` / `downloadUrlFor` / `archSuffix` / `extractQuickTunnelUrl` / `downloadHttps` / `isDebSource` | `cloudflared.ts` | 隧道管理 |
-| `classifyHost` / `detectEndpoints` / `normalizeBaseUrl` / `encodeConfigText` / `defaultDisplayName` / `DEFAULT_PORT` / `KIND_LABEL` | `config-text.ts` | 配置文本 |
+| `classifyHost` / `detectEndpoints` / `normalizeBaseUrl` / `encodeConfigText` / `composeCandidates` / `defaultDisplayName` / `DEFAULT_PORT` / `KIND_LABEL` / `EndpointKind` / `CandidateSources` | `config-text.ts` | 配置文本与多路候选（`composeCandidates`：隧道在前 + 本机 LAN/虚拟网，地址去重） |
 | `normalizeListenerHost` / `normalizeListenerPort` / `loopbackFor` / `DEFAULT_REMOTE_HOST` | `listener-config.ts` | 监听配置 |
 | `probeHostServices` / `INJECTED_SERVICE_NAMES` / `OPTIONAL_SERVICE_NAMES` / `HostServiceReport` | `host-service-probe.ts` | 注入面探针 |
 | `BffRest` / `createBffRest` / `BffRoute` / `BffRestOptions` / `RestIo` / `ScheduleCreatePort` | `bff-rest.ts` | App 侧 REST BFF 的薄分发层（九条路由 → 三个域模块；JSON 体 32 KiB、chunk 体 1 MiB+4 KiB、speech 体 8 MiB） |
@@ -742,6 +742,10 @@ export const PLUGIN_VERSION: string          // shared/version.ts，与 package.
 | `export function createImageRouteHandler` | `src/host/image-handoff.ts` | function |
 | `export class CloudflaredTunnelManager` | `src/host/cloudflared.ts` | class |
 | `export function encodeConfigText` | `src/host/config-text.ts` | function |
+| `export function composeCandidates` | `src/host/config-text.ts` | function |
+| `export interface CandidateSources` | `src/host/config-text.ts` | interface |
+| `export function buildConfigText` | `src/host/routes/cloudflare.ts` | function |
+| `export function ensureTunnelUrl` | `src/host/routes/cloudflare.ts` | function |
 | `export function normalizeListenerPort` | `src/host/listener-config.ts` | function |
 | `export function probeHostServices` | `src/host/host-service-probe.ts` | function |
 | `export async function readPluginInventory` | `src/host/plugin-inventory.ts` | function |

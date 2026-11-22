@@ -224,6 +224,11 @@ dsh plugin --profile web add ./dsh-remote-bridge-v2.14.0.tgz
 DSH1:eyJ2IjoxLCJlbmRwb2ludHMiOlt7ImxhYmVsIjoi…
 ```
 
+> 这份 `DSH1:` 文本里是个**候选列表**，不是单个地址：隧道在前，后面接着本机探测到的
+> 局域网与虚拟网地址。会探活的客户端（`dsh-companion`）在家里自动走局域网、出门落到隧道，
+> 一份码两边都能用；只认第一个地址的老客户端拿到的仍是隧道（在家在外都通）。
+> 想连「自备公网地址」（DDNS + 端口映射 / IPv6）就把它一起写进 `endpoints`。
+
 **② IM 聊天窗口里用一句话（配合智能体）**
 
 在微信/飞书里直接说「**帮我开隧道，把配置文本发我**」，智能体会调用本插件的

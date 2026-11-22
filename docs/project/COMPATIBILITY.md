@@ -21,6 +21,18 @@ dsh-Chat 的协议基线为 bridge ≥ 2.10.0（协议 v3，子协议 `dsh-mobil
 只是不出现（`attachDshGoPanel` 三层静默失败，`apply` 不抛错）。反过来，老版本本插件（< 2.15.0）
 没有 `dshGo` 字段，dsh-Go 只是看不到这个面板，不影响任何既有客户端。
 
+### 多路配置码（v2.16.0 起）
+
+一份 `DSH1:` 文本里的 `endpoints` 变成**有序候选列表**（隧道在前 + 本机 LAN / 虚拟网）。
+对老客户端是**加法**：它们读 `endpoints[0]`，而 `[0]` 恒为隧道地址（隧道在家在外都通）；
+不会出现「老客户端拿到一条用不了的 LAN 地址」的情况。会探活的新客户端（`dsh-companion`）
+按 `EndpointSelection.rank` 排序：LAN 延迟 ≤ 最快 ×1.5 即优先，其余按延迟。
+
+`dsh-Chat`（Flutter `app/lib/bridge/hosts.dart` 的 `decodeDsh1` 与 ArkTS `ConnectView.ets`）
+目前只取首个地址 —— 它照常能用（隧道那条），要享受「在家走 LAN」需要客户端改成探活排序
+（`ROADMAP.md` 的 `MOB-017`）。`POST /manage/config/text` 的 `includeTunnel` 是新字段，
+老客户端不传即维持旧行为（只探测本机网卡）。
+
 ## 协议面与弃用迁移矩阵（2026-11-20 起）
 
 桥的**第一协议面**是 `/ws/mobile` 的双向帧（子协议 `dsh-mobile-v1`；`dshrb-v1` 另开通用内核调用面）。

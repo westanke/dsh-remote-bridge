@@ -209,6 +209,13 @@ Download pages (same targets as the codes):
 Once the app is installed, generate a config text or pairing code under
 **Phone settings → Remote access** to connect it to this machine.
 
+The `DSH1:` text carries an **ordered candidate list**, not a single address: the tunnel first,
+then the LAN and virtual-network addresses detected on this machine. A client that probes
+(`dsh-companion`) picks the local one at home and falls back to the tunnel when you are away, so
+one code works in both places; older clients that only read the first entry still get the tunnel,
+which works everywhere. Add your own public address (DDNS + port forwarding, or IPv6) by passing it
+in `endpoints`.
+
 The public API is independent of DSH private wire protocols. Authorized clients can:
 
 - list, register, rename, and remove DSH workspace registrations;

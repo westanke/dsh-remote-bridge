@@ -117,6 +117,64 @@ export function detectEndpoints(port: number = DEFAULT_PORT): ConfigEndpoint[] {
   return found.map(({ kind, label, baseUrl }) => ({ kind, label, baseUrl }))
 }
 
+/** 从 baseUrl 里抠出主机名，抠不出就返回空串（分类只用于标签与排序）。 */
+function hostOf(baseUrl: string): string {
+  try {
+    return new URL(baseUrl).hostname
+  } catch {
+    return ''
+  }
+}
+
+/**
+ * 组合一份配置文本里的**候选地址列表**（多路：隧道 / LAN / 虚拟网）。
+ *
+ * ## 为什么需要它
+ *
+ * v2.15.0 之前两类入口各写各的：`/manage/config/text` 只探测本机网卡（只有 LAN / 虚拟网），
+ * 一键开隧道只塞隧道地址。于是「在家能用」和「出门能用」是两份码 —— 用户 2026-11-22 提的
+ * 需求是「**一个配置码支持多种链接**」。
+ *
+ * ## 顺序为什么是「隧道在前」
+ *
+ * 数组顺序只服务**只认一个地址的老客户端**：`dsh-Chat` 的 `decodeDsh1` 取 `endpoints[0].baseUrl`
+ * （`app/lib/bridge/hosts.dart`），老装机量在。隧道地址在家在外都通，放第一是唯一不回归的顺序。
+ * 真正的「局域网优先」由客户端**探活排序**实现 —— `dsh-companion` 的
+ * `EndpointSelection.rank` 已是「LAN 延迟 ≤ 最快 ×1.5 即优先，其余按延迟」。
+ *
+ * 所以：`[0]` 求稳（对老客户端），整表求全（对新客户端）。
+ *
+ * @param sources.explicit 调用方显式给的地址（`/manage/config/text` 的 `endpoints`）——
+ *   给了就不再探测网卡，避免把内网地址塞进用户不想要的地方。
+ */
+export interface CandidateSources {
+  port?: number
+  tunnelUrl?: string | null
+  tunnelLabel?: string
+  explicit?: ConfigEndpoint[] | null
+}
+
+export function composeCandidates(sources: CandidateSources = {}): ConfigEndpoint[] {
+  const port = Number.isInteger(sources.port) && Number(sources.port) > 0 ? Number(sources.port) : DEFAULT_PORT
+  const explicit = sources.explicit ?? null
+  const base = explicit !== null && explicit.length > 0
+    ? explicit.map((endpoint) => ({
+        label: endpoint.label.trim() === '' ? endpoint.baseUrl : endpoint.label.trim(),
+        baseUrl: normalizeBaseUrl(endpoint.baseUrl),
+        kind: endpoint.kind,
+      }))
+    : detectEndpoints(port)
+
+  const tunnelUrl = trimOrNull(sources.tunnelUrl ?? null)
+  if (tunnelUrl === null) return base
+  const tunnelBase = normalizeBaseUrl(tunnelUrl)
+  const tunnelLabel = trimOrNull(sources.tunnelLabel ?? null) ?? '云隧道'
+  return [
+    { label: tunnelLabel, baseUrl: tunnelBase, kind: classifyHost(hostOf(tunnelBase)) },
+    ...base.filter((endpoint) => normalizeBaseUrl(endpoint.baseUrl) !== tunnelBase),
+  ]
+}
+
 function trimOrNull(value: string | null | undefined): string | null {
   if (value === undefined || value === null) return null
   const text = String(value).trim()

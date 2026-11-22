@@ -112,8 +112,26 @@ curl -X POST http://127.0.0.1:3090/manage/config/text \
 | `deviceName` | 设备名（写进 `devices` 表，便于日后吊销），缺省 `Mobile device`（**平台无关**；设备第一次带身份连上来时会被自动换成「平台 · 型号」） |
 | `scopes` | 设备权限，缺省为 5 项**非破坏性**权限（不含 `files.delete` / `settings.write`） |
 | `rootIds` | 授权的根，缺省为全部已注册根 |
-| `port` | 自动探测地址时拼接的端口，缺省 `3090` |
+| `port` | 自动探测地址时拼接的端口，缺省取**实际监听端口**，取不到才用 `3090`（改过监听端口的机器上，按 3090 探测出来的地址全是死的） |
 | `endpoints` | 显式指定地址 `[{label, baseUrl}]`；缺省时自动探测本机非回环 IPv4 |
+| `includeTunnel` | `true` 表示「**没跑就把隧道开起来**」并把它的公网地址排进候选第一位（v2.16.0）。缺省 `false`：生成文本是只读动作，不许它偷偷拉起公网入口；隧道没启用时回 `400 TUNNEL_DISABLED`，12 秒内拿不到地址回 `504 TUNNEL_URL_TIMEOUT` |
+
+### 一个码多条路（v2.16.0）
+
+`endpoints` 是一份**有序候选列表**，而不是「一个地址」：
+
+| 位置 | 谁在用 |
+| --- | --- |
+| `endpoints[0]` | **只认一个地址的老客户端**（`dsh-Chat` 的 `decodeDsh1` 取首个）。所以有隧道时它恒为隧道地址 —— 在家在外都通，是唯一不回归的选择 |
+| 整张表 | 会探活的新客户端（`dsh-companion` 的 `EndpointSelection.rank`）：LAN 延迟 ≤ 最快 ×1.5 即优先，其余按延迟 |
+
+所以「局域网优先」是**客户端探活排序**的结果，不是数组顺序：同一份码在家里落到 LAN、出门落到隧道。
+一键开隧道（HTTP 与 IM `/tunnel`）产出的码同样是「隧道 + 本机候选」两条以上，不再只有隧道。
+
+> P2P 与 TURN/Relay 的位置：桥是明文 HTTP/WS，拿不到 WebRTC 的 P2P 通道；真实可用的「直连」
+> 只有 ① 用户自备公网可达地址（DDNS + 端口映射 / IPv6，写进 `endpoints` 即可）与
+> ② 虚拟网（Tailscale/ZeroTier 的 `100.64/10`，已作为 `VIRTUAL_NET` 参与排序）。
+> Relay 需要服务器，按用户口径不做（见 issue IKX5K7）。
 
 响应 `201`：
 
@@ -151,7 +169,7 @@ curl -X POST http://127.0.0.1:3090/manage/config/text \
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
 | `GET` | `/manage/cloudflare/status` | 当前隧道状态：`{ channel, url, running, error?, errorKey? }`。未启动时 `running:false`、`url:null`。豁免判据 0 的端点之一，供本机面板读「隧道开着」；隧道来源的请求仍被判据 1/2/3 挡住（403），读不到隧道地址 |
-| `POST` | `/manage/cloudflare/create` | 查/建 `cloudflared` 可执行文件并启动 **Quick Tunnel**（转发到**隧道专用数据端口**，见下节；不是主监听端口 `3090`），响应 `201` 返回与 `status` 同构的状态。**请求体可选** `{ "configText": true }`（v2.5.2）：在隧道**起来之前**的这一次调用里等随机域名并顺带生成 `DSH1:` 令牌配置，响应在状态之外多带 `configText`（结构同 `POST /manage/config/text` 的 201），`url` 也回填为等到的地址；12s 内没等到地址则不带 `configText`、`url:null`，客户端可轮询 `status` 后补一步 |
+| `POST` | `/manage/cloudflare/create` | 查/建 `cloudflared` 可执行文件并启动 **Quick Tunnel**（转发到**隧道专用数据端口**，见下节；不是主监听端口 `3090`），响应 `201` 返回与 `status` 同构的状态。**请求体可选** `{ "configText": true }`（v2.5.2）：在隧道**起来之前**的这一次调用里等随机域名并顺带生成 `DSH1:` 令牌配置，响应在状态之外多带 `configText`（结构同 `POST /manage/config/text` 的 201），`url` 也回填为等到的地址；12s 内没等到地址则不带 `configText`、`url:null`，客户端可轮询 `status` 后补一步。`endpointLabel` 可改隧道那条候选的标签（缺省「云隧道」）。v2.16.0 起搭车生成的 `configText.endpoints` 是**多路候选**（隧道在前 + 本机 LAN/虚拟网） |
 | `POST` | `/manage/cloudflare/stop` | 停止当前隧道，返回 `200` 与状态。**唯一豁免判据 0 的写操作**（v2.5.2）：本机面板在隧道运行时仍可停机；经边缘（带转发/`cf-*` 头）仍 403 |
 | `GET` | `/manage/cloudflare/activity` | 创建期间的阶段进度（用户侧用它轮询画进度条）：`{ stage, labelKey, labelParams?, percent }`（v2.5.2 起文案为可本地化的 `labelKey`，不再下发拼好的中文）；`create` 结束即清空 |
 

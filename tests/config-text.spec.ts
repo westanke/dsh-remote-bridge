@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   classifyHost,
+  composeCandidates,
   detectEndpoints,
   encodeConfigText,
   normalizeBaseUrl,
@@ -166,5 +167,62 @@ describe('detectEndpoints', () => {
       expect(endpoint.label.length).toBeGreaterThan(0)
       expect(['LAN', 'VIRTUAL_NET', 'WAN', 'UNKNOWN']).toContain(endpoint.kind)
     }
+  })
+})
+
+describe('composeCandidates（多路候选，2.16.0）', () => {
+  const explicit = [
+    { label: '家里局域网', baseUrl: 'http://192.168.1.126:3090', kind: 'LAN' as const },
+    { label: '公司虚拟网', baseUrl: 'http://100.101.102.103:3090', kind: 'VIRTUAL_NET' as const },
+  ]
+
+  it('没有隧道就是老行为：显式地址原样返回', () => {
+    const endpoints = composeCandidates({ explicit })
+    expect(endpoints.map(e => e.baseUrl)).toEqual([
+      'http://192.168.1.126:3090',
+      'http://100.101.102.103:3090',
+    ])
+  })
+
+  it('有隧道时隧道排第一，其后是显式候选（顺序不乱）', () => {
+    const endpoints = composeCandidates({ explicit, tunnelUrl: 'https://abc.trycloudflare.com' })
+    expect(endpoints.map(e => e.baseUrl)).toEqual([
+      'https://abc.trycloudflare.com',
+      'http://192.168.1.126:3090',
+      'http://100.101.102.103:3090',
+    ])
+    expect(endpoints[0]?.label).toBe('云隧道')
+  })
+
+  it('隧道地址与候选重复时只留一份（不让同一地址探活两次）', () => {
+    const endpoints = composeCandidates({
+      explicit: [{ label: '手工隧道', baseUrl: 'https://abc.trycloudflare.com', kind: 'WAN' as const }],
+      tunnelUrl: 'https://abc.trycloudflare.com/',
+    })
+    expect(endpoints).toHaveLength(1)
+    expect(endpoints[0]?.label).toBe('云隧道')
+  })
+
+  it('自定义隧道标签生效；空标签回落到默认「云隧道」', () => {
+    expect(composeCandidates({ explicit, tunnelUrl: 'https://abc.trycloudflare.com', tunnelLabel: '我的隧道' })[0]?.label).toBe('我的隧道')
+    expect(composeCandidates({ explicit, tunnelUrl: 'https://abc.trycloudflare.com', tunnelLabel: '   ' })[0]?.label).toBe('云隧道')
+  })
+
+  it('不给 explicit 时回落本机探测（可能为空，取决于测试机网卡）', () => {
+    const endpoints = composeCandidates({ port: 3090, tunnelUrl: 'https://abc.trycloudflare.com' })
+    expect(endpoints[0]?.baseUrl).toBe('https://abc.trycloudflare.com')
+    expect(endpoints.length).toBe(1 + detectEndpoints(3090).length)
+  })
+
+  it('隧道地址归一化：带 /api/v1 后缀与尾斜杠都会被剥掉', () => {
+    const endpoints = composeCandidates({ explicit, tunnelUrl: 'https://abc.trycloudflare.com/api/v1/' })
+    expect(endpoints[0]?.baseUrl).toBe('https://abc.trycloudflare.com')
+  })
+
+  it('显式地址缺标签时用 baseUrl 顶上（不产出空 label）', () => {
+    const endpoints = composeCandidates({
+      explicit: [{ label: '  ', baseUrl: 'http://10.0.0.5:3090', kind: 'LAN' as const }],
+    })
+    expect(endpoints[0]?.label).toBe('http://10.0.0.5:3090')
   })
 })

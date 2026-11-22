@@ -1,3 +1,41 @@
+## 未发布 · 多路配置码：一个 DSH1 同时带隧道 / LAN / 虚拟网（issue IKX5K7）
+
+**为什么有这一段**：v2.15.0 之前两类入口各写各的地址 —— `POST /manage/config/text` 只探测本机
+网卡，一键开隧道只塞隧道地址（`buildConfigText` 的 `endpoints` 一旦显式给出就不再探测）。
+结果「在家能用」和「出门能用」是两份码：在家生成的码出了门连不上，出门前生成的隧道码在家里
+又绕远。用户 2026-11-22 提出「一个配置码支持多种链接，优先 LAN，再 P2P，不通再走 Relay，
+最后隧道」。
+
+**新增**：
+
+- `src/host/config-text.ts` 新增 `composeCandidates({ port, tunnelUrl, tunnelLabel, explicit })`：
+  把「可选隧道 + 本机探测（或调用方显式给的地址）」合成一份候选列表，隧道排第一、地址去重。
+- `buildConfigText()` 增加 `attach: { tunnelUrl?, tunnelLabel? }` 参数；三个生成点统一走它 ——
+  `/manage/config/text`、`/manage/cloudflare/create`（`configText: true`）、IM `/tunnel` 复用分支。
+- `POST /manage/config/text` 新增 body `includeTunnel: true`：没跑就把隧道开起来（复用
+  `waitForUrl` 的 12 秒有界等待），把公网地址排进候选第一位。**缺省 false** —— 生成文本是
+  只读动作，不许它偷偷拉起公网入口。隧道没启用回 `400 TUNNEL_DISABLED`，12 秒无地址回
+  `504 TUNNEL_URL_TIMEOUT`。
+- `ensureTunnelUrl(options, requestId, actorLabel)`：只解决「给我一条隧道地址」，文本由调用方拼
+  （`/manage/config/text` 要透传 `scopes` / `displayName`）。
+- 探测端口口径改为**实际监听端口优先**（原来硬编码回 `3090`）：改过监听端口的机器上，按 3090
+  拼出来的 LAN 候选全是死地址，表现是「在家也连不上」。
+
+**顺序为什么是隧道在前**：`dsh-Chat` 的 `decodeDsh1` 只取 `endpoints[0].baseUrl`（老装机量在），
+隧道地址在家在外都通，放第一是唯一不回归的顺序；「局域网优先」由客户端探活排序实现 ——
+`dsh-companion` 的 `EndpointSelection.rank` 已是「LAN 延迟 ≤ 最快 ×1.5 即优先，其余按延迟」。
+
+**不做**：P2P 打洞（UPnP/NAT-PMP）与 TURN/Relay —— 桥是明文 HTTP/WS，拿不到 WebRTC 的 P2P
+通道，Relay 必须有服务器；用户口径是「需要自建服务器就跳过」。今天可用的「直连」是自备公网
+可达地址（DDNS + 端口映射 / IPv6）与虚拟网（`100.64/10`，已是 `VIRTUAL_NET`）。理由与边界
+写在 issue IKX5K7 与 `API.md` 的「一个码多条路」。
+
+**验证**：`tests/config-text.spec.ts` 新增 `composeCandidates` 7 例（无隧道 / 有隧道 / 去重 /
+标签回落 / 归一化 / 缺 label 兜底）；`tests/tunnel-create-config.spec.ts` 改为多路断言并新增
+4 例（`includeTunnel` 起隧道、缺省不碰隧道、隧道在跑复用、未启用回 `TUNNEL_DISABLED`）；
+`tsc --noEmit` 与 `vitest run` 全绿。**真机未验**：`dsh-companion` 在家选 LAN、出门落隧道的
+实际表现待跑。
+
 ## v2.15.0 · dsh-Go 原生界面：只读「接入」面板 + 状态条（2026-11-22）
 
 **为什么有这一段**：本插件存在的理由是「让别的客户端远程访问这台机器」，而 dsh-Go 里的用户
