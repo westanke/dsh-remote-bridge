@@ -12,6 +12,11 @@
   因为设备/隧道变化不在 `WorkspaceEventBus` 上广播，也不值得为只读面板改事件总线。
   验收：`tests/dsh-go-panel.spec.ts` 35 例；App 侧 `node sdk/plugin-kit/bin/check.mjs <插件目录>`
   判「原生界面能显示（状态条 1 · 面板 1）」，中英视图各自单检亦通过。**dsh-Go App 真机未联调**。
+  **市场提交**：`plugins/dsh-remote-bridge.json` → 市场仓 PR
+  [ccch1mneyyy/dsh-go-market#108](https://github.com/ccch1mneyyy/dsh-go-market/pull/108)（市场侧
+  `scripts/check.mjs` 对本条目 `passed`、`dshGo.adapted: true`（`native-slots`）、risk `medium`；
+  PR 上 `catalog` 绿，`auto-merge` 因 CodeRabbit 未跑完时 GraphQL 报 unstable 而失败 —— 与 #25/#60
+  同一时序问题，等维护者手动合并）。**市场条目生效要等该 PR 合并后 publish 工作流重建索引**。
 
 - **已完成（未发布，2026-11-20）· 协议面两级制：帧是唯一落点，REST 进弃用表**：
   按用户 2026-11-20 的口径（「REST 协议将逐步下线」）把文档制度补齐：`AGENTS.md` 新增 §1.1
