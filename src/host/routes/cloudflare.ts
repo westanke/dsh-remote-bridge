@@ -244,38 +244,56 @@ export async function createTunnel(options: RouterOptions,
 
 /** 一键建隧道（原 ApiRouter.openTunnelForCommand；router 保留同名委托，issue #3 搬移）。 */
   /**
-   * IM `/tunnel` 命令的宿主侧入口：开隧道并返回一行可粘贴的配置文本。
+   * IM `/tunnel` 命令的宿主侧入口：开隧道并返回 **地址 + 一次性配对码**。
    *
-   * 与 HTTP 路径的两点差别：
+   * ## 为什么回配对码，不回 `DSH1:` 长文本（issue #28）
    *
-   * 1. **隧道已在运行时直接复用当前地址**，不重复 spawn（第二次 `startQuick` 会撞
-   *    `TUNNEL_ALREADY_RUNNING`，而用户在 IM 里连发两条是很常见的）。
-   * 2. 配置文本是**多路候选**（隧道在前 + 本机 LAN / 虚拟网），设备名缺省由 `buildConfigText` 决定 —— 命令
-   *    不接受参数，所以没有 `endpointLabel` / `rootIds` 的透传面。
+   * 2026-11-22 真机实测：400+ 字符的 `DSH1:` 单行文本经微信转发/复制后会掉字符，
+   * 令牌变成「库里不存在的一枚」→ App 连上来只会被桥以 `TOKEN_INVALID` 拒掉，
+   * 现场表现为「码是新的却连不上」。配对码只有 8 位，复制不会坏，权限仍在配对
+   * 那一刻由同一套 `scopes` 决定。
+   *
+   * 顺带不再为 IM 路径**预建设备**：以前每发一次 `/tunnel` 就多一台设备（实测攒到
+   * 38 台），现在设备在手机真正兑换配对码时才建。
+   *
+   * 与 HTTP 路径的差别：**隧道已在运行时直接复用当前地址**，不重复 spawn
+   * （第二次 `startQuick` 会撞 `TUNNEL_ALREADY_RUNNING`，而用户在 IM 里连发两条很常见）。
    *
    * @throws 当 12 秒内没拿到公网地址，或 cloudflared 下载失败时。
    */
-export async function openTunnelForCommand(options: RouterOptions, ): Promise<{ url: string; text: string; deviceName: string }> {
+export async function openTunnelForCommand(
+  options: RouterOptions,
+): Promise<{ url: string; pairingCode: string; expiresAt: number }> {
     const tunnels = options.tunnels
     if (tunnels === undefined) throw new Error('隧道功能未启用。')
     const requestId = randomUUID()
 
+    const issuePairing = (url: string) => {
+      // rootIds / scopes 与 WebUI「生成配对码」同口径：配对那一刻就把权限定死。
+      const rootIds = options.database.listRoots().map(root => root.id)
+      const pairing = options.database.createPairing(
+        rootIds,
+        [...DEFAULT_CONFIG_SCOPES],
+        undefined,
+        { requestId },
+      )
+      return { url, pairingCode: pairing.code, expiresAt: pairing.expiresAt }
+    }
+
     const current = tunnels.publicState
     if (current.running === true && current.url !== null) {
-      const reused = buildConfigText(options, {}, requestId, { tunnelUrl: current.url })
       options.database.audit('admin', 'im-command', 'cloudflare.create', undefined, undefined, {
         reused: true,
       }, requestId)
-      return { url: current.url, text: reused.text, deviceName: reused.deviceName }
+      return issuePairing(current.url)
     }
 
-    const { state, configText } = await createTunnel(options, { configText: true }, requestId, 'im-command')
-    if (configText === undefined || state.url === null) {
+    const { state } = await createTunnel(options, {}, requestId, 'im-command')
+    const url = state.url ?? await tunnels.waitForUrl()
+    if (url === null) {
       throw new Error('隧道已启动，但 12 秒内没拿到公网地址。稍等片刻再发一次 /tunnel 可复用当前地址。')
     }
-    const text = typeof configText.text === 'string' ? configText.text : ''
-    const deviceName = typeof configText.deviceName === 'string' ? configText.deviceName : DEFAULT_DEVICE_NAME
-    return { url: state.url, text, deviceName }
+    return issuePairing(url)
   }
 
 /**

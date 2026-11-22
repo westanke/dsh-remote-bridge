@@ -281,7 +281,7 @@ export class ApiRouter {
     throw new ApiError(404, 'ROUTE_NOT_FOUND', 'The requested management route does not exist.')
   }
 
-  async openTunnelForCommand(): Promise<{ url: string; text: string; deviceName: string }> {
+  async openTunnelForCommand(): Promise<{ url: string; pairingCode: string; expiresAt: number }> {
     return openTunnelForCommand(this.options)
   }
 }

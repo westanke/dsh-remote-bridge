@@ -1493,3 +1493,20 @@ instead of the construction snapshot」；真机验证见 `STATUS.md` 2026-11-19
 when the run-finish status arrives / keeps the subscription through the idle grace window,
 then releases it。（注意 `nextFrame()` 取一帧就 `return`，会把流关掉 —— 要连取两帧必须
 自己拿 `stream[Symbol.asyncIterator]()`。）
+
+### IM 长文本掉字符：连接凭据不能走聊天窗口
+
+**症状**：用户在 IM 里 `/tunnel` 拿到配置码，粘进 App 却连不上；桥的日志/接口报 `TOKEN_INVALID`，
+而设备表里既没有吊销记录也没有删除记录。把用户发回来的那一行解码，`token` 只有 42 位，
+桥签发的一律 43 位（`randomBytes(32).toString('base64url')`，`src/host/database.ts:261`），
+sha256 也不在任何一台设备上。
+
+**根因**：`DSH1:` 是 400+ 字符的单行 base64。IM（微信实测 2026-11-22）转发/复制这段长文本时会
+改动内容，掉一个字符就让令牌变成「库里不存在的一枚」。因为 JSON 其余字段仍能解出来，
+客户端不会报「格式错误」，只会拿着坏令牌去连 —— 表现成「新码连不上」，极难归因。
+
+**铁律**：**任何要用户跨 IM 复制的连接凭据，长度必须压到不会坏的量级**（配对码 8 位级别），
+长文本只走「整段复制、不经转发」的路径（WebUI → 生成配置文本）。
+
+**回归锚**：`tests/im-tunnel-command.spec.ts` 断言回复含地址与配对码且**不含** `DSH1:`；
+`tests/tunnel-create-config.spec.ts` 断言 `openTunnelForCommand()` 只签发配对码、且不预建设备（issue #28）。

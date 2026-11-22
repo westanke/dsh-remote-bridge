@@ -127,7 +127,8 @@
 
 **宿主命令 `/tunnel` 与工具 `open_tunnel_config`（2.6.0 起）** 都不在上表里：它不是 REST 路由，而是注册进内核命令表
 （`ctx.commands.register`，全局层）的一条人类命令，供 IM 适配器（`@xmanrui/dsh-im`）在聊天窗口里直接执行。
-语义：开 Cloudflare 隧道 → 等随机域名 → 回一行 `DSH1:` 配置文本；隧道已在运行时复用当前地址。
+语义：开 Cloudflare 隧道 → 等随机域名 → 回「地址 + 一次性配对码」（8 位、10 分钟、单次；`{url, pairingCode, expiresAt}`）；
+隧道已在运行时复用当前地址。**刻意不回 `DSH1:` 长文本**：400+ 字符单行经 IM 转发会掉字符，令牌变成库里不存在的一枚（issue #28）。
 两者共用 `ApiRouter.openTunnelForCommand()`；命令给「能发 `/tunnel` 的客户端」，
 工具给「IM 里只会说自然语言」的场景（dsh-im 的斜杠命令表封闭，无通用派发）。
 实现 `src/host/im-command.ts`，宿主侧入口 `ApiRouter.openTunnelForCommand()`（与 `POST /manage/cloudflare/create`

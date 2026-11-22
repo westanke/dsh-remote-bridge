@@ -7,7 +7,7 @@
  * 此时公网入口不存在，WebUI 与 App 都够不着这台机器 —— 唯一的反向通道是 IM 机器人的
  * **长连接**（手机/IM 云 → 本机主动连出去，不需要任何入站端口）。
  *
- * 本模块只做一件事：注册一条 `/tunnel` 命令，把「开隧道 + 生成 DSH1 配置文本」的结果
+ * 本模块只做一件事：注册一条 `/tunnel` 命令，把「开隧道 + 一次性配对码」的结果
  * 直接作为聊天消息回给发送者。**不做停止、不做改配置、不读任何文件** —— 攻击面刻意压到
  * 「最多被人开一次隧道」，而隧道本身不授予任何数据面权限（数据面仍要设备令牌）。
  *
@@ -33,16 +33,30 @@
 export const TUNNEL_COMMAND_NAME = 'tunnel'
 
 /** 命令描述：会出现在 IM 的 `/help` 里。 */
-export const TUNNEL_COMMAND_DESCRIPTION = '开启 Cloudflare 隧道并返回一行配置文本（DSH1:…）'
+export const TUNNEL_COMMAND_DESCRIPTION = '开启 Cloudflare 隧道并返回地址与一次性配对码'
 
-/** 一次成功的开隧道结果。字段与 `ConfigTextResult` 对齐，刻意只取命令需要的那几个。 */
+/**
+ * 一次成功的开隧道结果。
+ *
+ * ## 为什么是「配对码」而不是 `DSH1:` 长文本（issue #28）
+ *
+ * 这里曾经回一行 400+ 字符的 `DSH1:` 配置文本。2026-11-22 真机实测：这段文本经
+ * 微信转发/复制后会**掉字符**——用户拿到的那份里 `token` 只有 42 位，而桥签发的
+ * 一律 43 位（`randomBytes(32).toString('base64url')`），于是 App 拿着一枚「库里
+ * 不存在」的令牌去连，桥只能回 `TOKEN_INVALID`。同一台电脑上「WebUI → 生成配对码」
+ * 却一次就通，差别就在文本长度。
+ *
+ * 所以 IM 侧改回**短配对码**：10 字符量级，复制不会坏；权限仍在配对那一刻由
+ * `scopes` 决定，语义与以前的「预建设备」完全一致。长文本仍保留在 WebUI 的
+ * 「生成配置文本」里——那条路径是整段复制，没有 IM 转发的损耗。
+ */
 export interface TunnelCommandResult {
   /** 隧道公网地址（`https://<random>.trycloudflare.com`）。 */
   url: string
-  /** 一行可粘贴的 `DSH1:<base64url>` 配置文本。 */
-  text: string
-  /** 这次配置里新建的设备名（每调用一次会新建一台设备，便于在面板里单独吊销）。 */
-  deviceName: string
+  /** 一次性配对码（8 位十六进制字母数字，10 分钟内有效、只能用一次）。 */
+  pairingCode: string
+  /** 配对码过期时刻（毫秒时间戳），用于在回复里写清有效期。 */
+  expiresAt: number
 }
 
 /** 命令的宿主侧依赖：只有一个函数，测试里换成假实现即可。 */
@@ -68,14 +82,19 @@ export interface TunnelCommandInvocation {
   readonly rawInput: string
 }
 
+/** 配对码有效期（分钟），仅用于拼人话；真值在 `result.expiresAt`。 */
+function pairingMinutes(expiresAt: number): number {
+  const remaining = Math.round((expiresAt - Date.now()) / 60_000)
+  return remaining > 0 ? remaining : 10
+}
+
 /** 把结果拼成聊天消息。 */
 export function formatTunnelReply(result: TunnelCommandResult): string {
   return [
     '云隧道已开启。',
     `地址：${result.url}`,
-    `设备名：${result.deviceName}`,
-    '配置文本（一行，复制后粘贴到 App 的「导入配置」）：',
-    result.text,
+    `配对码：${result.pairingCode}（${pairingMinutes(result.expiresAt)} 分钟内有效，只能用一次）`,
+    '在 App 里填地址 + 配对码，点「配对并连接」即可。',
   ].join('\n')
 }
 
@@ -167,27 +186,29 @@ export const TUNNEL_TOOL_NAME = 'open_tunnel_config'
  * 模型可见描述。
  *
  * 写英文是惯例（工具描述面向模型，与仓内其他描述同语言），并显式写清
- * 「用户说开隧道/取配置文本时调用」，否则模型倾向于自己用 bash 拼一条 curl。
+ * 「用户说开隧道/取配置时调用」，否则模型倾向于自己用 bash 拼一条 curl。
  *
- * 末段那句「原样回 `DSH1:` 那一行」是 2026-11-22 真机反馈加的（issue IKX5N7）：
- * 客户端新对话里 `/tunnel` 会被当普通消息交给智能体（dsh-Chat#IKX5MV），
- * 模型拿到配置文本后习惯先写一大段说明，配置码排到很后面、还要等流式输出 ——
- * 用户主观感受是「命令执行了但没回配置码」。要求它把那一行放到回复最前面。
+ * 两条历史教训都留在里面：
+ * - issue IKX5N7：客户端新对话里 `/tunnel` 会被当普通消息交给智能体，模型拿到凭据后
+ *   习惯先写一大段说明，凭据排到很后面 → 要求把凭据放到回复最前面。
+ * - issue #28：曾经回一行 400+ 字符的 `DSH1:` 文本，经 IM 转发会掉字符（令牌变成
+ *   库里不存在的一枚），所以现在只回「地址 + 一次性配对码」两行短文本。
  */
 export const TUNNEL_TOOL_DESCRIPTION =
-  'Open the Cloudflare quick tunnel for this DSH host and return a one-line DSH1: config text ' +
-  'that a phone app can paste to connect. Use it whenever the user asks to start the tunnel, ' +
-  'to get the config text, or says they are away from the computer and need remote access. ' +
+  'Open the Cloudflare quick tunnel for this DSH host and return the public URL plus a ' +
+  'one-time pairing code that a phone app can use to pair. Use it whenever the user asks to ' +
+  'start the tunnel, to get the connection info, or says they are away from the computer and ' +
+  'need remote access. ' +
   'It never stops the tunnel and never touches files. ' +
-  'When you reply, copy the DSH1: line from the result verbatim as the very first line — ' +
+  'When you reply, give the URL and the pairing code as the very first lines — ' +
   'no code fences, no re-wrapping, no reformatting — and keep any explanation to at most ' +
-  'two short sentences after it, because the user has to paste that line into the app.'
+  'two short sentences after them, because the user has to copy them into the app.'
 
 /** 工具的返回结构（与 `TunnelCommandResult` 同源）。 */
 export interface TunnelToolOutput {
   url: string
-  text: string
-  deviceName: string
+  pairingCode: string
+  expiresAt: number
 }
 
 /** 内核 tool 注册表的结构子集：只声明本工具真的会用到的字段。 */
@@ -226,30 +247,33 @@ export function createTunnelTool(deps: TunnelCommandDeps): Parameters<TunnelTool
         additionalProperties: false,
         properties: {
           url: { type: 'string' },
-          text: { type: 'string' },
-          deviceName: { type: 'string' },
+          pairingCode: { type: 'string' },
+          expiresAt: { type: 'number' },
         },
-        required: ['url', 'text', 'deviceName'],
+        required: ['url', 'pairingCode', 'expiresAt'],
       },
-      // 顺序有意为之（issue IKX5N7）：**配置文本放第一块**。模型倾向于复述它先看到的
+      // 顺序有意为之（issue IKX5N7）：**凭据放第一块**。模型倾向于复述它先看到的
       // 那段，之前把「Tunnel is up at …」放前面时，回复往往是先一句寒暄再贴码；
-      // 现在第一块就是可直接长按复制的 `DSH1:` 文本，第二块才给地址/设备名与
-      // 「原样回上面那行、别加解释」的提醒。
+      // 现在第一块就是可直接长按复制的「地址 + 配对码」两行，第二块才给有效期与
+      // 「原样回上面那两行、别加解释」的提醒。
       render: (_args, value) => [
-        { type: 'text', text: value.text },
+        {
+          type: 'text',
+          text: `地址：${value.url}\n配对码：${value.pairingCode}`,
+        },
         {
           type: 'text',
           text:
-            `Tunnel is up at ${value.url} (device name: ${value.deviceName}). ` +
-            'Reply with the DSH1: line above verbatim on its own line, and keep any extra ' +
-            'explanation to at most two short sentences.',
+            `The pairing code expires at ${new Date(value.expiresAt).toISOString()} and works once. ` +
+            'Reply with those two lines verbatim as the very first lines of your answer, and keep ' +
+            'any extra explanation to at most two short sentences: the user has to copy them into the app.',
         },
       ],
     },
     async execute() {
       const result = await deps.openTunnel()
       deps.logger?.info(`[dsh-remote-bridge] ${TUNNEL_TOOL_NAME} 已开启隧道 ${result.url}`)
-      return { url: result.url, text: result.text, deviceName: result.deviceName }
+      return { url: result.url, pairingCode: result.pairingCode, expiresAt: result.expiresAt }
     },
   }
 }

@@ -253,15 +253,19 @@ describe('POST /manage/cloudflare/create 一键搭车出令牌', () => {
 })
 
 describe('IM /tunnel 命令的宿主入口 openTunnelForCommand', () => {
-  it('隧道未运行：起一次隧道、等地址、产出可粘贴的 DSH1 配置文本', async () => {
+  it('隧道未运行：起一次隧道、等地址、签发一次性配对码（不再贴长 DSH1，issue #28）', async () => {
     const harness = await startHarness(false)
     try {
       const result = await harness.router.openTunnelForCommand()
       expect(result.url).toBe('https://fake-example.trycloudflare.com')
-      expect(result.text.startsWith('DSH1:')).toBe(true)
-      expect(result.deviceName.length).toBeGreaterThan(0)
+      // 只有短码：长文本经 IM 转发会掉字符，令牌就变成库里不存在的一枚。
+      expect(result.pairingCode.length).toBeGreaterThan(0)
+      expect(result.pairingCode.length).toBeLessThan(16)
+      expect(result.expiresAt).toBeGreaterThan(Date.now())
       expect(harness.tunnels.startQuickCalls).toBe(1)
       expect(harness.tunnels.waitForUrlCalls).toBe(1)
+      // 设备不再在 IM 侧预建：等手机真正兑换配对码时才建。
+      expect(harness.database.listDevices?.() ?? []).toHaveLength(0)
     } finally {
       await harness.close()
     }
@@ -273,7 +277,8 @@ describe('IM /tunnel 命令的宿主入口 openTunnelForCommand', () => {
       const first = await harness.router.openTunnelForCommand()
       const second = await harness.router.openTunnelForCommand()
       expect(second.url).toBe(first.url)
-      expect(second.text.startsWith('DSH1:')).toBe(true)
+      // 每次调用都是新的一份凭据（旧的用过就作废，避免两个窗口共用一枚码）。
+      expect(second.pairingCode).not.toBe(first.pairingCode)
       expect(harness.tunnels.startQuickCalls).toBe(1)
     } finally {
       await harness.close()
