@@ -1106,6 +1106,50 @@ rejected（NO_PROVIDER，手机是唯一界面）→ 自拒起 10 分钟自愈�
 
 ---
 
+### 晚挂拒绝处理器 = 未处理拒绝（用例随机红）
+
+**踩坑**（2026-11-22，v2.15.0 发布后的 CI）：`profile-install (macos-latest, 0.2.2-rc.1)` 红了，
+失败步骤是 `pnpm pack`（`prepack → pnpm check` 跑测试），注解里只有一句
+
+```
+Error: ENOENT: no such file or directory, lstat '/private/var/folders/…/zzz-gone.txt'
+ ❯ src/host/file-service.ts:91:22
+This error originated in "tests/file-service.spec.ts" test f…
+```
+
+看起来像「`list()` 抛错」，但那条用例**就是**要验抛错（`surfaces a stat failure for a vanished
+entry instead of silently skipping it`）。同一个提交（只改了文档）在上一轮 14/14 全绿，这一轮红。
+
+**根因**：用例的写法是
+
+```ts
+const listing = files.list(root, '', 500)   // 先拿 promise
+await rm(path.join(project, target))        // 再制造删除
+threw = await listing.then(() => false, () => true)  // 最后才挂拒绝处理器
+```
+
+中间那个 `await` 让出了事件循环。`files.list()` 的拒绝完全可能在 `rm` 返回**之前**落地；那一刻
+promise 上没有任何处理器，Node 在微任务队列排空后发 `unhandledRejection`，Vitest 把它算作**这条
+用例失败**，尽管后面 `await listing.then(…, …)` 确实拿到了同一个拒绝。窗口大小取决于磁盘与调度，
+所以只在 macOS 上随机命中。
+
+**现在怎么办**：**先挂处理器，再做会触发拒绝的动作**。
+
+```ts
+const listing = files.list(root, '', 500).then(() => false, () => true)
+await rm(path.join(project, target), { force: true })
+threw = await listing
+```
+
+同一类写法要一起看：任何「故意制造拒绝」的用例（竞态、超时、被 kill 的请求）都要在**创建
+promise 的同一行**把 `.then(ok, err)` 挂上，或包在 `expect(...).rejects` 里（它也是立刻挂的）。
+`await expect(fn()).rejects.toThrow()` 是安全的；`const p = fn(); await something(); await p` 不是。
+
+**为什么容易漏**：本地连跑 8 次都不会红（macOS 本地 APFS 的 `rm` 往往比 `lstat` 慢），只有 CI 的
+两档矩阵 × 三个平台才暴露。所以「本机全绿」不能证明这类用例稳。
+
+---
+
 ### kernel-call 白名单是唯一执法点
 
 **症状**：新加一条手机可达的内核能力时，最省事的写法是「在处理函数里判一下 scope

@@ -138,9 +138,13 @@ describe('directory listing concurrency', () => {
     let threw = false
     for (let attempt = 0; attempt < 25 && !threw; attempt += 1) {
       await writeFile(path.join(project, target), 'x')
-      const listing = files.list(root, '', 500)
+      // 先同步挂上拒绝处理器，再删文件：`files.list()` 的拒绝可能早于下面的 `await rm`
+      // 返回，那一下若还没有处理器，就是 process 级 unhandledRejection —— vitest 直接判
+      // 这条用例红（2026-11-22 CI 的 `profile-install (macos-latest, rc.1)` 就是这么红的：
+      // 用例想验的「抛错」发生了，但报成了未处理拒绝）。
+      const listing = files.list(root, '', 500).then(() => false, () => true)
       await rm(path.join(project, target), { force: true })
-      threw = await listing.then(() => false, () => true)
+      threw = await listing
     }
     expect(threw, '25 次都没命中竞态窗口 —— 说明 list() 可能不再对 lstat 失败抛错了').toBe(true)
   })

@@ -351,6 +351,7 @@ minor、`openapi.yaml` 里 `deprecated` 已存在至少一个 minor、两个客�
 - `把事件信封的外层 rpcId 当成结算句柄（approval 决策恒 409）`
 - `可信发布者只认「2FA 设备」，邮箱验证码不算（403 Please enable 2fa for your account）`
 - `Gitee issue 写 API 路径不含 repo 段（PATCH 404 Not Found Project）`
+- `晚挂拒绝处理器 = 未处理拒绝（用例随机红）`
 - `kernel-call 白名单是唯一执法点`
 - `owner peer 没有设备概念`
 - `服务方法 ≠ 内核端点`
