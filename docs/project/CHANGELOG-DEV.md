@@ -1,3 +1,27 @@
+## 未发布 · 会话转 idle 不再掐断跟随流：`turn/end` 尾帧不再丢失（2026-11-22）
+
+**症状**（dsh-Chat 1.0.27 + 桥 v2.16.0 真机）：回答正文全部上屏，但顶栏永远停在「生成中」，
+依赖「轮结束」的通知一条都不弹，`max-tokens` 截断提示不出现；重连后拉历史一切正常 ——
+看起来像客户端少解析了一帧。
+
+**根因**：内核收尾是「先 append `turn/end`，再 `setPhase({kind:'idle'})`」，两步在同一个同步栈
+里、中间没有 await；`api-session/status(false)` 由后者引出。桥在状态回调里直接 `abort()`，
+`for await` 下一拍恢复时 `signal.aborted` 已为真 → `break` → **这一轮最后一帧（正是 `turn/end`）
+永久丢失**，且 `detach()` 静默无日志。
+
+**改法**：
+- `SessionEventRelay` 新增 `noteRunFinished(sessionId)`：`running === false` 不再直接 `detach`，
+  先挂 `SESSION_RELAY_IDLE_GRACE_MS`（1.5s，已 `unref`）宽限计时器；`pendingIdle` 记在
+  `Map<string, Timeout>` 里。
+- `pump` 送出 `turn/end` 后**当场收敛**（`detach` + return）——正常情况下计时器根本走不到，
+  它只兜「尾帧始终不来」（取消、内核异常）的订阅。
+- `attach()` / `detach()` 都先 `cancelIdleRelease()`：宽限期内重新 `running === true` 走
+  attach 的命中分支，复用同一条订阅（不重建、不丢帧）。
+
+**回归锚**：`tests/dsh-0.2-bridge.spec.ts` › delivers the turn/end that is still in flight when the
+run-finish status arrives / keeps the subscription through the idle grace window, then releases it。
+坑位登记见 `PITFALLS.md` §idle 即 abort 丢尾帧。
+
 ## v2.16.0 · 多路配置码：一个 DSH1 同时带隧道 / LAN / 虚拟网（2026-11-22，issue IKX5K7）
 
 **为什么有这一段**：v2.15.0 之前两类入口各写各的地址 —— `POST /manage/config/text` 只探测本机

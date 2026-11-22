@@ -343,6 +343,7 @@ minor、`openapi.yaml` 里 `deprecated` 已存在至少一个 minor、两个客�
 - `CI 矩阵上的跨平台路径规范化假失败`
 - `bash 3.2 把中文吃进变量名`
 - `目录结构与接口说明漂移`
+- `idle 即 abort 丢尾帧`
 - `隧道让回环判据失效`
 - `改 node_modules 里的插件产物不生效（pnpm 硬链接）`
 - `apply 尾部抛错会留下「半死桥」`

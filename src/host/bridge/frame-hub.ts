@@ -142,6 +142,22 @@ function isRebuildableFrame(frame: Frame): boolean {
 // ── live session event relay ──────────────────────────────────────────────
 
 /**
+ * 「会话转 idle」到「真正释放跟随流」之间的宽限窗口。
+ *
+ * 内核的顺序是「先 append `turn/end`，再 `setPhase({kind:'idle'})`」（两者在 turn 的
+ * 收尾里，中间**没有 await**），而 `api-session/status(false)` 就是由后者引出的。
+ * 桥若在这一刻立刻 `abort()`，`for await` 恢复时 `signal.aborted` 已为真，
+ * **这一轮最后一帧（正是 `turn/end`）永久丢失**。
+ *
+ * 真机症状：回答正文全部上屏（那些帧不是最后一帧，能正常送出），但客户端顶栏
+ * 永远停在「生成中」，依赖 `turn/end` 的通知一条都不弹。
+ *
+ * 1.5s 只是兜底：正常情况下 pump 在下一个微任务就把 `turn/end` 送出并**主动收敛**，
+ * 计时器根本不会走到。它负责收掉「尾帧始终不来」（取消、内核异常）的订阅，避免泄漏。
+ */
+const SESSION_RELAY_IDLE_GRACE_MS = 1500
+
+/**
  * Relays live session frames into the old `session/event` shape.
  *
  * 0.2.x has no process-wide session event stream: both durable events and the
@@ -157,6 +173,14 @@ export class SessionEventRelay {
    * 于是最旧（最久没动过）的会话永远在队首 —— 淘汰时取第一个即可，不用另建链表。
    */
   private readonly active = new Map<string, AbortController>()
+
+  /**
+   * 「这一轮结束了，但尾帧可能还在管道里」的会话 → 宽限计时器。
+   *
+   * 有它才能区分「真的可以放了」与「刚转 idle、最后一帧还没读出来」。
+   * `attach()` 会清掉同一个会话的计时器（宽限期内又跑起来了 → 复用订阅）。
+   */
+  private readonly pendingIdle = new Map<string, ReturnType<typeof setTimeout>>()
 
   constructor(
     private readonly host: Dsh02HostServices,
@@ -187,6 +211,8 @@ export class SessionEventRelay {
    * 淘汰必须**有日志**：不然「我的旧会话为什么突然不流式了」永远查不出来。
    */
   attach(sessionId: string): void {
+    // 宽限期内又跑起来了：复用现有订阅（下面命中分支会刷新 LRU），只清掉待释放的计时器。
+    this.cancelIdleRelease(sessionId)
     const existing = this.active.get(sessionId)
     if (existing !== undefined) {
       // 命中即刷新 LRU 位置（删掉再插回去，顺序移动到队尾）。
@@ -206,13 +232,45 @@ export class SessionEventRelay {
     }
     const controller = new AbortController()
     this.active.set(sessionId, controller)
-    void this.pump(sessionId, controller.signal).catch(() => {
+    // pump 结束后必须交出这条订阅 —— 否则 `active` 里会留一个「泵已死」的控制器，
+    // 下次 `attach` 命中它就直接 return，客户端从此收不到这个会话的任何帧。
+    // 只在条目仍是自己时才删：中途可能已有新的 attach 换了控制器。
+    const release = (): void => {
+      if (this.active.get(sessionId) === controller) this.detach(sessionId)
+    }
+    void this.pump(sessionId, controller.signal).then(release, release)
+  }
+
+  /**
+   * 「这一轮跑完了」——**不要立刻 abort**，先给管道一点时间把尾帧送出去。
+   *
+   * 直接 `detach()` 会丢掉 `turn/end`（见 `SESSION_RELAY_IDLE_GRACE_MS` 的说明）。
+   * 正常情况下 pump 见到 `turn/end` 就会调 `detach()` 主动收敛，这个计时器
+   * 只是兜住「尾帧始终不来」的会话。
+   */
+  noteRunFinished(sessionId: string): void {
+    // 没在跟的会话不必排计时器（常见于「从没跑起来就报了一次 idle」）。
+    if (!this.active.has(sessionId) || this.pendingIdle.has(sessionId)) return
+    const timer = setTimeout(() => {
+      this.pendingIdle.delete(sessionId)
       this.detach(sessionId)
-    })
+    }, SESSION_RELAY_IDLE_GRACE_MS)
+    // 不让一个待释放的订阅把进程挂住（插件退出时靠 detachAll 收尾，不靠它）。
+    timer.unref?.()
+    this.pendingIdle.set(sessionId, timer)
+  }
+
+  /** 清掉某个会话的待释放计时器（重新开跑、或已经释放过）。 */
+  private cancelIdleRelease(sessionId: string): void {
+    const timer = this.pendingIdle.get(sessionId)
+    if (timer === undefined) return
+    clearTimeout(timer)
+    this.pendingIdle.delete(sessionId)
   }
 
   /** Stop following one session. */
   detach(sessionId: string): void {
+    this.cancelIdleRelease(sessionId)
     const controller = this.active.get(sessionId)
     if (controller === undefined) return
     this.active.delete(sessionId)
@@ -272,6 +330,15 @@ export class SessionEventRelay {
         // Durable session event: the plugin's normalizer reads `event.type` and,
         // for `assistant/chunk`, `event.data.chunk`.
         this.mux.push({ type: 'session/event', sessionId, event: frame.event })
+        // `turn/end` 是本轮**最后一帧**：它已经送出去了，订阅就完成使命了。
+        // 收在这里而不是等宽限计时器，是为了让「跑完即释放」的节奏保持不变
+        // （宽限只是兜底）。判据用 `pendingIdle` 而不是「无条件收」：
+        // 一个会话可能在同一次订阅里连跑多轮，没收到 idle 就断流会丢下一轮的帧。
+        const event = frame.event as { type?: unknown } | null
+        if (event !== null && typeof event === 'object' && event.type === 'turn/end' && this.pendingIdle.has(sessionId)) {
+          this.detach(sessionId)
+          return
+        }
         continue
       }
       if (frame.type !== 'assistant-stream' || frame.frame === undefined) continue
@@ -342,9 +409,13 @@ export function wireSessionRegistryRelay(
   host.on('api-session/status', (sessionId: unknown, running: unknown) => {
     if (typeof sessionId !== 'string') return
     // Starting a run is what makes the assistant stream worth following; a
-    // finished run releases the subscription.
+    // finished run must not cut it off immediately — the kernel appends
+    // `turn/end` before it flips the session to idle (same synchronous turn
+    // tail, no await in between), so an eager abort here drops that very frame.
+    // `noteRunFinished` keeps the subscription through a short grace window and
+    // the pump releases it as soon as `turn/end` has been forwarded.
     if (running === true) relay.attach(sessionId)
-    else relay.detach(sessionId)
+    else relay.noteRunFinished(sessionId)
     // The plugin's normalizer keys this frame as `host/session-status` (hyphen);
     // `session/status` would fall through to the generic branch and never reach
     // the chat.session.status projection the client watches.

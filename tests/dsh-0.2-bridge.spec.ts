@@ -1233,20 +1233,85 @@ describe('dsh 0.2.x bridge: contract shapes', () => {
     controller.abort()
   })
 
-  it('stops following a session once its run finishes', async () => {
+  it('delivers the turn/end that is still in flight when the run-finish status arrives', async () => {
     const { host, emit } = makeHost()
-    let aborted = false
-    host.sessionController.follow = vi.fn((_request: unknown, signal: AbortSignal) => (async function* () {
-      signal.addEventListener('abort', () => { aborted = true }, { once: true })
-      // Never yields: the subscription lives until the run ends.
+    let wake: (() => void) | undefined
+    const inFlight = new Promise<void>(resolve => { wake = resolve })
+    host.sessionController.follow = vi.fn((_request: unknown, _signal: AbortSignal) => (async function* () {
+      yield { type: 'snapshot', cursor: 3, records: [], hasMore: false }
+      // 这一帧代表「内核已经 append 了 turn/end，但桥还没把它从管道里读出来」的窗口。
+      await inFlight
+      yield {
+        type: 'event',
+        event: { type: 'turn/end', seq: 9, time: 5, data: { turn: 1, reason: { kind: 'completed' } } },
+      }
     })())
-    createDsh02ApiProxy(host)
+    const api = createDsh02ApiProxy(host)
+    const controller = new AbortController()
+    const stream = api.events.mux({ rpcId: 'r', payload: {} }, controller.signal)
+    // 注意：不能再用 `nextFrame()` 取两帧 —— 它对 `for await` 执行 `return`，
+    // 会在拿到第一帧后就把流关掉（`nextFrame` 的既有语义）。这里需要一条持续的游标。
+    const frames = stream[Symbol.asyncIterator]()
 
     emit('api-session/status', 'session-1', true)
-    await new Promise(resolve => setTimeout(resolve, 0))
+    expect((await frames.next()).value?.payload).toMatchObject({ type: 'session/snapshot', sessionId: 'session-1' })
+
+    // 内核的顺序是「先 append turn/end，再 setPhase(idle) → agent/status → 桥 abort」，
+    // 两步在**同一个同步栈**里，没有 await。所以只要桥在 idle 时立刻 abort，
+    // 微任务恢复时 `signal.aborted` 已经为真，这一轮最后一帧永久丢失。
+    // 真机症状：回答正文已上屏（那些帧不是最后一帧），但顶栏永远「生成中」，
+    // 依赖 turn/end 的通知一条都不弹。
+    wake?.()
     emit('api-session/status', 'session-1', false)
-    await new Promise(resolve => setTimeout(resolve, 0))
-    expect(aborted).toBe(true)
+
+    expect((await frames.next()).value?.payload).toMatchObject({
+      type: 'session/event',
+      sessionId: 'session-1',
+      event: { type: 'turn/end', seq: 9, data: { reason: { kind: 'completed' } } },
+    })
+    controller.abort()
+  })
+
+  it('keeps the subscription through the idle grace window, then releases it', async () => {
+    vi.useFakeTimers()
+    try {
+      const { host, emit } = makeHost()
+      let aborted = false
+      let follows = 0
+      host.sessionController.follow = vi.fn((_request: unknown, signal: AbortSignal) => {
+        follows += 1
+        return (async function* () {
+          // 挂着不结束：真实跟随流只有在 abort 之后才收尾。空生成器会被
+          // pump 的「结束即释放」逻辑立刻收掉，测不到宽限窗口。
+          await new Promise<void>(resolve => {
+            signal.addEventListener('abort', () => { aborted = true; resolve() }, { once: true })
+          })
+        })()
+      })
+      createDsh02ApiProxy(host)
+
+      emit('api-session/status', 'session-1', true)
+      await vi.advanceTimersByTimeAsync(0)
+      expect(follows).toBe(1)
+
+      emit('api-session/status', 'session-1', false)
+      await vi.advanceTimersByTimeAsync(0)
+      // 尾帧可能还在管道里，宽限期内**不能**立刻中断。
+      expect(aborted).toBe(false)
+
+      // 宽限期内重新开跑：复用同一条订阅，不重建（重建会在窗口期丢帧）。
+      emit('api-session/status', 'session-1', true)
+      await vi.advanceTimersByTimeAsync(1500)
+      expect(follows).toBe(1)
+      expect(aborted).toBe(false)
+
+      // 再结束一次，宽限期到点必须释放 —— 不能把订阅漏在那里。
+      emit('api-session/status', 'session-1', false)
+      await vi.advanceTimersByTimeAsync(1500)
+      expect(aborted).toBe(true)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('emits host/session-status so the client sees running state', async () => {

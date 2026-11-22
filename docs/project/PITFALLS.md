@@ -1455,3 +1455,36 @@ ignores a cache entry older than the 24h window。
 **回归锚**：`tests/mobile-gateway-ws.spec.ts` › 「answers hello from the runtime resolver
 instead of the construction snapshot」；真机验证见 `STATUS.md` 2026-11-19 条目。
 
+
+### idle 即 abort 丢尾帧
+
+**症状**：客户端能收到全部回答正文，但**这一轮永远不结束** —— 顶栏常驻「生成中」，
+依赖「轮结束」的通知一条都不弹，`max-tokens` 截断提示也不出现。重连后拉历史一切正常，
+所以第一反应总是「客户端少解析了一帧」。
+
+**根因**：内核收尾的顺序是「**先 append `turn/end`，再 `setPhase({kind:'idle'})`**」
+（`dsh-agent-loop` 的 turn `finally` → `kick()` 的 `finally`），两步之间**没有 await**；
+而 `api-session/status(false)` 正是由后者引出的。桥在状态回调里直接
+`controller.abort()`，于是 `for await` 的下一拍恢复时 `signal.aborted` 已经为真、
+循环 `break` —— **这一轮最后一帧（正是 `turn/end`）永久丢失**。丢的时机是每轮结尾，
+且没有任何日志（`detach()` 静默）。
+
+**实发案例**（2026-11-22，dsh-Chat 1.0.27 + 桥 v2.16.0）：报告
+`dsh-Chat 调查报告-dshChat-turn帧丢失疑点-20261122.md`。临时 vitest 复现：
+假 `follow` 先 yield snapshot、再在**同一同步栈**触发 status(false)，`frames seen`
+只有 `["session/snapshot"]`。既有用例只断言 `aborted === true`，从不断言尾帧送达，
+所以这个缺口从 `#2` 拆文件起一直绿。
+
+**现在怎么办（铁律）**：会话「转 idle」**不等于**「流可以立刻掐」。`SessionEventRelay`
+现在把 `running === false` 交给 `noteRunFinished()`：先挂一个
+`SESSION_RELAY_IDLE_GRACE_MS` 宽限计时器（1.5s，`unref` 过），pump 一旦送出
+`turn/end` 就**当场收敛**（`detach` + return），计时器只兜「尾帧始终不来」的会话；
+宽限期内重新 `running === true` 走 `attach()` 的命中分支复用同一条订阅（不重建、不丢帧）。
+
+**铁律**：中止一条「还在排水」的流之前，先问一句「最后那一帧是不是还在管道里」。
+凡「内核先写事件、再发状态」的地方，状态回调里只允许**标记**，不允许**掐断**。
+
+**回归锚**：`tests/dsh-0.2-bridge.spec.ts` › delivers the turn/end that is still in flight
+when the run-finish status arrives / keeps the subscription through the idle grace window,
+then releases it。（注意 `nextFrame()` 取一帧就 `return`，会把流关掉 —— 要连取两帧必须
+自己拿 `stream[Symbol.asyncIterator]()`。）
