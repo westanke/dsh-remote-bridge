@@ -168,12 +168,20 @@ export const TUNNEL_TOOL_NAME = 'open_tunnel_config'
  *
  * 写英文是惯例（工具描述面向模型，与仓内其他描述同语言），并显式写清
  * 「用户说开隧道/取配置文本时调用」，否则模型倾向于自己用 bash 拼一条 curl。
+ *
+ * 末段那句「原样回 `DSH1:` 那一行」是 2026-11-22 真机反馈加的（issue IKX5N7）：
+ * 客户端新对话里 `/tunnel` 会被当普通消息交给智能体（dsh-Chat#IKX5MV），
+ * 模型拿到配置文本后习惯先写一大段说明，配置码排到很后面、还要等流式输出 ——
+ * 用户主观感受是「命令执行了但没回配置码」。要求它把那一行放到回复最前面。
  */
 export const TUNNEL_TOOL_DESCRIPTION =
   'Open the Cloudflare quick tunnel for this DSH host and return a one-line DSH1: config text ' +
   'that a phone app can paste to connect. Use it whenever the user asks to start the tunnel, ' +
   'to get the config text, or says they are away from the computer and need remote access. ' +
-  'It never stops the tunnel and never touches files.'
+  'It never stops the tunnel and never touches files. ' +
+  'When you reply, copy the DSH1: line from the result verbatim as the very first line — ' +
+  'no code fences, no re-wrapping, no reformatting — and keep any explanation to at most ' +
+  'two short sentences after it, because the user has to paste that line into the app.'
 
 /** 工具的返回结构（与 `TunnelCommandResult` 同源）。 */
 export interface TunnelToolOutput {
@@ -223,9 +231,19 @@ export function createTunnelTool(deps: TunnelCommandDeps): Parameters<TunnelTool
         },
         required: ['url', 'text', 'deviceName'],
       },
+      // 顺序有意为之（issue IKX5N7）：**配置文本放第一块**。模型倾向于复述它先看到的
+      // 那段，之前把「Tunnel is up at …」放前面时，回复往往是先一句寒暄再贴码；
+      // 现在第一块就是可直接长按复制的 `DSH1:` 文本，第二块才给地址/设备名与
+      // 「原样回上面那行、别加解释」的提醒。
       render: (_args, value) => [
-        { type: 'text', text: `Tunnel is up at ${value.url}` },
         { type: 'text', text: value.text },
+        {
+          type: 'text',
+          text:
+            `Tunnel is up at ${value.url} (device name: ${value.deviceName}). ` +
+            'Reply with the DSH1: line above verbatim on its own line, and keep any extra ' +
+            'explanation to at most two short sentences.',
+        },
       ],
     },
     async execute() {

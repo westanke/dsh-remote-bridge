@@ -182,14 +182,24 @@ describe('open_tunnel_config 工具（IM 自然语言入口）', () => {
     expect([...(schema.required as string[])].sort()).toEqual(['deviceName', 'text', 'url'])
   })
 
-  it('render 只吐两段文本：地址一行 + 配置文本一行（IM 卡片里可直接长按复制）', async () => {
+  it('render 只吐两段文本：配置文本在前（可直接长按复制）+ 地址/设备名与「原样回」提醒', async () => {
     const tool = createTunnelTool(fakeDeps(async () => RESULT))
     const blocks = tool.output.render({}, { url: RESULT.url, text: RESULT.text, deviceName: RESULT.deviceName })
     expect(blocks).toHaveLength(2)
     expect(blocks.every(block => block.type === 'text')).toBe(true)
-    const [addressLine, configLine] = blocks
-    expect(addressLine?.text).toContain(RESULT.url)
-    expect(configLine?.text).toBe(RESULT.text)
+    // 第一块就是配置文本本身：模型容易复述它先看到的那段，所以 `DSH1:` 必须排最前
+    // （issue IKX5N7，真机上配置码曾被一大段说明挤到后面）。
+    const [configBlock, noteBlock] = blocks
+    expect(configBlock?.text).toBe(RESULT.text)
+    expect(noteBlock?.text).toContain(RESULT.url)
+    expect(noteBlock?.text).toContain(RESULT.deviceName)
+    expect(noteBlock?.text).toMatch(/verbatim/i)
+  })
+
+  it('描述里硬性要求模型原样回 DSH1、别加代码块（issue IKX5N7）', () => {
+    const tool = createTunnelTool(fakeDeps(async () => RESULT))
+    expect(tool.description).toMatch(/DSH1: line from the result verbatim/i)
+    expect(tool.description).toMatch(/no code fences/i)
   })
 
   it('openTunnel 抛错时向模型抛出（让它如实告诉用户失败原因）', async () => {
