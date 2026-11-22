@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto'
 import { type IncomingMessage } from 'node:http'
 import { adminRefusal } from '../auth.ts'
 import { type TunnelPublicState, ensureCloudflared, sanitizeDownloadError } from '../cloudflared.ts'
-import { DEFAULT_PORT, composeCandidates, defaultDisplayName, encodeConfigText, type ConfigEndpoint } from '../config-text.ts'
+import { DEFAULT_PORT, composeCandidates, defaultDisplayName, type ConfigEndpoint } from '../config-text.ts'
 import { DEFAULT_DEVICE_NAME } from '../device-identity.ts'
 import { ApiError } from '../errors.ts'
 import { type RouterOptions } from '../router.ts'
@@ -72,16 +72,22 @@ export function tunnelStateFor(options: RouterOptions, req: IncomingMessage): Tu
 
 /** cloudflared 配置文本渲染（原 ApiRouter.buildConfigText，issue #3 搬移）。 */
   /**
-   * 生成一行可粘贴的 `DSH1:` 配置文本（POST /manage/config/text 与「一键开隧道并出令牌」
-   * 的 create 端点共用，避免两处各写一套配对/兑换/编码逻辑而漂移）。
+   * 生成**一行短码**：`<url1>,<url2>,…#<pairingCode>`（POST /manage/config/text 与
+   * 「一键开隧道并出令牌」的 create 端点共用，避免两处各写一套配对逻辑而漂移）。
+   *
+   * 为什么不再是 `DSH1:` 长文本（2.17.0，issue #28）：400+ 字符的单行凭据经微信/邮件
+   * 转发会掉字符，令牌就成了一把对不上库的钥匙，客户端只能拿到 `TOKEN_INVALID`，
+   * 而 JSON 其余字段仍能解析，用户根本看不出是文本被改了。短码只有「地址表 + 8 位码」，
+   * 字符少、可读、可手抄，配对码又是一次性的，掉字符会直接失败而不会静默错位。
+   *
+   * 另外**不再预建设备**：配对码兑换时设备才落库（`nameSource: 'default'` 仍适用于
+   * 兑换时上报的名字），池子里不会再堆「生成过配置文本但从没连过」的僵尸设备。
    *
    * 入参字段与 /manage/config/text 的窄格式一致：
-   * - endpoints：显式给出则不再做本机网卡探测（隧道场景必须只塞隧道地址，不能混入 LAN）；
+   * - endpoints：显式给出则不再做本机网卡探测；
    * - rootIds / scopes / deviceName / displayName / port：全部可选，缺省沿用原端点口径；
    * - scopes 缺省是**五个非破坏性默认权限**（不含 files.delete / settings.write），
    *   调用方若显式传 DEVICE_SCOPES 会放大手机权限，create 一键路径不传。
-   *
-   * 刻意不返回 pairing.expiresAt：那是配对码的十分钟有效期，设备令牌本身不过期。
    */
 export function buildConfigText(
     options: RouterOptions,
@@ -89,11 +95,10 @@ export function buildConfigText(
     requestId: string,
     attach: { tunnelUrl?: string | null; tunnelLabel?: string } = {},
   ): {
-    text: string
+    shortCode: string
     displayName: string
     deviceName: string
     endpoints: ConfigEndpoint[]
-    deviceId: string
   } {
     // 端口口径：显式 body.port 优先，其次**实际监听端口**，最后才是 3090 默认值。
     // 用实际端口是因为 LAN 候选只有带对端口才连得上 —— 用户改过监听端口时，
@@ -128,26 +133,13 @@ export function buildConfigText(
     const displayName = readOptionalText(body.displayName) ?? defaultDisplayName()
 
     const pairing = options.database.createPairing(rootIds, scopes, undefined, { requestId })
-    // `nameSource: 'default'`：这个名字是占位名，等设备第一次带身份连上来时
-    // 允许被自动改成「平台 · 型号」（见 `device-identity.ts`）。用户手工填了
-    // `deviceName` 时则是 `declared` —— 那是人的意图，机器不该覆盖。
-    const exchanged = options.database.exchangePairing(pairing.code, deviceName, {
-      requestId,
-      ...(readOptionalText(body.deviceName) === undefined ? { nameSource: 'default' } : { nameSource: 'declared' }),
-    })
-
+    // 只建配对码、不兑换：设备在手机真的连上来时才落库（见上面的说明）。
+    // 兑换发生在客户端 `pair()`：它把配对码换成设备令牌，名字由客户端上报。
     return {
-      text: encodeConfigText({
-        displayName,
-        endpoints,
-        token: exchanged.token,
-        deviceName,
-        scopes,
-      }),
+      shortCode: `${endpoints.map((endpoint) => endpoint.baseUrl).join(',')}#${pairing.code}`,
       displayName,
       deviceName,
       endpoints,
-      deviceId: exchanged.device.id,
     }
   }
 

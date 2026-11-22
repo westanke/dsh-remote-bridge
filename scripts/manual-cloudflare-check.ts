@@ -4,13 +4,13 @@
  * 走 router.ts 同款链条：
  *   ensureCloudflared(dataDir) → 复用已验证的二进制（不联网下载）
  *   → CloudflaredTunnelManager.startQuick(exe, port) → 从 stdout 抓 trycloudflare 地址
- *   → 用地址生成 DSH1 配置文本 → 解码回读验证 → stop()
+ *   → 检查候选地址表（短码的左半边）→ stop()
  *
  * 前置：把 cloudflared 二进制放到 dataDir/cloudflared（本脚本不下载）。
  * 用法：CLOUDFLARED_BIN=/path/to/cloudflared node_modules/.bin/tsx scripts/manual-cloudflare-check.ts
  */
 import { ensureCloudflared, CloudflaredTunnelManager } from '../src/host/cloudflared.ts'
-import { encodeConfigText } from '../src/host/config-text.ts'
+import { composeCandidates } from '../src/host/config-text.ts'
 
 const DATA_DIR = process.env.CLOUDFLARED_DATA_DIR ?? '/media/wangke/OFFICE/workspace/cloudflared-prov/data'
 const BIN = process.env.CLOUDFLARED_BIN ?? '/media/wangke/OFFICE/workspace/cloudflared-prov/extracted/usr/bin/cloudflared'
@@ -52,20 +52,16 @@ async function main(): Promise<void> {
   if (gotUrl === null) {
     ok('隧道地址出现', false, `30s 内未抓到，state=${JSON.stringify(manager.publicState)}`)
   } else {
-    // 3) 用地址生成 DSH1 配置
-    console.log('\n[3] 用隧道地址生成 DSH1 配置文本')
-    const text = encodeConfigText({
-      displayName: 'cloudflare-真机验证',
-      endpoints: [{ label: '云隧道', baseUrl: gotUrl, kind: 'WAN' }],
-      token: null,
-      deviceName: null,
-      scopes: [],
-    })
-    ok('生成配置文本（DSH1 前缀）', text.startsWith('DSH1:'), text.slice(0, 40) + '…')
-    const buf = Buffer.from(text.slice(5), 'base64url')
-    const decoded = JSON.parse(buf.toString('utf8'))
-    const ep = decoded.endpoints?.[0]
-    ok('往返解码 baseUrl 一致', ep?.baseUrl === gotUrl, `endpoints[0].baseUrl=${ep?.baseUrl}`)
+    // 3) 短码的左半边 = 候选地址表（隧道在前 + 本机 LAN/虚拟网）
+    //
+    // 2.17.0 起服务端不再生成 `DSH1:` 长文本（issue #28），这里只验证候选表的形状与顺序：
+    // 手机拿到的就是 `${urls.join(',')}#${配对码}`，第一条必须是隧道地址。
+    console.log('\n[3] 候选地址表（短码左半边）')
+    const candidates = composeCandidates({ tunnelUrl: gotUrl })
+    const urls = candidates.map((endpoint) => endpoint.baseUrl)
+    ok('候选表非空', urls.length > 0, urls.join(','))
+    ok('第一条是隧道地址', urls[0] === gotUrl, `urls[0]=${urls[0]}`)
+    ok('不含 DSH1: 长文本', !urls.join(',').includes('DSH1:'))
   }
 
   // 4) 停止

@@ -181,14 +181,14 @@
 | GET | `/manage/devices` | 设备清单 |
 | PATCH / DELETE | `/manage/devices/{deviceId}` | 改 scope/root、**只改名**（`{name}`）· 撤销（直接删行） |
 | POST | `/manage/pairings` | 生成配对码 |
-| POST | `/manage/config/text` | 生成 `DSH1:` 配置文本 |
+| POST | `/manage/config/text` | 生成**一行短码** `<url1>,<url2>,…#<pairingCode>`（`{shortCode, displayName, deviceName, endpoints}`；只建配对码、不预建设备，2.17.0 起不再回 `DSH1:` 长文本） |
 | POST | `/manage/remote/enable` · `/disable` | 开关远程监听 |
 | PUT | `/manage/remote/listener` | 改绑定 IP/端口（失败回滚） |
 | GET | `/manage/audit` | 审计日志 |
 | GET / PUT | `/manage/image` | 识图路径设置 |
 | DELETE | `/manage/trash/{trashId}` | 彻底删除回收站条目 |
 | GET / HEAD | `/manage/cloudflare/status` · `/activity` | 隧道状态与活动（豁免判据 0，供本机面板读取；判据 1/2/3 仍生效） |
-| POST | `/manage/cloudflare/create` | 建隧道（仅隧道未运行时；可选 body `configText:true` 搭车返回 `DSH1:` 配置） |
+| POST | `/manage/cloudflare/create` | 建隧道（仅隧道未运行时；可选 body `configText:true` 搭车返回同一行短码） |
 | POST | `/manage/cloudflare/stop` | 停隧道（**唯一豁免判据 0 的写操作**；判据 1/2/3 仍生效，边缘调用 403） |
 
 ---
@@ -493,7 +493,7 @@ export class FileService {  // 构造 (database, emit)
 | `HISTORY_BYTE_BUDGET` / `HISTORY_EVENT_BYTE_BUDGET` / `HISTORY_KEEP_CHARS` / `clampHistoryEvents` / `applyHistoryBudget` | `history-budget.ts` | 历史字节预算 |
 | `normalizeHandoffSubdir` / `readHandoffSubdir` / `saveHandoffSubdir` / `imageHandoffView` / `declaredMediaType` / `sniffMediaType` / `loopbackHost` / `pluginPageReferer` / `sameOrigin` / `createImageRouteHandler` / `IMAGE_ROUTE` / `HANDOFF_FILE_NAME` / `HANDOFF_MEDIA_TYPES` | `image-handoff.ts` | 识图路径与只读图片路由 |
 | `CloudflaredTunnelManager` / `ensureCloudflared` / `downloadUrlFor` / `archSuffix` / `extractQuickTunnelUrl` / `downloadHttps` / `isDebSource` | `cloudflared.ts` | 隧道管理 |
-| `classifyHost` / `detectEndpoints` / `normalizeBaseUrl` / `encodeConfigText` / `composeCandidates` / `defaultDisplayName` / `DEFAULT_PORT` / `KIND_LABEL` / `EndpointKind` / `CandidateSources` | `config-text.ts` | 配置文本与多路候选（`composeCandidates`：隧道在前 + 本机 LAN/虚拟网，地址去重） |
+| `classifyHost` / `detectEndpoints` / `normalizeBaseUrl` / `composeCandidates` / `defaultDisplayName` / `DEFAULT_PORT` / `KIND_LABEL` / `EndpointKind` / `CandidateSources` | `config-text.ts` | 候选地址表与多路候选（`composeCandidates`：隧道在前 + 本机 LAN/虚拟网，地址去重）。2.17.0 起不再导出 `DSH1:` 编码器（issue #28：IM 长文本掉字符） |
 | `normalizeListenerHost` / `normalizeListenerPort` / `loopbackFor` / `DEFAULT_REMOTE_HOST` | `listener-config.ts` | 监听配置 |
 | `probeHostServices` / `INJECTED_SERVICE_NAMES` / `OPTIONAL_SERVICE_NAMES` / `HostServiceReport` | `host-service-probe.ts` | 注入面探针 |
 | `BffRest` / `createBffRest` / `BffRoute` / `BffRestOptions` / `RestIo` / `ScheduleCreatePort` | `bff-rest.ts` | App 侧 REST BFF 的薄分发层（九条路由 → 三个域模块；JSON 体 32 KiB、chunk 体 1 MiB+4 KiB、speech 体 8 MiB） |
@@ -742,7 +742,6 @@ export const PLUGIN_VERSION: string          // shared/version.ts，与 package.
 | `export function clampHistoryEvents` | `src/host/history-budget.ts` | function |
 | `export function createImageRouteHandler` | `src/host/image-handoff.ts` | function |
 | `export class CloudflaredTunnelManager` | `src/host/cloudflared.ts` | class |
-| `export function encodeConfigText` | `src/host/config-text.ts` | function |
 | `export function composeCandidates` | `src/host/config-text.ts` | function |
 | `export interface CandidateSources` | `src/host/config-text.ts` | interface |
 | `export function buildConfigText` | `src/host/routes/cloudflare.ts` | function |

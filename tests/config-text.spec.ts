@@ -3,7 +3,6 @@ import {
   classifyHost,
   composeCandidates,
   detectEndpoints,
-  encodeConfigText,
   normalizeBaseUrl,
 } from '../src/host/config-text.ts'
 
@@ -16,82 +15,21 @@ import {
  * 单测各自都绿，跨端却不再兼容。所以必须钉一个来自**另一处实现**的真实输出。
  */
 
-describe('encodeConfigText', () => {
-  it('matches the golden output byte for byte', () => {
-    // 这条 golden 来自 `tools/emit-config.mjs` 的真实 stdout，且该脚本的输出已被
-    // Kotlin 端 `ConnectionShareInteropTest` 断言与 `ConnectionShare.encode()` 逐字节相同。
-    // 因此这一条同时钉住了三处实现。
-    const text = encodeConfigText({
-      displayName: '家里的电脑',
-      endpoints: [{ label: '家里局域网', baseUrl: 'http://192.168.1.126:3090', kind: 'LAN' }],
-      token: 'tok_abc123',
-      deviceName: 'Pixel 9',
-      scopes: [],
-    })
-
-    expect(text).toBe(
-      'DSH1:eyJkaXNwbGF5TmFtZSI6IuWutumHjOeahOeUteiEkSIsImVuZHBvaW50cyI6W3sibGFiZWwiOiLlrrbph4zlsYDln5_nvZEiLCJiYXNlVXJsIjoiaHR0cDovLzE5Mi4xNjguMS4xMjY6MzA5MCJ9XSwidG9rZW4iOiJ0b2tfYWJjMTIzIiwiZGV2aWNlTmFtZSI6IlBpeGVsIDkifQ',
-    )
-  })
-
-  it('omits keys whose values are empty rather than writing nulls', () => {
-    const withNulls = encodeConfigText({
-      displayName: 'PC',
-      endpoints: [{ label: 'lan', baseUrl: 'http://10.0.0.5:3090', kind: 'LAN' }],
-      token: null,
-      deviceName: null,
-      scopes: [],
-    })
-    const body = Buffer.from(withNulls.slice('DSH1:'.length), 'base64url').toString('utf8')
-
-    expect(body).not.toContain('token')
-    expect(body).not.toContain('deviceName')
-    expect(body).not.toContain('scopes')
-    // 窄格式：本机状态字段一个都不该出现。
-    expect(body).not.toContain('"id"')
-    expect(body).not.toContain('"kind"')
-    expect(body).not.toContain('"enabled"')
-  })
-
-  it('keeps the wire key order stable so three implementations cannot drift apart', () => {
-    const text = encodeConfigText({
-      displayName: 'PC',
-      endpoints: [{ label: 'lan', baseUrl: 'http://10.0.0.5:3090', kind: 'LAN' }],
-      token: 'tok',
-      deviceName: 'phone',
-      scopes: ['files.read'],
-    })
-    const body = Buffer.from(text.slice('DSH1:'.length), 'base64url').toString('utf8')
-
-    expect(body.indexOf('displayName')).toBeLessThan(body.indexOf('endpoints'))
-    expect(body.indexOf('endpoints')).toBeLessThan(body.indexOf('token'))
-    expect(body.indexOf('token')).toBeLessThan(body.indexOf('deviceName'))
-    expect(body.indexOf('deviceName')).toBeLessThan(body.indexOf('scopes'))
-  })
-
-  it('strips the /api/v1 suffix from addresses', () => {
-    const text = encodeConfigText({
-      displayName: 'PC',
-      endpoints: [{ label: 'lan', baseUrl: 'http://10.0.0.5:3090/api/v1/', kind: 'LAN' }],
-      token: 'tok',
-      deviceName: null,
-      scopes: [],
-    })
-    const body = Buffer.from(text.slice('DSH1:'.length), 'base64url').toString('utf8')
-    expect(body).toContain('http://10.0.0.5:3090')
-    expect(body).not.toContain('/api/v1')
-  })
-
-  it('refuses to produce a text without any address', () => {
-    expect(() => encodeConfigText({
-      displayName: 'PC',
-      endpoints: [],
-      token: 'tok',
-      deviceName: null,
-      scopes: [],
-    })).toThrow()
+describe('DSH1 编码器（2.17.0 已移除）', () => {
+  /**
+   * issue #28：服务端不再生成 `DSH1:` 长文本 —— 400+ 字符的单行凭据经 IM 转发会掉字符，
+   * 令牌因此对不上库，客户端只看到 `TOKEN_INVALID`。所有出口改回一行
+   * `<url1>,<url2>,…#<pairingCode>`。原来钉「三处实现字节一致」的 golden 断言随编码器
+   * 一起删除；`DSH1:` 现在只是**客户端**的向下兼容输入格式。
+   *
+   * 这条用例留作路标：谁想再把编码器加回来，先读 `PITFALLS.md` §IM 长文本掉字符。
+   */
+  it('该模块不再导出编码器', async () => {
+    const module = await import('../src/host/config-text.ts')
+    expect('encodeConfigText' in module).toBe(false)
   })
 })
+
 
 describe('classifyHost', () => {
   it('classifies the ranges the client uses for ranking', () => {
@@ -117,29 +55,15 @@ describe('classifyHost', () => {
   })
 })
 
-describe('encodeConfigText with a Cloudflare tunnel endpoint', () => {
+describe('composeCandidates with a Cloudflare tunnel endpoint', () => {
   // 坑位 §wss 端点必须归一成 https：隧道对外的原生地址是 `https://<host>.trycloudflare.com`，
   // 它必须是 https（客户端拼 /events 时自动升级为 wss），不能把 wss:// 或 http:// 直接塞进去。
-  it('round-trips an https quick-tunnel endpoint into the wire format', () => {
-    const payload = {
-      displayName: '家里的电脑',
-      endpoints: [
-        {
-          label: '云隧道',
-          baseUrl: 'https://real-tunnel-9f2k.trycloudflare.com',
-          kind: 'WAN' as const,
-        },
-      ],
-      token: 'tok_tunnel',
-      deviceName: 'Pixel 9',
-      scopes: [],
-    }
-    const text = encodeConfigText(payload)
-    expect(text).toContain('DSH1:')
-    const body = Buffer.from(text.slice('DSH1:'.length), 'base64url').toString('utf8')
-    const decoded = JSON.parse(body)
-    // 端点地址原样保留：https 前缀与 trycloudflare 主机都不能在编码途中被改写掉。
-    expect(decoded.endpoints[0].baseUrl).toBe('https://real-tunnel-9f2k.trycloudflare.com')
+  //
+  // 短码的左半边就是这张表的 `baseUrl` 拼接 —— 编码器移除后（issue #28）地址要原样进短码。
+  it('keeps an https quick-tunnel endpoint verbatim and puts it first', () => {
+    const candidates = composeCandidates({ tunnelUrl: 'https://real-tunnel-9f2k.trycloudflare.com' })
+    expect(candidates[0]?.baseUrl).toBe('https://real-tunnel-9f2k.trycloudflare.com')
+    expect(candidates.map((endpoint) => endpoint.baseUrl).join(',')).not.toContain('DSH1:')
   })
 })
 

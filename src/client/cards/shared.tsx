@@ -157,10 +157,13 @@ export function pluginStateKey(state: PluginEntry['state']): MessageKey {
 }
 
 /**
- * Shows a freshly minted `DSH1:` config text.
+ * Shows a freshly minted one-line short code (`<url1>,<url2>,…#<pairingCode>`).
  *
- * The text is a credential carrier, so this panel keeps the "it is a key" reminder visible and lists
- * the addresses the host actually detected, letting the user confirm them before sending the text away.
+ * 2.17.0 起不再展示 `DSH1:` 长文本（issue #28）：400+ 字符的单行凭据经 IM 转发会掉字符，
+ * 令牌因此对不上库，用户在手机上只看到「令牌已失效」而看不出是被转发改坏的。短码只有地址表
+ * 与一次性配对码，掉字符会直接配对失败（可重来），不会静默错位。
+ *
+ * 面板同时列出主机探测到的地址，方便用户确认「在家会走哪条、在外走哪条」。
  * Copying degrades to "the text is selected, copy it yourself" when the Clipboard API is unavailable —
  * the normal case when this WebUI is opened over plain HTTP on a LAN address.
  */
@@ -173,7 +176,7 @@ export function ConfigTextPanel(props: { result: ConfigTextResult }): JSX.Elemen
     const clipboard = globalThis.navigator?.clipboard
     if (clipboard !== undefined) {
       try {
-        await clipboard.writeText(props.result.text)
+        await clipboard.writeText(props.result.shortCode)
         setCopyState('done')
         return
       } catch {
@@ -186,7 +189,7 @@ export function ConfigTextPanel(props: { result: ConfigTextResult }): JSX.Elemen
       node.select()
     }
     setCopyState('manual')
-  }, [props.result.text])
+  }, [props.result.shortCode])
 
   return <div style={{ marginTop: 14 }}>
     <div className="daw-warning">{t('configTextSecurity')}</div>
@@ -198,7 +201,7 @@ export function ConfigTextPanel(props: { result: ConfigTextResult }): JSX.Elemen
       readOnly
       rows={4}
       spellCheck={false}
-      value={props.result.text}
+      value={props.result.shortCode}
       onFocus={event => event.currentTarget.select()}
     />
     <div className="daw-form-row" style={{ marginTop: 8, marginBottom: 10, gridTemplateColumns: 'auto auto minmax(0,1fr)', alignItems: 'center' }}>
@@ -207,7 +210,7 @@ export function ConfigTextPanel(props: { result: ConfigTextResult }): JSX.Elemen
       {copyState === 'manual' && <span className="daw-list-meta">{t('copyManual')}</span>}
     </div>
     <div className="daw-list-meta" style={{ marginBottom: 2 }}>
-      {t('configTextDevice')}: {props.result.deviceName} · {t('configTextDeviceId')}: <span style={{ fontFamily: 'ui-monospace,SFMono-Regular,Consolas,monospace' }}>{props.result.deviceId}</span>
+      {t('configTextDevice')}: {props.result.deviceName}{t('configTextDeviceNote')}
     </div>
     <div className="daw-list-meta" style={{ marginBottom: 10 }}>{t('configTextScopes')}</div>
     <strong>{t('configTextDetected')}</strong>

@@ -206,15 +206,20 @@ Download pages (same targets as the codes):
 > produced by `pnpm qr:app` (`scripts/generate-app-qr.mjs`), which verifies its own output with an
 > independent decoder; the test suite also decodes the committed files back and checks the address.
 
-Once the app is installed, generate a config text or pairing code under
+Once the app is installed, generate a **connection code** or a pairing code under
 **Phone settings → Remote access** to connect it to this machine.
 
-The `DSH1:` text carries an **ordered candidate list**, not a single address: the tunnel first,
-then the LAN and virtual-network addresses detected on this machine. A client that probes
-(`dsh-companion`) picks the local one at home and falls back to the tunnel when you are away, so
-one code works in both places; older clients that only read the first entry still get the tunnel,
-which works everywhere. Add your own public address (DDNS + port forwarding, or IPv6) by passing it
-in `endpoints`.
+The connection code is one line, `<url1>,<url2>,…#<pairingCode>`: the left half is an
+**ordered candidate list** (tunnel first, then the LAN and virtual-network addresses detected on
+this machine), the right half is an 8-character, 10-minute, single-use pairing code. A client that
+probes picks the local address at home and the tunnel when you are away, so one line works in both
+places; older clients that only read the first entry still get the tunnel, which works everywhere.
+Add your own public address (DDNS + port forwarding, or IPv6) by passing it in `endpoints`.
+
+Since 2.17.0 the long `DSH1:` text is no longer generated (issue #28): a 400+ character single-line
+credential gets **characters dropped** when forwarded through WeChat or email, which turned the
+device token into a key that matched no row in the database — the phone only reported "token is
+invalid" with no hint that the message itself had been mangled.
 
 The public API is independent of DSH private wire protocols. Authorized clients can:
 

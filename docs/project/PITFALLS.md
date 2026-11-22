@@ -1505,8 +1505,14 @@ sha256 也不在任何一台设备上。
 改动内容，掉一个字符就让令牌变成「库里不存在的一枚」。因为 JSON 其余字段仍能解出来，
 客户端不会报「格式错误」，只会拿着坏令牌去连 —— 表现成「新码连不上」，极难归因。
 
-**铁律**：**任何要用户跨 IM 复制的连接凭据，长度必须压到不会坏的量级**（配对码 8 位级别），
-长文本只走「整段复制、不经转发」的路径（WebUI → 生成配置文本）。
+**铁律**：**任何要用户跨 IM 复制的连接凭据，长度必须压到不会坏的量级**（配对码 8 位级别）。
+2.17.0 起这条铁律收紧到「**完全不生成**长凭据」：`encodeConfigText()` 已从服务端删除，
+`/tunnel`、`open_tunnel_config`、WebUI「生成连接短码」、`POST /manage/config/text` 全部只出
+一行 `<url1>,<url2>,…#<pairingCode>`。`DSH1:` 只剩客户端侧的向下兼容输入 ——
+**别再把生成端加回来**，那是把已经踩实的坑重新打开。
 
 **回归锚**：`tests/im-tunnel-command.spec.ts` 断言回复第一行就是 `<url>#<pairingCode>` 且**不含** `DSH1:`；
-`tests/tunnel-create-config.spec.ts` 断言 `openTunnelForCommand()` 只签发配对码、且不预建设备（issue #28）。
+`tests/tunnel-create-config.spec.ts` 断言 `openTunnelForCommand()` 与 `/manage/config/text`
+都只签发短码、且不预建设备；`tests/plugin-inventory-api.spec.ts` 断言响应键只有
+`deviceName/displayName/endpoints/shortCode`（无 token）；`tests/config-text.spec.ts`
+断言模块不再导出编码器（issue #28）。

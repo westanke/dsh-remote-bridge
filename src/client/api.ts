@@ -67,11 +67,15 @@ export interface ConfigTextEndpoint {
  * minutes" and push users into needless regeneration.
  */
 export interface ConfigTextResult {
-  text: string
+  /**
+   * 一行短码：`<url1>,<url2>,…#<pairingCode>`（2.17.0 起取代 `DSH1:` 长文本，issue #28）。
+   *
+   * 只含地址与一次性配对码，不含设备令牌 —— 转发被改坏最多配对失败，不会错拿凭据。
+   */
+  shortCode: string
   displayName: string
   deviceName: string
   endpoints: ConfigTextEndpoint[]
-  deviceId: string
 }
 
 /**

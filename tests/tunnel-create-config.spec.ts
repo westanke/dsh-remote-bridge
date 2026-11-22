@@ -180,27 +180,32 @@ describe('POST /manage/cloudflare/create 一键搭车出令牌', () => {
         body: JSON.stringify({ configText: true }),
       })
       expect(response.status).toBe(201)
-      const parsed = JSON.parse(response.body) as TunnelPublicState & { configText?: { text: string; endpoints: Array<{ baseUrl: string }> } }
+      const parsed = JSON.parse(response.body) as TunnelPublicState & { configText?: { shortCode: string; endpoints: Array<{ baseUrl: string }> } }
       expect(harness.tunnels.startQuickCalls).toBe(1)
       expect(harness.tunnels.waitForUrlCalls).toBe(1)
       expect(parsed.running).toBe(true)
-      // 等到的地址回填进 state.url，客户端这一次调用即可渲染地址+配置，不必再轮询。
+      // 等到的地址回填进 state.url，客户端这一次调用即可渲染地址+短码，不必再轮询。
       expect(parsed.url).toBe('https://fake-example.trycloudflare.com')
-      // 配置搭车返回：多路候选（2.16.0）—— 隧道排第一，其后是本机探测到的 LAN / 虚拟网。
+      // 短码搭车返回：多路候选 —— 隧道排第一，其后是本机探测到的 LAN / 虚拟网。
       //
-      // 为什么 `[0]` 必须是隧道：只认一个地址的老客户端（dsh-Chat 的 decodeDsh1 取
-      // endpoints[0]）拿到的是它，放 LAN 会让出门在外的老装机全部连不上。
+      // 为什么 `[0]` 必须是隧道：老装机与只看第一条的实现拿到的都是它，
+      // 放 LAN 会让出门在外的手机全部连不上。
       expect(parsed.configText).toBeDefined()
-      expect(parsed.configText?.text.startsWith('DSH1:')).toBe(true)
       expect(parsed.configText?.endpoints[0]?.baseUrl).toBe('https://fake-example.trycloudflare.com')
+      // 短码形状：地址全部在前、`#` 后是配对码；不再出现 `DSH1:` 长文本（issue #28）。
+      const shortCode = parsed.configText?.shortCode ?? ''
+      expect(shortCode).toBe(`${parsed.configText?.endpoints.map((endpoint) => endpoint.baseUrl).join(',')}#${shortCode.split('#')[1] ?? ''}`)
+      expect(shortCode.split('#')).toHaveLength(2)
+      expect(shortCode.split('#')[1]?.length).toBeGreaterThan(3)
+      expect(shortCode).not.toContain('DSH1:')
       // 本机有网卡就一定有第二项；测试机可能只有回环（探测为空），那种情况长度就是 1。
       for (const endpoint of parsed.configText?.endpoints.slice(1) ?? []) {
         expect(endpoint.baseUrl).not.toBe('https://fake-example.trycloudflare.com')
       }
 
-      // 副作用真实落库：换出的设备令牌在 devices 表里查得到。
+      // 2.17.0 起不再预建设备：配对码兑换那一步才落库，池子里不会堆僵尸设备。
       const devices = harness.database.listDevices()
-      expect(devices).toHaveLength(1)
+      expect(devices).toHaveLength(0)
     } finally {
       await harness.close()
     }
@@ -320,16 +325,16 @@ describe('POST /manage/config/text 多路配置码（2.16.0）', () => {
         body: JSON.stringify({ includeTunnel: true }),
       })
       expect(response.status).toBe(201)
-      const parsed = JSON.parse(response.body) as { text: string; endpoints: Array<{ baseUrl: string; label: string }> }
+      const parsed = JSON.parse(response.body) as { shortCode: string; endpoints: Array<{ baseUrl: string; label: string }> }
       expect(harness.tunnels.startQuickCalls).toBe(1)
-      expect(parsed.text.startsWith('DSH1:')).toBe(true)
       // 隧道在前：只认一个地址的老客户端拿到的是「在家在外都通」的那条。
       expect(parsed.endpoints[0]?.baseUrl).toBe('https://fake-example.trycloudflare.com')
       expect(parsed.endpoints[0]?.label).toBe('云隧道')
-      // 解出来也确实是多路（本机只有回环时退化成 1 项，不硬断言）。
-      const wire = JSON.parse(Buffer.from(parsed.text.slice('DSH1:'.length), 'base64url').toString('utf8')) as { endpoints: Array<{ baseUrl: string }> }
-      expect(wire.endpoints[0]?.baseUrl).toBe('https://fake-example.trycloudflare.com')
-      expect(wire.endpoints.length).toBe(parsed.endpoints.length)
+      // 短码左半边必须与候选表逐条对上（顺序也一致），右半边是一次性配对码。
+      const [addresses, code] = parsed.shortCode.split('#')
+      expect(addresses).toBe(parsed.endpoints.map((endpoint) => endpoint.baseUrl).join(','))
+      expect(code?.length).toBeGreaterThan(3)
+      expect(parsed.shortCode).not.toContain('DSH1:')
     } finally {
       await harness.close()
     }

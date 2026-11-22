@@ -1,39 +1,31 @@
 import { hostname, networkInterfaces } from 'node:os'
 
 /**
- * 「配置文本」生成：产出一行可粘贴的 `DSH1:` 文本，取代扫码配对。
+ * 候选地址与「一行短码」共用的基础设施。
  *
- * ## 为什么在服务端也要能生成
+ * ## 历史（为什么要读这段）
  *
- * 用户场景是「人已经出门在外，电脑留在家，看不到屏幕」，所以扫码与念配对码都不成立。
- * 主路径是「在电脑上生成一行文本 → 发给自己 → 到外面粘贴进手机 APP」。
+ * 2.17.0 之前，本模块还负责把「显示名 + 候选地址 + 设备令牌 + scopes」编码成
+ * `DSH1:<base64url>` 长文本（issue #28 之前的连接主路径）。它解决过真实问题
+ * （人已出门、电脑在家、扫码和念配对码都不成立），但也埋了一个坑：
+ * 400+ 字符的单行凭据经微信 / 邮件转发会**掉字符**，令牌因此变成一把对不上库的
+ * 钥匙，客户端只看到 `TOKEN_INVALID`，而 JSON 其余字段仍能解析，用户根本看不出
+ * 是文本被改了 —— 见 `PITFALLS.md` §IM 长文本掉字符。
  *
- * 此前这条路径只有一个命令行脚本（`dsh-companion` 仓库的 `tools/emit-config.mjs`），
- * 要求用户装 Node、开终端、记命令 —— 用户的质疑是「**电脑 在哪里生成？**」。
- * 配对码本来就在 WebUI 的「远程访问」页生成，所以配置文本也应该在那里一键生成。
- *
- * ## 线格式（权威定义是 `dsh-companion` 的 `ConnectionShare.kt`，不是本文件）
+ * 现在所有「给手机一个连法」的出口都只回一行短码：
  *
  * ```
- * DSH1:<UTF-8 JSON 的 Base64 URL-safe 无填充编码>
+ * <url1>,<url2>,…#<pairingCode>
  * ```
  *
- * JSON 是**窄格式**，不带 `id` / `kind` / `enabled` / 探活历史等本机状态：
- *
- * ```json
- * {"displayName":"家里的电脑","endpoints":[{"label":"家里局域网","baseUrl":"http://192.168.1.126:3090"}],
- *  "token":"<设备令牌>","deviceName":"Pixel 9","scopes":["files.read"]}
- * ```
- *
- * 键顺序必须与 Kotlin data class 的字段顺序一致，空值键**整个不写** —— 否则三处实现
- * （Kotlin 编解码、命令行脚本、本模块）会产生字节不同的文本，而解码端虽然都认，
- * 但 golden 对比就失去意义了。`tests/config-text.spec.ts` 里钉了一条与脚本已知输出
- * 逐字节相同的断言。
+ * 地址表由 `composeCandidates()` 产生（隧道在前，其后本机 LAN / 虚拟网），
+ * 配对码 8 位、10 分钟、单次；客户端整行粘一次，自己拆成候选表 + 码、
+ * 自己探活择优。编码器已从服务端移除，`DSH1:` 只作为**客户端**的向下兼容格式存在。
  *
  * ## 安全边界
  *
- * 产出的文本**不做加密**：它本身就是凭据载体（内含设备令牌），等价于一把钥匙。
- * 安全边界由「用户把它发给谁」决定，因此响应里只回 `text`，**不再单独回传 token**。
+ * 短码里只有地址与一次性配对码，**不含**设备令牌 —— 转发过程被改坏的最坏结果是
+ * 配对失败（可重来），而不是「悄悄拿到另一台设备的凭据」。
  */
 
 /** 地址类型，与 Kotlin `EndpointKind` 对齐。 */
@@ -43,14 +35,6 @@ export interface ConfigEndpoint {
   label: string
   baseUrl: string
   kind: EndpointKind
-}
-
-export interface ConfigTextPayload {
-  displayName: string
-  endpoints: ConfigEndpoint[]
-  token: string | null
-  deviceName: string | null
-  scopes: string[]
 }
 
 /** 只用于展示与日志的地址类型标签。 */
@@ -192,29 +176,14 @@ export function normalizeBaseUrl(raw: string): string {
 }
 
 /**
- * 编码成 `DSH1:` 文本。
+ * `DSH1:` 长文本的编码器已于 2.17.0 移除（issue #28）。
  *
- * 键顺序与「空值不写键」的规则必须与 Kotlin 端一致 —— 见文件头说明。
+ * 理由：400+ 字符的单行凭据经 IM / 邮件转发会掉字符，令牌变成对不上库的一把钥匙，
+ * 客户端只看到 `TOKEN_INVALID`；而 JSON 其余字段仍可解析，用户看不出是文本被改了。
+ * 现在所有「给手机一个连法」的出口都只回一行 `<url1>,<url2>,…#<pairingCode>`。
+ *
+ * 客户端仍认 `DSH1:`（老用户手里可能还留着旧文本），解在客户端做；服务端不再生成。
  */
-export function encodeConfigText(payload: ConfigTextPayload): string {
-  const endpoints = payload.endpoints.map((endpoint) => ({
-    label: endpoint.label.trim(),
-    baseUrl: normalizeBaseUrl(endpoint.baseUrl),
-  }))
-  if (endpoints.length === 0) throw new Error('至少需要一个地址才能生成配置文本')
-
-  // 用对象字面量固定键顺序，不要依赖 JSON.stringify 的字典序。
-  const wire: Record<string, unknown> = { displayName: payload.displayName.trim(), endpoints }
-  const token = trimOrNull(payload.token)
-  if (token !== null) wire.token = token
-  const deviceName = trimOrNull(payload.deviceName)
-  if (deviceName !== null) wire.deviceName = deviceName
-  const scopes = payload.scopes.map((scope) => scope.trim()).filter((scope) => scope !== '')
-  if (scopes.length > 0) wire.scopes = scopes
-
-  const body = JSON.stringify(wire)
-  return `DSH1:${Buffer.from(body, 'utf8').toString('base64url')}`
-}
 
 /** 本机显示名：主机名的首段，为空时退回一个中性名字。 */
 export function defaultDisplayName(): string {

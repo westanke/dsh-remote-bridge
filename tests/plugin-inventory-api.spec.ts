@@ -260,7 +260,7 @@ describe('GET /api/v1/roots/resolve', () => {
 describe('POST /manage/config/text', () => {
   const origin = 'http://127.0.0.1:3080'
 
-  it('produces a decodable config text and never echoes the token separately', async () => {
+  it('returns a one-line short code and never echoes a device token', async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'daw-config-'))
     cleanup.dir(root)
     const server = await startServer()
@@ -280,28 +280,24 @@ describe('POST /manage/config/text', () => {
 
       expect(response.status).toBe(201)
       const body = await response.json() as Record<string, unknown>
-      const text = body.text as string
+      const shortCode = body.shortCode as string
 
-      expect(text.startsWith('DSH1:')).toBe(true)
+      // 形状：`<url1>,<url2>,…#<pairingCode>`，绝不再产出 `DSH1:` 长文本（issue #28）。
+      expect(shortCode.startsWith('DSH1:')).toBe(false)
+      expect(shortCode.split('#')).toHaveLength(2)
+      expect(shortCode.split('#')[0]).toBe('http://192.168.1.126:3090')
+      expect((shortCode.split('#')[1] ?? '').length).toBeGreaterThan(3)
       expect(body).toMatchObject({ displayName: '家里的电脑', deviceName: 'Pixel 9' })
 
-      // 单独回传 token 会让它出现在日志、浏览器历史与开发者工具里 —— 它已经在 text 内，
-      // 不需要第二份。这条断言防止后人「顺手」把它加回响应。
+      // 响应里不许出现设备令牌：短码只含地址与一次性配对码，转发被改坏最多配对失败，
+      // 不会变成「悄悄拿到另一台设备的凭据」。
       expect(Object.keys(body).sort()).toEqual(
-        ['deviceId', 'deviceName', 'displayName', 'endpoints', 'text'],
+        ['deviceName', 'displayName', 'endpoints', 'shortCode'],
       )
+      expect(JSON.stringify(body)).not.toMatch(/token/i)
 
-      // 文本必须真的能被解开，且地址里的 /api/v1 已被剥掉。
-      const decoded = JSON.parse(Buffer.from(text.slice('DSH1:'.length), 'base64url').toString('utf8'))
-      expect(decoded.displayName).toBe('家里的电脑')
-      expect(decoded.endpoints).toEqual([{ label: '家里局域网', baseUrl: 'http://192.168.1.126:3090' }])
-      expect(typeof decoded.token).toBe('string')
-      expect(decoded.token.length).toBeGreaterThan(8)
-      expect(decoded.scopes).toEqual(['files.read'])
-
-      // 生成的设备应当真的出现在 devices 表里，用户之后才能吊销它。
-      const deviceId = body.deviceId as string
-      expect(server.database.listDevices().some(device => device.id === deviceId)).toBe(true)
+      // 2.17.0 起不预建设备：兑换配对码的那一刻才落库。
+      expect(server.database.listDevices()).toHaveLength(0)
     } finally {
       await server.close()
     }

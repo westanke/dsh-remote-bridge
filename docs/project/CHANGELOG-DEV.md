@@ -15,7 +15,14 @@
   10 分钟、单次；工具返回 `{addresses, pairingCode, expiresAt}`（`addresses` 逗号分隔）。
   客户端整行粘一次即可，自己拆成候选表 + 配对码，连哪条由探活择优决定 —— 用户不用手抄 URL，
   在家也不会被迫绕隧道。
-- 不再预建设备：配置文本只在 WebUI 的「生成配置文本」里出，IM 里拿不到长凭据。
+- **WebUI 的「生成配置文本」也一并不再出长码**（用户：「长码已弃用，没必要保留」）：
+  按钮改名「生成连接短码」，`POST /manage/config/text` 与 `create` 搭车返回的
+  `configText` 改为 `{shortCode, displayName, deviceName, endpoints}` —— 即同一行
+  `<url1>,<url2>,…#<pairingCode>`；面板不再显示设备 ID（此时设备还没落库）。
+- 服务端 `encodeConfigText()` 与 `ConfigTextPayload` **整体删除**（`DSH1:` 只剩客户端侧的
+  向下兼容输入）；`tests/config-text.spec.ts` 的 golden 逐字节断言随之退役，换一条
+  「模块不再导出编码器」的路标用例。
+- 都不再预建设备：配对码兑换的那一刻设备才落库，设备池里不会堆「生成过码但从没连过」的僵尸。
 
 **为什么不是"把 DSH1 发两遍"**：IM 会改字符，重复发不解决；短配对码只有 8 位，且一次性、
 有有效期，转发走样时立刻报「配对失败」，而不是拿着坏令牌一直超时。
