@@ -149,8 +149,22 @@ export class RemoteApiServer implements RemoteControl {
   private remoteEnabled = false
   private readonly operations = new Map<string, OperationState>()
   private readonly sockets = new Map<WebSocket, SocketState>()
-  private readonly webSockets: WebSocketServer
-  /** 移动端网关 WebSocket（/ws/mobile）：与 /api/v1/events 并存，WS 优先、REST 兜底。 */
+  /**
+   * 移动端网关 WebSocket（/ws/mobile）：与 /api/v1/events 并存，WS 优先、REST 兜底。
+   *
+   * **两条 WS 通道各用一个 `WebSocketServer` 实例**（issue #31），不能共用：
+   * `ws` 的 `perMessageDeflate` 是**实例级**选项，没法按 pathname 区分。
+   */
+  private readonly mobileWebSockets: WebSocketServer
+  /**
+   * 广播通道 WebSocket（/api/v1/events，桌面/浏览器用）。
+   *
+   * **不开压缩**：这条通道的背压判据依赖 `socket.bufferedAmount` 的「未压缩字节数」
+   * 语义（`src/host/server.ts` 的 `noteHighWater`），压缩会让那个读数在
+   * 「压缩前的原始字节」与「压缩后的线上字节」之间跳变，高水位永远越不过。
+   */
+  private readonly eventWebSockets: WebSocketServer
+  /** 移动端网关 WS 的处理与状态（/ws/mobile）：与 /api/v1/events 并存，WS 优先、REST 兜底。 */
   private readonly wsMobile: MobileGatewayWsHandler
   private readonly eventsAbort = new AbortController()
   private unsubscribeEvents: (() => void) | undefined
@@ -177,7 +191,15 @@ export class RemoteApiServer implements RemoteControl {
     this.highWaterMarkBytes = Math.max(1, options.highWaterMarkBytes ?? DEFAULT_HIGH_WATER_MARK_BYTES)
     this.heartbeatIntervalMs = Math.max(1, options.heartbeatIntervalMs ?? DEFAULT_HEARTBEAT_INTERVAL_MS)
     // `maxPayload` 只在构造时能设，所以放进构造：超限帧由 `ws` 自己 `close(1009)`。
-    this.webSockets = new WebSocketServer({
+    //
+    // **两条通道各建一个 `WebSocketServer`**（issue #31）：`ws` 的 `perMessageDeflate`
+    // 是**实例级**选项，共享实例就等于「要么两条通道都压，要么都不压」。
+    // issue #29 只想给 `/ws/mobile`（隧道上 history 首屏 600 KB → 140 KB）开压缩，
+    // 但共享实例把压缩**泄漏**到了 `/api/v1/events` —— 而那条通道的背压保护
+    // （`noteHighWater` → `close(1013, 'Backpressure')`）依赖 `bufferedAmount`
+    // 的未压缩字节语义，压缩会让读数在压缩前/压缩后之间跳变 ⇒ 高水位永远越不过
+    // ⇒ 慢客户端再也关不掉。详见 `docs/project/PITFALLS.md` §压缩让 bufferedAmount 失效。
+    this.mobileWebSockets = new WebSocketServer({
       noServer: true,
       clientTracking: false,
       maxPayload: Math.max(1, options.maxPayloadBytes ?? DEFAULT_MAX_PAYLOAD_BYTES),
@@ -199,6 +221,13 @@ export class RemoteApiServer implements RemoteControl {
         // 一次握手失败（1006），等于把一个可控的拒绝变成了连接异常。
         return pickMobileSubprotocol(protocols) || offered
       },
+    })
+    // 广播通道（/api/v1/events）：**不**开 `perMessageDeflate`。
+    // 这里的 `handleProtocols` 保持 `ws` 的默认行为（回客户端清单首项）—— 与拆分前逐字一致。
+    this.eventWebSockets = new WebSocketServer({
+      noServer: true,
+      clientTracking: false,
+      maxPayload: Math.max(1, options.maxPayloadBytes ?? DEFAULT_MAX_PAYLOAD_BYTES),
     })
     // 移动端网关 WS（/ws/mobile）：与 /api/v1/events 共享同一 HTTP server upgrade，
     // 各自按 pathname 分流。
@@ -300,7 +329,8 @@ export class RemoteApiServer implements RemoteControl {
     await this.closeCurrent()
     await this.tunnelListener.stop()
     await this.wsMobile.stop()
-    this.webSockets.close()
+    this.mobileWebSockets.close()
+    this.eventWebSockets.close()
     setWsConnections(0)
   }
 
@@ -526,7 +556,8 @@ export class RemoteApiServer implements RemoteControl {
     try {
       const url = new URL(req.url ?? '/', 'http://workspace.local')
       // 移动端网关 WS（/ws/mobile）优先分流：子协议 dsh-pair / dsh-auth，配对 + 令牌认证。
-      // 复用同一 WebSocketServer 实例做 HTTP upgrade，升级完成后交给 wsMobile 鉴权与分发。
+      // 用**自己的** WebSocketServer 实例做 HTTP upgrade（issue #31：压缩是实例级选项，
+      // 这条通道要开 permessage-deflate），升级完成后交给 wsMobile 鉴权与分发。
       if (this.wsMobile.ownsPath(req)) {
         // 与下面 /api/v1/events 分支同一条规矩：**判定放在升级之前**，这样还能回标准
         // HTTP 429（带 Retry-After），而不是升级后再用一个 WS 关闭码隐晦地表示「太挤了」。
@@ -541,7 +572,7 @@ export class RemoteApiServer implements RemoteControl {
           )
           return
         }
-        this.webSockets.handleUpgrade(req, socket, head, (webSocket) => {
+        this.mobileWebSockets.handleUpgrade(req, socket, head, (webSocket) => {
           this.wsMobile.onConnection(webSocket, req)
         })
         return
@@ -572,7 +603,10 @@ export class RemoteApiServer implements RemoteControl {
         )
         return
       }
-      this.webSockets.handleUpgrade(req, socket, head, (webSocket) => {
+      // 广播通道用**自己的** WebSocketServer 实例（issue #31）：这条通道**不**开
+      // permessage-deflate —— 背压判据（`noteHighWater`）依赖 `bufferedAmount` 的
+      // 未压缩字节语义，压缩会让高水位永远越不过、慢客户端关不掉。
+      this.eventWebSockets.handleUpgrade(req, socket, head, (webSocket) => {
         const state: SocketState = {
           principal,
           queue: [],

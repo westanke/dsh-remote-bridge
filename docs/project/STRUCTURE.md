@@ -19,7 +19,7 @@ dsh-remote-bridge/
 │   ├── host/                宿主侧：HTTP 服务、路由、各类 adapter、持久层
 │   ├── client/              DSH WebUI 浏览器半边（React 面板 + 图片交接渲染）
 │   └── shared/              双端共享的契约类型与版本号
-├── tests/                   vitest 单元与合约测试（83 个 spec，见 §3.4）
+├── tests/                   vitest 单元与合约测试（95 个 spec，见 §3.4）
 ├── e2e/                     playwright 样式契约（4 用例，无需服务器）
 ├── scripts/                 发版 / 推送 / 文档门禁 / 探针脚本（不是运行时代码）
 ├── kotlin-sdk/              给 Android 客户端的 Kotlin SDK（随包分发）
@@ -172,7 +172,7 @@ host services 之上重建 0.1.x 的 `apiProxy` 面容，让 `chat-adapter` / `s
 | `contracts.ts` | 共享契约类型：`DeviceScope` / `RootView` / `DeviceView` / `FileEntryView` / `WorkspaceEvent` / `Principal` |
 | `version.ts` | `PLUGIN_VERSION`（随版本号同步的唯一出处） |
 
-### 3.4 `tests/` —— 单元与合约测试（83 个 spec）
+### 3.4 `tests/` —— 单元与合约测试（95 个 spec）
 
 按主题分组，**新增测试按这张表找位置**：
 

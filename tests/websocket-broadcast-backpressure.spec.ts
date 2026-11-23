@@ -196,6 +196,28 @@ describe('broadcast isolation and backpressure', () => {
     }
   })
 
+  it('never negotiates permessage-deflate on the broadcast channel', async () => {
+    // 回归锚（issue #31）：issue #29 给 `WebSocketServer` 开了 `perMessageDeflate`，
+    // 而当时 `/ws/mobile` 与 `/api/v1/events` **共用同一个实例** ⇒ 压缩泄漏到了广播通道。
+    //
+    // 后果不是「多压了一点」而是**背压保护失效**：`ws` 的 `bufferedAmount` =
+    // `_writableState.length + _sender._bufferedBytes`，压缩时后者在「压缩前的原始字节」
+    // 与「压缩后的线上字节」之间跳变 ⇒ 服务端读到的高水位读数忽高忽低 ⇒
+    // `noteHighWater()` 的两拍判定凑不齐 ⇒ 慢客户端永远不被 close(1013) 摘掉。
+    //
+    // 判据用**握手协商结果**（`socket.extensions`），而不是跑一遍背压：
+    // 协商结果与平台无关、瞬时可得；而背压那条要靠时序（见上面那条用例的注释）。
+    const harness = await startHarness()
+    try {
+      const client = await harness.connect()
+      // `ws` 客户端**默认就提出** permessage-deflate（node_modules/ws/lib/websocket.js:677），
+      // 所以这里不显式关掉 —— 正是「客户端想压、服务端不该压」的场景。
+      expect(client.socket.extensions).not.toContain('permessage-deflate')
+    } finally {
+      await harness.stop()
+    }
+  })
+
   it('preserves per-connection ordering across many events', async () => {
     const harness = await startHarness({ socketQueueLimit: 4096 })
     try {

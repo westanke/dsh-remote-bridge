@@ -1,3 +1,58 @@
+## 未发布 · 广播通道不再被压缩泄漏：背压保护恢复（2026-11-23，issue #31）
+
+**症状**（CI，run 45089115624 / 45089115673）：v2.17.0 之后 CI 连红两轮，
+`core (ubuntu-latest)`、`core (windows-latest)`、`profile-install` 三个 job 的
+`pnpm test` 全部停在同一条断言：
+
+```
+tests/websocket-broadcast-backpressure.spec.ts:188
+AssertionError: 灌了 27 轮仍未触发背压关闭 —— 高水位 64 KiB 可能没被越过:
+  expected 1 to be +0 // Object.is equality
+```
+
+失败用例本身自 v2.16.1 起**一行未改**（`git log v2.16.1..HEAD -- tests/websocket-broadcast-backpressure.spec.ts`
+为空）⇒ 破坏点在服务端。
+
+**根因**：issue #29 给 `WebSocketServer` 加了 `perMessageDeflate`，而当时
+`/ws/mobile` 与 `/api/v1/events` **共用同一个 `WebSocketServer` 实例** ——
+`ws` 的 `perMessageDeflate` 是**实例级**选项，没法按 pathname 区分 ⇒ 压缩**泄漏**
+到了广播通道。
+
+泄漏的代价不是「多压了一点」，而是**背压保护整个失效**：这条通道的慢客户端判据是
+`socket.bufferedAmount > highWaterMarkBytes`（连续两拍越线才 `close(1013, 'Backpressure')`）。
+而 `ws` 的 `bufferedAmount = _writableState.length + _sender._bufferedBytes`，
+后者统计的是**压缩前的原始字节**且在压缩完成瞬间被减掉 ⇒ 读数在「8 MiB 原始」与
+「≈8 KB 线上」之间跳变。实测（真实桥 + 50 ms 采样）：
+
+| 客户端协商 | `bufferedAmount` 读数 |
+| --- | --- |
+| `permessage-deflate`（`ws` 客户端默认） | `8388753 → 0` 反复跳变 ⇒ 永远凑不齐两拍 |
+| 不协商 | 稳定 `8388761` ⇒ 立刻触发关闭 |
+
+本地回环上压缩只要 ~50 ms 完成，drain 恰好抓到那一瞬的 8 MiB 读数当第一拍，
+250 ms 后复查时压缩早完成、读数归 0 ⇒ 第二拍永远不成立；CI runner 上更慢，
+连第一拍都抓不到 ⇒ 27 轮灌完 `overHighWater` 一直是 0 ⇒ 连接不关 ⇒ 断言拿到 1。
+
+**改法**：**两条 WS 通道各用一个 `WebSocketServer` 实例**（`src/host/server.ts`）：
+- `mobileWebSockets`：`/ws/mobile`，**开** `perMessageDeflate`（保住 issue #29 的隧道收益）；
+- `eventWebSockets`：`/api/v1/events`，**不开**压缩 —— 恢复 issue #29 之前的行为，
+  让 `bufferedAmount` 回到「未压缩字节」语义，背压判据重新有效。
+
+隧道专用监听（`src/host/tunnel-listener.ts`）本来就是独立实例、只放行 `/ws/mobile`，
+本轮**不动**。
+
+**验证**：
+- `tests/websocket-broadcast-backpressure.spec.ts` 新增一例钉住协商结果
+  （广播通道 `socket.extensions` 不含 `permessage-deflate`）—— 该用例在改动前**红**、
+  改动后**绿**（已用 `git checkout` 回退验证过）；
+- 原有那条「持续灌帧直到背压关闭」用例转绿；
+- `tests/mobile-gateway-ws.spec.ts` 的两条压缩用例（`/ws/mobile`）仍绿；
+- `pnpm check` 四道门全绿（typecheck / test 95 文件 1075 用例 / docs:check / build）。
+
+**口径更正**：v2.17.0 那条写的「`/ws/mobile` 与隧道专用入口的 `WebSocketServer` 都开
+`perMessageDeflate`」不准确 —— 当时实际是**一个**实例同时服务两条通道，
+压缩因此泄漏到了 `/api/v1/events`。本条改成「两条通道各一个实例」。
+
 ## v2.17.1 · `/tunnel` 明确每次签发新配对码（2026-11-23，issue #30）
 
 - `/tunnel` 两条路径（新建隧道 / 复用现有隧道）本来就各自 `createPairing`，这次补上行为契约：

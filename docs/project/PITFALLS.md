@@ -1516,3 +1516,50 @@ sha256 也不在任何一台设备上。
 都只签发短码、且不预建设备；`tests/plugin-inventory-api.spec.ts` 断言响应键只有
 `deviceName/displayName/endpoints/shortCode`（无 token）；`tests/config-text.spec.ts`
 断言模块不再导出编码器（issue #28）。
+
+### 压缩让 bufferedAmount 失效：背压判据不能建在压缩过的字节上
+
+**症状**：CI 连红两轮，广播通道的背压用例挂住：
+`AssertionError: 灌了 27 轮仍未触发背压关闭 —— 高水位 64 KiB 可能没被越过:
+expected 1 to be +0`（`tests/websocket-broadcast-backpressure.spec.ts`）。
+慢客户端该被 `close(1013, 'Backpressure')` 摘掉，实际**一直挂着**；
+本地回环却能过 ⇒ 典型的「CI 红、本地绿」。
+
+**根因**：issue #29 给 `WebSocketServer` 开了 `perMessageDeflate`，而 `/ws/mobile` 与
+`/api/v1/events` **共用同一个实例**。`ws` 的 `perMessageDeflate` 是**实例级**选项，
+没法按 pathname 区分 ⇒ 压缩**泄漏**到了广播通道。
+
+而 `ws` 的 `bufferedAmount = _writableState.length + _sender._bufferedBytes`
+（`node_modules/ws/lib/websocket.js:120-125`），其中 `_sender._bufferedBytes` 统计的是
+**压缩前的原始字节**，且在压缩完成瞬间被减掉（`node_modules/ws/lib/sender.js:511` 加、
+`:523` 减）⇒ 读数在「8 MiB 原始」与「≈8 KB 线上」之间**跳变**。
+广播通道的慢客户端判据（`src/host/server.ts` 的 `noteHighWater`：**连续两拍**越线才关）
+需要的是**稳定**的越线读数 ⇒ 压缩一开，判据就废了。
+
+实测（真实桥 + 50 ms 采样，8 MiB 载荷）：
+
+| 客户端协商 | `bufferedAmount` 读数 | 结果 |
+| --- | --- | --- |
+| `permessage-deflate`（`ws` 客户端**默认**提出） | `8388753 → 0` 反复跳变 | 两拍凑不齐 ⇒ 永不关闭 |
+| 不协商 | 稳定 `8388761` | 立刻触发关闭 |
+
+本地之所以还能过：回环上压缩 ~50 ms 就完成，drain 恰好抓到那一瞬的 8 MiB 读数当第一拍，
+250 ms 后复查时压缩早完成、读数归 0 ⇒ 第二拍永远不成立（**不是**通过，是侥幸）。
+CI runner 更慢，连第一拍都抓不到 ⇒ `overHighWater` 一直是 0 ⇒ 连接不关。
+
+**铁律**：
+- **凡是拿 `bufferedAmount` 判「对端读不动」的通道，那条通道的 WS **不许开压缩**。
+  要压缩就**另起一个 `WebSocketServer` 实例** —— 协商粒度是实例级，`ws` 没给按路径区分的口子。
+  本仓现成写法：`src/host/server.ts` 的 `mobileWebSockets`（开）/ `eventWebSockets`（不开），
+  隧道口 `src/host/tunnel-listener.ts` 是第三个独立实例。
+- **加 `perMessageDeflate` 之前先问**：这条通道有没有依赖 `bufferedAmount` 的判据
+  （慢客户端摘除、背压、内存水位）？有就别加，或者换个实例。
+- **别用「一条大帧必然越线」当断言**（Windows 内核缓冲大 ⇒ `bufferedAmount` 恒 0，
+  已踩过，见本仓 `git log` 里的 `cc77cb6`/`d2bb268`）。要测背压就**持续灌帧**，
+  判据用**握手协商结果**（`socket.extensions`）这类与时序无关的量。
+
+**回归锚**：`tests/websocket-broadcast-backpressure.spec.ts` ›
+never negotiates permessage-deflate on the broadcast channel（钉住广播通道不协商压缩）+
+closes a connection that stays over the high-water mark twice（背压真的触发）；
+`tests/mobile-gateway-ws.spec.ts` › negotiates permessage-deflate when the client offers it /
+stays uncompressed when the client turns compression off（钉住 `/ws/mobile` 仍按 issue #29 开压缩）。
