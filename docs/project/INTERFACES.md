@@ -127,7 +127,7 @@
 
 **宿主命令 `/tunnel` 与工具 `open_tunnel_config`（2.6.0 起）** 都不在上表里：它不是 REST 路由，而是注册进内核命令表
 （`ctx.commands.register`，全局层）的一条人类命令，供 IM 适配器（`@xmanrui/dsh-im`）在聊天窗口里直接执行。
-语义：开 Cloudflare 隧道 → 等随机域名 → 回**一行短码 `<url1>,<url2>,…#<pairingCode>`**（候选地址表与配置文本同源 `composeCandidates`：隧道在前、其后 LAN/虚拟网；配对码 8 位、10 分钟、单次；工具返回 `{addresses, pairingCode, expiresAt}`，`addresses` 为逗号分隔）；
+语义：开 Cloudflare 隧道 → 等随机域名 → 回**一行短码 `<url1>,<url2>,…#<pairingCode>`**（候选地址表与配置文本同源 `composeCandidates`：隧道在前、其后 LAN/虚拟网；配对码 10 位 hex、10 分钟、单次；工具返回 `{addresses, pairingCode, expiresAt}`，`addresses` 为逗号分隔）；
 隧道已在运行时复用当前地址。**刻意不回 `DSH1:` 长文本**：400+ 字符单行经 IM 转发会掉字符，令牌变成库里不存在的一枚（issue #28）。
 两者共用 `ApiRouter.openTunnelForCommand()`；命令给「能发 `/tunnel` 的客户端」，
 工具给「IM 里只会说自然语言」的场景（dsh-im 的斜杠命令表封闭，无通用派发）。
@@ -294,7 +294,7 @@
   不是 `approval-requested` / `question-requested` 这类专用 kind；③ `connection-resync-required`
   是真帧（反压溢出后提示全量重同步）。
 - `message` 帧：`sessionId` 可选（省略自动建会话）、`mode:'queue'|'steer'`、`content`（PromptContentPart[]，图片 Base64 无 `data:` 前缀）、`clientTimeZone`、`workspaceId`/`cwd`。
-- `history` 帧：`beforeSeq`/`maxMessages`/`maxBytes`（默认 4 MiB）、`view:'conversation'`；响应带 `hasMore`+`nextBeforeSeq`。
+- `history` 帧：`beforeSeq`/`maxMessages`（`maxBytes`/`view` 虽在类型里声明但**服务端不读**，字节上限是服务端固定的 2 MiB，见 `API.md` 的 `history` 帧脚注）；响应带 `hasMore`，**不带** `nextBeforeSeq`。
 - HITL：`question-answer` / `question-cancel` / `approval-response` 由客户端发起；**待处理项的推送走 `event` 帧**（`chat.userQuestions/*` / `chat.approval.*` 载荷），`outcome: 'allowed-once'|'rejected'`，**不支持始终允许**；重放待处理项 `replayed=true`，客户端按 `approvalId`/`callId` 去重。
 - 背压与关闭：同 §3.1（单帧 1 MiB、发送队列 512 帧、30s ping、连续错过 2 周期 terminate、设备撤销 close(4001)）；`connection.resyncRequired` 通知客户端改走 REST 重取基线。
 - 鉴权与授权：复用 `principal()` 与 `eventAllowed`（scope/root/session 三层）；会话级操作再用 `isSessionAuthorized` 过滤；未带凭据 401，越权 scope 403，系统错误不回显绝对路径。

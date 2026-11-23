@@ -56,7 +56,7 @@ export function pickMobileSubprotocol(protocols: Iterable<string>): string | fal
   return false
 }
 
-/** 首次配对子协议前缀：`dsh-pair.<6-hex-code>`。 */
+/** 首次配对子协议前缀：`dsh-pair.<10-hex-code>`（40-bit hex，码形如 `A1B2C-D3E4F`）。 */
 export const PROTOCOL_PAIR_PREFIX = 'dsh-pair.'
 
 /** 长期令牌子协议前缀：`dsh-auth.<base64url-token>`。 */

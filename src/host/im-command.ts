@@ -57,7 +57,7 @@ export interface TunnelCommandResult {
    * `[0]` 是公网隧道地址，其后是局域网 / 虚拟网。老客户端只认第一条也能连。
    */
   urls: string[]
-  /** 一次性配对码（8 位十六进制字母数字，10 分钟内有效、只能用一次）。 */
+  /** 一次性配对码（10 位十六进制字母数字，10 分钟内有效、只能用一次）。 */
   pairingCode: string
   /** 配对码过期时刻（毫秒时间戳），用于在回复里写清有效期。 */
   expiresAt: number

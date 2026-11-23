@@ -922,7 +922,7 @@ v2.8 新增，**现在是桥的第一协议面**：新能力只在这里落帧�
     `plugin-install` 可用 `installId` 指定内核的 `options.requestId`，
     `plugin-install-status` 必须带同一个 `installId`（缺了本地回 `BAD_REQUEST`）。
   - 不允许 URL query 带 token，避免令牌进入 URL 日志。
-- 配对码：一次性，10 分钟有效期（复用 `/api/v1/pairings/exchange` 产出的 code），256-bit，Base64URL 载荷；设备令牌不过期，撤销即时生效。
+- 配对码：一次性，10 分钟有效期（复用 `/api/v1/pairings/exchange` 产出的 code），**10 位十六进制字母数字、中间一个连字符**（如 `A1B2C-D3E4F`；兑换时去连字符并转大写，所以 `a1b2cd3e4f` 与 `A1B2C-D3E4F` 等价）；设备令牌是另一回事：**256-bit、Base64URL 载荷**、不过期、撤销即时生效。
 - 鉴权：`dsh-pair`/`dsh-auth`/`bearer.<token>` 均复用 `principal()`，与 `/api/v1` 同一套判据；`allowAdmin: true` 允许 loopback admin；连接上限 32（鉴权后计数，Upgrade 前判定，超出回 HTTP `429` + `Retry-After: 5`）。
 
 ### 连接即推 hello
@@ -957,7 +957,7 @@ v2.8 新增，**现在是桥的第一协议面**：新能力只在这里落帧�
 | `message` | 发消息（sessionId 可选，省略自动创建新会话） | `sessionId?`, `mode:'queue'|'steer'`, `content` (PromptContentPart[]), `clientTimeZone?`, `workspaceId?`, `cwd?` |
 | `workspaces` | 列工作区 | — |
 | `sessions` | 列会话（按授权过滤） | `archived?` |
-| `history` | 分页拉历史 | `sessionId`, `beforeSeq?`, `maxMessages?`, `maxBytes?`（默认 4 MiB）, `view:'conversation'`；**首屏（不带 `beforeSeq`）的响应额外带 `projections`**（与 REST `GET /chat/sessions/{id}/messages` 同源），翻页不带 —— 投影只要一份，而这一帧有 1 MiB 上限 |
+| `history` | 分页拉历史 | `sessionId`, `beforeSeq?`, `maxMessages?`（**`maxBytes?` 与 `view?` 目前声明了但服务端不读**，见下）；**首屏（不带 `beforeSeq`）的响应额外带 `projections`**（与 REST `GET /chat/sessions/{id}/messages` 同源），翻页不带 —— 投影只要一份，而这一帧有 1 MiB 上限。响应带 `hasMore`，**不带** `nextBeforeSeq`（客户端按 `events` 内的 seq 自行推算游标） |
 | `attachment` | 取附件/图片 base64 | `attachmentId` 或 `sessionId+name` |
 | `file-download-open/read/cancel` | 分片下载文件 | open **必带** `requestId`,另带 `sessionId`,`path`（相对会话根，禁 `..`）；read 带 `transferId`,`offset`（严格顺序）；最大 512 MiB，chunk 512 KiB，最大 4 并发，idle 2 min，末块附 `sha256` |
 | `file-upload-open/chunk/finish/cancel` | 分片上传文件 | open **必带** `requestId`,另带 `sessionId`,`name`（叶子名）,`size`,`sha256`；chunk 带 `uploadId`,`offset`,`data`（顺序 base64，块 256 KiB）；finish 校验 SHA-256 后经内核附件通道换 `receiptId`；需 `files.write` scope |
@@ -1000,6 +1000,16 @@ v2.8 新增，**现在是桥的第一协议面**：新能力只在这里落帧�
 | `schedule-view` | 读单条定时任务（`request` 原样透传内核 `schedule/view`，issue #26 阶段 7） | `{request}`；响应为同 kind 帧，`data` 为 `{ok:true, value}` 或 `{ok:false, error:{code,message}}`（+ `requestId` 回显）；需 `chat.*` scope |
 | `schedule-run` | 立刻执行一次定时任务（`request` 原样透传内核 `schedule/run`，issue #26 阶段 7） | `{request}`；响应为同 kind 帧，`data` 为 `{ok:true, value}` 或 `{ok:false, error:{code,message}}`（+ `requestId` 回显）；需 `chat.*` scope |
 | `schedule-delete-inactive` | 清理已停用/已结束的定时任务（无参，issue #26 阶段 7） | `{}`（无参）；响应为同 kind 帧，`data` 为 `{ok:true, value}` 或 `{ok:false, error:{code,message}}`（+ `requestId` 回显）；需 `chat.*` scope |
+
+> **`history` 帧里 `maxBytes` / `view` 的现状（issue #32）**：这两个字段在
+> `ClientFrame` 类型里声明了（`src/host/ws-protocol.ts`），但**服务端不读、不转发**
+> —— `src/host/ws-basic.ts` 的 `history()` 只转发 `beforeSeq` 与 `maxMessages`。
+> 字节上限是**服务端固定值**：`src/host/history-budget.ts` 的 `HISTORY_BYTE_BUDGET`
+> （2 MiB，单事件 512 KiB、单条 8 000 字符）；整份超限时丢最旧的事件并把响应标
+> `truncated:true`，单条超限时在该事件上标 `bridgeTruncated:true`。
+> 客户端**不要**依赖「带 `maxBytes` 就能控制体积」，也不要把 `view` 当成多视图开关
+> （当前只有一种视图语义）。响应帧带 `hasMore` 但**不带** `nextBeforeSeq`；
+> 翻页游标按 `events` 内的 seq 自行推算。
 
 > **阶段 8（issue #26 / MOB-012）删掉的声明**：`search` / `defaults` / `set-default` /
 > `directories` 曾经声明在词表里，但只会回结构化 `NOT_IMPLEMENTED`

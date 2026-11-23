@@ -35,7 +35,7 @@
 | 发消息（message） | 仅 REST `/api/v1/sessions/:id/messages` | WS `{type:"message"}`，sessionId 可选（省略自动创建会话）、mode queue\|steer、纯图片、clientTimeZone、workspaceId/cwd | **缺失：WS 发消息** |
 | 自动建会话 | 无 | message 省略 sessionId → 先建新会话再发；workspaceId/cwd 放入工作区 | **缺失** |
 | 会话/工作区列表 | REST | WS `{type:"workspaces"}` / `{type:"sessions"}`（sessions 轻量投影：sessionId/updatedAt/running/blank/cwd/agentPreset/parentSessionId/origin/projections{asOfSeq,values.title}） | **缺失：WS 查列表** |
-| 历史分页 | REST | WS `{type:"history"}`（beforeSeq/maxMessages/maxBytes/view:"conversation"，hasMore+nextBeforeSeq 向后分页，默认 4 MiB，historyFormatVersion 4） | **缺失：WS history** |
+| 历史分页 | REST | WS `{type:"history"}`（beforeSeq/maxMessages；maxBytes/view 声明了但服务端不读，字节上限是服务端固定的 2 MiB，historyFormatVersion 4；响应带 hasMore，**不带** nextBeforeSeq） | **缺失：WS history** |
 | 附件/图片 | REST upload/read | WS `{type:"attachment"}`（verified metadata + canonical base64 bytes，images Base64 无 data: 前缀，单图约 3.5 MiB，单条总 100 MiB） | **缺失：WS attachment** |
 | 文件下载 | 无 | WS file-download-open/read/cancel（transferId, offset, chunk, eof, sha256；最大 512 MiB，chunk 256 KiB，最大 4 并发，idle 2 min，超时 180s） | **缺失：WS 文件下载** |
 | 文件上传（v0.11.1 新增） | 无 | WS file-upload-open/chunk/finish/cancel（SHA-256 校验、receiptId、progress、断线清理；单文件 512 MiB、块 256 KiB、4 并发、空闲 2 min，uploadEnabled 独立开关） | **缺失：WS 文件上传** |
@@ -79,7 +79,7 @@ mobile-gateway 的 WS 是双向 RPC 风格：客户端发 `{type: …}` 帧，�
 6. 客户端→服务端请求帧：`ping`/`subscribe`/`unsubscribe`/`message`/`workspaces`/`sessions`/`history`/`attachment`/`file-list`/`file-download-*`/`file-upload-*`/`search`/`host`/`default-model`/`save-default-model`/`models`/`providers`/`commands`/`command-execute`/`command-options`/`command-select`/`select-model`/`permission-options`/`permission`/`context-usage`/`session-stats`/`tasks`/`goal`/`goal-edit`/`goal-pause`/`goal-resume`/`goal-clear`/`plugin-*`/`agent-presets`/`defaults`/`set-default`/`question-answer`/`question-cancel`/`approval-response`/`session-create`/`fork`/`session-cancel`/`session-archive`/`session-rename`。
 7. 服务端→客户端响应/推送帧：`pong`/`subscribed`/`sent`/`workspaces`/`sessions`/`history`/`search`/`commands`/`command-options`/`command-executed`/`command-selected`/`attachment`/`file-list`/`file-download-opened/chunk/cancelled`/`file-upload-opened/chunk/finish/cancelled`/`session-cancelled`/`queue-item-updated`/`session-queues`/`session-queue`/`session-archived`/`session-renamed`/`session-archives`/`session-title-changed`/`error`/`event`/`tasks`/`goal`/`goal-*`/`tasks-updated`/`goal-updated`/`question-*`/`approval-*`。
 8. `message` 帧：sessionId 可选（省略自动创建新会话）、mode queue\|steer、支持纯图片、clientTimeZone、workspaceId/cwd 放入工作区。
-9. `history` 帧：beforeSeq/maxMessages/maxBytes、view:"conversation"、hasMore+nextBeforeSeq 向后分页、默认 4 MiB 上限。
+9. `history` 帧：beforeSeq/maxMessages（maxBytes/view 声明了但服务端不读，字节上限是服务端固定的 2 MiB；响应带 hasMore，不带 nextBeforeSeq）。
 10. HITL：WS 双向 question-answer/approval-response，server 主动推 question-requested/approval-requested，replay 重放待处理项。
 
 ### P1 —— 配对与鉴权状态机
@@ -182,7 +182,7 @@ src/host/
 - [x] 新增 WS `/ws/mobile` 端点可建连、握手鉴权（`dsh-auth.<token>` / `dsh-pair.<code>`）。
 - [x] 连接即推 `hello`（protocol:3、capabilities、authenticated、device；port/clients 字段暂缺，不影响鉴权）。
 - [x] WS `{type:"message"}` 可发消息（sessionId 可选、自动建会话、mode queue\|steer、图片 base64）。
-- [x] WS `{type:"history"}` 可分页拉历史（beforeSeq/maxMessages；maxBytes 已接线，hasMore+nextBeforeSeq）。
+- [x] WS `{type:"history"}` 可分页拉历史（beforeSeq/maxMessages；服务端固定 2 MiB 字节上限，响应带 hasMore、不带 nextBeforeSeq）。
 - [x] WS `{type:"workspaces"}`/`{type:"sessions"}` 可查列表（受 session 授权过滤）。
 - [x] WS `{type:"attachment"}` 可传/取附件。
 - [x] WS HITL：question-answer/approval-response 双向；server 经事件桥主动推 `{kind:'event'}` 的 requested；连接建立 replay 重放（replayed:true）。

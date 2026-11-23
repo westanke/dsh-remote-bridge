@@ -1,3 +1,32 @@
+## 未发布 · 契约文档订正：配对码位数与 `history` 帧字段（2026-11-23，issue #32）
+
+**起因**：为评估「基于本桥做微信小程序客户端」逐条核对了帧契约，发现文档与实现有 8 处不一致。
+其中 3 处会让**照文档实现的客户端行为错误**（不是措辞问题）：
+
+1. `history` 帧的 `maxBytes` **从未被服务端读取**（`src/host/ws-basic.ts` 只转发 `beforeSeq`
+   与 `maxMessages`），而文档写「默认 4 MiB」—— 实际字节闸是服务端固定值
+   `src/host/history-budget.ts` 的 `HISTORY_BYTE_BUDGET`（**2 MiB**）。
+2. `history` 帧的 `view:'conversation'` 同样从未被读取，文档却把它列为关键字段。
+3. 响应字段 `nextBeforeSeq` **在 `src/` 下零命中** —— history 响应实际只带
+   `{sessionId, events, hasMore, projections?, queue?}`。
+
+另有 9 处说配对码是「8 位」或「6-hex」—— 实际是 `randomBytes(5)` 生成的
+**10 位 hex、中间一个连字符**（`A1B2C-D3E4F`），这个形状自 v1.0.0 起从未变过。
+还有 `docs/project/API.md` 把**设备令牌**的特征（「256-bit，Base64URL 载荷」）写到了配对码头上。
+
+**改法**：**只改注释与文档措辞，运行时行为零变化** ——
+- `src/host/ws-protocol.ts`、`config-text.ts`、`routes/cloudflare.ts`、`im-command.ts` 的
+  配对码位数注释改对；`src/host/bridge/kernel-allowlist.ts` 的白名单条数 14 → 24；
+- `API.md` / `INTERFACES.md` / `mobile-gateway-comparison.md` 的 `history` 帧改成
+  「只认 `beforeSeq`/`maxMessages`，字节上限服务端固定 2 MiB，响应不带 `nextBeforeSeq`」；
+- `API.md` 把配对码与设备令牌拆成两句；`PITFALLS.md`、`INTERFACES.md` 的位数同步；
+- 新增回归用例（`tests/database-auth.spec.ts`）钉住配对码形状与
+  `normalizePairingCode` 的去连字符 + 转大写语义。
+
+**为什么现在做**：这批漂移是**照文档实现客户端就会踩**的坑。姊妹客户端
+`dsh-companion` / `dsh-Chat` 里 `maxBytes`/`nextBeforeSeq` 零命中，没踩到；
+但新客户端（微信小程序）会从文档起手。
+
 ## v2.17.2 · 广播通道不再被压缩泄漏：背压保护恢复（2026-11-23，issue #31）
 
 **症状**（CI，run 45089115624 / 45089115673）：v2.17.0 之后 CI 连红两轮，

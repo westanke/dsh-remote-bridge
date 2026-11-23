@@ -103,11 +103,15 @@ export const KERNEL_DENIED_NAMESPACES: readonly string[] = [
 ]
 
 /**
- * 阶段 5 的白名单（14 条，全部 unary）。
+ * 通用内核调用面的白名单（24 条，全部 unary —— 白名单条目本身没有流式形态；
+ * 一个端点是否流式由内核描述符声明，见 `kernel-invoke.ts` 的 `KernelEndpointShape.stream`）。
  *
  * 挑选标准：①对手机是**新**能力（不在已封装的 35 条里）②不会因为一次误调就把
- * 本机弄坏 ③scope 能落到既有的七个设备权限上。写操作只放「可撤销、影响面小」的
- * 那几条（收藏/取消收藏、反馈标记、初始化默认模型）。
+ * 本机弄坏 ③scope 能落到既有的七个设备权限上。写操作分两类：影响面小、可撤销的
+ * （收藏/取消收藏、反馈标记、初始化默认模型），以及 issue #26 阶段 7 引入的插件管理
+ * （`pluginManager/*`，只改 profile 的插件配置，够不到本机凭据）。
+ *
+ * 条数由 `tests/kernel-allowlist.spec.ts` 钉住，改这里要同步改那处断言。
  */
 export const KERNEL_ALLOWLIST: readonly KernelAllowlistEntry[] = [
   // —— 会话只读 ——
