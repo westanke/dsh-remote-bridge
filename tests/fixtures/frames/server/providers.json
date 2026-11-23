@@ -1,0 +1,9 @@
+{
+  "kind": "providers",
+  "data": {
+    "writable": true,
+    "revisionByNamespace": {},
+    "customProvider": { "available": false, "protocols": [] },
+    "providers": []
+  }
+}

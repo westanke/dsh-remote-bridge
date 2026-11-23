@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { sanitizeLoneSurrogates, stringifyWire } from '../src/host/wire-json.ts'
+import { parseWireJson, sanitizeLoneSurrogates, stringifyWire } from '../src/host/wire-json.ts'
+import { decodeFrame } from '../src/host/ws-protocol.ts'
 
 /** 判定一个字符串里是否还有孤立代理项（测试自己的独立实现，不复用被测代码）。 */
 function hasLoneSurrogate(text: string): boolean {
@@ -86,5 +87,60 @@ describe('wire JSON sanitization', () => {
     expect(Date.now() - started).toBeLessThan(2000)
     expect(fixed.startsWith('\uFFFD')).toBe(true)
     expect(hasLoneSurrogate(fixed)).toBe(false)
+  })
+})
+
+describe('parseWireJson (inbound, issue #IKXGYR)', () => {
+  it('rejects duplicate literal keys in one object', () => {
+    const res = parseWireJson('{"a":1,"a":2}')
+    expect(res.ok).toBe(false)
+    if (!res.ok) expect(res.reason).not.toContain('position') // 泛化文案，不回显解析器细节
+  })
+
+  it('rejects keys that collide only after unescaping', () => {
+    // \u0061 === 'a'：转义后同名也算重复，静默合并正是要堵的实现分歧面
+    expect(parseWireJson('{"a":1,"\\u0061":2}').ok).toBe(false)
+    expect(parseWireJson('{"\\u0061":1,"a":2}').ok).toBe(false)
+  })
+
+  it('rejects duplicates in nested objects and array elements', () => {
+    expect(parseWireJson('{"o":{"k":1,"k":2}}').ok).toBe(false)
+    expect(parseWireJson('[{"k":1},{"k":2,"k":3}]').ok).toBe(false)
+    expect(parseWireJson('{"a":[1,{"b":{"c":1,"c":2}}]}').ok).toBe(false)
+  })
+
+  it('accepts distinct keys, same-name keys across scopes, and repeated values', () => {
+    expect(parseWireJson('{"a":1,"b":2}').ok).toBe(true)
+    // 不同层同名不是重复
+    expect(parseWireJson('{"a":{"a":1}}').ok).toBe(true)
+    // 值里出现重复字样与键无关
+    expect(parseWireJson('{"a":"a,a"}').ok).toBe(true)
+    expect(parseWireJson('[1,1,1]').ok).toBe(true)
+  })
+
+  it('is not fooled by structural characters inside strings', () => {
+    // 字符串里的 } " , : 不得干扰键位跟踪
+    expect(parseWireJson('{"a":"}{,:\\""}').ok).toBe(true)
+    expect(parseWireJson('{"a":"x","b":"}"}').ok).toBe(true)
+  })
+
+  it('funnels syntax errors into the same generic failure', () => {
+    expect(parseWireJson('{').ok).toBe(false)
+    expect(parseWireJson('{"a":}').ok).toBe(false)
+    expect(parseWireJson('not json').ok).toBe(false)
+    expect(parseWireJson('{"a":1').ok).toBe(false)
+  })
+
+  it('preserves the parsed value on success', () => {
+    const res = parseWireJson('{"type":"ping","requestId":"r1","nested":{"x":[1,2,null,true]}}')
+    expect(res.ok).toBe(true)
+    if (res.ok) {
+      expect(res.value).toEqual({ type: 'ping', requestId: 'r1', nested: { x: [1, 2, null, true] } })
+    }
+  })
+
+  it('keeps decodeFrame behavior: duplicate-key frames decode to null', () => {
+    expect(decodeFrame('{"type":"ping","type":"pong"}')).toBeNull()
+    expect(decodeFrame('{"type":"ping"}')).toEqual({ type: 'ping' })
   })
 })

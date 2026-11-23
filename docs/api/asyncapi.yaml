@@ -618,6 +618,26 @@ components:
         shaped by `KernelCallFrame` / `KernelCallCancelFrame`; on a
         `dsh-mobile-v1` connection they are not part of the negotiated
         vocabulary at all.
+
+        **`file-upload-status` frame** (issue #IKXGYW, 2026-11-24): an
+        idempotent result query for a chunked upload, exactly for the case
+        where a `file-upload-finish` response was lost to a disconnect.
+        Answers `file-upload-status` with `data.state` = `uploading`
+        (current connection only) | `completed` | `cancelled`. Finished
+        results are kept for 2 minutes (`UPLOAD_RESULT_TTL_MS`) and are
+        scoped to the **device** (not the connection), so a reconnected
+        client can still learn whether that finish succeeded. Unknown or
+        expired ids answer `error` code `file-upload-not-found`.
+
+        **`history` frame — `compact` parameter** (`history-compact-v1`,
+        2026-11-24): the optional boolean `compact: true` asks for a bounded
+        summary projection. Every over-long string inside the events is
+        reduced to "first 512 chars + `…[truncated]…` + last 512 chars"
+        (`HISTORY_COMPACT_KEEP_CHARS`), and the answering `history` frame
+        carries `data.compact: true` so clients know the batch is a summary
+        and must not cache it as full text. Pure server-side projection:
+        `beforeSeq` paging keeps working, and without `compact` the response
+        is byte-identical to previous servers.
       required: [type]
       properties:
         type:
@@ -658,6 +678,7 @@ components:
             - file-upload-chunk
             - file-upload-finish
             - file-upload-cancel
+            - file-upload-status
             # 模型 / 设置（ws-models.ts, ws-settings.ts）
             - models
             - select-model
@@ -808,6 +829,7 @@ components:
             - file-upload-chunk-accepted
             - file-upload-completed
             - file-upload-cancelled
+            - file-upload-status
             # 会话生命周期
             - session-created
             - session-cancelled
@@ -907,7 +929,10 @@ components:
         silently removed — use them for feature detection instead of comparing
         versions. `port` is the local port this connection arrived on; `clients`
         is the current authenticated connection count. `device` is omitted for
-        loopback-admin principals (they are not devices).
+        loopback-admin principals (they are not devices). `maxFrameBytes` (issue
+        #IKXGYX) declares the **effective** inbound per-frame limit for this
+        connection — `maxPayloadBytes` is server-configurable (issue #10), so
+        clients must use this value instead of hard-coding the 1 MiB default.
       required: [protocol, capabilities, authenticated]
       properties:
         protocol:
@@ -920,6 +945,13 @@ components:
         authenticated:
           type: boolean
           const: true
+        maxFrameBytes:
+          type: integer
+          description: |
+            Effective inbound per-frame limit in bytes for this connection.
+            Frames above it are refused by the transport with close `1009`.
+            Always present from protocol revision 3 servers of 2026-11-23 and
+            later; older servers omit it (clients fall back to 1 MiB).
         device:
           type: object
           required: [id, name, scopes, rootIds]
@@ -979,6 +1011,20 @@ components:
         statusCode:
           type: integer
           description: Present when the failure originated from an HTTP-status-shaped upstream error.
+        retryable:
+          type: boolean
+          description: |
+            Server-computed retry guidance (issue: error frames carry structured
+            semantics). `true` — retrying the same request may succeed (transient
+            upstream/internal failure); `false` — retrying verbatim will not (client
+            bug, missing authorization, or settled resource state). **Absent means an
+            unknown code: clients must treat it as `false`.** The mapping is a fixed
+            server-side table (`src/host/error-codes.ts`) mirrored in docs/API.md;
+            senders never annotate per-call.
+        details:
+          description: |
+            Optional structured supplement, only when a code has one (e.g.
+            `RATE_LIMITED` → `retryAfterMs`). Never contains absolute host paths.
 
     # ── 通用内核调用面（issue #26 阶段 5，仅 dshrb-v1 子协议）─────────────────
     #
@@ -1134,7 +1180,7 @@ components:
         maxFrameBytes:
           type: integer
           const: 1048576
-          description: 1 MiB per frame; larger frames are refused with close `1009`.
+          description: 1 MiB default per frame; larger frames are refused with close `1009`. This is the **default** — the effective limit for a connection is declared per-connection in `hello.maxFrameBytes` (issue #IKXGYX) and may be configured smaller or larger (issue #10).
         maxWebSocketPayloadBytes:
           type: integer
           const: 150994944

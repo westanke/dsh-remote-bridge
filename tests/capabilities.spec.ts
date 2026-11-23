@@ -82,6 +82,9 @@ const EVIDENCE: Record<string, { openapi?: string[]; asyncapi?: string[] }> = {
   // 这两条是**行为保证**，不新增路径/事件，因此没有契约字面量可指：
   // 它们的依据在源码（history-budget.ts / chat-adapter 的 replay 方法）与 API.md 的说明里。
   'history-byte-budget-v1': {},
+  // 依据是 AsyncAPI history 帧 description 里的参数说明（data 没有 per-kind schema，
+  // 所以用字面量自指：description 里必须出现 `history-compact-v1` 这四个字符）。
+  'history-compact-v1': { asyncapi: ['history-compact-v1'] },
   'interaction-replay-v1': {},
   // 后台任务：三条能力位分别指向自己的端点（list / output / kill 形态不同，
   // 合并成一条会让「只有 kill 可用」的中间态被误判成完整可用）。

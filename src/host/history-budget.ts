@@ -243,3 +243,36 @@ export function applyHistoryBudget<T extends { events: unknown[]; hasMore: boole
     ...(touched ? { bytes: clamped.bytes, truncated: true } : {}),
   }
 }
+
+// ───────────────────────── 请求式摘要（history-compact-v1） ─────────────────────────
+
+/**
+ * compact 请求的每字符串保留量。
+ *
+ * 客户端带 `compact: true` 拉 history 时，事件里**每个**超长字符串都压到
+ * 「首 512 + `…[truncated]…` + 尾 512」（复用 [clampStrings] 的既有格式——
+ * 客户端已经认识这个标记，不需要为摘要再学一种）。这比逐字段猜「工具输出在哪个键」
+ * 可靠：内核契约不在本仓可查范围内（见文件头「为什么不照抄字段级的做法」）。
+ */
+export const HISTORY_COMPACT_KEEP_CHARS = 512
+
+/**
+ * 按请求生成 history 的**有界摘要**投影（`history` 帧 `compact: true` 参数）。
+ *
+ * 与 [clampHistoryEvents] 的区别：那一个是**服务端兜底**（只在超预算时动手），
+ * 这一个是**客户端请求**（来就是摘要，正常响应也会被压缩）——所以它必然改形状，
+ * 靠响应里的 `compact: true` 标记告诉客户端「这批事件是摘要、别拿去当全文缓存」。
+ * 纯服务端投影：不动内核，翻页（beforeSeq）照旧可用。
+ */
+export function compactHistoryEvents(
+  events: readonly unknown[],
+  keepChars: number = HISTORY_COMPACT_KEEP_CHARS,
+): { events: unknown[]; clamped: number } {
+  let clamped = 0
+  const next = events.map(entry => {
+    const result = clampStrings(entry, keepChars, new WeakSet())
+    clamped += result.clamped
+    return result.value
+  })
+  return { events: next, clamped }
+}

@@ -108,6 +108,8 @@ data class MobileHello(
     val device: MobileDevice? = null,
     val port: Int? = null,
     val clients: Int? = null,
+    /** 本连接的入站单帧上限（字节，issue #IKXGYX）；缺省（老服务端）按 1 MiB 处理。 */
+    val maxFrameBytes: Long? = null,
 )
 
 /** 配对成功的凭证下发帧，只会在 `MobileCredentials.Pairing` 流程里出现，且**早于** hello。 */
@@ -200,6 +202,13 @@ class MobileGatewayException(
      * 那一组帧**不走** `requestId`（服务端刻意不回显），所以关联句柄放在这里。
      */
     val callId: String? = null,
+    /**
+     * 服务端重试指引（error 帧可选字段）：`true` = 原样重试可能成功；`false` = 原样重试不会成功。
+     * **缺省（null）表示未知错误码，按 `false` 处理**——这是保守方向，别把 null 当 true 用。
+     */
+    val retryable: Boolean? = null,
+    /** 服务端附带的结构化补充（如 `RATE_LIMITED` 的 `retryAfterMs`）；绝不包含宿主绝对路径。 */
+    val details: JsonElement? = null,
 ) : RuntimeException(message)
 
 /** 请求发出去了但等不到回帧。多半是服务端不认识这个 type，或帧被背压队列丢了。 */
@@ -505,6 +514,10 @@ class MobileGatewayClient(
     /** 非字符串 primitive（数字/布尔）的 `content` 本身就是字面量文本，取它即可。 */
     private fun JsonPrimitive.contentOrNullSafe(): String = content
 
+    /** JSON 布尔 primitive：非字符串且字面量恰为 true/false 才认，其余（字符串/数字/缺字段）给 null。 */
+    private fun JsonPrimitive.booleanOrNullSafe(): Boolean? =
+        if (!isString && (content == "true" || content == "false")) content.toBooleanStrict() else null
+
     // ── 请求-响应 ────────────────────────────────────────────────────────────
 
     /**
@@ -738,6 +751,8 @@ class MobileGatewayClient(
             requestType = data?.get("requestType")?.jsonPrimitive?.contentOrNullSafe() ?: type,
             requestId = reply.requestId,
             statusCode = data?.get("statusCode")?.jsonPrimitive?.contentOrNullSafe()?.toIntOrNull(),
+            retryable = data?.get("retryable")?.jsonPrimitive?.booleanOrNullSafe(),
+            details = data?.get("details"),
         )
     }
 

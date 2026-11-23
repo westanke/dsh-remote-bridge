@@ -9,7 +9,7 @@
  */
 import { HISTORY_FORMAT_VERSION } from '../capabilities.ts'
 import { ApiError } from '../errors.ts'
-import { applyHistoryBudget } from '../history-budget.ts'
+import { applyHistoryBudget, compactHistoryEvents } from '../history-budget.ts'
 import { resolveAuthorizedPath, wireRelative } from '../path-policy.ts'
 import { randomUUID } from 'node:crypto'
 import { lstat } from 'node:fs/promises'
@@ -225,8 +225,8 @@ export const sessionsMethods = {
     this: ChatAdapterInternals,
     principal: Principal,
     sessionId: string,
-    options: { beforeSeq?: number; maxMessages?: number },
-  ): Promise<{ events: unknown[]; hasMore: boolean; projections?: unknown; bytes?: number; truncated?: boolean; historyFormatVersion?: number }> {
+    options: { beforeSeq?: number; maxMessages?: number; compact?: boolean },
+  ): Promise<{ events: unknown[]; hasMore: boolean; projections?: unknown; bytes?: number; truncated?: boolean; compact?: boolean; historyFormatVersion?: number }> {
     await this.requireSession(principal, sessionId)
     const payload = {
       sessionId,
@@ -241,7 +241,17 @@ export const sessionsMethods = {
     // 带上**事件形状版本**：客户端可据此判断「这份 events 我能不能解析」。
     // 本轮只声明、不校验 —— 强制校验会打断已发布客户端的 beforeSeq 分页
     // （它们不认识这个字段，也就谈不上带对版本）。详见 capabilities.ts 的说明。
-    return { ...applyHistoryBudget(raw), historyFormatVersion: HISTORY_FORMAT_VERSION }
+    const budgeted = applyHistoryBudget(raw)
+    if (options.compact !== true) return { ...budgeted, historyFormatVersion: HISTORY_FORMAT_VERSION }
+    // 请求式摘要（history-compact-v1，issue #IKXGYV）：先按预算兜底，再做有界摘要。
+    // 摘要必然改形状，所以靠 `compact: true` 标记让客户端知道「这批不是全文缓存」。
+    const compacted = compactHistoryEvents(budgeted.events)
+    return {
+      ...budgeted,
+      events: compacted.events,
+      compact: true,
+      historyFormatVersion: HISTORY_FORMAT_VERSION,
+    }
   },
 
   /**

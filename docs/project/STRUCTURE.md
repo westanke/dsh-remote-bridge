@@ -76,7 +76,7 @@ dsh-remote-bridge/
     image-handoff.ts            识图路径设置 + 只读图片路由
     cloudflared.ts              Cloudflare 隧道进程管理
     config-text.ts              DSH1: 配置文本编解码
-    path-policy.ts / root-resolver.ts / history-budget.ts / wire-json.ts / errors.ts
+    path-policy.ts / root-resolver.ts / history-budget.ts / wire-json.ts / errors.ts / error-codes.ts
     host-service-probe.ts       注入面探针（观测，不参与业务）
 ```
 
@@ -140,7 +140,8 @@ host services 之上重建 0.1.x 的 `apiProxy` 面容，让 `chat-adapter` / `s
 | `event-bus.ts` | `WorkspaceEventBus`：进程内订阅/发布，server 据此扇出到 WS |
 | `rate-limit.ts` | `FixedWindowLimiter`：固定窗口限流（鉴权失败、配对尝试、普通请求三档） |
 | `errors.ts` | `ApiError` / `asApiError`：REST 错误码与 HTTP 状态的统一载体 |
-| `wire-json.ts` | 出网 JSON 安全序列化（孤立 UTF-16 代理项换 U+FFFD） |
+| `wire-json.ts` | 出网 JSON 安全序列化（孤立 UTF-16 代理项换 U+FFFD）；入站严格解析（重复键拒绝） |
+| `error-codes.ts` | mobile WS `error` 帧错误码语义表：五组分组 + `retryable` 判定（`sendFrame` 出口统一注入，未知码不写字段） |
 | `path-policy.ts` | 相对路径校验（拒绝绝对路径/盘符/UNC/`..`/Windows 保留名） |
 | `root-resolver.ts` | 绝对路径 → 「属于哪个授权根 + 相对路径」 |
 | `history-budget.ts` | 历史响应的字节预算与从最旧端裁剪（防手机端 OOM） |
@@ -323,6 +324,7 @@ host services 之上重建 0.1.x 的 `apiProxy` 面容，让 `chat-adapter` / `s
 | `src/host/db/trash.ts` | file | 回收站记录表族 TrashTable（insert/updateStatus/get/list/remove） |
 | `src/host/dsh-0.2-bridge.ts` | file | DSH 0.2.x 适配层组装根（工厂 + bridge/ re-export 面，公开 API 零改动） |
 | `src/host/errors.ts` | file | ApiError 与错误归一 |
+| `src/host/error-codes.ts` | file | error 帧错误码语义表（五组 + retryable，issue #IKXGYS） |
 | `src/host/event-bus.ts` | file | 进程内事件总线 |
 | `src/host/file-service.ts` | file | 授权根文件服务 |
 | `src/host/history-budget.ts` | file | 历史字节预算与裁剪 |
@@ -358,7 +360,7 @@ host services 之上重建 0.1.x 的 `apiProxy` 面容，让 `chat-adapter` / `s
 | `src/host/ws-commands.ts` | file | 移动端网关 WS 命令域（commands/command-execute、model/permission 通用二级菜单 command-options/select、permission 会话档位切换，/ws/mobile） |
 | `src/host/ws-connection-policy.ts` | file | 移动端网关 WS 连接策略（连接上限判定 + 心跳调度，持 sockets 引用而非副本，/ws/mobile） |
 | `src/host/ws-event-bridge.ts` | file | 移动端网关 WS 事件桥：订阅事件总线，按主体授权 + subscribe 会话白名单过滤后主动推 {kind:'event'}（/ws/mobile） |
-| `src/host/ws-file-transfer.ts` | file | 移动端网关 WS 分块文件传输域（file-download open/read/cancel 随机读+末块 SHA-256；file-upload open/chunk/finish/cancel spool 落盘+校验+内核附件换 receiptId，/ws/mobile） |
+| `src/host/ws-file-transfer.ts` | file | 移动端网关 WS 分块文件传输域（file-download open/read/cancel 随机读+末块 SHA-256；file-upload open/chunk/finish/cancel spool 落盘+校验+内核附件换 receiptId；file-upload-status 结果幂等查询，设备级归属，2 分钟 TTL，/ws/mobile） |
 | `src/host/ws-files.ts` | file | 移动端网关 WS 文件浏览域（file-list、directory-create，授权根内目录列举/建目录与分页，/ws/mobile） |
 | `src/host/ws-goals.ts` | file | 移动端网关 WS 任务/目标/统计域（tasks/goal/session-stats/context-usage 读会话投影；goal-* 写代理内核 goals Remote，缺失回 unsupported） |
 | `src/host/ws-handler.ts` | file | 移动端网关 WebSocket 总装（/ws/mobile）：子协议 dsh-pair/dsh-auth、鉴权三入口、hello 帧、消息分发、发送/背压路径；5 个基础帧见 ws-basic.ts，连接上限与心跳见 ws-connection-policy.ts |

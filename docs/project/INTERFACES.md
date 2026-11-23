@@ -487,10 +487,11 @@ export class FileService {  // 构造 (database, emit)
 | `WorkspaceEventBus`（`emit` / `subscribe`） | `event-bus.ts` | 进程内事件总线 |
 | `FixedWindowLimiter`（`consume`） | `rate-limit.ts` | 限流 |
 | `ApiError` / `asApiError` | `errors.ts` | 错误载体 |
-| `stringifyWire` / `sanitizeLoneSurrogates` | `wire-json.ts` | 出网 JSON 安全序列化 |
+| `ErrorFrameGroup` / `errorFrameGroup` / `errorFrameRetryable` | `error-codes.ts` | error 帧错误码语义表（五组 + retryable；issue #IKXGYS） |
+| `stringifyWire` / `sanitizeLoneSurrogates` / `parseWireJson` / `WireParseResult` / `WIRE_JSON_INVALID` | `wire-json.ts` | 出网安全序列化 + 入站严格解析（重复键拒绝，issue #IKXGYR） |
 | `validateRelativePath` / `canonicalRoot` / `resolveAuthorizedPath` / `isPathInside` / `wireRelative` / `parentWirePath` | `path-policy.ts` | 路径策略 |
 | `matchAuthorizedRoot` / `matchAuthorizedRootResolved` / `inspectResolvedPath` | `root-resolver.ts` | 绝对路径 → 授权根 |
-| `HISTORY_BYTE_BUDGET` / `HISTORY_EVENT_BYTE_BUDGET` / `HISTORY_KEEP_CHARS` / `clampHistoryEvents` / `applyHistoryBudget` | `history-budget.ts` | 历史字节预算 |
+| `HISTORY_BYTE_BUDGET` / `HISTORY_EVENT_BYTE_BUDGET` / `HISTORY_KEEP_CHARS` / `HISTORY_COMPACT_KEEP_CHARS` / `clampHistoryEvents` / `selectWithinBudget` / `applyHistoryBudget` / `compactHistoryEvents` | `history-budget.ts` | 历史字节预算与 compact 摘要投影（`history-compact-v1`） |
 | `normalizeHandoffSubdir` / `readHandoffSubdir` / `saveHandoffSubdir` / `imageHandoffView` / `declaredMediaType` / `sniffMediaType` / `loopbackHost` / `pluginPageReferer` / `sameOrigin` / `createImageRouteHandler` / `IMAGE_ROUTE` / `HANDOFF_FILE_NAME` / `HANDOFF_MEDIA_TYPES` | `image-handoff.ts` | 识图路径与只读图片路由 |
 | `CloudflaredTunnelManager` / `ensureCloudflared` / `downloadUrlFor` / `archSuffix` / `extractQuickTunnelUrl` / `downloadHttps` / `isDebSource` | `cloudflared.ts` | 隧道管理 |
 | `classifyHost` / `detectEndpoints` / `normalizeBaseUrl` / `composeCandidates` / `defaultDisplayName` / `DEFAULT_PORT` / `KIND_LABEL` / `EndpointKind` / `CandidateSources` | `config-text.ts` | 候选地址表与多路候选（`composeCandidates`：隧道在前 + 本机 LAN/虚拟网，地址去重）。2.17.0 起不再导出 `DSH1:` 编码器（issue #28：IM 长文本掉字符） |
@@ -672,7 +673,12 @@ export const PLUGIN_VERSION: string          // shared/version.ts，与 package.
 | `export class WorkspaceEventBus` | `src/host/event-bus.ts` | class |
 | `export class FixedWindowLimiter` | `src/host/rate-limit.ts` | class |
 | `export class ApiError` | `src/host/errors.ts` | class |
+| `export type ErrorFrameGroup` | `src/host/error-codes.ts` | type |
+| `export function errorFrameGroup` | `src/host/error-codes.ts` | function |
+| `export function errorFrameRetryable` | `src/host/error-codes.ts` | function |
 | `export function stringifyWire` | `src/host/wire-json.ts` | function |
+| `export function sanitizeLoneSurrogates` | `src/host/wire-json.ts` | function |
+| `export function parseWireJson` | `src/host/wire-json.ts` | function（入站严格解析：对象内重复键拒绝，含转义后同名；失败统一泛化 `WIRE_JSON_INVALID`） |
 | `export class MobileGatewayWsHandler` | `src/host/ws-handler.ts` | class |
 | `attachHostServices` | `src/host/ws-handler.ts` | method（注入全局模型目录与文件浏览依赖） |
 | `attachRemoteServices` | `src/host/ws-handler.ts` | method（注入内核可选 typert 远程服务，定时任务/语音代理） |
@@ -706,6 +712,7 @@ export const PLUGIN_VERSION: string          // shared/version.ts，与 package.
 | `export class FileTransferHandler` | `src/host/ws-file-transfer.ts` | class（分块下载/上传，连接隔离 + 并发上限 + SHA-256） |
 | `closeConnection` | `src/host/ws-file-transfer.ts` | method（连接关闭清理该连接全部传输） |
 | `mediaTypeOf` | `src/host/ws-file-transfer.ts` | function |
+| `UPLOAD_RESULT_TTL_MS` | `src/host/ws-file-transfer.ts` | const（`file-upload-status` 已结束上传结果保留时长，2 分钟，issue #IKXGYW） |
 | `speechAudioLimit` | `src/host/ws-speech.ts` | function |
 | `normalizeSpeechCatalog` | `src/host/ws-speech.ts` | function |
 | `normalizeSpeechTranscript` | `src/host/ws-speech.ts` | function |
@@ -736,11 +743,12 @@ export const PLUGIN_VERSION: string          // shared/version.ts，与 package.
 | `export interface ServerFrame` | `src/host/ws-protocol.ts` | interface |
 | `export type SendFrame` | `src/host/ws-protocol.ts` | type |
 | `export function encodeFrame` | `src/host/ws-protocol.ts` | function |
-| `export function decodeFrame` | `src/host/ws-protocol.ts` | function |
+| `export function decodeFrame` | `src/host/ws-protocol.ts` | function（走 `parseWireJson` 严格解析：重复键帧 → null → 调用方回 `INVALID_FRAME`） |
 | `export function makeServerFrame` | `src/host/ws-protocol.ts` | function |
 | `export function validateRelativePath` | `src/host/path-policy.ts` | function |
 | `export function matchAuthorizedRoot` | `src/host/root-resolver.ts` | function |
 | `export function clampHistoryEvents` | `src/host/history-budget.ts` | function |
+| `export function compactHistoryEvents` | `src/host/history-budget.ts` | function |
 | `export function createImageRouteHandler` | `src/host/image-handoff.ts` | function |
 | `export class CloudflaredTunnelManager` | `src/host/cloudflared.ts` | class |
 | `export function composeCandidates` | `src/host/config-text.ts` | function |

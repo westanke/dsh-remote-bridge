@@ -1,0 +1,4 @@
+{
+  "kind": "connection-resync-required",
+  "data": { "dropped": 12, "reason": "backpressure" }
+}

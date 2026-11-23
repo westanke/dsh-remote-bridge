@@ -89,6 +89,10 @@ export const BRIDGE_CAPABILITIES: readonly string[] = [
   'turn-failure-v1', // chat.turn.failed
   // —— 本仓在 2026-10-17 加的传输层保证 ——
   'history-byte-budget-v1', // 见 history-budget.ts：超预算时从最旧端丢并置 hasMore
+  // WS `history` 帧的 `compact: true` 参数（2026-11-24，issue #IKXGYV）：请求有界摘要投影 ——
+  // 事件里每个超长字符串压到「首 512 + 标记 + 尾 512」，响应带 `compact: true` 标明
+  // 「这批是摘要、别当全文缓存」。纯服务端投影，`beforeSeq` 翻页照旧可用。
+  'history-compact-v1', // 见 history-budget.ts compactHistoryEvents：AsyncAPI history 帧 description
   'interaction-replay-v1', // 见 chat-adapter.replayPending*：新连接会补推仍待处理的审批/提问
   'session-snapshot-v1', // chat.session.snapshot：订阅基线（持久 seq 的切点），供断档检测
   // —— /ws/mobile 会话投影读取（2026-10-28）：都读 session/projections，不需额外内核服务 ——

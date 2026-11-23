@@ -1,0 +1,29 @@
+{
+  "kind": "models",
+  "data": {
+    "sessionId": "sess-1",
+    "current": {
+      "provider": "openai",
+      "model": "gpt-x"
+    },
+    "routable": true,
+    "groups": [
+      {
+        "id": "openai",
+        "name": "OpenAI",
+        "models": [
+          {
+            "id": "gpt-x",
+            "name": "GPT X"
+          },
+          {
+            "id": "gpt-y",
+            "name": "GPT Y"
+          }
+        ]
+      }
+    ],
+    "failures": [],
+    "requestId": "fx-models"
+  }
+}

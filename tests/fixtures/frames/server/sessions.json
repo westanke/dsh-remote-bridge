@@ -1,0 +1,30 @@
+{
+  "kind": "sessions",
+  "data": {
+    "sessions": [
+      {
+        "id": "sess-1",
+        "rootId": "<ROOT>",
+        "cwd": "",
+        "cwdAbsolute": "<PROJECT>",
+        "updatedAt": 1,
+        "running": false,
+        "blank": true,
+        "workspaceId": "ws-1",
+        "workspaceTitle": "Project"
+      },
+      {
+        "id": "sess-2",
+        "rootId": "<ROOT>",
+        "cwd": "",
+        "cwdAbsolute": "<PROJECT>",
+        "updatedAt": 2,
+        "running": false,
+        "blank": false,
+        "workspaceId": "ws-1",
+        "workspaceTitle": "Project"
+      }
+    ],
+    "requestId": "fx-sessions"
+  }
+}

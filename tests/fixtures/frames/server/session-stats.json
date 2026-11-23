@@ -1,0 +1,10 @@
+{
+  "kind": "session-stats",
+  "data": {
+    "sessionId": "sess-1",
+    "tokenUsage": null,
+    "contextPressure": null,
+    "sessionStats": null,
+    "requestId": "fx-session-stats"
+  }
+}

@@ -8,7 +8,7 @@ import { classifyHost, type ConfigEndpoint } from '../config-text.ts'
 import { ApiError } from '../errors.ts'
 import { getMetricsSnapshot, type MetricsSnapshot } from '../metrics.ts'
 import { type RouterOptions } from '../router.ts'
-import { stringifyWire } from '../wire-json.ts'
+import { parseWireJson, stringifyWire } from '../wire-json.ts'
 
 /** 路由上下文：dispatch/management 块的公共载体（issue #3）。 */
 export interface RouteCtx {
@@ -102,8 +102,14 @@ export async function readJson(req: IncomingMessage, maxBytes: number): Promise<
   const bytes = await readBytes(req, maxBytes)
   if (bytes.length === 0) return {}
   try {
-    return JSON.parse(Buffer.from(bytes).toString('utf8'))
-  } catch {
+    // issue #IKXGYR：REST body 与 WS 入站同一条纪律 —— 严格 UTF-8（fatal 解码，
+    // 拒绝被静默替换成 U+FFFD 的坏字节）+ 对象内重复键拒绝，失败统一 400 泛化文案。
+    const text = new TextDecoder('utf-8', { fatal: true }).decode(bytes)
+    const parsed = parseWireJson(text)
+    if (!parsed.ok) throw new ApiError(400, 'JSON_INVALID', 'The request body is not valid JSON.')
+    return parsed.value
+  } catch (error) {
+    if (error instanceof ApiError) throw error
     throw new ApiError(400, 'JSON_INVALID', 'The request body is not valid JSON.')
   }
 }

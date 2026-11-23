@@ -23,6 +23,7 @@ import type { DshChatAdapter } from './chat-adapter.ts'
 import type { AuthService } from './auth.ts'
 import type { WorkspaceEventBus } from './event-bus.ts'
 import { ApiError } from './errors.ts'
+import { errorFrameRetryable } from './error-codes.ts'
 import { availableCapabilities, type CapabilityFlags } from './capabilities.ts'
 import {
   WS_PATH,
@@ -709,6 +710,9 @@ export class MobileGatewayWsHandler {
       // 与上游 hello 对齐：port 为本连接实际接入的监听端口，clients 为当前已鉴权连接数。
       ...(state.listenerPort !== undefined ? { port: state.listenerPort } : {}),
       clients: this.sockets.size,
+      // 宣告本连接的入站单帧上限（issue #IKXGYX）：`maxPayloadBytes` 可配（issue #10），
+      // 客户端不该按 1 MiB 默认值硬编码。总是带，值就是生效值。
+      maxFrameBytes: this.maxPayloadBytes,
       ...(state.device !== undefined ? {
         device: {
           id: state.device.id,
@@ -946,6 +950,15 @@ export class MobileGatewayWsHandler {
    */
   private sendFrame(webSocket: WebSocket, frame: ServerFrame): void {
     const state = this.stateOf(webSocket)
+    // error 帧出口统一注入 `retryable`（issue #IKXGYS）：发送点只管给 code，语义查表
+    // 在这里做，保证任何一条错误路径都不会漏标。未知码不写字段（客户端按 false 处理）。
+    if (frame.kind === 'error') {
+      const data = frame.data as { code?: string; retryable?: boolean }
+      if (typeof data.code === 'string' && data.retryable === undefined) {
+        const retryable = errorFrameRetryable(data.code)
+        if (retryable !== undefined) frame = { ...frame, data: { ...data, retryable } } as ServerFrame
+      }
+    }
     const text = encodeFrame(withRequestIdEcho(frame, this.frameRequestId.getStore()))
     const rebuildable = isRebuildableServerFrame(frame.kind)
 

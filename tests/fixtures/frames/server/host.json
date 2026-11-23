@@ -1,0 +1,12 @@
+{
+  "kind": "host",
+  "data": {
+    "version": "remote-bridge",
+    "dshVersion": "<DSH_VERSION>",
+    "cwd": "<HOME>",
+    "attachedSessions": 0,
+    "canOpenPath": false,
+    "defaultProvider": "openai",
+    "defaultModel": "gpt-x"
+  }
+}

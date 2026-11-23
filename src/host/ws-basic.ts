@@ -90,9 +90,11 @@ export class MobileBasicFrames {
     }
     const beforeSeq = (frame as { beforeSeq?: number }).beforeSeq
     const maxMessages = (frame as { maxMessages?: number }).maxMessages
+    const compact = (frame as { compact?: boolean }).compact === true
     const opts: Record<string, unknown> = {}
     if (beforeSeq !== undefined) opts.beforeSeq = beforeSeq
     if (maxMessages !== undefined) opts.maxMessages = maxMessages
+    if (compact) opts.compact = true
     const { events, hasMore, projections } = await this.chat.history(this.principal, sessionId, opts)
     // 队列首屏（issue IKX1ZM）：队列的数据源就是投影里的 `inbox`，history 首屏既然已经
     // 带了整份投影，就顺手归一成 `queue: QueueEntry[]` —— 客户端不必先发一次
@@ -114,6 +116,9 @@ export class MobileBasicFrames {
         // 每页都塞一份纯属浪费额度。
         ...(beforeSeq !== undefined || projections === undefined ? {} : { projections }),
         ...(queue === undefined ? {} : { queue }),
+        // 摘要投影标记（history-compact-v1，issue #IKXGYV）：客户端据此知道自己
+        // 拿到的是有界摘要，不能拿它当全文缓存；不请求 compact 时该字段不出现。
+        ...(compact ? { compact: true } : {}),
       },
     })
   }

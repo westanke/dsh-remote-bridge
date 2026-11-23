@@ -307,6 +307,8 @@ describe('mobile gateway WebSocket (/ws/mobile) — authenticated session', () =
 
     const hello = frames.find(frame => frame.kind === 'hello')
     expect(hello?.data).toMatchObject({ protocol: 3, authenticated: true })
+    // 宣告生效的入站单帧上限（issue #IKXGYX）；默认配置下就是 1 MiB。
+    expect((hello?.data as { maxFrameBytes?: number }).maxFrameBytes).toBe(1024 * 1024)
     socket.close()
   })
 
@@ -2968,6 +2970,274 @@ describe('mobile gateway WebSocket (/ws/mobile) — kernel-call plane', () => {
     // 关键：旧连接拿到的是「能力暂缺」，不是 UNKNOWN_TYPE —— 说明这帧已从兜底表挪进真处理器。
     expect(error.code).toBe('NOT_IMPLEMENTED')
     expect(error.requestType).toBe('plugin-catalog')
+    socket.close()
+  })
+})
+
+describe('mobile gateway WebSocket (/ws/mobile) — inbound wire JSON (issue #IKXGYR)', () => {
+  it('answers a duplicate-key frame with INVALID_FRAME and keeps the connection usable', async () => {
+    const { database, root, url } = await startHarness()
+    const pairing = database.createPairing([root.id], ['chat.read'])
+    const credentials = database.exchangePairing(pairing.code, 'Wire JSON device')
+    const socket = connect(url, {
+      protocols: [`dsh-auth.${credentials.token}`, 'dsh-mobile-v1'],
+      headers: { Authorization: `Bearer ${credentials.token}` },
+    })
+    const { frames } = collect(socket)
+    await new Promise<void>((resolve, reject) => {
+      socket.once('open', resolve)
+      socket.once('error', reject)
+    })
+    await nextKind(frames, 'hello')
+
+    // 重复键（含转义同名）不再静默取末值：回 error 帧，且不断链
+    socket.send('{"type":"ping","type":"pong"}')
+    await nextKind(frames, 'error')
+    const error = frames.find(frame => frame.kind === 'error')?.data as { code?: string }
+    expect(error.code).toBe('INVALID_FRAME')
+
+    // 同一条连接还能继续用：合法 ping 照常回 pong（拒帧 ≠ 断链）
+    socket.send(JSON.stringify({ type: 'ping', requestId: 'after-dup' }))
+    await nextKind(frames, 'pong')
+    socket.close()
+  })
+})
+
+describe('mobile gateway WebSocket (/ws/mobile) — error 帧 retryable 注入 (issue #IKXGYS)', () => {
+  /** 发一帧，收第一条 error，返回其 data（等 hello → 发帧 → 等 error）。 */
+  async function errorFor(payload: string): Promise<{ code?: string; retryable?: boolean; details?: unknown }> {
+    const { database, root, url } = await startHarness()
+    const pairing = database.createPairing([root.id], ['chat.read'])
+    const credentials = database.exchangePairing(pairing.code, 'Retryable device')
+    const socket = connect(url, {
+      protocols: [`dsh-auth.${credentials.token}`, 'dsh-mobile-v1'],
+      headers: { Authorization: `Bearer ${credentials.token}` },
+    })
+    const { frames } = collect(socket)
+    await new Promise<void>((resolve, reject) => {
+      socket.once('open', resolve)
+      socket.once('error', reject)
+    })
+    await nextKind(frames, 'hello')
+    socket.send(payload)
+    await nextKind(frames, 'error')
+    const data = frames.find(frame => frame.kind === 'error')?.data as { code?: string; retryable?: boolean }
+    socket.close()
+    return data
+  }
+
+  it('UNKNOWN_TYPE 帧带 retryable:false（用法错不可重试）', async () => {
+    const error = await errorFor(JSON.stringify({ type: 'no-such-frame-xyz', requestId: 'r1' }))
+    expect(error.code).toBe('UNKNOWN_TYPE')
+    expect(error.retryable).toBe(false)
+  })
+
+  it('发一个会撞 INTERNAL_ERROR 的域错误时带 retryable:true（内部错可重试）', async () => {
+    // apiOverrides 让 sessions() 抛非 ApiError 的普通异常 → reportFrameError 兜底成 INTERNAL_ERROR。
+    // fakeApi 的形状是 api.sessions.list（嵌套对象），浅合并要整段替换 sessions。
+    const { database, root, url } = await startHarness({
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      apiOverrides: (api: any) => ({
+        ...api,
+        sessions: { ...api.sessions, list: async () => { throw new Error('boom') } },
+      }),
+    })
+    const pairing = database.createPairing([root.id], ['chat.read'])
+    const credentials = database.exchangePairing(pairing.code, 'Boom device')
+    const socket = connect(url, {
+      protocols: [`dsh-auth.${credentials.token}`, 'dsh-mobile-v1'],
+      headers: { Authorization: `Bearer ${credentials.token}` },
+    })
+    const { frames } = collect(socket)
+    await new Promise<void>((resolve, reject) => {
+      socket.once('open', resolve)
+      socket.once('error', reject)
+    })
+    await nextKind(frames, 'hello')
+    socket.send(JSON.stringify({ type: 'sessions', requestId: 'r2' }))
+    await nextKind(frames, 'error')
+    const error = frames.find(frame => frame.kind === 'error')?.data as { code?: string; retryable?: boolean }
+    expect(error.code).toBe('INTERNAL_ERROR')
+    expect(error.retryable).toBe(true)
+    socket.close()
+  })
+})
+
+describe('mobile gateway WebSocket (/ws/mobile) — history compact 投影 (issue #IKXGYV)', () => {
+  const LONG = 'x'.repeat(3_000)
+
+  async function authed(database: WorkspaceDatabase, rootId: string, url: string) {
+    const pairing = database.createPairing([rootId], ['chat.read'] as never)
+    const credentials = database.exchangePairing(pairing.code, 'Mobile device')
+    const socket = connect(url, {
+      protocols: 'dsh-mobile-v1',
+      headers: { Authorization: `Bearer ${credentials.token}` },
+    })
+    const { frames } = collect(socket)
+    await new Promise<void>((resolve, reject) => {
+      socket.once('open', resolve)
+      socket.once('error', reject)
+    })
+    await nextKind(frames, 'hello')
+    return { socket, frames }
+  }
+
+  /** 一条事件里塞一个超长字符串；compact 请求应把它压到首尾各 512。 */
+  function longEventHistory() {
+    return {
+      sessions: undefined,
+      history: async (request: { rpcId: string; payload: { beforeSeq?: number; compact?: boolean } }) => ({
+        rpcId: request.rpcId,
+        result: {
+          ok: true,
+          value: {
+            events: [
+              { seq: 1, type: 'message', role: 'user', content: 'short' },
+              { seq: 2, type: 'tool/result', output: LONG },
+            ],
+            hasMore: false,
+          },
+        },
+      }),
+    }
+  }
+
+  it('compact: true 返回有界摘要并带 compact 标记；不请求时事件原样', async () => {
+    const { database, root, url } = await startHarness({
+      apiOverrides: api => ({ sessions: { ...api.sessions, ...longEventHistory() } }),
+    })
+    const { socket, frames } = await authed(database, root.id, url)
+
+    socket.send(JSON.stringify({ type: 'history', sessionId: 'sess-1' }))
+    await nextKind(frames, 'history')
+    const plain = frames.find(frame => frame.kind === 'history')?.data as {
+      compact?: boolean
+      events?: Array<{ output?: string }>
+    }
+    // 不请求 compact：与旧版逐字节一致 —— 无 compact 标记、长字符串原样。
+    expect(plain.compact).toBeUndefined()
+    expect(plain.events?.[1]?.output).toBe(LONG)
+
+    socket.send(JSON.stringify({ type: 'history', sessionId: 'sess-1', compact: true }))
+    await new Promise(resolve => setTimeout(resolve, 80))
+    const compacted = frames.filter(frame => frame.kind === 'history')[1]?.data as {
+      compact?: boolean
+      events?: Array<{ output?: string }>
+    }
+    expect(compacted.compact).toBe(true)
+    const output = compacted.events?.[1]?.output ?? ''
+    // 首尾各保留 512、中间是既有省略标记；短字符串不受影响。
+    expect(output.startsWith('x'.repeat(512))).toBe(true)
+    expect(output.endsWith('x'.repeat(512))).toBe(true)
+    expect(output).toContain('…[truncated]…')
+    expect(output.length).toBeLessThan(3_000)
+    expect((compacted.events?.[0] as { content?: string })?.content).toBe('short')
+    socket.close()
+  })
+})
+
+describe('mobile gateway WebSocket (/ws/mobile) — file-upload-status 幂等结果查询 (issue #IKXGYW)', () => {
+  it('完成的上传在重连后仍可查到（device 归属），未知 id 回 file-upload-not-found', async () => {
+    const { database, root, url } = await startHarness()
+    const pairing = database.createPairing([root.id], ['chat.read', 'chat.write', 'files.write'] as never)
+    const credentials = database.exchangePairing(pairing.code, 'Mobile device')
+    const open = () => {
+      const socket = connect(url, {
+        protocols: 'dsh-mobile-v1',
+        headers: { Authorization: `Bearer ${credentials.token}` },
+      })
+      const { frames } = collect(socket)
+      return { socket, frames }
+    }
+
+    const a = open()
+    await new Promise<void>((resolve, reject) => {
+      a.socket.once('open', resolve)
+      a.socket.once('error', reject)
+    })
+    await nextKind(a.frames, 'hello')
+    const payload = Buffer.from('status-query-payload')
+    const sha256 = createHash('sha256').update(payload).digest('hex')
+    a.socket.send(JSON.stringify({
+      type: 'file-upload-open', requestId: 's1', sessionId: 'sess-1',
+      name: 'status.txt', size: payload.length, sha256,
+    }))
+    await nextKind(a.frames, 'file-upload-opened')
+    const uploadId = (a.frames.find(frame => frame.kind === 'file-upload-opened')?.data as { uploadId: string }).uploadId
+    a.socket.send(JSON.stringify({
+      type: 'file-upload-chunk', requestId: 's1-c', uploadId, offset: 0, data: payload.toString('base64'),
+    }))
+    await nextKind(a.frames, 'file-upload-chunk-accepted')
+    a.socket.send(JSON.stringify({ type: 'file-upload-finish', requestId: 's1-f', uploadId }))
+    await nextKind(a.frames, 'file-upload-completed')
+    // 断线：结果必须留在设备级表里（这是这个帧存在的理由）。
+    a.socket.close()
+
+    const b = open()
+    await new Promise<void>((resolve, reject) => {
+      b.socket.once('open', resolve)
+      b.socket.once('error', reject)
+    })
+    await nextKind(b.frames, 'hello')
+    b.socket.send(JSON.stringify({ type: 'file-upload-status', requestId: 's1-q', uploadId }))
+    await nextKind(b.frames, 'file-upload-status')
+    const status = b.frames.find(frame => frame.kind === 'file-upload-status')?.data as
+      { state?: string; receiptId?: string; sha256?: string; requestId?: string }
+    expect(status.requestId).toBe('s1-q')
+    expect(status.state).toBe('completed')
+    expect(status.receiptId).toMatch(/^att-/)
+    expect(status.sha256).toBe(sha256)
+
+    // 未知 id → 既有错误码（不新造码）。
+    b.socket.send(JSON.stringify({ type: 'file-upload-status', requestId: 's1-u', uploadId: 'no-such-upload' }))
+    await nextKind(b.frames, 'error')
+    const error = b.frames.filter(frame => frame.kind === 'error').pop()?.data as { code?: string }
+    expect(error.code).toBe('file-upload-not-found')
+    b.socket.close()
+  })
+
+  it('进行中的上传报 uploading（带 offset/size），取消后报 cancelled', async () => {
+    const { database, root, url } = await startHarness()
+    const pairing = database.createPairing([root.id], ['chat.read', 'chat.write', 'files.write'] as never)
+    const credentials = database.exchangePairing(pairing.code, 'Mobile device')
+    const socket = connect(url, {
+      protocols: 'dsh-mobile-v1',
+      headers: { Authorization: `Bearer ${credentials.token}` },
+    })
+    const { frames } = collect(socket)
+    await new Promise<void>((resolve, reject) => {
+      socket.once('open', resolve)
+      socket.once('error', reject)
+    })
+    await nextKind(frames, 'hello')
+    const payload = Buffer.from('partial')
+    socket.send(JSON.stringify({
+      type: 'file-upload-open', requestId: 'p1', sessionId: 'sess-1',
+      name: 'partial.txt', size: payload.length, sha256: createHash('sha256').update(payload).digest('hex'),
+    }))
+    await nextKind(frames, 'file-upload-opened')
+    const uploadId = (frames.find(frame => frame.kind === 'file-upload-opened')?.data as { uploadId: string }).uploadId
+
+    socket.send(JSON.stringify({ type: 'file-upload-status', requestId: 'p1-q', uploadId }))
+    await nextKind(frames, 'file-upload-status')
+    const uploading = frames.find(frame => frame.kind === 'file-upload-status')?.data as
+      { state?: string; offset?: number; size?: number }
+    expect(uploading.state).toBe('uploading')
+    expect(uploading.offset).toBe(0)
+    expect(uploading.size).toBe(payload.length)
+
+    socket.send(JSON.stringify({ type: 'file-upload-cancel', requestId: 'p1-x', uploadId }))
+    await nextKind(frames, 'file-upload-cancelled')
+    const before = frames.length - 1
+    socket.send(JSON.stringify({ type: 'file-upload-status', requestId: 'p1-q2', uploadId }))
+    await awaitNewFrame(
+      frames, before,
+      item => item.kind === 'file-upload-status' && (item.data as { requestId?: string })?.requestId === 'p1-q2',
+      'file-upload-status p1-q2',
+    )
+    const cancelled = frames.find(frame => (frame.data as { requestId?: string })?.requestId === 'p1-q2')?.data as
+      { state?: string }
+    expect(cancelled.state).toBe('cancelled')
     socket.close()
   })
 })

@@ -10,6 +10,8 @@
  * 服务端主帽头：{ id, kind, time, data } —— 方便与现有事件流复用基础设施。
  */
 
+import { parseWireJson } from './wire-json.ts'
+
 // ───────────────────────── 路径与子协议 ─────────────────────────
 
 /** WS 升级路径（与 server.ts 的 `/api/v1/events` 并存）。 */
@@ -186,6 +188,7 @@ export type ClientFrameType =
   | 'file-upload-chunk'
   | 'file-upload-finish'
   | 'file-upload-cancel'
+  | 'file-upload-status'
   | 'agent-team'
   | 'subagents'
   | 'speech-catalog'
@@ -251,6 +254,7 @@ export type ServerFrameKind =
   | 'file-upload-chunk-accepted'
   | 'file-upload-completed'
   | 'file-upload-cancelled'
+  | 'file-upload-status'
   | 'agent-team'
   | 'subagents'
   | 'speech-catalog'
@@ -361,6 +365,12 @@ export interface HelloData {
   device?: { id: string; name: string; scopes: string[]; rootIds: string[] }
   port?: number
   clients?: number
+  /**
+   * 本连接的入站单帧上限（字节；issue #IKXGYX）。服务端按实际生效值宣告
+   * （`maxPayloadBytes` 可配，issue #10），客户端据此设置自己发送帧的上限，
+   * 不要按编译期默认值硬编码。超限帧被底层以 close `1009` 拒绝。
+   */
+  maxFrameBytes?: number
 }
 
 /** `paired` 载荷：配对成功后。 */
@@ -388,6 +398,14 @@ export interface HistoryFrame extends ClientFrame {
   maxMessages?: number
   maxBytes?: number
   view?: 'conversation'
+  /**
+   * 请求**有界摘要**投影（能力位 `history-compact-v1`，issue #IKXGYV）。
+   *
+   * `true` 时事件里每个超长字符串压到「首 512 + 标记 + 尾 512」，
+   * 响应 data 带 `compact: true` 标明「这批是摘要、别当全文缓存」。
+   * 纯服务端投影，`beforeSeq` 翻页照旧可用；不带/`false` 与改动前逐字节一致。
+   */
+  compact?: boolean
 }
 
 /** 审批决定客户端帧。 */
@@ -659,6 +677,19 @@ export interface FileUploadCancelFrame extends ClientFrame {
   uploadId: string
 }
 
+/**
+ * 文件上传结果查询客户端帧（issue #IKXGYW）。
+ *
+ * 幂等查询 `uploadId` 的状态：`uploading` / `completed` / `cancelled`。
+ * 已结束的结果保留 2 分钟（[UPLOAD_RESULT_TTL_MS]）且按**设备**归属 ——
+ * 断线重连后仍可查到「那次 finish 到底成没成功」，不必整文件重传。
+ */
+export interface FileUploadStatusFrame extends ClientFrame {
+  type: 'file-upload-status'
+  requestId?: string
+  uploadId: string
+}
+
 // ── 通用内核调用面（issue #26 阶段 5，仅 dshrb-v1 子协议）───────────────────
 //
 // 这一组帧只在客户端**声明**了 `dshrb-v1` 子协议的连接上启用：`dsh-mobile-v1` 的已发布
@@ -720,11 +751,10 @@ export function encodeFrame(frame: unknown): string {
 
 /** 解码一条文本帧；解码失败返回 null（由调用方决定关闭或忽略）。 */
 export function decodeFrame(text: string): unknown | null {
-  try {
-    return JSON.parse(text)
-  } catch {
-    return null
-  }
+  // issue #IKXGYR：入站走严格解析 —— 对象内重复键（含转义后同名）拒绝，
+  // 失败原因统一泛化，不把解析器内部细节回给对端。
+  const parsed = parseWireJson(text)
+  return parsed.ok ? parsed.value : null
 }
 
 /** 构造一条带 `id`/`time` 的服务端主帽头帧。 */

@@ -1,0 +1,9 @@
+{
+  "kind": "context-usage",
+  "data": {
+    "sessionId": "sess-1",
+    "tokenUsage": null,
+    "contextPressure": null,
+    "requestId": "fx-context-usage"
+  }
+}

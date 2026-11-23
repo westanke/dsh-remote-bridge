@@ -690,6 +690,23 @@ curl http://127.0.0.1:3090/api/v1/debug/host-services \
 
 结构性元数据不会返回服务器绝对路径。聊天正文和工具输出属于会话内容，可能包含用户或模型主动写出的路径文本。
 
+### 错误码分组与 `retryable`（issue：error 帧结构化，2026-11-23 起）
+
+错误码按语义分五组（实现表：`src/host/error-codes.ts`，WS `error` 帧与 REST `error` 体共用同一套码）。
+`/ws/mobile` 的 `error` 帧由服务端统一按此表注入可选的 `retryable: boolean`；REST 错误体不加该字段
+（REST 的 HTTP 语义已足够）。**帧上没带 `retryable` = 未知错误码，客户端一律按 `false` 处理。**
+
+| 分组 | `retryable` | 码 | 客户端该怎么做 |
+| --- | --- | --- | --- |
+| usage（用法错） | `false` | `UNKNOWN_TYPE`、`MISSING_TYPE`、`INVALID_FRAME`、`MISSING_PARAMS`、`bad-request`/`BAD_REQUEST`、`REQUEST_INVALID`、`JSON_INVALID`、`NOT_IMPLEMENTED`、`PATH_OUTSIDE_ROOTS` | 客户端 bug 或能力缺失：原样重发永远不会成功，修请求或换内核 |
+| auth（授权缺） | `false` | `AUTH_REQUIRED`、`FORBIDDEN_SCOPE`、`SCOPE_REQUIRED`、`ACCOUNT_SIGNED_OUT`、`TUNNEL_MODE_ADMIN_DISABLED` | 走重新配对/授权流程，重试无意义 |
+| state（状态已定） | `false` | `NOT_FOUND`、`ROUTE_NOT_FOUND`、`SESSION_NOT_FOUND`、`CONFLICT`、`PAYLOAD_TOO_LARGE` | 结果确定，重试只会拿到同一个答案 |
+| upstream（上游暂时性故障） | `true` | `UPSTREAM_UNAVAILABLE`、`SCHEDULE_FAILED`、`TIMEOUT`、`RATE_LIMITED` | 可原样重试；`RATE_LIMITED` 的 `details.retryAfterMs` 给了退避时长 |
+| internal（桥内部错） | `true` | `INTERNAL_ERROR` | 可原样重试，但同一请求反复失败就该上报 |
+
+分组只在文档与本表中成文，**不上帧**；帧上只有 `retryable`。加新错误码时同批登记
+`src/host/error-codes.ts`、本表与 asyncapi 的 `MobileError`。
+
 ### 管理面拒绝码（v2.5.1 起，`403`）
 
 管理面（`/manage/**`）与回环 admin 头（`X-Dsh-Workspace-Admin: 1`）不再只看「TCP 来源是否回环」。
@@ -930,10 +947,12 @@ v2.8 新增，**现在是桥的第一协议面**：新能力只在这里落帧�
 每条被接受的连接，第一帧是 `hello`：
 
 ```json
-{ "kind": "hello", "protocol": 3, "capabilities": [...], "authenticated": true|false, "device": {...}, "port": 3090, "clients": N }
+{ "kind": "hello", "protocol": 3, "capabilities": [...], "authenticated": true|false, "device": {...}, "port": 3090, "clients": N, "maxFrameBytes": 1048576 }
 ```
 
 `capabilities` 与 `connection.ready` 的能力位同源（见 `src/host/capabilities.ts`），命名 `<能力>-v<主版本>`，只增不撤。
+
+`maxFrameBytes`（issue #IKXGYX）：**本连接的入站单帧上限（字节）**。服务端按实际生效值宣告（`maxPayloadBytes` 可配，issue #10），客户端据此设置自己发送帧的上限，不要按 1 MiB 默认值硬编码；超限帧被底层以 close `1009` 拒绝。老版本桥（2026-11-23 之前）不发该字段，客户端缺省回退 1 MiB。
 
 ### requestId 关联（请求/应答配对）
 
@@ -957,10 +976,11 @@ v2.8 新增，**现在是桥的第一协议面**：新能力只在这里落帧�
 | `message` | 发消息（sessionId 可选，省略自动创建新会话） | `sessionId?`, `mode:'queue'|'steer'`, `content` (PromptContentPart[]), `clientTimeZone?`, `workspaceId?`, `cwd?` |
 | `workspaces` | 列工作区 | — |
 | `sessions` | 列会话（按授权过滤） | `archived?` |
-| `history` | 分页拉历史 | `sessionId`, `beforeSeq?`, `maxMessages?`（**`maxBytes?` 与 `view?` 目前声明了但服务端不读**，见下）；**首屏（不带 `beforeSeq`）的响应额外带 `projections`**（与 REST `GET /chat/sessions/{id}/messages` 同源），翻页不带 —— 投影只要一份，而这一帧有 1 MiB 上限。响应带 `hasMore`，**不带** `nextBeforeSeq`（客户端按 `events` 内的 seq 自行推算游标） |
+| `history` | 分页拉历史 | `sessionId`, `beforeSeq?`, `maxMessages?`（**`maxBytes?` 与 `view?` 目前声明了但服务端不读**，见下）；**首屏（不带 `beforeSeq`）的响应额外带 `projections`**（与 REST `GET /chat/sessions/{id}/messages` 同源），翻页不带 —— 投影只要一份，而这一帧有 1 MiB 上限。响应带 `hasMore`，**不带** `nextBeforeSeq`（客户端按 `events` 内的 seq 自行推算游标）。可选 `compact: true`（能力位 `history-compact-v1`，2026-11-24）：请求有界摘要投影（每个超长字符串压到「首 512 + `…[truncated]…` + 尾 512」），响应带 `compact: true` 标明「这批是摘要、别当全文缓存」；纯服务端投影，`beforeSeq` 翻页照旧，不请求时响应与旧版逐字节一致 |
 | `attachment` | 取附件/图片 base64 | `attachmentId` 或 `sessionId+name` |
 | `file-download-open/read/cancel` | 分片下载文件 | open **必带** `requestId`,另带 `sessionId`,`path`（相对会话根，禁 `..`）；read 带 `transferId`,`offset`（严格顺序）；最大 512 MiB，chunk 512 KiB，最大 4 并发，idle 2 min，末块附 `sha256` |
 | `file-upload-open/chunk/finish/cancel` | 分片上传文件 | open **必带** `requestId`,另带 `sessionId`,`name`（叶子名）,`size`,`sha256`；chunk 带 `uploadId`,`offset`,`data`（顺序 base64，块 256 KiB）；finish 校验 SHA-256 后经内核附件通道换 `receiptId`；需 `files.write` scope |
+| `file-upload-status` | 上传结果幂等查询（2026-11-24，issue #IKXGYW） | 只带 `uploadId`（`requestId` 可选）。应答 `file-upload-status`：`state` = `uploading`（仅本连接可见，带 `offset`/`size`）/ `completed`（带 `receiptId`/`file`/`sha256`）/ `cancelled`。已结束结果保留 2 分钟（`UPLOAD_RESULT_TTL_MS`）且按**设备**归属 —— 断线重连后仍可查「那次 finish 到底成没成功」，不必整文件重传；未知/过期回 `error code:'file-upload-not-found'` |
 | `file-resolve` | 文件预览元数据（不取字节） | **必带** `requestId`,另带 `sessionId`,`path`（相对会话根，禁 `..`）；回 `file-resolved` 带 `{path,name,mediaType,size,modifiedAt}`；非普通文件 `file-not-regular`，超下载上限 `file-too-large`；需 `files.read` |
 | `host` | 查主机信息 | — | 回 `{version,dshVersion,cwd,attachedSessions,canOpenPath,defaultProvider?,defaultModel?}`；`cwd` 仅 `os.homedir()`，不回显授权根绝对路径；无 `canOpenWorkspacePath` 通道时 `canOpenPath:false` |
 | `default-model` / `save-default-model` | 读/保存默认模型 | `provider`, `model`, `reasoningEffort?` |
@@ -1034,6 +1054,7 @@ v2.8 新增，**现在是桥的第一协议面**：新能力只在这里落帧�
 | `commands` / `command-options` / `command-executed` / `command-selected` | 命令响应；`commands` 另带 `builtinTokens`（0.2.2 一方命令 en/zh 六条）与每条目的 `definitionId`/`builtin`（P2-B） |
 | `attachment` / `file-list` / `directory-create` / `file-download-opened/chunk/cancelled` | 附件、目录浏览/建目录（需 `files.write`）与文件下载（chunk 末块带 `sha256`） |
 | `file-upload-opened/chunk-accepted/completed/cancelled` | 分片上传（completed 带 `receiptId` 与 `sha256`） |
+| `file-upload-status` | 上传结果查询应答（`state` 三档，见上表） |
 | `session-cancelled` | 会话取消回执 |
 | `session-created` / `session-archived` / `session-renamed` / `session-waited` / `fork` / `workspace-create` | 会话与工作区生命周期（`session-created` 带 `{sessionId, rootId \| workspaceId, agentPreset?}`） |
 | `error` | 错误（不回显绝对路径）；**带** `data.requestId` 与 `data.requestType`——前者钉到具体在途请求，后者说明是哪类请求。分发**前**的拒绝（`UNKNOWN_TYPE`/`INVALID_FRAME`/`MISSING_TYPE`）没有 `requestType`（没有处理器可署名）；`UNKNOWN_TYPE` 仍带 `requestId`（若请求给了） |

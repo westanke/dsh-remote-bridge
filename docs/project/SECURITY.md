@@ -323,6 +323,29 @@ HTTP 是受支持的连接方式，不会被强制跳转或拒绝。但 Bearer t
 > 等于把管理面无凭据敞到公网（v2.5.0 实测 200/201）。隧道仍可用于**数据面**，
 > 但只在 2.5.1 及之后、并且遵守下一节的规则。
 
+## 入站 wire JSON 纪律（issue #IKXGYR，2026-11-23 起）
+
+`/ws/mobile` 入站帧与 `/api/v1` REST body 的 JSON 解析走同一条严格路径
+（`src/host/wire-json.ts` 的 `parseWireJson`）：对象内**重复键一律拒绝**——包括
+JSON 转义后同名（`{"a":1,"\u0061":2}`）——REST 侧还要求 body 是**严格 UTF-8**
+（fatal 解码，坏字节不再静默替换成 U+FFFD）。为什么是安全性质而不只是「洁癖」：
+重复键在不同语言的 JSON 解码器里行为各不相同（取末值 / 报错 / 合并），同一份载荷
+在服务端与客户端可能解析成**不同对象**，鉴权与业务判据读到的字段就可能不一致；
+把它在边界上钉死，才谈得上「两端看到同一个请求」。
+
+**可证伪断言（有测试认领，改这里必须同时改测试）**：
+
+1. **重复键帧被拒且不断链**：`/ws/mobile` 上发送含重复键（直名或转义同名）的帧
+   ⇒ 收到 `error` 帧 `INVALID_FRAME`，同一连接随后仍能正常收发（拒帧 ≠ 断链）。
+   → `tests/wire-json.spec.ts`（单元：直名 / 转义同名 / 嵌套 / 数组元素）
+   + `tests/mobile-gateway-ws.spec.ts`
+   "answers a duplicate-key frame with INVALID_FRAME and keeps the connection usable"
+2. **REST body 重复键 / 坏字节 ⇒ 400 JSON_INVALID**：合法载荷不受影响。
+   → `tests/bff-rest.spec.ts` "rejects duplicate-key and invalid-UTF-8 bodies with 400 JSON_INVALID"
+3. **失败文案泛化**：解析失败对外只给统一文案（`Invalid wire JSON.` /
+   `The request body is not valid JSON.`），不回显解析器内部细节（位置、栈、V8 报错）。
+   → `tests/wire-json.spec.ts` 对 `reason` 不含解析器细节的断言。
+
 ## REST BFF：分块上传 / 定时任务 / 官方语音（2026-10-28 起，未发版）
 
 这三项原本只在 `/ws/mobile` 上提供，现在有同语义的 `/api/v1` 端点。新增对外端点必须重新过一遍

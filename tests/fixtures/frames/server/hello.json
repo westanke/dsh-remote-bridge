@@ -1,0 +1,17 @@
+{
+  "kind": "hello",
+  "data": {
+    "protocol": 3,
+    "capabilities": ["chat.read", "chat.write"],
+    "authenticated": true,
+    "port": 8787,
+    "clients": 1,
+    "maxFrameBytes": 1048576,
+    "device": {
+      "id": "<DEVICE_ID>",
+      "name": "Mobile device",
+      "scopes": ["chat.read"],
+      "rootIds": ["<ROOT>"]
+    }
+  }
+}

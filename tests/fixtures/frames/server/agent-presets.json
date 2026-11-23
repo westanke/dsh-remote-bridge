@@ -1,0 +1,15 @@
+{
+  "kind": "agent-presets",
+  "data": {
+    "presets": [
+      {
+        "id": "preset-1",
+        "name": "Default",
+        "trust": "trusted",
+        "isDefault": true,
+        "available": true
+      }
+    ],
+    "requestId": "fx-agent-presets"
+  }
+}

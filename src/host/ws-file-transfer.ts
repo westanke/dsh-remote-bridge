@@ -70,6 +70,24 @@ interface UploadTransfer {
   lastActiveAt: number
 }
 
+/**
+ * 一次**已结束**上传的结果（`file-upload-status` 查询用，issue #IKXGYW）。
+ *
+ * 为什么按 `principalId`（设备）而不是 `connectionKey`（连接）：这个查询要解决的正是
+ * 「file-upload-finish 的响应在断线中丢了」——重连后 connectionKey 已经变了，
+ * 按连接归属会让客户端永远查不到自己的结果、只能整文件重传。
+ * 进行中的上传仍按连接归属（防跨连接串流量），只有**结果**放宽到设备级。
+ */
+interface FinishedUpload {
+  principalId: string
+  sessionId: string
+  state: 'completed' | 'cancelled'
+  at: number
+  receiptId?: string
+  file?: { attachmentId: string; name: string; bytes: number }
+  sha256?: string
+}
+
 interface ChatAdapterLike {
   isSessionAuthorized(principal: Principal, sessionId: string): Promise<boolean>
   listSessions(principal: Principal): Promise<Array<{ id: string; rootId: string }>>
@@ -95,6 +113,10 @@ interface ChatAdapterLike {
 }
 
 const HEX_SHA256 = /^[a-fA-F0-9]{64}$/
+/** 已结束上传结果的保留时长（`file-upload-status` 查询窗口，issue #IKXGYW）。 */
+export const UPLOAD_RESULT_TTL_MS = 2 * 60 * 1000
+/** 结果表容量上限：超了从最旧端丢，防长连接驻留内存。 */
+const MAX_RESULT_ENTRIES = 32
 export const LEAF_NAME = /^[^\x00-\x1f\x7f/\\]+$/
 const MEDIA_TYPES: Record<string, string> = {
   '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
@@ -137,6 +159,8 @@ function mediaTypeFor(relativePath: string): string {
 export class FileTransferHandler {
   private readonly downloads = new Map<string, DownloadTransfer>()
   private readonly uploads = new Map<string, UploadTransfer>()
+  /** 已结束上传的结果表（TTL 见 uploadStatus/expire，容量上限见 recordUploadResult）。 */
+  private readonly uploadResults = new Map<string, FinishedUpload>()
   private readonly uploadSpoolDir: string
 
   constructor(
@@ -184,6 +208,7 @@ export class FileTransferHandler {
       case 'file-upload-chunk':
       case 'file-upload-finish':
       case 'file-upload-cancel':
+      case 'file-upload-status':
         await this.handleUpload(principal, frame, connectionKey, reply)
         return true
       case 'file-resolve':
@@ -451,8 +476,10 @@ export class FileTransferHandler {
         await this.uploadChunk(frame, connectionKey, reply)
       } else if (frame.type === 'file-upload-finish') {
         await this.uploadFinish(principal, frame, connectionKey, reply)
+      } else if (frame.type === 'file-upload-status') {
+        await this.uploadStatus(principal, frame, connectionKey, reply)
       } else {
-        await this.uploadCancel(frame, connectionKey, reply)
+        await this.uploadCancel(principal, frame, connectionKey, reply)
       }
     } catch (error) {
       const code = error instanceof Error && 'code' in error && typeof (error as { code?: unknown }).code === 'string'
@@ -621,6 +648,15 @@ export class FileTransferHandler {
           createReadStream(transfer.spoolPath),
           transfer.name,
         )
+        this.recordUploadResult(uploadId, {
+          principalId: principal.id,
+          sessionId: transfer.sessionId,
+          state: 'completed',
+          at: Date.now(),
+          receiptId: receipt.receiptId,
+          file: { attachmentId: receipt.receiptId, name: receipt.name ?? transfer.name, bytes: transfer.size },
+          sha256: transfer.sha256,
+        })
         await this.closeUpload(uploadId)
         reply({
           kind: 'file-upload-completed',
@@ -652,6 +688,15 @@ export class FileTransferHandler {
     }
     try {
       const receipt = await this.chat.uploadAttachment(principal, transfer.sessionId, base64, transfer.name)
+      this.recordUploadResult(uploadId, {
+        principalId: principal.id,
+        sessionId: transfer.sessionId,
+        state: 'completed',
+        at: Date.now(),
+        receiptId: receipt.receiptId,
+        file: { attachmentId: receipt.receiptId, name: receipt.name ?? transfer.name, bytes: transfer.size },
+        sha256: transfer.sha256,
+      })
       reply({
         kind: 'file-upload-completed',
         data: {
@@ -665,14 +710,71 @@ export class FileTransferHandler {
     }
   }
 
-  private async uploadCancel(frame: ClientFrame, connectionKey: string, reply: TransferSendFrame): Promise<void> {
+  private async uploadCancel(principal: Principal, frame: ClientFrame, connectionKey: string, reply: TransferSendFrame): Promise<void> {
     const uploadId = typeof frame.uploadId === 'string' ? frame.uploadId : ''
     const transfer = this.uploads.get(uploadId)
     if (transfer !== undefined && transfer.connectionKey === connectionKey) {
+      this.recordUploadResult(uploadId, {
+        principalId: principal.id,
+        sessionId: transfer.sessionId,
+        state: 'cancelled',
+        at: Date.now(),
+      })
       await this.closeUpload(uploadId)
       reply({ kind: 'file-upload-cancelled', data: { requestId: frame.requestId, uploadId, sessionId: transfer.sessionId } })
     } else {
       reply({ kind: 'file-upload-cancelled', data: { requestId: frame.requestId, uploadId } })
+    }
+  }
+
+  /**
+   * `file-upload-status` 帧（issue #IKXGYW）：幂等的上传结果查询。
+   *
+   * 要解决的场景：`file-upload-finish` 已经成功、响应却在断线中丢了 ——
+   * 没有这条查询，客户端只能整文件重传（几 MB～几百 MB 白花，还可能撞上
+   * 会话里的重复附件）。状态机三档：
+   *
+   * - `uploading`：进行中（只看**本连接**的，跨连接按 unknown 拒 —— 防串流量）；
+   * - `completed` / `cancelled`：已结束，按**设备**（principalId）答，重连可查；
+   * - 都没有 → 既有错误码 `file-upload-not-found`（未知或结果已过期，见 [UPLOAD_RESULT_TTL_MS]）。
+   */
+  private async uploadStatus(principal: Principal, frame: ClientFrame, connectionKey: string, reply: TransferSendFrame): Promise<void> {
+    const requestId = typeof frame.requestId === 'string' ? frame.requestId : undefined
+    const uploadId = typeof frame.uploadId === 'string' ? frame.uploadId : ''
+    const active = this.uploads.get(uploadId)
+    if (active !== undefined && active.connectionKey === connectionKey) {
+      reply({
+        kind: 'file-upload-status',
+        data: {
+          requestId, uploadId, state: 'uploading',
+          sessionId: active.sessionId, offset: active.offset, size: active.size,
+        },
+      })
+      return
+    }
+    const finished = this.uploadResults.get(uploadId)
+    if (finished !== undefined && finished.principalId === principal.id && Date.now() - finished.at <= UPLOAD_RESULT_TTL_MS) {
+      reply({
+        kind: 'file-upload-status',
+        data: {
+          requestId, uploadId, state: finished.state, sessionId: finished.sessionId,
+          ...(finished.receiptId === undefined ? {} : { receiptId: finished.receiptId }),
+          ...(finished.file === undefined ? {} : { file: finished.file }),
+          ...(finished.sha256 === undefined ? {} : { sha256: finished.sha256 }),
+        },
+      })
+      return
+    }
+    reply(failure('file-upload-not-found', 'upload is unknown or its result has expired', frame.type, { requestId }))
+  }
+
+  /** 记一条已结束的上传结果；表有容量上限，超了从最旧端丢（防长连接驻留内存）。 */
+  private recordUploadResult(uploadId: string, result: FinishedUpload): void {
+    this.uploadResults.set(uploadId, result)
+    while (this.uploadResults.size > MAX_RESULT_ENTRIES) {
+      const oldest = [...this.uploadResults.entries()].sort((a, b) => a[1].at - b[1].at)[0]
+      if (oldest === undefined) break
+      this.uploadResults.delete(oldest[0])
     }
   }
 
@@ -707,6 +809,9 @@ export class FileTransferHandler {
     for (const [id, transfer] of this.uploads) {
       if (!transfer.busy && transfer.lastActiveAt < cutoff) await this.closeUpload(id)
     }
+    for (const [id, result] of this.uploadResults) {
+      if (Date.now() - result.at > idleMs) this.uploadResults.delete(id)
+    }
   }
 
   /** 停机：清理全部传输。 */
@@ -715,5 +820,6 @@ export class FileTransferHandler {
       ...[...this.downloads.keys()].map(id => this.closeDownload(id)),
       ...[...this.uploads.keys()].map(id => this.closeUpload(id)),
     ])
+    this.uploadResults.clear()
   }
 }

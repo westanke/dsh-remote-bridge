@@ -39,6 +39,7 @@
 | --- | --- |
 | [STRUCTURE.md](STRUCTURE.md) | **代码地图**：顶层目录树、分层与依赖方向、逐目录职责、关键文件速查、新增东西放哪里。文末锚点归 `docs:check` 双向校验。 |
 | [INTERFACES.md](INTERFACES.md) | **契约与签名**：对外 REST/流/能力位、内部模块导出与逐字签名、改接口检查清单。文末锚点归 `docs:check` 双向校验。 |
+| [PROTOCOL-BEHAVIOR.md](PROTOCOL-BEHAVIOR.md) | **`/ws/mobile` 行为语义**：帧顺序、背压与 resync 客户端义务、history/订阅基线、超时口径、close (code, reason) 分类与重连策略（issue #IKXGYT/#IKXGYX）。 |
 
 > 这两份是给「要改代码的人与 AI」用的。对外正式契约仍是 [API.md](API.md) +
 > `../api/openapi.yaml` + `../api/asyncapi.yaml`；设计动机仍是 [ARCHITECTURE.md](ARCHITECTURE.md)。

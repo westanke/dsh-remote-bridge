@@ -1,3 +1,49 @@
+## 未发布 · 协议对比建议清单落地：行为语义/契约夹具/幂等查询（2026-11-24，issue #IKXGYR #IKXGYS #IKXGYT #IKXGYU #IKXGYV #IKXGYW #IKXGYX）
+
+**起因**：与 `ds-harness-remote`（v0.6.7）做协议实现/功能对比，报告
+`调查报告-协议对比-桥与ds-harness-remote-20261123.md` 列出 13 条可借鉴项。
+本次落地其中 P0 四条 + P1 四条（P2 方向性事项只记录，见报告 §五）。
+
+**行为变化（都是可省略/可忽略的加性字段，旧客户端零破坏）**：
+
+1. **入站 wire JSON 拒绝重复键**（`#IKXGYR`）：`/ws/mobile` 的 `decodeFrame` 与 REST
+   所有 JSON 请求体都先过 `wire-json.ts` 的 `parseWireJson` —— 同一对象内重复字段
+   （含转义后同名）整帧拒收（WS 回 `INVALID_FRAME`，REST 回 400 `JSON_INVALID`），
+   不把 parser 原始错误漏给用户。重复键在 `JSON.parse` 里是静默后者覆盖，属于
+   「配置看似生效实际被覆盖」类安全面缺口。
+2. **error 帧可选 `retryable`/`details`**（`#IKXGYS`）：发送漏斗统一按
+   `src/host/error-codes.ts` 的五组表（usage/auth/state/upstream/internal）注入；
+   未知码不写字段（客户端按 `false` 处理）。`details` 当前只被 `RATE_LIMITED` 用
+   （`retryAfterMs`），契约同时声明了它的通用形状。
+3. **`docs/project/PROTOCOL-BEHAVIOR.md`**（`#IKXGYT`）：把此前只散落在代码注释里的
+   行为语义成文 —— 帧顺序承诺、背压与 `connection-resync-required` 的客户端义务、
+   history/subscribe 基线关系、超时口径表、`close(code, reason)` 分类与重连策略
+   （含「永不从裸 close code 推导重试决策」铁律）。挂进 `docs/project/README.md` 导航。
+4. **golden frame fixtures**（`#IKXGYU`）：`tests/fixtures/frames/` 存 14 个静态样例 +
+   6 个活体样例（`UPDATE_FRAME_FIXTURES=1` 重新生成），`tests/frame-fixtures.spec.ts`
+   做词表双向机检 + 活体深度比对 + 覆盖线；三端（Kotlin/Flutter/ArkTS）今后可拿同一批
+   样例对拍，不必各写各的。
+5. **`history-compact-v1`**（`#IKXGYV`）：`history` 帧可选 `compact: true` 请求有界摘要
+   （`HISTORY_COMPACT_KEEP_CHARS = 512`，超长字符串压成「首 512 + `…[truncated]…` +
+   尾 512」），响应带 `compact: true` 标明「别当全文缓存」；纯服务端投影，
+   `beforeSeq` 翻页照旧。
+6. **`file-upload-status` 幂等结果查询**（`#IKXGYW`）：分片上传丢失
+   `file-upload-finish` 响应（断线）后不再只能整文件重传 —— 新帧按 `uploadId` 查
+   `uploading`（仅本连接）/`completed`/`cancelled`。已结束结果保留 2 分钟
+   （`UPLOAD_RESULT_TTL_MS`）且按**设备**归属，重连后仍可见；未知/过期回
+   `file-upload-not-found`（沿用既有码）。
+7. **hello 宣告 `maxFrameBytes`**（`#IKXGYX`）：`hello` 帧总是带服务端**生效**上限
+   （值来自既有可配的 `maxPayloadBytes`，issue #10 语义不变）；客户端不再硬编码
+   1 MiB，收到更小上限就该缩帧，超限仍是 `close 1009`。
+
+**为什么不照搬**：E2EE（Noise）、传输爬梯、跨机会话迁移、控制/数据面分离 ——
+桥是单用户自托管定位，这些是 `ds-harness-remote` 的账号体系与公网中继场景需要，
+报告 §五写明理由。
+
+**测试**：新增/扩展 5 个 spec（wire-json、bff-rest、mobile-gateway-ws、
+mobile-frame-contract、frame-fixtures、capabilities），全量 `vitest run` 96 文件
+1098 用例全绿；`docs:check` 双向锚点一致。
+
 ## 未发布 · 契约文档订正：配对码位数与 `history` 帧字段（2026-11-23，issue #32）
 
 **起因**：为评估「基于本桥做微信小程序客户端」逐条核对了帧契约，发现文档与实现有 8 处不一致。

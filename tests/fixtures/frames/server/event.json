@@ -1,0 +1,9 @@
+{
+  "kind": "event",
+  "data": {
+    "id": "appr-1:requested",
+    "type": "approval.requested",
+    "time": 0,
+    "data": { "sessionId": "sess-1", "approvalId": "appr-1", "replayed": true }
+  }
+}

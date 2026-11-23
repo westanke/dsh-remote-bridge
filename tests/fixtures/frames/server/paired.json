@@ -1,0 +1,7 @@
+{
+  "kind": "paired",
+  "data": {
+    "token": "<PAIRING_TOKEN>",
+    "device": { "id": "<DEVICE_ID>", "name": "Mobile device" }
+  }
+}

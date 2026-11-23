@@ -1,0 +1,16 @@
+{
+  "kind": "workspaces",
+  "data": {
+    "workspaces": [
+      {
+        "id": "ws-1",
+        "title": "Project",
+        "rootId": "<ROOT>",
+        "path": "",
+        "createdAt": 1,
+        "updatedAt": 1
+      }
+    ],
+    "requestId": "fx-workspaces"
+  }
+}

@@ -50,6 +50,8 @@ const protocolSource = readFileSync(new URL('../src/host/ws-protocol.ts', import
  */
 type SchemaNode = {
   const?: unknown
+  type?: string | string[]
+  description?: string
   required?: string[]
   enum?: unknown
   items?: SchemaNode
@@ -189,6 +191,11 @@ describe('/ws/mobile 通道与握手在 asyncapi 里有形状', () => {
     expect(hello.required).toEqual(expect.arrayContaining(['protocol', 'capabilities', 'authenticated']))
     // device 必须可省略：回环管理员连接没有设备身份，服务端整段不发。
     expect(hello.required).not.toContain('device')
+    // maxFrameBytes 宣告生效上限（issue #IKXGYX），可省略（老服务端不发，客户端回退 1 MiB）。
+    expect(hello.properties?.maxFrameBytes?.type).toBe('integer')
+    expect(hello.required).not.toContain('maxFrameBytes')
+    // 契约里写明「生效值」语义，而不是把 1 MiB 当硬契约。
+    expect(hello.properties?.maxFrameBytes?.description ?? '').toContain('Effective inbound per-frame limit')
   })
 
   it('设备 scope 枚举覆盖 contracts.ts 的 DEVICE_SCOPES 全集', async () => {
@@ -224,6 +231,62 @@ describe('/ws/mobile 通道与握手在 asyncapi 里有形状', () => {
     // 这两种错误对客户端的含义完全不同：前者该回落到 REST，后者是客户端 bug。
     expect(asyncapiText).toContain('NOT_IMPLEMENTED')
     expect(asyncapiText).toContain('UNKNOWN_TYPE')
+  })
+
+  it('error 帧声明可选 retryable/details，retryable 缺省语义成文（issue #IKXGYS）', () => {
+    const errorSchema = schemaNode('MobileError')
+    // 新字段必须标注 optional（不在 required 里）——旧客户端忽略新字段，零破坏是承诺。
+    expect(errorSchema.properties?.retryable?.type).toBe('boolean')
+    expect(errorSchema.properties?.details).toBeDefined()
+    expect(errorSchema.required).not.toContain('retryable')
+    expect(errorSchema.required).not.toContain('details')
+    // 「缺字段 = 未知码 = 按 false」必须写进契约，客户端才知道保守方向。
+    expect(asyncapiText).toMatch(/Absent means an\s*\n?\s*unknown code|absent means an unknown code/i)
+    // 服务端语义表与文档相互指认：实现文件存在，且 API.md 分组表列了五个组。
+    const errorCodesSource = readFileSync(new URL('../src/host/error-codes.ts', import.meta.url), 'utf8')
+    expect(errorCodesSource).toContain("export function errorFrameRetryable")
+    const apiDoc = readFileSync(new URL('../docs/project/API.md', import.meta.url), 'utf8')
+    for (const group of ['usage', 'auth', 'state', 'upstream', 'internal']) {
+      expect(apiDoc).toContain(`| ${group}`)
+    }
+    // 抽查语义表内容与 API.md 分组表一致（防止两处文档各改各的）。
+    expect(errorCodesSource).toContain("UPSTREAM_UNAVAILABLE: { group: 'upstream', retryable: true }")
+    expect(errorCodesSource).toContain("INTERNAL_ERROR: { group: 'internal', retryable: true }")
+    expect(errorCodesSource).toContain("UNKNOWN_TYPE: { group: 'usage', retryable: false }")
+  })
+
+  it('history 帧的可选 compact 参数成文，且与实现/能力位互指（issue #IKXGYV）', () => {
+    // 契约：参数语义写进客户端帧 description（data 没有 per-kind schema，字面量自指）。
+    expect(asyncapiText).toContain('history-compact-v1')
+    expect(asyncapiText).toMatch(/first 512 chars/i)
+    // 实现：摘要投影存在、保留量常量在（文档抄的数字以源码为准）。
+    const budget = readFileSync(new URL('../src/host/history-budget.ts', import.meta.url), 'utf8')
+    expect(budget).toContain('export function compactHistoryEvents')
+    expect(budget).toContain('HISTORY_COMPACT_KEEP_CHARS = 512')
+    // 客户端帧类型：HistoryFrame 声明了 compact?: boolean。
+    const protocol = readFileSync(new URL('../src/host/ws-protocol.ts', import.meta.url), 'utf8')
+    const frame = protocol.match(/export interface HistoryFrame[\s\S]*?compact\?: boolean/)
+    expect(frame, 'HistoryFrame 缺少 compact?: boolean').not.toBeNull()
+    // 能力位与 API.md 表格互指。
+    const capabilities = readFileSync(new URL('../src/host/capabilities.ts', import.meta.url), 'utf8')
+    expect(capabilities).toContain("'history-compact-v1'")
+    const apiDoc = readFileSync(new URL('../docs/project/API.md', import.meta.url), 'utf8')
+    expect(apiDoc).toContain('history-compact-v1')
+  })
+
+  it('file-upload-status 双向进词表与契约，幂等语义成文（issue #IKXGYW）', () => {
+    // 帧类型：客户端词表与服务端 kind 词表都含。
+    expect(asyncapiText).toMatch(/-\s*file-upload-status\s*\n/)
+    const protocol = readFileSync(new URL('../src/host/ws-protocol.ts', import.meta.url), 'utf8')
+    expect(protocol).toMatch(/\| 'file-upload-status'/)
+    expect(protocol).toMatch(/export interface FileUploadStatusFrame[\s\S]*?uploadId: string/)
+    // 语义：设备级归属 + TTL 写进契约，否则客户端不会知道重连后还能查。
+    expect(asyncapiText).toMatch(/scoped to the\s*\*\*device\*\*\s*\(not the connection\)/)
+    expect(asyncapiText).toMatch(/UPLOAD_RESULT_TTL_MS/)
+    const apiDoc = readFileSync(new URL('../docs/project/API.md', import.meta.url), 'utf8')
+    expect(apiDoc).toContain('file-upload-status')
+    const source = readFileSync(new URL('../src/host/ws-file-transfer.ts', import.meta.url), 'utf8')
+    expect(source).toContain('UPLOAD_RESULT_TTL_MS')
   })
 })
 

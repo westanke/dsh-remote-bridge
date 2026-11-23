@@ -1,0 +1,9 @@
+{
+  "kind": "error",
+  "data": {
+    "code": "UNKNOWN_TYPE",
+    "message": "Unknown frame type: no-such-frame",
+    "retryable": false,
+    "requestId": "fx-error"
+  }
+}

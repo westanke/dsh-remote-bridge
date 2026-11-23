@@ -928,3 +928,34 @@ describe('REST BFF 官方语音', () => {
     }
   })
 })
+
+describe('REST 入站 wire JSON（issue #IKXGYR）', () => {
+  it('rejects duplicate-key and invalid-UTF-8 bodies with 400 JSON_INVALID', async () => {
+    const app = await harness()
+    try {
+      const token = await app.token(['chat.write'])
+      const dup = await app.call({
+        method: 'POST',
+        path: '/chat/schedules',
+        token,
+        raw: new TextEncoder().encode('{"sessionId":"S1","sessionId":"S2"}'),
+        contentType: 'application/json',
+      })
+      expect(dup.status).toBe(400)
+      const body = (await dup.json()) as { error?: { code?: string } }
+      expect(body.error?.code).toBe('JSON_INVALID')
+
+      // 无效 UTF-8（forbidden overlong 编码 0xC0 0x80）：fatal 解码拒绝，不再静默替换 U+FFFD
+      const bad = await app.call({
+        method: 'POST',
+        path: '/chat/schedules',
+        token,
+        raw: new Uint8Array([0x7b, 0x22, 0x61, 0x22, 0x3a, 0x31, 0x7d, 0xc0, 0x80]),
+        contentType: 'application/json',
+      })
+      expect(bad.status).toBe(400)
+    } finally {
+      await app.close()
+    }
+  })
+})
