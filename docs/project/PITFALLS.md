@@ -228,6 +228,19 @@ v2.2.1 是第一次按此规矩执行，哈希成功对上。
 
 **铁律**：要校验产物一致性，用与发布方相同的打包器。
 
+**2026-11-23 复核（issue #31 顺带查的）：CI 里的 `pnpm pack` 不违反本条**。
+`.github/workflows/ci.yml` 里两处 `pnpm pack`（`core` job 第 7 步、
+`profile-install` 的 `pnpm pack --pack-destination artifacts`）打出来的 tarball 只用于
+「装进 DSH profile 能不能起来」的冒烟，**不参与任何哈希比对**；发布方用的仍是 npm
+（`scripts/pack-release.sh` 的 `npm pack --ignore-scripts --pack-destination artifacts`、
+`publish.yml` 的 `npm publish`）。实测两个打包器列出的**文件清单逐项相同**
+（`assets/` + `docs/api/` + `kotlin-sdk/` + `lib/` + `cordis.patch.yml` + `README*` +
+`LICENSE` + `package.json` + `screenshots.json`），差别只在 tar 头与 shasum/integrity。
+
+**什么时候必须换成 `npm pack`**：一旦想在 CI 里校验「本地这份与 npm registry 上那份
+哈希一致」，那一刻就得用**发布方那个打包器**（npm）。在那之前不必动 CI 的打包器 ——
+换了也只是把同样的文件清单多检查一遍。
+
 ---
 
 ### Gitee Release 死链
@@ -1554,9 +1567,18 @@ CI runner 更慢，连第一拍都抓不到 ⇒ `overHighWater` 一直是 0 ⇒ 
   隧道口 `src/host/tunnel-listener.ts` 是第三个独立实例。
 - **加 `perMessageDeflate` 之前先问**：这条通道有没有依赖 `bufferedAmount` 的判据
   （慢客户端摘除、背压、内存水位）？有就别加，或者换个实例。
+- **`ws` 客户端默认就提出 `perMessageDeflate`**（`node_modules/ws/lib/websocket.js:677`）——
+  两个方向别搞反：
+  - 想**测「不压」**（服务端确实没协商）⇒ 客户端**显式** `perMessageDeflate: false`
+    （`ws` 默认提出压缩，不显式关就测不到「不压」这一侧）；
+  - 想**测「服务端不该压」** ⇒ **不要**显式关客户端的压缩，让**服务端自己拒绝协商**，
+    再断言 `socket.extensions` 不含 `permessage-deflate`（钉的是握手协商结果，与时序无关）。
 - **别用「一条大帧必然越线」当断言**（Windows 内核缓冲大 ⇒ `bufferedAmount` 恒 0，
   已踩过，见本仓 `git log` 里的 `cc77cb6`/`d2bb268`）。要测背压就**持续灌帧**，
   判据用**握手协商结果**（`socket.extensions`）这类与时序无关的量。
+- **CI 红、本地绿先查时序**：本地「过了」可能只是**侥幸**（这次是回环上压缩 ~50 ms 完成，
+  drain 恰好抓到那一瞬的大读数）。判据若依赖瞬时读数，本地绿**不能**证明它稳 ——
+  本地连跑 N 次全绿也不算数（同 §晚挂拒绝处理器 = 未处理拒绝）。
 
 **回归锚**：`tests/websocket-broadcast-backpressure.spec.ts` ›
 never negotiates permessage-deflate on the broadcast channel（钉住广播通道不协商压缩）+
