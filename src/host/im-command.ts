@@ -96,7 +96,7 @@ function pairingMinutes(expiresAt: number): number {
 export function formatTunnelReply(result: TunnelCommandResult): string {
   return [
     `${result.urls.join(',')}#${result.pairingCode}`,
-    `（一行粘进 App 的导入框即可：它会拆成多条候选地址 + 配对码，连哪条自己探；${pairingMinutes(result.expiresAt)} 分钟内有效、只能用一次）`,
+    `（一行粘进 App 的导入框即可：它会拆成多条候选地址 + 配对码，连哪条自己探；每次 /tunnel 都重新签发，${pairingMinutes(result.expiresAt)} 分钟内有效、只能用一次）`,
   ].join('\n')
 }
 

@@ -55,6 +55,23 @@ describe('/tunnel 命令', () => {
     expect(text).toContain(RESULT.urls[2]!)
   })
 
+  it('每执行一次都签发新配对码（隧道地址复用，码必须换）', async () => {
+    // 桥侧同一时刻只允许一个隧道：第二次拿到同一个 url、但必须是新码，
+    // 否则用户「用完一次再发 /tunnel」拿到的还是过期码（真机 2026-11-23）。
+    const codes: string[] = []
+    const command = createTunnelCommand(fakeDeps(async () => {
+      const code = `CODE-${codes.length + 1}`
+      codes.push(code)
+      return { ...RESULT, pairingCode: code }
+    }))
+    const first = await command.handler({ rawInput: '' })
+    const second = await command.handler({ rawInput: '' })
+    expect((first as { text: string }).text.split('\n')[0]).toContain('CODE-1')
+    expect((second as { text: string }).text.split('\n')[0]).toContain('CODE-2')
+    expect((second as { text: string }).text).toContain(RESULT.urls[0]!)
+    expect(codes).toEqual(['CODE-1', 'CODE-2'])
+  })
+
   it('带参数一律拒绝（刻意不提供 /tunnel stop 这类第二个入口）', async () => {
     const openTunnel = vi.fn(async () => RESULT)
     const command = createTunnelCommand(fakeDeps(openTunnel))
