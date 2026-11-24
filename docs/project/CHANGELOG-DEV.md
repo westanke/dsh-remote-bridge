@@ -1,3 +1,33 @@
+## 未发布 · 撤掉 dsh-companion 的下载二维码：「App 下载」只留 dsh-Chat（2026-11-25，issue #IKXRAD）
+
+**起因**：用户要求「取消 DSH 伴侣（dsh-companion）的二维码」—— 设置页「App 下载」卡与 README
+下载表里此前并排列着 dsh-companion 与 dsh-Chat 两套二维码，现只保留 dsh-Chat 的两张。
+
+**改法**（纯界面与文档，协议与运行时零变化）：
+
+- `scripts/generate-app-qr.mjs` 的 `TARGETS` 去掉 dsh-companion 两条（`github` / `gitee`），
+  只剩 dsh-Chat × GitHub / Gitee；`src/client/app-qr.ts` 重新生成（2 个 data URL），
+  `AppQrCode.client` 的联合类型随之收窄为 `'dsh-Chat'`。
+- 删除资产 `assets/app-qr-github.svg|png` 与 `assets/app-qr-gitee.svg|png`（四份）。
+- `tests/app-qr.spec.ts` 的条目与地址断言改为两条 dsh-Chat（**反解校验仍用独立解码器
+  `jsqr`**：编码是 `qrcode`，解码是 `jsqr`，两个实现互证）。
+- `tests/i18n.spec.ts`：文案断言从「两个客户端都出现」改为「只出现 dsh-Chat，且不出现
+  dsh-companion」。
+- i18n 中英 `appDownloadClientsHint` 改成只提 dsh-Chat；`app-download.tsx` 头注释同步。
+- README.md / README.en.md：卡片表与下载表只留 dsh-Chat 行；dsh-companion 的仓库链接与
+  项目介绍**保留**（只是不再给它的下载二维码，链接直接可开）。
+- `assets/screenshots/panel-app-download.png` 由 `scripts/generate-screenshots.ts` 重新生成
+  （卡里现在只有两张码）。
+- 同步 `docs/project/STRUCTURE.md`（app-qr.ts / app-download.tsx 两行描述）与
+  `docs/project/INTERFACES.md`（`AppQrCode` 的 `client` 取值）。
+
+**验证**：`tsc --noEmit` 绿；`vitest run` 96 文件 1098 用例全绿；`docs:check` 四段全绿；
+`playwright test` 9/9 通过（含「App 下载卡片展开时二维码都渲染出来了」，按
+`APP_QR_CODES.length` 动态断言）；`tsdown` 构建绿。
+
+**未做**：本次**不发版**（用户选择「只改代码，先不发版」）—— 版本号未动、无 tag、
+未推双站、未发 npm。下一版发布时这些改动随该版本一起走。
+
 ## v2.17.3 · 协议对比建议清单落地：行为语义/契约夹具/幂等查询（2026-11-24，issue #IKXGYR #IKXGYS #IKXGYT #IKXGYU #IKXGYV #IKXGYW #IKXGYX）
 
 **起因**：与 `ds-harness-remote`（v0.6.7）做协议实现/功能对比，报告

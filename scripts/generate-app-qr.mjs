@@ -31,7 +31,10 @@ const MODULE_PATH = resolve(ROOT, 'src/client/app-qr.ts')
 const keyToFile = (key, extension) => `app-qr-${key}.${extension}`
 
 /**
- * 二维码内容：两个客户端（dsh-companion / dsh-Chat）× 两个站点的 Releases **列表页**。
+ * 二维码内容：dsh-Chat × 两个站点的 Releases **列表页**。
+ *
+ * 2026-11-25：按用户要求撤掉 dsh-companion（DSH 伴侣）的两张二维码，只留 dsh-Chat。
+ * （issue IKXRAD）
  *
  * 两种格式各有用处，都提交进仓库：
  * - **SVG** 给插件界面用（以 data URL 内联进 bundle）：矢量，任意尺寸都清晰。
@@ -39,8 +42,6 @@ const keyToFile = (key, extension) => `app-qr-${key}.${extension}`
  *   PNG 在两站都稳。
  */
 const TARGETS = [
-  { client: 'dsh-companion', key: 'github', label: 'GitHub', url: 'https://github.com/westanke/dsh-companion/releases' },
-  { client: 'dsh-companion', key: 'gitee', label: 'Gitee', url: 'https://gitee.com/westanke/dsh-companion/releases' },
   { client: 'dsh-Chat', key: 'chat-github', label: 'GitHub', url: 'https://github.com/westanke/dsh-Chat/releases' },
   { client: 'dsh-Chat', key: 'chat-gitee', label: 'Gitee', url: 'https://gitee.com/westanke/dsh-Chat/releases' },
 ]
@@ -133,14 +134,14 @@ async function main() {
   const module = `// 本文件由 scripts/generate-app-qr.mjs 生成，请勿手改。
 // 重新生成：node scripts/generate-app-qr.mjs
 //
-// 内容是四个固定地址（两个客户端 × GitHub / Gitee 的 Releases **列表页**），
+// 内容是 dsh-Chat 在 GitHub / Gitee 的 Releases **列表页**（两个固定地址），
 // 因此发新版无需重新生成。
 // 以 data URL 内联，客户端不引任何二维码依赖、也不发网络请求。
 //
 // scripts/../tests/app-qr.spec.ts 会把这些 data URL 解回来核对地址，防止手改或漂移。
 
 export interface AppQrCode {
-  /** 客户端标识（dsh-companion / dsh-Chat），用于界面归属与文案。 */
+  /** 客户端标识（当前只有 dsh-Chat），用于界面归属与文案。 */
   readonly client: ${clientUnion}
   /** 资产标识（站点 + 客户端），用于资产文件名与 React key。 */
   readonly key: ${keyUnion}

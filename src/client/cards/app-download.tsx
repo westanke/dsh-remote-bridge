@@ -1,5 +1,5 @@
 /**
- * 「App 下载」卡：两个客户端（dsh-companion / dsh-Chat）的下载二维码与地址。
+ * 「App 下载」卡：手机客户端 dsh-Chat 的下载二维码与地址。
  *
  * 这张卡不碰任何服务端状态 —— 二维码是构建期生成的常量（`app-qr.ts`，由
  * `scripts/generate-app-qr.mjs` 产出）。它唯一的问题是「二维码指向的地址是否还有效」，

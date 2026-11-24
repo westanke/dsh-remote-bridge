@@ -133,9 +133,10 @@ function decode(matrix: boolean[][]): string | null {
 const asset = (name: string): string => readFileSync(resolve(__dirname, '..', 'assets', name), 'utf8')
 
 describe('App 下载二维码', () => {
-  it('两个客户端 × 两个站各有一份资产，且都能被独立解码器解出正确地址', () => {
-    expect(APP_QR_CODES.map(code => code.key)).toEqual(['github', 'gitee', 'chat-github', 'chat-gitee'])
-    expect(APP_QR_CODES.map(code => code.client)).toEqual(['dsh-companion', 'dsh-companion', 'dsh-Chat', 'dsh-Chat'])
+  it('只保留 dsh-Chat × 两个站，且都能被独立解码器解出正确地址', () => {
+    // 2026-11-25：按用户要求撤掉 dsh-companion（DSH 伴侣）的两张二维码（issue IKXRAD）。
+    expect(APP_QR_CODES.map(code => code.key)).toEqual(['chat-github', 'chat-gitee'])
+    expect(APP_QR_CODES.map(code => code.client)).toEqual(['dsh-Chat', 'dsh-Chat'])
 
     for (const code of APP_QR_CODES) {
       const matrix = matrixFromSvg(asset(`app-qr-${code.key}.svg`))
@@ -185,8 +186,6 @@ describe('App 下载二维码', () => {
       expect(code.url).not.toMatch(/v\d+\.\d+\.\d+/)
     }
     expect(APP_QR_CODES.map(code => code.url)).toEqual([
-      'https://github.com/westanke/dsh-companion/releases',
-      'https://gitee.com/westanke/dsh-companion/releases',
       'https://github.com/westanke/dsh-Chat/releases',
       'https://gitee.com/westanke/dsh-Chat/releases',
     ])

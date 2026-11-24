@@ -143,7 +143,7 @@ dsh plugin --profile web add ./dsh-remote-bridge-v2.14.0.tgz
 | 识图 | 设置图片交接目录（识图路径），并只读展示出厂默认 `.dsh-images` 与兜底目录 |
 | 回收站 | 查看与恢复被删除的条目（只列出来自手机 App 的删除记录） |
 | 插件 | 查看本 profile 装了哪些插件、启用或停用、检查更新，并能跳转到内核的插件列表 |
-| App 下载 | 扫码下载 dsh-companion 或 dsh-Chat，二维码指向两个站点的 Releases 列表页 |
+| App 下载 | 扫码下载 dsh-Chat，二维码指向两个站点的 Releases 列表页 |
 
 
 ### 图片交接：手机发的图，桌面也看得见
@@ -181,13 +181,12 @@ dsh plugin --profile web add ./dsh-remote-bridge-v2.14.0.tgz
 
 | 客户端 | GitHub | Gitee（国内访问更快） |
 | --- | --- | --- |
-| dsh-companion | ![GitHub 上的 dsh-companion Releases](assets/app-qr-github.png) | ![Gitee 上的 dsh-companion Releases](assets/app-qr-gitee.png) |
 | dsh-Chat | ![GitHub 上的 dsh-Chat Releases](assets/app-qr-chat-github.png) | ![Gitee 上的 dsh-Chat Releases](assets/app-qr-chat-gitee.png) |
 
 下载页（与二维码同址）：
 
-- dsh-companion：<https://github.com/westanke/dsh-companion/releases> · <https://gitee.com/westanke/dsh-companion/releases>
 - dsh-Chat：<https://github.com/westanke/dsh-Chat/releases> · <https://gitee.com/westanke/dsh-Chat/releases>
+- dsh-companion：<https://github.com/westanke/dsh-companion/releases> · <https://gitee.com/westanke/dsh-companion/releases>（不提供二维码，直接开链接）
 
 > 二维码里写的是 Releases **列表页**，不是某个具体的 APK 文件名 —— 扫码永远落到最新版本。
 

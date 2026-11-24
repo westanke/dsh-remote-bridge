@@ -150,7 +150,7 @@ The entry lives in DSH settings under the title **Phone settings**. It renders s
 | Image reading | Set the handoff directory (the image-reading path); shows the read-only factory default `.dsh-images` and the fallback directory |
 | Trash | View and restore deleted entries (only deletions made from the phone app appear here) |
 | Plugins | See what this profile has installed, enable or disable it, check for updates, and jump to the kernel's plugin list |
-| App download | Scan to install dsh-companion or dsh-Chat; the codes point at both hosts' Releases list pages |
+| App download | Scan to install dsh-Chat; the codes point at both hosts' Releases list pages |
 
 The sidebar gear button was **removed**: having the entry in both the sidebar and the settings page gave one thing two starting points. The in-conversation **Files** tab is gone too, so the desktop now has exactly one entry point.
 
@@ -193,16 +193,15 @@ host, so publishing a new version never requires regenerating them:
 
 | Client | GitHub | Gitee (faster from mainland China) |
 | --- | --- | --- |
-| dsh-companion | ![dsh-companion releases on GitHub](assets/app-qr-github.png) | ![dsh-companion releases on Gitee](assets/app-qr-gitee.png) |
 | dsh-Chat | ![dsh-Chat releases on GitHub](assets/app-qr-chat-github.png) | ![dsh-Chat releases on Gitee](assets/app-qr-chat-gitee.png) |
 
 Download pages (same targets as the codes):
 
-- dsh-companion: <https://github.com/westanke/dsh-companion/releases> · <https://gitee.com/westanke/dsh-companion/releases>
 - dsh-Chat: <https://github.com/westanke/dsh-Chat/releases> · <https://gitee.com/westanke/dsh-Chat/releases>
+- dsh-companion: <https://github.com/westanke/dsh-companion/releases> · <https://gitee.com/westanke/dsh-companion/releases> (no QR code — open the link directly)
 
 > The codes encode the Releases **list page**, not a specific APK filename — so a new release
-> never needs new artwork, and whoever scans always lands on the latest version. All four images are
+> never needs new artwork, and whoever scans always lands on the latest version. Both images are
 > produced by `pnpm qr:app` (`scripts/generate-app-qr.mjs`), which verifies its own output with an
 > independent decoder; the test suite also decodes the committed files back and checks the address.
 

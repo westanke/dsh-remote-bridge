@@ -57,15 +57,17 @@ describe('workspace translations', () => {
   })
 
   it('interpolates the QR alt text with the client and site name', () => {
-    expect(translate('zh-CN', 'appDownloadQrAlt', { client: 'dsh-companion', site: 'GitHub' })).toBe('dsh-companion · GitHub 下载页二维码')
+    expect(translate('zh-CN', 'appDownloadQrAlt', { client: 'dsh-Chat', site: 'GitHub' })).toBe('dsh-Chat · GitHub 下载页二维码')
     expect(translate('en', 'appDownloadQrAlt', { client: 'dsh-Chat', site: 'Gitee' })).toBe('QR code for the dsh-Chat Gitee download page')
   })
 
-  it('names both clients in the app download card', () => {
-    expect(translate('zh-CN', 'appDownloadClientsHint')).toContain('dsh-companion')
+  // 2026-11-25：dsh-companion（DSH 伴侣）的两张二维码已撤（issue IKXRAD），
+  // 「App 下载」卡只剩 dsh-Chat —— 文案里不该再出现 dsh-companion。
+  it('names only dsh-Chat in the app download card', () => {
     expect(translate('zh-CN', 'appDownloadClientsHint')).toContain('dsh-Chat')
-    expect(translate('en', 'appDownloadClientsHint')).toContain('dsh-companion')
+    expect(translate('zh-CN', 'appDownloadClientsHint')).not.toContain('dsh-companion')
     expect(translate('en', 'appDownloadClientsHint')).toContain('dsh-Chat')
+    expect(translate('en', 'appDownloadClientsHint')).not.toContain('dsh-companion')
     expect(translate('en', 'appDownloadClientsHint')).not.toBe(translate('zh-CN', 'appDownloadClientsHint'))
   })
 
