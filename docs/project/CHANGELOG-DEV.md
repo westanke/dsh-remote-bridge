@@ -1,4 +1,4 @@
-## 未发布 · 协议对比建议清单落地：行为语义/契约夹具/幂等查询（2026-11-24，issue #IKXGYR #IKXGYS #IKXGYT #IKXGYU #IKXGYV #IKXGYW #IKXGYX）
+## v2.17.3 · 协议对比建议清单落地：行为语义/契约夹具/幂等查询（2026-11-24，issue #IKXGYR #IKXGYS #IKXGYT #IKXGYU #IKXGYV #IKXGYW #IKXGYX）
 
 **起因**：与 `ds-harness-remote`（v0.6.7）做协议实现/功能对比，报告
 `调查报告-协议对比-桥与ds-harness-remote-20261123.md` 列出 13 条可借鉴项。
@@ -44,7 +44,7 @@
 mobile-frame-contract、frame-fixtures、capabilities），全量 `vitest run` 96 文件
 1098 用例全绿；`docs:check` 双向锚点一致。
 
-## 未发布 · 契约文档订正：配对码位数与 `history` 帧字段（2026-11-23，issue #32）
+## v2.17.3 · 契约文档订正：配对码位数与 `history` 帧字段（2026-11-23，issue #32）
 
 **起因**：为评估「基于本桥做微信小程序客户端」逐条核对了帧契约，发现文档与实现有 8 处不一致。
 其中 3 处会让**照文档实现的客户端行为错误**（不是措辞问题）：
