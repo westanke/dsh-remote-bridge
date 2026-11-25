@@ -111,6 +111,7 @@ export function buildConfigText(
     // 多路候选：隧道（若本轮带上）+ 本机 LAN / 虚拟网。顺序口径见 composeCandidates。
     const endpoints = composeCandidates({
       port,
+      listenerHost: options.remote.status().host,
       tunnelUrl: attach.tunnelUrl ?? null,
       explicit: readRequestedEndpoints(body.endpoints),
       ...(attach.tunnelLabel === undefined ? {} : { tunnelLabel: attach.tunnelLabel }),
@@ -266,7 +267,7 @@ export async function openTunnelForCommand(
      * 手机在家走 LAN、在外走隧道，由客户端探活择优决定，不需要用户换码。
      */
     const candidatesFor = (tunnelUrl: string): string[] =>
-      composeCandidates({ tunnelUrl }).map(endpoint => endpoint.baseUrl)
+      composeCandidates({ tunnelUrl, listenerHost: options.remote.status().host }).map(endpoint => endpoint.baseUrl)
 
     const issuePairing = (url: string) => {
       // rootIds / scopes 与 WebUI「生成配对码」同口径：配对那一刻就把权限定死。

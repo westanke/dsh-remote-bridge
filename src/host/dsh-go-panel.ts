@@ -94,7 +94,7 @@ export function readState(source: AccessSource, now: number = Date.now()): Acces
     remoteEnabled: status.remoteEnabled,
     host: status.host,
     port: status.port,
-    endpoints: status.remoteEnabled ? detectEndpoints(status.port).map(item => item.baseUrl) : [],
+    endpoints: status.remoteEnabled ? detectEndpoints(status.port, status.host).map(item => item.baseUrl) : [],
     tunnelRunning: tunnel.running,
     tunnelUrl: tunnel.url,
     rootCount: source.roots(),

@@ -1,3 +1,4 @@
+import { isIP } from 'node:net'
 import { hostname, networkInterfaces } from 'node:os'
 
 /**
@@ -50,14 +51,61 @@ const SORT_RANK: Record<EndpointKind, number> = { LAN: 0, VIRTUAL_NET: 1, WAN: 2
 /** 默认监听端口 —— 与 `DEFAULT_PORT` 在脚本里保持一致。 */
 export const DEFAULT_PORT = 3090
 
+/** 去掉 URL/IPv6 的方括号与 zone id，供分类与比较使用。 */
+function stripHostDecorations(host: string): string {
+  let value = String(host ?? '').trim().toLowerCase()
+  if (value.startsWith('[') && value.endsWith(']')) value = value.slice(1, -1)
+  const zone = value.indexOf('%')
+  return zone === -1 ? value : value.slice(0, zone)
+}
+
+/** IPv4-mapped IPv6（`::ffff:a.b.c.d` 或 `::ffff:xxxx:xxxx`）折回 IPv4。 */
+function mappedIPv4(host: string): string | null {
+  if (!host.startsWith('::ffff:')) return null
+  const rest = host.slice('::ffff:'.length)
+  if (isIP(rest) === 4) return rest
+  const parts = rest.split(':')
+  if (parts.length !== 2 || parts.some((part) => !/^[0-9a-f]{1,4}$/.test(part))) return null
+  const high = Number.parseInt(parts[0]!, 16)
+  const low = Number.parseInt(parts[1]!, 16)
+  return `${high >> 8}.${high & 0xff}.${low >> 8}.${low & 0xff}`
+}
+
+function firstHextet(host: string): number | null {
+  const first = host.split(':')[0] ?? ''
+  if (first === '') return 0
+  if (!/^[0-9a-f]{1,4}$/.test(first)) return null
+  return Number.parseInt(first, 16)
+}
+
+function isLinkLocalIPv6(host: string): boolean {
+  if (isIP(host) !== 6) return false
+  const first = firstHextet(host)
+  return first !== null && first >= 0xfe80 && first <= 0xfebf
+}
+
 /**
- * 按 Kotlin `EndpointKind.infer` 的规则粗分类地址。
+ * 按 Kotlin `EndpointKind.infer` 的规则粗分类地址（IPv4 与 IPv6）。
  *
- * 只用于标签与排序；真实可用性始终由客户端探活决定。
+ * IPv6 口径：`fc00::/7` ULA 与 `fe80::/10` link-local 归 LAN；`2000::/3`
+ * 全球单播归 WAN；回环 `::1` 归 LAN；其余保留地址归 UNKNOWN。只用于标签与排序；
+ * 真实可用性始终由客户端探活决定。
  */
 export function classifyHost(host: string): EndpointKind {
-  const value = String(host ?? '').toLowerCase()
+  const value = stripHostDecorations(host)
+  if (value === '') return 'UNKNOWN'
   if (value === 'localhost' || value === '127.0.0.1' || value === '::1' || value.endsWith('.local')) return 'LAN'
+  if (value === '::') return 'UNKNOWN'
+  const mapped = mappedIPv4(value)
+  if (mapped !== null) return classifyHost(mapped)
+  if (isIP(value) === 6) {
+    const first = firstHextet(value)
+    if (first === null) return 'UNKNOWN'
+    if (first >= 0xfc00 && first <= 0xfdff) return 'LAN'
+    if (first >= 0xfe80 && first <= 0xfebf) return 'LAN'
+    if (first >= 0x2000 && first <= 0x3fff) return 'WAN'
+    return 'UNKNOWN'
+  }
   const octets = value.split('.').map(Number)
   if (octets.length !== 4 || octets.some((n) => !Number.isInteger(n) || n < 0 || n > 255)) return 'UNKNOWN'
   const [a, b] = octets as [number, number]
@@ -71,27 +119,56 @@ export function classifyHost(host: string): EndpointKind {
   return 'WAN'
 }
 
+function formatBaseUrl(host: string, port: number): string {
+  return `http://${host.includes(':') ? `[${host}]` : host}:${port}`
+}
+
 /**
- * 枚举本机可用于对外连接的 IPv4 地址。
- *
- * 排除 loopback（`address.internal`）与 169.254.* —— 后者只在没有 DHCP 时出现，
- * 塞给用户只会造成「为什么这个地址连不上」的困惑。
+ * 监听地址只允许对应的地址族出现在候选里：绑 `0.0.0.0` 时列 IPv6 只会制造
+ * 「码里有、连不上」的假候选；绑 `::` 时 Linux 默认双栈，IPv4/IPv6 都可保留。
+ * 传具体地址时只留该地址（其余网卡根本没有被监听）。
  */
-export function detectEndpoints(port: number = DEFAULT_PORT): ConfigEndpoint[] {
+function allowsAddress(host: string, listenerHost: string | undefined): boolean {
+  const bind = stripHostDecorations(listenerHost ?? '')
+  if (bind === '') return true
+  if (bind === '::') return true
+  if (bind === '0.0.0.0') return isIP(host) === 4
+  // 回环绑定没有可对外的地址，但配置文本仍要能生成（候选由客户端探活决定）；
+  // 真正的对外监听不会用回环地址。
+  if (bind === '127.0.0.1' || bind === '::1' || bind === 'localhost') return true
+  return host === bind
+}
+
+/**
+ * 枚举本机可用于对外连接的 IPv4 / IPv6 地址。
+ *
+ * 排除 loopback（`address.internal`）、IPv4 link-local 169.254.* 与 IPv6
+ * link-local fe80::/10 —— 这些地址只在没有正常路由或需要 zone id 时出现，
+ * 塞给用户只会造成「为什么这个地址连不上」的困惑。IPv6 URL 必须加方括号。
+ */
+export function detectEndpoints(port: number = DEFAULT_PORT, listenerHost?: string): ConfigEndpoint[] {
   const seen = new Set<string>()
   const found: Array<ConfigEndpoint & { iface: string }> = []
 
   for (const [iface, addresses] of Object.entries(networkInterfaces())) {
     for (const address of addresses ?? []) {
-      if (address.family !== 'IPv4' || address.internal) continue
-      if (address.address.startsWith('169.254.')) continue
-      if (seen.has(address.address)) continue
-      seen.add(address.address)
-      const kind = classifyHost(address.address)
+      if (address.internal) continue
+      const host = stripHostDecorations(address.address)
+      if (!allowsAddress(host, listenerHost)) continue
+      if (address.family === 'IPv4') {
+        if (host.startsWith('169.254.')) continue
+      } else if (address.family === 'IPv6') {
+        if (host === '::1' || isLinkLocalIPv6(host)) continue
+      } else {
+        continue
+      }
+      if (seen.has(host)) continue
+      seen.add(host)
+      const kind = classifyHost(host)
       found.push({
         kind,
         iface,
-        baseUrl: `http://${address.address}:${port}`,
+        baseUrl: formatBaseUrl(host, port),
         label: `${KIND_LABEL[kind]}（${iface}）`,
       })
     }
@@ -108,6 +185,11 @@ function hostOf(baseUrl: string): string {
   } catch {
     return ''
   }
+}
+
+/** 供路由解析显式 endpoint 时复用；无协议/非法时返回空串。 */
+export function endpointHost(baseUrl: string): string {
+  return hostOf(baseUrl)
 }
 
 /**
@@ -133,6 +215,8 @@ function hostOf(baseUrl: string): string {
  */
 export interface CandidateSources {
   port?: number
+  /** 桥实际监听地址；用于只保留该地址族/该地址的候选。 */
+  listenerHost?: string
   tunnelUrl?: string | null
   tunnelLabel?: string
   explicit?: ConfigEndpoint[] | null
@@ -147,7 +231,7 @@ export function composeCandidates(sources: CandidateSources = {}): ConfigEndpoin
         baseUrl: normalizeBaseUrl(endpoint.baseUrl),
         kind: endpoint.kind,
       }))
-    : detectEndpoints(port)
+    : detectEndpoints(port, sources.listenerHost)
 
   const tunnelUrl = trimOrNull(sources.tunnelUrl ?? null)
   if (tunnelUrl === null) return base

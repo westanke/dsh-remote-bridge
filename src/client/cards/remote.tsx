@@ -150,7 +150,7 @@ export function RemoteCard(props: { open: boolean; onToggle(): void }): JSX.Elem
     <div className="daw-warning">{t('httpWarning')}</div>
     {roots.length === 0 && !managementLocked && <div className="daw-warning">{t('addRootBeforeRemote')}</div>}
     <div className="daw-listener-form">
-      <label className="daw-field"><span>{t('bindIp')}</span><input className="daw-input" value={listenerHost} disabled={status?.remoteEnabled || managementLocked} spellCheck={false} placeholder="0.0.0.0" onChange={event => setListenerHost(event.target.value)} /></label>
+      <label className="daw-field"><span>{t('bindIp')}</span><input className="daw-input" value={listenerHost} disabled={status?.remoteEnabled || managementLocked} spellCheck={false} placeholder="0.0.0.0 / ::" onChange={event => setListenerHost(event.target.value)} /></label>
       <label className="daw-field"><span>{t('bindPort')}</span><input className="daw-input" type="number" min={1} max={65535} inputMode="numeric" value={listenerPort} disabled={status?.remoteEnabled || managementLocked} onChange={event => setListenerPort(event.target.value)} /></label>
       <button className="daw-command" disabled={managementLocked || status?.remoteEnabled || listenerHost.trim() === '' || !listenerPortValid || !listenerDirty} onClick={() => {
         setError(undefined)

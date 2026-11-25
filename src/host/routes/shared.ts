@@ -4,7 +4,7 @@ import path from 'node:path'
 import { type DeviceScope, type Principal, DEFAULT_DEVICE_SCOPES, DEVICE_SCOPES } from '../../shared/contracts.ts'
 import { type BffRest } from '../bff-rest.ts'
 import { type PromptContentPart, type UserQuestionAnswer } from '../chat-adapter.ts'
-import { classifyHost, type ConfigEndpoint } from '../config-text.ts'
+import { classifyHost, endpointHost, type ConfigEndpoint } from '../config-text.ts'
 import { ApiError } from '../errors.ts'
 import { getMetricsSnapshot, type MetricsSnapshot } from '../metrics.ts'
 import { type RouterOptions } from '../router.ts'
@@ -273,8 +273,7 @@ export function readRequestedEndpoints(value: unknown): ConfigEndpoint[] | null 
       throw new ApiError(400, 'BODY_INVALID', 'Each endpoint requires a non-empty baseUrl.')
     }
     const label = readOptionalText((item as Record<string, unknown>).label) ?? baseUrl
-    const host = baseUrl.replace(/^https?:\/\//i, '').split('/')[0]?.split(':')[0] ?? ''
-    endpoints.push({ label, baseUrl, kind: classifyHost(host) })
+    endpoints.push({ label, baseUrl, kind: classifyHost(endpointHost(baseUrl)) })
   }
   return endpoints
 }

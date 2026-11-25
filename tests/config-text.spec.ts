@@ -49,6 +49,17 @@ describe('classifyHost', () => {
     expect(classifyHost('not-an-ip')).toBe('UNKNOWN')
   })
 
+  it('classifies IPv6 loopback, ULA, link-local, mapped and global literals', () => {
+    expect(classifyHost('::1')).toBe('LAN')
+    expect(classifyHost('[::1]')).toBe('LAN')
+    expect(classifyHost('fd00::1')).toBe('LAN')
+    expect(classifyHost('fe80::1')).toBe('LAN')
+    expect(classifyHost('::ffff:192.168.1.1')).toBe('LAN')
+    expect(classifyHost('2409:8a74:8884:c780::2')).toBe('WAN')
+    expect(classifyHost('2001:db8::1')).toBe('WAN')
+    expect(classifyHost('::')).toBe('UNKNOWN')
+  })
+
   it('classifies a Cloudflare quick-tunnel host as UNKNOWN (kind is cosmetic, not in wire)', () => {
     expect(classifyHost('real-tunnel-9f2k.trycloudflare.com')).toBe('UNKNOWN')
     expect(classifyHost('abcdef-try-123.trycloudflare.com')).toBe('UNKNOWN')
@@ -73,6 +84,7 @@ describe('normalizeBaseUrl', () => {
     expect(normalizeBaseUrl('http://10.0.0.5:3090/api/v1')).toBe('http://10.0.0.5:3090')
     expect(normalizeBaseUrl('http://10.0.0.5:3090/api/v1/')).toBe('http://10.0.0.5:3090')
     expect(normalizeBaseUrl(normalizeBaseUrl('http://10.0.0.5:3090/api/v1'))).toBe('http://10.0.0.5:3090')
+    expect(normalizeBaseUrl('http://[fd00::1]:3090/api/v1/')).toBe('http://[fd00::1]:3090')
   })
 })
 
@@ -82,7 +94,8 @@ describe('detectEndpoints', () => {
     for (const endpoint of endpoints) {
       expect(endpoint.baseUrl).not.toContain('127.0.0.1')
       expect(endpoint.baseUrl).not.toContain('169.254.')
-      expect(endpoint.baseUrl).toMatch(/^http:\/\/\d+\.\d+\.\d+\.\d+:3090$/)
+      expect(endpoint.baseUrl).not.toMatch(/\[::1\]|\[fe80:/i)
+      expect(endpoint.baseUrl).toMatch(/^http:\/\/(\[[0-9a-f:]+\]|\d+\.\d+\.\d+\.\d+):3090$/)
     }
   })
 
@@ -91,6 +104,11 @@ describe('detectEndpoints', () => {
       expect(endpoint.label.length).toBeGreaterThan(0)
       expect(['LAN', 'VIRTUAL_NET', 'WAN', 'UNKNOWN']).toContain(endpoint.kind)
     }
+  })
+
+  it('filters address families by the listener host', () => {
+    expect(detectEndpoints(3090, '0.0.0.0').every(endpoint => !endpoint.baseUrl.includes('['))).toBe(true)
+    expect(detectEndpoints(3090, '::').every(endpoint => endpoint.baseUrl.startsWith('http://'))).toBe(true)
   })
 })
 
@@ -106,6 +124,13 @@ describe('composeCandidates（多路候选，2.16.0）', () => {
       'http://192.168.1.126:3090',
       'http://100.101.102.103:3090',
     ])
+  })
+
+  it('保留显式给出的 IPv6 地址（方括号不能丢）', () => {
+    const endpoints = composeCandidates({
+      explicit: [{ label: 'IPv6', baseUrl: 'http://[fd00::1]:3090', kind: 'LAN' as const }],
+    })
+    expect(endpoints[0]?.baseUrl).toBe('http://[fd00::1]:3090')
   })
 
   it('有隧道时隧道排第一，其后是显式候选（顺序不乱）', () => {

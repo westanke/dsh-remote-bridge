@@ -121,7 +121,7 @@ const zh = {
   // 否则用户会以为「我勾了删除怎么没生效」。
   configTextScopeNote: '连接短码固定使用最小权限（不含删除文件、修改设置），不跟随上面勾选 —— 它是要发出去的。要完整权限请改用配对码。',
   remoteAccess: '远程访问',
-  bindIp: '绑定 IP',
+  bindIp: '绑定 IP（IPv4/IPv6）',
   bindPort: '端口',
   saveListener: '保存监听设置',
   actualListener: '当前实际监听',
@@ -410,7 +410,7 @@ const en: Messages = {
   scopeGrantNoticeExisting: 'Changing this only affects new pairing codes. To change an already paired device, open Devices and use its Permissions button.',
   configTextScopeNote: 'Connection codes always carry a minimal set of scopes (no file deletion, no settings write) and ignore the ticks above — they are meant to be shared. Use a pairing code when you want the full set.',
   remoteAccess: 'Remote access',
-  bindIp: 'Bind IP',
+  bindIp: 'Bind IP (IPv4/IPv6)',
   bindPort: 'Port',
   saveListener: 'Save listener',
   actualListener: 'Current listener',
