@@ -2,8 +2,8 @@
 
 <p align="center">
   <strong>You left the house. The desktop is still locked. Take out your phone and keep using that machine.</strong><br>
-  Translates DSH's private remote protocol into WebSocket frames (primary) plus a versioned REST API (legacy, being retired) so the phone clients
-  dsh-companion and dsh-Chat keep your chats,
+  Translates DSH's private remote protocol into WebSocket frames (primary) plus a versioned REST API (legacy, being retired) so the phone client
+  dsh-Chat keeps your chats,
   sessions, files and devices on the same machine.
 </p>
 
@@ -23,7 +23,7 @@
   <img alt="License" src="https://img.shields.io/badge/license-AGPL--3.0-2da44e">
 </p>
 
-`dsh-remote-bridge` is the remote-access bridge plugin for DeepSeek Harness (DSH). It translates DSH's private remote protocol into **two device protocol surfaces**: the bidirectional `/ws/mobile` frames (every new capability lands only here, since v2.8) and the versioned REST `/api/v1` (legacy: frozen, shrink-only, being retired) so dsh-companion ([GitHub](https://github.com/westanke/dsh-companion) · [Gitee](https://gitee.com/westanke/dsh-companion)) and dsh-Chat ([GitHub](https://github.com/westanke/dsh-Chat) · [Gitee](https://gitee.com/westanke/dsh-Chat)), among other trusted clients, can keep using the same chat, workspace, and file capabilities while away from the machine. On the desktop it provides a **Phone settings** section inside your DSH settings, rendering collapsible cards inline: five in the main list (Remote / Public tunnel / Devices / Trash / App download) plus a collapsed-by-default **Advanced settings** group holding Roots, Image reading and Plugins — every card folds on its own and several may stay open at once.
+`dsh-remote-bridge` is the remote-access bridge plugin for DeepSeek Harness (DSH). It translates DSH's private remote protocol into **two device protocol surfaces**: the bidirectional `/ws/mobile` frames (every new capability lands only here, since v2.8) and the versioned REST `/api/v1` (legacy: frozen, shrink-only, being retired) so dsh-Chat ([GitHub](https://github.com/westanke/dsh-Chat) · [Gitee](https://gitee.com/westanke/dsh-Chat)), among other trusted clients, can keep using the same chat, workspace, and file capabilities while away from the machine. On the desktop it provides a **Phone settings** section inside your DSH settings, rendering collapsible cards inline: five in the main list (Remote / Public tunnel / Devices / Trash / App download) plus a collapsed-by-default **Advanced settings** group holding Roots, Image reading and Plugins — every card folds on its own and several may stay open at once.
 
 **Who it is for**: people who use DSH as their main tool but do not want to be tied to the desk. Remote access is **off by default** — until you enable it, the plugin listens on loopback only, so installing it never exposes the machine to the LAN by itself.
 
@@ -170,8 +170,8 @@ When the active model cannot see images (a text-only model), this plugin saves t
 
 Two client repositories are listed side by side; both talk to the same bridge:
 
-- **[dsh-companion](https://github.com/westanke/dsh-companion) ([Gitee](https://gitee.com/westanke/dsh-companion))** — the Android client, a fork of the upstream [dsh-android-app](https://github.com/Hakunm/dsh-android-app).
-- **[dsh-Chat](https://github.com/westanke/dsh-Chat) ([Gitee](https://gitee.com/westanke/dsh-Chat))** — a dual-client repo: Flutter (`app/`, Android 1.0.18+19 released, iOS channel included) and native HarmonyOS ArkTS (`harmony/`, started 2026-11-15, unreleased). It targets bridge ≥ 2.10.0 (protocol v3, `dsh-mobile-v1` subprotocol).
+- **[dsh-companion](https://github.com/westanke/dsh-companion) ([Gitee](https://gitee.com/westanke/dsh-companion))** — the Android client, a fork of the upstream [dsh-android-app](https://github.com/Hakunm/dsh-android-app). **No longer maintained or updated**; kept for historical reference only.
+- **[dsh-Chat](https://github.com/westanke/dsh-Chat) ([Gitee](https://gitee.com/westanke/dsh-Chat))** — Flutter (`app/`, Android 1.0.36 released, with the iOS channel and the HarmonyOS Flutter-OH host) plus the frozen legacy HarmonyOS ArkTS build (`harmony/`). It targets bridge ≥ 2.10.0 (protocol v3, `dsh-mobile-v1` subprotocol).
 
 **There is also an "Access" panel inside dsh-Go (v2.15.0 onwards)**. dsh-Go has a native plugin
 protocol: a plugin declares entries in its `package.json` under `dshGo` and registers view functions
@@ -198,7 +198,7 @@ host, so publishing a new version never requires regenerating them:
 Download pages (same targets as the codes):
 
 - dsh-Chat: <https://github.com/westanke/dsh-Chat/releases> · <https://gitee.com/westanke/dsh-Chat/releases>
-- dsh-companion: <https://github.com/westanke/dsh-companion/releases> · <https://gitee.com/westanke/dsh-companion/releases> (no QR code — open the link directly)
+- dsh-companion: <https://github.com/westanke/dsh-companion/releases> · <https://gitee.com/westanke/dsh-companion/releases> (**no longer maintained; archive only** — no QR code, open the link directly)
 
 > The codes encode the Releases **list page**, not a specific APK filename — so a new release
 > never needs new artwork, and whoever scans always lands on the latest version. Both images are
@@ -365,7 +365,7 @@ The default selection is five scopes — `chat.read`, `chat.write`, `files.read`
 
 ### Device names and models
 
-At pairing time the bridge has no idea who will use the token, so a new device starts with a **platform-neutral** placeholder name (`Mobile device`). The first time the device connects, the bridge works out its platform and model from the request and replaces the name with `platform · model` (for example `HarmonyOS · ICL-AL10`).
+At pairing time the bridge has no idea who will use the token, so a new device starts with a **platform-neutral** placeholder name (`Mobile device`). The first time the device connects, the bridge works out its platform and model from the request and replaces the name with `platform · model` (for example `HarmonyOS · <model>`).
 
 Platform detection prefers the client-declared `X-Dsh-Device: <platform>/<model>` header and falls back to the `User-Agent`. **The model is only taken from what the client reports**: neither okhttp nor ArkWeb puts a model in its default UA, and the bridge will not guess — a wrong model is worse than no model.
 
@@ -445,8 +445,7 @@ write authorization check was missing `await` and therefore never ran. Not cover
 real-device pass.
 
 **v2.13.0 verification status**: 92 test files / **1003 cases** green; `typecheck`, `docs:check`,
-and the build all pass. Fifteen functional surfaces were exercised on real hardware (vivo V2080A /
-Android 11 / kernel 0.2.2-rc.4). This release replaces all **31 hand-copied kernel semantic entry
+and the build all pass. Fifteen functional surfaces were exercised on real hardware. This release replaces all **31 hand-copied kernel semantic entry
 points** with a descriptor-driven kernel-endpoint path, and adds a generic `kernel-call` surface
 (14 allowlisted endpoints, gated by both scope and authorized root, only over the `dshrb-v1`
 subprotocol).
@@ -653,5 +652,5 @@ inside the zero-change set, and 4 slots retained with 0 removed.
 - Repository: [GitHub](https://github.com/westanke/dsh-remote-bridge) · [Gitee](https://gitee.com/westanke/dsh-remote-bridge)
 - npm: [`dsh-remote-bridge`](https://www.npmjs.com/package/dsh-remote-bridge) ([mainland-China mirror](https://registry.npmmirror.com/dsh-remote-bridge))
 - License: [GNU Affero General Public License v3.0](./LICENSE)
-- Android client: dsh-companion ([GitHub](https://github.com/westanke/dsh-companion) · [Gitee](https://gitee.com/westanke/dsh-companion)), a fork of the upstream [dsh-android-app](https://github.com/Hakunm/dsh-android-app), kept in step with this plugin
-- Another client repository: dsh-Chat ([GitHub](https://github.com/westanke/dsh-Chat) · [Gitee](https://gitee.com/westanke/dsh-Chat)), containing a Flutter build (Android 1.0.18+19, iOS channel included) and a native HarmonyOS ArkTS build (unreleased)
+- Android client: dsh-companion ([GitHub](https://github.com/westanke/dsh-companion) · [Gitee](https://gitee.com/westanke/dsh-companion)), a fork of the upstream [dsh-android-app](https://github.com/Hakunm/dsh-android-app); **no longer maintained or updated**, kept for historical reference only
+- Primary client repository: dsh-Chat ([GitHub](https://github.com/westanke/dsh-Chat) · [Gitee](https://gitee.com/westanke/dsh-Chat)), containing a Flutter build (Android 1.0.36, iOS channel and HarmonyOS Flutter-OH host included) and the frozen legacy HarmonyOS ArkTS build

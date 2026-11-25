@@ -3,7 +3,7 @@
 <p align="center">
   <strong>人已经出门，电脑还锁着 —— 掏出手机，继续用这台机器。</strong><br>
   把 DSH 内核的私有 remote 协议翻译成 WebSocket 帧（首选）与版本化 REST（老协议，逐步下线），
-  配上手机客户端 dsh-companion 与 dsh-Chat，
+  配上手机客户端 dsh-Chat，
   聊天、会话、文件、设备全程留在同一台机器上。
 </p>
 
@@ -23,7 +23,7 @@
   <img alt="License" src="https://img.shields.io/badge/license-AGPL--3.0-2da44e">
 </p>
 
-`dsh-remote-bridge` 是 DeepSeek Harness（DSH）的远程访问桥接插件：它把 DSH 内核的私有 remote 协议翻译成**两个设备协议面**——`/ws/mobile` 的双向帧（新能力只在这里落，v2.8 起）与版本化 REST `/api/v1`（老协议：已冻结、只减不增、逐步下线），让 dsh-companion（[GitHub](https://github.com/westanke/dsh-companion) · [Gitee](https://gitee.com/westanke/dsh-companion)）与 dsh-Chat（[GitHub](https://github.com/westanke/dsh-Chat) · [Gitee](https://gitee.com/westanke/dsh-Chat)）等受信任客户端在离开电脑后仍能使用同一套聊天、工作区与文件能力；桌面端在你的 DSH 设置里提供一个「手机设置」，内联折叠卡片：主列表五张（远程访问 / 外网隧道 / 设备 / 回收站 / App 下载），另有默认收起的「高级设置」组收纳根目录、识图与插件三项，每张卡片各自折叠、可多张同时展开。
+`dsh-remote-bridge` 是 DeepSeek Harness（DSH）的远程访问桥接插件：它把 DSH 内核的私有 remote 协议翻译成**两个设备协议面**——`/ws/mobile` 的双向帧（新能力只在这里落，v2.8 起）与版本化 REST `/api/v1`（老协议：已冻结、只减不增、逐步下线），让 dsh-Chat（[GitHub](https://github.com/westanke/dsh-Chat) · [Gitee](https://gitee.com/westanke/dsh-Chat)）等受信任客户端在离开电脑后仍能使用同一套聊天、工作区与文件能力；桌面端在你的 DSH 设置里提供一个「手机设置」，内联折叠卡片：主列表五张（远程访问 / 外网隧道 / 设备 / 回收站 / App 下载），另有默认收起的「高级设置」组收纳根目录、识图与插件三项，每张卡片各自折叠、可多张同时展开。
 
 **它适合谁**：把 DSH 当主力工具、但不想被「必须坐在电脑前」绑住的人。远程访问**默认关闭**，未启用时只监听回环地址——装完不会自动把机器暴露到局域网。
 
@@ -162,8 +162,8 @@ dsh plugin --profile web add ./dsh-remote-bridge-v2.14.0.tgz
 
 桥同时配套两个客户端仓，二者连的是同一套接口：
 
-- **[dsh-companion](https://github.com/westanke/dsh-companion)（[Gitee](https://gitee.com/westanke/dsh-companion)）** —— Android 客户端，上游 [dsh-android-app](https://github.com/Hakunm/dsh-android-app) 的 fork。
-- **[dsh-Chat](https://github.com/westanke/dsh-Chat)（[Gitee](https://gitee.com/westanke/dsh-Chat)）** —— 双客户端仓：Flutter 版（`app/`，Android 已发版 1.0.18+19，含 iOS 通道）与 HarmonyOS 原生 ArkTS 版（`harmony/`，2026-11-15 起步，未发版）。协议基线要求桥 ≥ 2.10.0（协议 v3，子协议 `dsh-mobile-v1`）。
+- **[dsh-companion](https://github.com/westanke/dsh-companion)（[Gitee](https://gitee.com/westanke/dsh-companion)）** —— Android 客户端，上游 [dsh-android-app](https://github.com/Hakunm/dsh-android-app) 的 fork。**已停止维护更新**，仅作历史参考。
+- **[dsh-Chat](https://github.com/westanke/dsh-Chat)（[Gitee](https://gitee.com/westanke/dsh-Chat)）** —— Flutter 版（`app/`，Android 已发版 1.0.36，含 iOS 通道与 HarmonyOS Flutter-OH 宿主）与已冻结的旧 HarmonyOS ArkTS 版（`harmony/`）。协议基线要求桥 ≥ 2.10.0（协议 v3，子协议 `dsh-mobile-v1`）。
 
 **另外：dsh-Go 里也有一块「接入」面板（v2.15.0 起）**。dsh-Go 有一套原生插件协议 —— 插件
 在 `package.json` 的 `dshGo` 里声明条目、在宿主进程内注册视图函数，App 直接画。我们用它放一个
@@ -186,7 +186,7 @@ dsh plugin --profile web add ./dsh-remote-bridge-v2.14.0.tgz
 下载页（与二维码同址）：
 
 - dsh-Chat：<https://github.com/westanke/dsh-Chat/releases> · <https://gitee.com/westanke/dsh-Chat/releases>
-- dsh-companion：<https://github.com/westanke/dsh-companion/releases> · <https://gitee.com/westanke/dsh-companion/releases>（不提供二维码，直接开链接）
+- dsh-companion：<https://github.com/westanke/dsh-companion/releases> · <https://gitee.com/westanke/dsh-companion/releases>（**已停止维护，仅存档**；不提供二维码，直接开链接）
 
 > 二维码里写的是 Releases **列表页**，不是某个具体的 APK 文件名 —— 扫码永远落到最新版本。
 
@@ -216,7 +216,7 @@ dsh plugin --profile web add ./dsh-remote-bridge-v2.14.0.tgz
 回的是这样一段：
 
 ```
-https://<random>.trycloudflare.com,http://192.168.1.126:3090,http://100.64.250.1:3090#AB3DE7JK
+https://<random>.trycloudflare.com,http://<LAN-IP>:3090,http://<virtual-IP>:3090#AB3DE7JK
 （一行粘进 App 的导入框即可：它会拆成多条候选地址 + 配对码，连哪条自己探；10 分钟内有效、只能用一次）
 ```
 
@@ -392,7 +392,7 @@ Authorization: Bearer DEVICE_TOKEN
 
 ### 设备名与型号
 
-配对那一刻桥并不知道将来是谁来用这个令牌，所以新设备先得到一个**平台无关**的占位名（`Mobile device`）。设备第一次连上来时，桥会从请求里识别平台与型号，把名字自动换成「平台 · 型号」（比如 `HarmonyOS · ICL-AL10`）。
+配对那一刻桥并不知道将来是谁来用这个令牌，所以新设备先得到一个**平台无关**的占位名（`Mobile device`）。设备第一次连上来时，桥会从请求里识别平台与型号，把名字自动换成「平台 · 型号」（比如 `HarmonyOS · <型号>`）。
 
 平台判定优先看客户端上报的 `X-Dsh-Device: <platform>/<model>` 头，没有就从 `User-Agent` 兜底。**型号只认客户端上报**：OkHttp 与 ArkWeb 的默认 UA 里都没有机型，桥不会去猜 —— 猜错的型号比没有型号更糟。
 
@@ -512,7 +512,7 @@ activation 走内核 `goals/get`（投影故意不含这个字段），清除后
 既有缺陷：goal 写的越权检查漏了 `await`，从来没有做过会话授权判定。未做：真机四步回归。
 
 **v2.13.0 的验证状态**：92 个测试文件 / **1003 个用例**全绿、`typecheck`/`docs:check`/构建通过；
-安卓真机（vivo V2080A / Android 11 / 内核 0.2.2-rc.4）跑通 15 项功能面。这一版把桥手抄的
+安卓真机跑通 15 项功能面。这一版把桥手抄的
 **31 个内核语义入口**全部换成「内核端点 + 描述符驱动」，并新增 `kernel-call` 通用调用面
 （14 条白名单端点，按 scope 与授权根两维把关，`dshrb-v1` 子协议下才生效）。
 
@@ -648,5 +648,5 @@ DSH **0.2.1-rc.3** 隔离实例上**实跑验过**，不是静态推断：插件
 - 仓库：[GitHub](https://github.com/westanke/dsh-remote-bridge) · [Gitee](https://gitee.com/westanke/dsh-remote-bridge)
 - npm：[`dsh-remote-bridge`](https://www.npmjs.com/package/dsh-remote-bridge)（[国内镜像](https://registry.npmmirror.com/dsh-remote-bridge)）
 - 许可证：[GNU Affero General Public License v3.0](./LICENSE)
-- Android 客户端：dsh-companion（[GitHub](https://github.com/westanke/dsh-companion) · [Gitee](https://gitee.com/westanke/dsh-companion)），上游 [dsh-android-app](https://github.com/Hakunm/dsh-android-app) 的 fork，与本插件配套
-- 另一客户端仓：dsh-Chat（[GitHub](https://github.com/westanke/dsh-Chat) · [Gitee](https://gitee.com/westanke/dsh-Chat)），内含 Flutter 版（Android 1.0.18+19，含 iOS 通道）与 HarmonyOS 原生 ArkTS 版（未发版）
+- Android 客户端：dsh-companion（[GitHub](https://github.com/westanke/dsh-companion) · [Gitee](https://gitee.com/westanke/dsh-companion)），上游 [dsh-android-app](https://github.com/Hakunm/dsh-android-app) 的 fork；**已停止维护更新**，仅作历史参考
+- 主要客户端仓：dsh-Chat（[GitHub](https://github.com/westanke/dsh-Chat) · [Gitee](https://gitee.com/westanke/dsh-Chat)），内含 Flutter 版（Android 1.0.36，含 iOS 通道与 HarmonyOS Flutter-OH 宿主）与已冻结的旧 HarmonyOS ArkTS 版
