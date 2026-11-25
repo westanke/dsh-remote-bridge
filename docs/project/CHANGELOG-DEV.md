@@ -1,4 +1,6 @@
-## 未发布 · 撤掉 dsh-companion 的下载二维码：「App 下载」只留 dsh-Chat（2026-11-25，issue #IKXRAD）
+## v2.17.4 · IPv6 支持、设备名同步与 App 下载二维码收口（2026-11-25，issue #IKXRAD）
+
+**同版另外两项**：`ac9bfc9` 让候选地址、配置文本与监听过滤支持 IPv6（具体 IPv6 literal / `::`，URL 自动加方括号）；`fb2f877` 在 token 重连时读取 `X-DSH-Device-Name`，调用 `database.renameDevice()` 同步设备展示名，已配对设备重连一次即可改名，无需重新配对。
 
 **起因**：用户要求「取消 DSH 伴侣（dsh-companion）的二维码」—— 设置页「App 下载」卡与 README
 下载表里此前并排列着 dsh-companion 与 dsh-Chat 两套二维码，现只保留 dsh-Chat 的两张。
@@ -25,8 +27,7 @@
 `playwright test` 9/9 通过（含「App 下载卡片展开时二维码都渲染出来了」，按
 `APP_QR_CODES.length` 动态断言）；`tsdown` 构建绿。
 
-**未做**：本次**不发版**（用户选择「只改代码，先不发版」）—— 版本号未动、无 tag、
-未推双站、未发 npm。下一版发布时这些改动随该版本一起走。
+**发布**：随 v2.17.4 一起发布（npm + Gitee/AtomGit tag/Release）。
 
 ## v2.17.3 · 协议对比建议清单落地：行为语义/契约夹具/幂等查询（2026-11-24，issue #IKXGYR #IKXGYS #IKXGYT #IKXGYU #IKXGYV #IKXGYW #IKXGYX）
 

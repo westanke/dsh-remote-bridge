@@ -433,6 +433,28 @@ describe('mobile gateway WebSocket (/ws/mobile) — authenticated session', () =
     socket.close()
   })
 
+  it('updates the device display name on a later token connection', async () => {
+    const { database, root, url } = await startHarness()
+    const pairing = database.createPairing([root.id], ['chat.read'])
+    const credentials = database.exchangePairing(pairing.code, 'Old name')
+    const encodedName = Buffer.from('DSH Chat (V2080A)', 'utf8').toString('base64')
+    const socket = connect(url, {
+      protocols: ['dsh-mobile-v1', `dsh-auth.${credentials.token}`],
+      headers: { 'X-DSH-Device-Name': encodedName },
+    })
+    const { frames } = collect(socket)
+    await new Promise<void>((resolve, reject) => {
+      socket.once('open', resolve)
+      socket.once('error', reject)
+    })
+    await nextKind(frames, 'hello')
+    const hello = frames.find(frame => frame.kind === 'hello')?.data as { device?: { name?: string } }
+    expect(hello.device?.name).toBe('DSH Chat (V2080A)')
+    expect(database.listDevices().find(device => device.id === credentials.device.id)?.name)
+      .toBe('DSH Chat (V2080A)')
+    socket.close()
+  })
+
   it('falls back to X-DSH-Device-ID when X-DSH-Device-Name is missing', async () => {
     const { database, root, url } = await startHarness()
     const pairing = database.createPairing([root.id], ['chat.read'])

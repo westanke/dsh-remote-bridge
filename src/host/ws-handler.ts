@@ -518,15 +518,35 @@ export class MobileGatewayWsHandler {
       return true
     }
 
-    const device = this.principalToDeviceView(principal)
-    this.acceptSocket(webSocket, principal, req, device)
-    this.sendHello(webSocket, principal)
+    // 令牌重连也允许客户端声明展示名：同一个 token 换了设备名/系统改名后，
+    // 下一次重连即可把桥里的设备档案更新，不必重新配对。
+    const namedPrincipal = this.applyDeclaredDeviceName(principal, req)
+    const device = this.principalToDeviceView(namedPrincipal)
+    this.acceptSocket(webSocket, namedPrincipal, req, device)
+    this.sendHello(webSocket, namedPrincipal)
     // 协商到 dshrb-v1：hello 之后补一帧能力目录（顺序不能反，客户端按首帧判协议版本）。
     this.sockets.get(webSocket)?.handlers.kernelCall?.announce()
     // 与 /api/v1/events 同一服务端保证：新连接立刻补推仍待处理的审批/提问，
     // App 重连不会漏掉待办 HITL（重放事件带 replayed:true，客户端按 id/callId 去重）。
-    void this.replayPendingInteractions(webSocket, principal)
+    void this.replayPendingInteractions(webSocket, namedPrincipal)
     return true
+  }
+
+  /** 从 X-DSH-Device-Name 读取并更新设备展示名；失败/无变化时保留原 principal。 */
+  private applyDeclaredDeviceName(principal: Principal, req: IncomingMessage): Principal {
+    if (principal.kind !== 'device') return principal
+    const encoded = headerValue(req, 'x-dsh-device-name')
+    if (encoded === undefined || encoded.trim() === '') return principal
+    const decoded = decodeBase64Utf8(encoded.trim())
+    const name = decoded?.trim().slice(0, 120)
+    if (name === undefined || name === '' || name === principal.name) return principal
+    try {
+      this.database.renameDevice(principal.id, name)
+      return { ...principal, name }
+    } catch {
+      // 改名失败不应阻断已鉴权的连接；保留旧名。
+      return principal
+    }
   }
 
   // ───────────────────────── 接受连接（公共）─────────────────────────
