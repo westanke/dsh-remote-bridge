@@ -402,7 +402,7 @@ describe('package.json 的 dshGo 清单', () => {
   }
 
   it('存在且协议版本是 1', () => {
-    expect(pkg.version).toBe('2.17.4')
+    expect(pkg.version).toBe('2.17.5')
     expect(manifest?.v).toBe(1)
   })
 

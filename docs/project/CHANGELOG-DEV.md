@@ -1,4 +1,16 @@
-## 未发布 · 内核 RPC 超时归一为可重试 TIMEOUT、会话列表/历史上限放宽（2026-11-27）
+## v2.17.5 · 帧上限失败体验、后台任务三帧、待处理提问 `questions` 帧与内核超时归一（2026-11-27）
+
+**同版四项**：`/ws/mobile` 入站帧超限改为「先 error 帧、再 close 1009」；后台任务新增
+`job-list` / `job-output` / `job-kill` 三帧与 `chat.job.updated` / `chat.job.finished` 推送；
+待处理提问列表新增只读 `questions` 帧（3.0.0 弃用 REST 的替代）；内核 `rpc/timeout`
+归一为可重试 `TIMEOUT/504`，`sessions.list` / `sessions.history` 单次 RPC 上限放宽到 20 s。
+
+**验证**：`pnpm check`（typecheck → test → docs:check → build）全绿；`npm test` 98 文件
+**1114** 用例全绿；两端协议词表 client 91 / server 94 / 去重 129。
+
+**发布**：npm + Gitee/AtomGit tag/Release 一并发布。
+
+### 内核 RPC 超时归一为可重试 TIMEOUT、会话列表/历史上限放宽（2026-11-27）
 
 **起因**：真机反复出现「加载历史失败：The host did not answer sessions.list within 10000ms.」。
 根因是 `rpc.ts` 的统一 10 s 上限在慢盘/长回合/上百会话时被打穿，而 `unwrapDsh()`
@@ -15,7 +27,7 @@
 **兼容性**：错误码从 `DSH_RPC_TIMEOUT`（400，不可重试）变为 `TIMEOUT`（504，可重试）；
 客户端 `RequestException.retryable` 会为 true。没有新增帧/能力位。
 
-## 未发布 · 帧超限失败体验：先 `FRAME_TOO_LARGE` error 帧，再 close `1009`（2026-11-27）
+### 帧超限失败体验：先 `FRAME_TOO_LARGE` error 帧，再 close `1009`（2026-11-27）
 
 **起因**：`/ws/mobile` 的入站单帧超过 `hello.maxFrameBytes` 时，`ws` 直接 `close(1009)`，
 客户端只看到一个裸 1009——分不清「帧太大」和别的 1009，也不知道生效上限；发图/大附件只能
@@ -40,7 +52,7 @@
 `websocket-security` 共 4 文件 153 例绿；临时集成脚本实测压缩/未压缩/隧道三条入口均为
 「hello → error 帧 → 1009 reason」，对端主动 close 不被改写；`tsc`、`docs:check` 绿。
 
-## 未发布 · 后台任务新增 `job-list` / `job-output` / `job-kill` 帧与状态推送（2026-11-27）
+### 后台任务新增 `job-list` / `job-output` / `job-kill` 帧与状态推送（2026-11-27）
 
 **起因**：客户端把「后台任务卡/列表」记为缺能力——桥只有三条 REST jobs 端点，
 `/ws/mobile` 没有任何帧，客户端拿不到任务清单，也收不到「跑完了/失败了」的提醒。
@@ -88,7 +100,7 @@
 tests/mobile-frame-contract.spec.ts tests/frame-fixtures.spec.ts` → 3 文件 36 用例全绿；
 `npx tsc --noEmit` 绿；`npm run docs:check` 四段绿。全量 `pnpm test` 留给合并方。
 
-## 未发布 · 待处理提问清单新增 `questions` 帧（2026-11-27）
+### 待处理提问清单新增 `questions` 帧（2026-11-27）
 
 **起因**：dsh-Chat 断线重连后靠 REST `GET /chat/sessions/{id}/questions` 补齐内核 `continued`
 那半提问——WS 的待处理重放只覆盖桥前台接管的部分。那条 REST 在 3.0.0 的弃用表里，而

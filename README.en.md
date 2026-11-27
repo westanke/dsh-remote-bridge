@@ -17,7 +17,7 @@
 
 <p align="center">
   <a href="./README.md">中文</a> ·
-  <img alt="Version" src="https://img.shields.io/badge/version-v2.17.4-087f8c">
+  <img alt="Version" src="https://img.shields.io/badge/version-v2.17.5-087f8c">
   <img alt="DSH plugin" src="https://img.shields.io/badge/DeepSeek_Harness-plugin-1f2328">
   <img alt="Platforms" src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-586069">
   <img alt="License" src="https://img.shields.io/badge/license-AGPL--3.0-2da44e">
@@ -432,7 +432,7 @@ pnpm pack
 
 v2.5.0 was verified on DSH **0.2.1-rc.2** on real hardware: all 14/14 host services injected, the three jobs endpoints exercised, and the permission catalog returned the kernel's real three presets. **The current development baseline** is upstream `dsh-v0.2.2-rc.4` (commit `3f321d32bfe382212a8ed8785c1d47a5a300aa23`); see `engines.dsh` above for the supported range. CI covers Windows, Ubuntu, and macOS on **two kernel versions each** (`0.2.2-rc.1` and `0.2.2-rc.4`) — the lower bound and the near-upper bound of the range declared in `engines.dsh` (issue #26, phase 0.1).
 
-**Current HEAD (v2.17.4 + unreleased changes) test set**: 97 test files / **1112 cases** (`npx vitest list`). Unreleased changes include the read-only `questions` frame, frame-limit failure handling (`/ws/mobile` sends a `FRAME_TOO_LARGE` error frame before closing with `1009` and a `limitBytes` close reason), and the background-job fetch frames; the default 1 MiB frame limit is unchanged. Run `pnpm check` before merging for the full gate.
+**Current HEAD (v2.17.5) test set**: 98 test files / **1114 cases** (`npx vitest list`). Unreleased changes include the read-only `questions` frame, frame-limit failure handling (`/ws/mobile` sends a `FRAME_TOO_LARGE` error frame before closing with `1009` and a `limitBytes` close reason), and the background-job fetch frames; the default 1 MiB frame limit is unchanged. Run `pnpm check` before merging for the full gate.
 
 **v2.14.0 verification status**: 93 test files / **1021 cases** green; `typecheck`, `docs:check`,
 and the build all pass. This release catches dsh-Chat up on queue management and goal activation
@@ -586,7 +586,7 @@ inside the zero-change set, and 4 slots retained with 0 removed.
 
 ## Project
 
-- Version: `v2.17.4`
+- Version: `v2.17.5`
 - **v2.9.0 makes teammates (sub-sessions) readable**: the phone's team panel could list members and
   sub-sessions but could not open a single one, because `sessions.list` filters out every row with
   `origin === 'subagent'` (the bridge's own `dsh-0.2-bridge.ts:2327`, with a comment explaining that

@@ -1,7 +1,7 @@
 # 当前状态
 
-- 日期：2026-11-27（**已发版 v2.17.4：IPv6 支持、设备名同步与 App 下载二维码收口**；再往前 v2.16.0 是多路配置码 + `open_tunnel_config` 回执改形，v2.15.0 是 dsh-Go 原生界面 + kernel-call 白名单放行 `skills/list`；`main` 上另有未发布的 issue #26 阶段 0–9、完工检修一批、真机测试期两个 bug，以及待处理提问清单 `questions` 帧、帧超限失败体验、后台任务拉取帧）
-- **当前未发布（2026-11-27）· 帧上限失败体验 + `questions` 帧 + 后台任务拉取帧**：
+- 日期：2026-11-27（**已发版 v2.17.5：帧上限失败体验、后台任务三帧、待处理提问 `questions` 帧、内核 RPC 超时归一**；上一版 v2.17.4 是 IPv6 支持、设备名同步与 App 下载二维码收口，v2.16.0 是多路配置码 + `open_tunnel_config` 回执改形，v2.15.0 是 dsh-Go 原生界面 + kernel-call 白名单放行 `skills/list`）
+- **v2.17.5（2026-11-27）· 帧上限失败体验 + `questions` 帧 + 后台任务拉取帧**：
   `/ws/mobile` 入站单帧超过 `maxFrameBytes` 时，先发 `kind:'error'`（`code:'FRAME_TOO_LARGE'`、
   `retryable:true`、`details.limitBytes`）再以 `1009` 关闭；close reason 为
   `FRAME_TOO_LARGE limitBytes=…`。`/api/v1/events` 的帧格式没有 `kind:'error'`，只带 close reason。

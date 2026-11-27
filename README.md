@@ -17,7 +17,7 @@
 
 <p align="center">
   <a href="./README.en.md">English</a> ·
-  <img alt="Version" src="https://img.shields.io/badge/version-v2.17.4-087f8c">
+  <img alt="Version" src="https://img.shields.io/badge/version-v2.17.5-087f8c">
   <img alt="DSH plugin" src="https://img.shields.io/badge/DeepSeek_Harness-plugin-1f2328">
   <img alt="Platforms" src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-586069">
   <img alt="License" src="https://img.shields.io/badge/license-AGPL--3.0-2da44e">
@@ -486,7 +486,7 @@ v2.5.0 在 DSH **0.2.1-rc.2** 上完成真机验证：14/14 宿主服务全部�
 CI 覆盖 Windows、Ubuntu 和 macOS **各两档内核**（`0.2.2-rc.1` 与 `0.2.2-rc.4`），
 即 `engines.dsh` 声明区间的下界与上界附近各测一次（issue #26 阶段 0.1）。
 
-**当前 HEAD（v2.17.4 + 未发布改动）的测试集**：97 个测试文件 / **1112 个用例**（`npx vitest list` 统计）。未发布改动包括待处理提问清单 `questions` 帧、帧超限失败体验（`/ws/mobile` 超限先回 `FRAME_TOO_LARGE` error 帧，再以 `1009` 关闭并在 close reason 带 `limitBytes`），以及后台任务拉取帧；默认单帧上限保持 1 MiB 不变。合并前的 `pnpm check` 是完整门禁。
+**当前 HEAD（v2.17.5）的测试集**：98 个测试文件 / **1114 个用例**（`npx vitest list` 统计）。未发布改动包括待处理提问清单 `questions` 帧、帧超限失败体验（`/ws/mobile` 超限先回 `FRAME_TOO_LARGE` error 帧，再以 `1009` 关闭并在 close reason 带 `limitBytes`），以及后台任务拉取帧；默认单帧上限保持 1 MiB 不变。合并前的 `pnpm check` 是完整门禁。
 
 **v2.16.0 的验证状态**：95 个测试文件 / **1073 个用例**全绿、`typecheck`/`docs:check`/构建通过。
 这一版把配置码升级成**有序候选列表**（`MOB-016`，issue IKX5K7）：一个 `DSH1:` 同时带隧道、LAN
@@ -598,7 +598,7 @@ DSH **0.2.1-rc.3** 隔离实例上**实跑验过**，不是静态推断：插件
 
 ## 项目信息
 
-- 当前版本：`v2.17.4`
+- 当前版本：`v2.17.5`
 - **v2.9.0 是团队成员（子会话）可读版**：手机端的团队面板此前只能看到成员与子会话的名字，点开读不到
   任何内容 —— 因为 `sessions.list` 会把 `origin === 'subagent'` 的行整批滤掉（桥自己的
   `dsh-0.2-bridge.ts:2327`，注释写明「暴露出来只会得到点开就崩的行」），子会话 id 打 `/messages`
