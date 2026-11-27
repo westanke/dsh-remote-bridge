@@ -451,7 +451,7 @@ export function wireSessionRegistryRelay(
     hostFrames.push({ type: 'host/remote-event', event: 'agent-preset/selected', args: [sessionId, agentPreset] })
   })
   // DSH 0.2.2: the llm service announces provider model-catalog changes
-  // (`llm/models-updated(provider)`). Relay it so WS/SSE clients can refresh
+  // (`llm/models-updated(provider)`). Relay it so WS clients can refresh
   // their model lists without polling (new in the 0.2.2 adaptation, P2-A).
   host.on('llm/models-updated', (provider: unknown) => {
     if (typeof provider !== 'string') return

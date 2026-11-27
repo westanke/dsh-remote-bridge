@@ -36,15 +36,16 @@ dsh-Chat 的协议基线为 bridge ≥ 2.10.0（协议 v3，子协议 `dsh-mobil
 ## 协议面与弃用迁移矩阵（2026-11-20 起）
 
 桥的**第一协议面**是 `/ws/mobile` 的双向帧（子协议 `dsh-mobile-v1`；`dshrb-v1` 另开通用内核调用面）。
-`/api/v1` REST 与 `/api/v1/events` SSE 是**老协议**：已冻结、只减不增、逐步下线。
+`/api/v1` REST 与 `/api/v1/events` 广播 WS 是**老协议**：已冻结、只减不增、逐步下线。
 规则见 [AGENTS.md](../../AGENTS.md) §1.1，逐端点表见 [API.md](API.md) 的「协议面状态与弃用表」。
 
 | 项 | 现状 | 最早移除 |
 | --- | --- | --- |
 | REST 已弃用端点（21 个 operation：工作区发现、会话增删改/分叉/归档/等待、消息、审批、提问、命令、模型、Agent Preset、取消） | `openapi.yaml` 已标 `deprecated: true` + `x-dsh-replaced-by` + `x-dsh-removal-not-before`，替代帧见 API.md 表 1 | **3.0.0** |
 | REST 对等面：分块上传 / 定时任务 / 语音（13 条） | 帧是主路径；`dsh-companion` 仍在用 REST 回落，迁完后降级为「已弃用」 | **3.0.0** |
-| `/api/v1/events`（SSE） | 只作 WS 断线兜底 | 不早于 3.0.0，与 REST 同步评估 |
-| 例外（`/manage/*`、图片与裸路由、roots/trash、附件字节、jobs、子会话历史、工作区登记写、设置面） | 没有帧等价物，保留 | 不计划移除 |
+| `/api/v1/events`（广播 WS，非 SSE） | 只作 `/ws/mobile` 断线兜底 | 不早于 3.0.0，与 REST 同步评估 |
+| REST 对等面：后台任务（3 条） | `job-list` / `job-output` / `job-kill` 帧已提供（2026-11-27）；REST 保留给已发布客户端，未标 `deprecated` | 不早于 3.0.0，与其它对等面同步评估 |
+| 例外（`/manage/*`、图片与裸路由、roots/trash、附件字节、子会话历史、工作区登记写、设置面） | 没有帧等价物，保留 | 不计划移除 |
 
 **已发布客户端的现状**：`dsh-companion` v2.2.x 以帧为主、REST 仅回落（`DshClientBff.kt` 仍调
 三域对等面）；`dsh-Chat` 已接 `dshrb-v1`。移除任一已弃用端点前，两个仓都必须确认不再调用

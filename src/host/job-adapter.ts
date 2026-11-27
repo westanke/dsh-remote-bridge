@@ -150,6 +150,33 @@ export class JobAdapter {
   }
 
   /**
+   * 观察某个会话的任务清单变化（WS 推送用）。
+   *
+   * 与 {@link list} 的区别：这里**不截断**内核的 roster 流。内核的 `list`
+   * 首帧是全量 truth，之后每个 lifecycle commit 再发一帧；REST 只读首帧，
+   * 而推送需要把后续帧也读出来。
+   *
+   * 每一帧都按 `rows` 校验后整表 yield（`Whole-set replacement`），调用方
+   * 负责与上一帧比对。流结束或 signal abort 时生成器随之结束；异常原样
+   * 抛给调用方，由 watcher 决定是否摘除并在下一次订阅时重启。
+   */
+  async *watch(sessionId: string, signal: AbortSignal): AsyncGenerator<JobListResult> {
+    const stream = this.host.jobController.list({ sessionId }, signal)
+    for await (const frame of stream) {
+      if (signal.aborted) return
+      if (frame === null || typeof frame !== 'object') continue
+      if (frame.type !== 'rows') {
+        throw new JobApiError(502, 'JOB_FRAME_UNKNOWN', `Unexpected job roster frame: ${String(frame.type)}`)
+      }
+      const jobs = frame.jobs
+      if (!Array.isArray(jobs)) {
+        throw new JobApiError(502, 'JOB_SHAPE_INVALID', 'The job roster frame carried no rows array.')
+      }
+      yield { jobs: jobs.map(toJobView) }
+    }
+  }
+
+  /**
    * 读一个任务已保留的输出（从指定字节偏移继续）。
    *
    * 内核的 `follow` 是流：`opened` 锚点 → 若干 `output` 批次 → 终态 `status`。

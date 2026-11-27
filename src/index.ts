@@ -85,9 +85,13 @@ export interface Config {
   remoteHost?: string
   maxUploadBytes?: number
   /**
-   * WS 单帧最大字节数（默认 1 MiB，超限由 `ws` 直接 `close(1009)`）。
+   * WS 单帧最大字节数（默认 1 MiB）。
    *
-   * 同时约束 `/api/v1/events` 与 `/ws/mobile` 两条 upgrade（同一 `WebSocketServer`）。
+   * 超限时 `/ws/mobile` 先发一帧 `FRAME_TOO_LARGE` 结构化 error（含 `details.limitBytes`），
+   * 再以 `1009` 关闭并在 close reason 里带同一个码；`/api/v1/events` 没有 error 帧形状，
+   * 只带 close reason。`hello` 帧的 `maxFrameBytes` 也来自这里。
+   *
+   * 同时约束 `/api/v1/events` 与 `/ws/mobile` 两条 upgrade（两个 `WebSocketServer`）。
    * 调大它手机端才能发大图原图、语音 base64 帧才不受 ~785 KB 的隐性卡口 ——
    * dsh-companion#12 的 P2：客户端已按 700 KiB 压缩兜底，这里给想发更大原图的
    * 部署开口子。默认值刻意不变，现有部署行为零变化。
@@ -266,6 +270,11 @@ export async function apply(ctx: HostContext, config: Config = {}): Promise<void
   } catch (error) {
     ctx.logger.warn(new Error(`dsh-remote-bridge: host service probe failed: ${String(error)}`))
   }
+  // 后台任务 adapter：REST 与 WS 共用同一份（两条协议面的授权/错误语义因此一致）。
+  // 此前只在 ApiRouter 里内联构造；现在提前到 attachMobileHostServices 之前。
+  const jobs = jobControllerAvailable && reflect?.get
+    ? new JobAdapter({ jobController: reflect.get('jobController', false) as never })
+    : undefined
   const capabilities = {
     jobs: jobControllerAvailable,
     // `chat-schedules-v1` 随 typertGateway Remote 同生死（DSH 0.2.2 起 create/edit
@@ -293,13 +302,14 @@ export async function apply(ctx: HostContext, config: Config = {}): Promise<void
     // 「静默少一个功能」。过滤规则与理由见 `capabilities.ts` 的
     // `CAPABILITY_REQUIREMENTS`。
     capabilities,
-    // 单帧上限从配置一路传下来：`ws` 的 `maxPayload` 只在构造期能设，
-    // 超限帧它自己 `close(1009)`。校验在上面 apply 入口（与 maxUploadBytes 同款）。
+    // 单帧上限从配置一路传下来：`ws` 的 `maxPayload` 只在构造期能设。
+    // 超限由 server.ts 接管：`/ws/mobile` 先补 `FRAME_TOO_LARGE` error 帧再 close(1009)，
+    // 两条通道的 close reason 都带码与生效上限。校验在上面 apply 入口。
     maxPayloadBytes,
   })
   // /ws/mobile 的全局模型目录 / providers / 文件浏览需要 settings 与 files 适配器，
   // 它们在此刻才构造完成（晚于 RemoteApiServer），通过 setter 注入避免构造顺序环。
-  remote.attachMobileHostServices({ settings, files })
+  remote.attachMobileHostServices({ settings, files, ...(jobs === undefined ? {} : { jobs }) })
   remote.attachMobileRemoteServices(hostRemote.services, resolveKernelCatalog)
   remote.setCapabilityResolver(() => kernelCapabilityFlags(resolveKernelCatalog()))
   router = new ApiRouter({
@@ -315,9 +325,7 @@ export async function apply(ctx: HostContext, config: Config = {}): Promise<void
     imageFallbackDir: imageHandoffDir,
     ...(hostRemote.services === undefined ? {} : { hostRemote: hostRemote.services }),
     ...(hostServiceReport === undefined ? {} : { hostServiceReport }),
-    ...(jobControllerAvailable && reflect?.get
-      ? { jobs: new JobAdapter({ jobController: reflect.get('jobController', false) as never }) }
-      : {}),
+    ...(jobs === undefined ? {} : { jobs }),
   })
 
   try {

@@ -70,7 +70,6 @@
 | `POST /pairings/exchange`、`GET /devices/self` | 配对发生在 WS 握手之前 |
 | `/roots*`、`/trash*` | 授权根与回收站管理；`file-*` 帧只覆盖工作区文件 |
 | `GET /attachments/{attachmentId}` | 附件字节；消息里以 `file` 部件引用 |
-| `/chat/sessions/{id}/jobs` 三条 | 后台任务没有帧（`tasks` 帧是 TODO 投影，不是 jobs） |
 | `/chat/sessions/{lead}/subagents/{subagentId}/messages` | 子会话历史没有帧 |
 | `POST /chat/workspaces`、`PATCH/DELETE /chat/workspaces/{id}` | 帧只有 `workspace-create` |
 | `/settings/*` | 设置面：帧只覆盖 `providers` 只读、`plugin-*` 插件管理与 `default-model` |
@@ -615,15 +614,45 @@ curl -X POST http://127.0.0.1:3090/api/v1/chat/sessions/{sessionId}/jobs/{jobId}
 `already-finished` 表示它已经是终态、无需再杀 —— 客户端应显示「它已经结束了」，
 而不是「已终止」。任务不存在或该会话看不到它时返回 `404 JOB_NOT_FOUND`。
 
-### 为什么 REST 只读一帧，不做长连接
+### WebSocket 帧（2026-11-27）
 
-内核的 `list` 是流（`AsyncIterable`），但内核注释写得很清楚：
-「Whole-set replacement, so a reconnect's first frame is already the truth」——
-**首帧就是完整真相**。所以 REST 读第一帧就够，不把 HTTP 变成长连接（手机端耗电、
-断线重连复杂，而且清单本来就该「拉一次就是真的」）。
+REST 三条保留给已发布客户端（老协议只减不增）；新客户端走 `/ws/mobile` 的三条同名拉取帧：
+
+```jsonc
+// → { type: "job-list", sessionId: "session-1", requestId?: "..." }
+// ← { kind: "job-list", data: { sessionId: "session-1", jobs: [/* 同 REST */] } }
+
+// → { type: "job-output", sessionId: "session-1", jobId: "bash-3f9a1c", cursor?: 5 }
+// ← { kind: "job-output", data: { jobId: "bash-3f9a1c", output: "…", nextCursor: 15, truncated: false } }
+
+// → { type: "job-kill", sessionId: "session-1", jobId: "bash-3f9a1c" }
+// ← { kind: "job-kill", data: { jobId: "bash-3f9a1c", killed: true } }
+```
+
+- **授权**：`job-list`/`job-output` 要 `chat.read`，`job-kill` 要 `chat.write`；三者还都要
+  `chat.isSessionAuthorized` 通过（root grant + 会话可见）。不可见会话回 `SESSION_NOT_FOUND`，
+  不暴露任务是否存在。缺参回 `MISSING_PARAMS`；`cursor` 不是非负安全整数回 `BAD_REQUEST`；
+  任务不存在回 `NOT_FOUND`；上游 `JOB_*` 失败回 `UPSTREAM_UNAVAILABLE`（不回显路径）。
+- **游标**：`nextCursor` 是绝对字节偏移，客户端下次把它当 `cursor` 传回；`truncated:true`
+  表示留存策略吃掉了中间字节，客户端应提示「输出不完整」。
+- **推送**：状态变化走现有 `event` 帧，不新增 kind：
+  - `chat.job.updated`：`{sessionId, jobId, status, progress?, finishedAt?}`（非终态变化）；
+  - `chat.job.finished`：同载荷，`status` 为 `completed`/`killed`/`failed`。
+  订阅某会话（`subscribe`）时桥会为该会话启动一个 job watcher，直接消费内核
+  `jobController.list` 的后续帧；**只对已订阅且通过 `chat.isSessionAuthorized` 的连接推送**，
+  未订阅会话不推。事件是「变化通知」，**没有回放**：断线重连后先 `job-list` 拉基线，
+  再等后续推送。watcher 以连接为单位引用计数，最后一个订阅者断开即释放内核流。
+
+### REST 与 WS 的分工（为什么 REST 只读一帧）
+
+内核的 `list` 是流（`AsyncIterable`），首帧就是完整真相
+（「Whole-set replacement, so a reconnect's first frame is already the truth」）。REST 只读首帧：
+老客户端只需要「拉一次就是真的」，不值得为它把 HTTP 变成长连接。WS 侧则可以把同一条流
+留给 watcher，消费后续 lifecycle 帧做推送 —— 两条路径读的是同一个内核流，语义一致。
 
 同理，`output` 读到终态帧就收：内核让终态与输出走同一条流，就是为了避免
 「输出没读全就被告知结束」。
+
 
 ## 工具审批
 
@@ -692,7 +721,7 @@ curl http://127.0.0.1:3090/api/v1/debug/host-services \
 
 ### 错误码分组与 `retryable`（issue：error 帧结构化，2026-11-23 起）
 
-错误码按语义分五组（实现表：`src/host/error-codes.ts`，WS `error` 帧与 REST `error` 体共用同一套码）。
+错误码按语义分六组（实现表：`src/host/error-codes.ts`，WS `error` 帧与 REST `error` 体共用同一套码）。
 `/ws/mobile` 的 `error` 帧由服务端统一按此表注入可选的 `retryable: boolean`；REST 错误体不加该字段
 （REST 的 HTTP 语义已足够）。**帧上没带 `retryable` = 未知错误码，客户端一律按 `false` 处理。**
 
@@ -701,8 +730,11 @@ curl http://127.0.0.1:3090/api/v1/debug/host-services \
 | usage（用法错） | `false` | `UNKNOWN_TYPE`、`MISSING_TYPE`、`INVALID_FRAME`、`MISSING_PARAMS`、`bad-request`/`BAD_REQUEST`、`REQUEST_INVALID`、`JSON_INVALID`、`NOT_IMPLEMENTED`、`PATH_OUTSIDE_ROOTS` | 客户端 bug 或能力缺失：原样重发永远不会成功，修请求或换内核 |
 | auth（授权缺） | `false` | `AUTH_REQUIRED`、`FORBIDDEN_SCOPE`、`SCOPE_REQUIRED`、`ACCOUNT_SIGNED_OUT`、`TUNNEL_MODE_ADMIN_DISABLED` | 走重新配对/授权流程，重试无意义 |
 | state（状态已定） | `false` | `NOT_FOUND`、`ROUTE_NOT_FOUND`、`SESSION_NOT_FOUND`、`CONFLICT`、`PAYLOAD_TOO_LARGE` | 结果确定，重试只会拿到同一个答案 |
+| transport（传输层限制） | `true` | `FRAME_TOO_LARGE` | 入站单帧超过 `hello.maxFrameBytes`：先收到本 error 帧，随后 close `1009`；按 `details.limitBytes` 压缩/拆分后重连重发，仍超限才需要调大 `maxPayloadBytes` |
 | upstream（上游暂时性故障） | `true` | `UPSTREAM_UNAVAILABLE`、`SCHEDULE_FAILED`、`TIMEOUT`、`RATE_LIMITED` | 可原样重试；`RATE_LIMITED` 的 `details.retryAfterMs` 给了退避时长 |
 | internal（桥内部错） | `true` | `INTERNAL_ERROR` | 可原样重试，但同一请求反复失败就该上报 |
+
+`FRAME_TOO_LARGE` 是**连接级**错误：超限帧未被解码，无法回显原帧的 `requestId`，客户端应按连接级错误处理。
 
 分组只在文档与本表中成文，**不上帧**；帧上只有 `retryable`。加新错误码时同批登记
 `src/host/error-codes.ts`、本表与 asyncapi 的 `MobileError`。
@@ -885,7 +917,7 @@ data 字段与实时路径**一致**（只多 `replayed`）；数据来自适配
 |---|---|---|
 | 心跳 | 服务端每 30s ping；连续 2 个周期缺 pong 即 terminate（`ws-handler.ts` 的 `startHeartbeat`，与 `/api/v1/events` 的 `startHeartbeat` 各管自己那张连接表） | 正常实现自动回 pong 即可 |
 | 连接数 | 默认上限 32（可配置）；**鉴权先于计数**，第 33 条鉴权通过后在 Upgrade 阶段收到 HTTP `429`（`Retry-After: 5`）。`/ws/mobile` 与 `/api/v1/events` **各自计数**（各自 32，互不占用），判定都在 Upgrade 之前做（`server.ts` 的 `handleUpgrade` 两个分支） | 未鉴权请求不消耗名额；429 后退避重连 |
-| 帧大小 | 单帧上限 1 MiB，超限 WebSocket close `1009` | 大附件走 REST 上传，不要塞进 WS |
+| 帧大小 | 单帧上限 1 MiB（可配）。`/ws/mobile` 超限先收 `kind:'error'`（`code:'FRAME_TOO_LARGE'`、`retryable:true`、`details.limitBytes`），随后 close `1009`，reason 为 `FRAME_TOO_LARGE limitBytes=…`；`/api/v1/events` 没有 error 帧，只带同样的 close reason | 大附件走 REST 上传；按 `hello.maxFrameBytes` 压缩/拆分 |
 | 发送队列 | 每连接 512 帧；溢出时优先丢可重建的 `chat.message.delta`，状态帧（`chat.turn.*` / `chat.approval.*` / `chat.turn.failed` / `connection.ready`）优先保留。`/ws/mobile` 侧按 kind 判据（`isRebuildableServerFrame`：只有 `event` 可丢 —— 它的载荷都能从 REST 历史与状态重拉，**应答帧一律不丢**） | — |
 
 队列溢出丢帧后，服务端会尽力补发一帧连接级通知（状态帧也塞不进、要 close `1013 Backpressure` 之前也会再发一次）。两个通道拼写不同、载荷相同：`/api/v1/events` 是 `type: 'connection.resyncRequired'`，`/ws/mobile` 是 `kind: 'connection-resync-required'`（后者在队列排空后补发，多次溢出合并成一条，`dropped` 累加）：
@@ -952,7 +984,7 @@ v2.8 新增，**现在是桥的第一协议面**：新能力只在这里落帧�
 
 `capabilities` 与 `connection.ready` 的能力位同源（见 `src/host/capabilities.ts`），命名 `<能力>-v<主版本>`，只增不撤。
 
-`maxFrameBytes`（issue #IKXGYX）：**本连接的入站单帧上限（字节）**。服务端按实际生效值宣告（`maxPayloadBytes` 可配，issue #10），客户端据此设置自己发送帧的上限，不要按 1 MiB 默认值硬编码；超限帧被底层以 close `1009` 拒绝。老版本桥（2026-11-23 之前）不发该字段，客户端缺省回退 1 MiB。
+`maxFrameBytes`（issue #IKXGYX）：**本连接的入站单帧上限（字节）**。服务端按实际生效值宣告（`maxPayloadBytes` 可配，issue #10），客户端据此设置自己发送帧的上限，不要按 1 MiB 默认值硬编码；超限时服务端先补一帧 `FRAME_TOO_LARGE` error（`/ws/mobile`），再以 close `1009` 关闭，reason 为 `FRAME_TOO_LARGE limitBytes=…`；`/api/v1/events` 没有 error 帧，只带同样的 close reason。老版本桥（2026-11-23 之前）不发该字段，客户端缺省回退 1 MiB。
 
 ### requestId 关联（请求/应答配对）
 
@@ -1021,6 +1053,9 @@ v2.8 新增，**现在是桥的第一协议面**：新能力只在这里落帧�
 | `schedule-view` | 读单条定时任务（`request` 原样透传内核 `schedule/view`，issue #26 阶段 7） | `{request}`；响应为同 kind 帧，`data` 为 `{ok:true, value}` 或 `{ok:false, error:{code,message}}`（+ `requestId` 回显）；需 `chat.*` scope |
 | `schedule-run` | 立刻执行一次定时任务（`request` 原样透传内核 `schedule/run`，issue #26 阶段 7） | `{request}`；响应为同 kind 帧，`data` 为 `{ok:true, value}` 或 `{ok:false, error:{code,message}}`（+ `requestId` 回显）；需 `chat.*` scope |
 | `schedule-delete-inactive` | 清理已停用/已结束的定时任务（无参，issue #26 阶段 7） | `{}`（无参）；响应为同 kind 帧，`data` 为 `{ok:true, value}` 或 `{ok:false, error:{code,message}}`（+ `requestId` 回显）；需 `chat.*` scope |
+| `job-list` | 读会话后台任务清单（2026-11-27） | `sessionId`；回 `{kind:'job-list',data:{sessionId, jobs}}`，`jobs` 与 REST `GET …/jobs` 同形；需 `chat.read` + 会话可见 |
+| `job-output` | 增量读任务输出（2026-11-27） | `sessionId`,`jobId`,`cursor?`（非负安全整数，省略=从最旧保留字节开始）；回 `{kind:'job-output',data:{jobId,output,nextCursor,truncated}}` —— `output` 即 REST 的 `text`，`nextCursor` 即 `next`，`truncated` 即 `lossy`；需 `chat.read` + 会话可见 |
+| `job-kill` | 终止任务（2026-11-27） | `sessionId`,`jobId`；回 `{kind:'job-kill',data:{jobId,killed}}` —— `killed:true` 仅表示终止请求已受理（REST `requested`），`false` 表示任务已终态（REST `already-finished`）；需 `chat.write` + 会话可见 |
 
 > **`history` 帧里 `maxBytes` / `view` 的现状（issue #32）**：这两个字段在
 > `ClientFrame` 类型里声明了（`src/host/ws-protocol.ts`），但**服务端不读、不转发**
@@ -1075,6 +1110,7 @@ v2.8 新增，**现在是桥的第一协议面**：新能力只在这里落帧�
 | `speech-catalog` / `speech-subscribed` / `speech-unsubscribed` / `speech-state` / `speech-configured` / `speech-preparing` / `speech-preparation-cancelled` / `speech-transcript` / `speech-cancelled` | 语音输入响应与就绪状态推送；内核无该服务时 catalog 回 `available:false, code:'speech/unavailable'`，其余回 `error` |
 | `schedule-catalog` / `schedule-list` / `schedule-history` / `schedule-update` / `schedule-delete` | 定时任务响应；内核无 schedule Remote 时回 `error code:'schedule/unavailable'`，引导 REST 兜底 |
 | `schedule-create` / `schedule-edit` / `schedule-view` / `schedule-run` / `schedule-delete-inactive` | 阶段 7 直通帧的**同名应答**：`{request}` 原样交给内核 `schedule/create|edit|view|run|deleteInactive`，`data` 为 `{ok:true, value}` 或 `{ok:false, error:{code,message}}`（+ `requestId` 回显）。错误走结果帧而不是 `error` 帧：这五条是请求-应答，客户端按 kind 找回调 |
+| `job-list` / `job-output` / `job-kill` | 后台任务拉取帧的同名应答（2026-11-27）：`data` 分别为 `{sessionId,jobs}`、`{jobId,output,nextCursor,truncated}`、`{jobId,killed}`，照常回显 `data.requestId`。状态变化**不新增推送 kind**，走 `event` 帧的 `chat.job.updated` / `chat.job.finished`（只推给已订阅且 `chat.isSessionAuthorized` 通过的连接；未订阅会话不推、无回放） |
 | `plugin-catalog` / `plugin-detail` / `plugin-inspect` / `plugin-install` / `plugin-install-status` / `plugin-remove` / `plugin-update` / `plugin-versions` / `plugin-registries` / `plugin-settings` | 插件族**同名应答**（`plugin-settings` 的载荷是 `{name, enabled}`，落点是 `pluginManager/setBundleEnabled` —— **会触发该 bundle 的 reload**；`plugin-install` 可在 `options` 里带 `requestId`/`installId`，`plugin-install-status` 必须带 `installId`，缺参回 `BAD_REQUEST` error 帧）（`plugin-catalog`/`inspect`/`install`/`settings` 四条此前只回 `NOT_IMPLEMENTED`，阶段 7 起为真实现）：请求经 `kernel-allowlist.ts` 的 `KERNEL_FRAME_CALLS` 落到 `pluginManager/*`，与 `kernel-call` 帧共用同一个 `KernelCallService`（默认拒绝 + 同一套设备 scope 判据），`data` 同样是 `{ok, value\|error}` 信封 |
 | `kernel-call-result` | 通用内核调用结果（**仅 `dshrb-v1`**）：`{callId, ok, value?, error?{code,message}}`。**不带 `data.requestId`**，按 `callId` 关联（见上面 exclusion 清单）；幂等命中的重试拿到的是上次结果的原样回放 |
 | `kernel-endpoints` | 能力目录快照（**仅 `dshrb-v1`**）：鉴权通过后即推一次，内容是「桥白名单 ∩ 内核目录」的 `{endpoint, scope, stream, wires, summary}[]` —— 不是内核全量端点（全量等于把攻击面列给客户端），客户端据此知道能调什么、需要什么 scope、`args` 该带哪些键（`wires` 取自内核描述符，客户端不必硬编码键名）。元素形状由后续阶段冻结，客户端需容忍未知字段与未知端点 |
@@ -1246,6 +1282,6 @@ dsh-Go（Flutter 客户端）有一套**原生插件协议**：插件在 `packag
 | 定时任务（cron） | **已对等（限 cron 形态）** | 创建/列表/局部改/删除/暂停恢复（0.2.2 起）；一次性、固定间隔与 rrule 提醒不可表达，不在列表出现 |
 | 官方语音输入 | **已对等** | 目录/转写/配置；内核无服务时为 200 `available:false` 而非 404 |
 
-以下 DSH WebUI 能力仍有缺口：后台任务（`jobs`）与子会话历史**没有帧**，继续走 REST（例外表 §3）；工作区自定义排序、回收站管理同样只有 REST。会话搜索走 `kernel-call` 的 `session/search`；目标与子代理已有 `goal-*` / `subagents` 帧；消息队列由 `message` 帧的 `mode` 表达，不是独立能力。
+以下 DSH WebUI 能力仍有缺口：子会话历史**没有帧**，继续走 REST（例外表 §3）；工作区自定义排序、回收站管理同样只有 REST。后台任务自 2026-11-27 起已有 `job-list`/`job-output`/`job-kill` 三帧（见「后台任务」段）。会话搜索走 `kernel-call` 的 `session/search`；目标与子代理已有 `goal-*` / `subagents` 帧；消息队列由 `message` 帧的 `mode` 表达，不是独立能力。
 
 App 不得直接调用 DSH 私有 `/api`；确需通用内核调用时只能走 `dshrb-v1` 的 `kernel-call`（24 条白名单 + 12 个拒绝命名空间 + scope 同源，见上文）。每项新能力必须在插件中定义**帧 + 能力位**、对应设备 scope/root/session 授权、脱敏规则、AsyncAPI 帧枚举、Kotlin SDK 和合约测试，才能标记为对等；确实做不成帧的，按例外表登记并写清理由。

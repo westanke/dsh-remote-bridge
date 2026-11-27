@@ -63,6 +63,8 @@ import { MobileBasicFrames, type MobileDeviceView } from './ws-basic.ts'
 import { MobileConnectionPolicy } from './ws-connection-policy.ts'
 import { QueueHandler } from './ws-queues.ts'
 import { SessionPushes, type PushTarget } from './ws-pushes.ts'
+import type { JobAdapter } from './job-adapter.ts'
+import { JobsHandler, JobWatchers } from './ws-jobs.ts'
 import type { HostRemoteHandle } from './ws-host-services.ts'
 import { MobileEventBridge, makeEventAuthorizer, makeSessionFilter } from './ws-event-bridge.ts'
 
@@ -141,6 +143,8 @@ interface MobileSocketState {
     settings?: SettingsHandler
     host: HostHandler
     schedule: ScheduleHandler
+    /** 后台任务拉取帧（job-list / job-output / job-kill）；adapter 缺席时回结构化 404。 */
+    jobs?: JobsHandler
     /** 通用内核调用面：只有协商到 `dshrb-v1` 且内核服务齐全时才存在。 */
     kernelCall?: KernelCallHandler
     /** 阶段 7：插件帧 → 内核端点（与 kernelCall 共用同一个调用服务）。 */
@@ -262,9 +266,15 @@ export class MobileGatewayWsHandler {
   attachHostServices(services: {
     settings: MobileGatewayWsHandler['settingsService']
     files: MobileGatewayWsHandler['filesService']
+    /** 后台任务 adapter；缺席时 job-* 帧回结构化 404（与 REST 未挂载一致）。 */
+    jobs?: JobAdapter
   }): void {
     this.settingsService = services.settings
     this.filesService = services.files
+    if (services.jobs !== undefined) {
+      this.jobsAdapter = services.jobs
+      this.jobWatchers ??= new JobWatchers(this.chat, services.jobs, this.events)
+    }
     // 文件传输依赖 FileService 同款授权根 + chat 的会话授权/附件通道，spool 落 database.dataDir/uploads。
     if (this.fileTransfer === undefined) {
       this.fileTransfer = new FileTransferHandler(this.database, this.chat as never)
@@ -310,7 +320,7 @@ export class MobileGatewayWsHandler {
     private readonly database: WorkspaceDatabase,
     private readonly chat: DshChatAdapter,
     private readonly auth: AuthService,
-    events: WorkspaceEventBus,
+    private readonly events: WorkspaceEventBus,
     private readonly capabilitiesFlags: CapabilityFlags,
     options: MobileGatewayOptions = {},
   ) {
@@ -320,6 +330,7 @@ export class MobileGatewayWsHandler {
     this.maxPayloadBytes = Math.max(1, options.maxPayloadBytes ?? DEFAULT_MOBILE_MAX_PAYLOAD_BYTES)
     // 队列/目标状态推送器（issue IKX1ZM）：进程级单一实例，事件桥 deliver 时喂它。
     // 必须在事件桥之前建好 —— 桥的投递回调里要调它。
+    // 事件总线存成字段：后台任务 watcher 需要 emit chat.job.*（推送仍走同一座桥）。
     this.pushes = new SessionPushes({
       chat,
       // 函数而非值：attachRemoteServices 晚于构造注入（见 SessionPushesOptions 注释）。
@@ -355,6 +366,10 @@ export class MobileGatewayWsHandler {
   }
 
   private readonly eventBridge: MobileEventBridge<WebSocket>
+  /** 后台任务 adapter（attachHostServices 注入；缺席时 job-* 帧回结构化 404）。 */
+  private jobsAdapter: JobAdapter | undefined
+  /** 会话级后台任务 roster watcher（只有存在 JobAdapter 时创建）。 */
+  private jobWatchers: JobWatchers | undefined
   /** 队列/目标快照推送（issue IKX1ZM）。 */
   private readonly pushes: SessionPushes
   /** 连接生命周期策略（上限 + 心跳），见 ws-connection-policy.ts。 */
@@ -606,12 +621,13 @@ export class MobileGatewayWsHandler {
         this.sendFrame(webSocket, frame)
       },
     }
+    const connectionKey = randomUUID()
     const state: MobileSocketState = {
       principal,
       device: deviceView,
       pairingToken: device?.pairingToken ?? undefined,
       helloSent: false,
-      connectionKey: randomUUID(),
+      connectionKey,
       listenerPort: req.socket.localPort,
       queue: [],
       draining: false,
@@ -646,6 +662,8 @@ export class MobileGatewayWsHandler {
         team: new TeamHandler(this.chat, (frame) => this.sendFrame(webSocket, frame)),
         // 定时任务处理器始终存在：缺内核服务时由其内部回 schedule/unavailable。
         schedule: new ScheduleHandler(this.hostRemote, (frame) => this.sendFrame(webSocket, frame)),
+        // 始终存在：adapter 缺席时三帧仍能识别并回 NOT_FOUND（不是 UNKNOWN_TYPE）。
+        jobs: new JobsHandler(this.chat, this.jobsAdapter, (frame) => this.sendFrame(webSocket, frame)),
         ...(this.filesService === undefined ? {} : {
           files: new FilesHandler(this.database, this.filesService, (frame) => this.sendFrame(webSocket, frame)),
         }),
@@ -682,6 +700,8 @@ export class MobileGatewayWsHandler {
       void this.fileTransfer?.closeConnection(state.connectionKey)
       // 通用内核调用：中止该连接上在飞行中的调用（不要让它们挂到超时）。
       state.handlers.kernelCall?.dispose()
+      // 后台任务 watcher：把该连接持有的会话引用全部释放，最后一条引用撤掉时 abort 内核流。
+      this.jobWatchers?.releaseAll(state.connectionKey)
     }
     webSocket.on('close', teardown)
     webSocket.on('error', teardown)
@@ -890,6 +910,7 @@ export class MobileGatewayWsHandler {
     if (await handlers.team.handle(state.principal, clientFrame)) return
     if (await handlers.host.handle(state.principal, clientFrame)) return
     if (await handlers.schedule.handle(state.principal, clientFrame)) return
+    if (handlers.jobs !== undefined && await handlers.jobs.handle(state.principal, clientFrame)) return
     if (handlers.files !== undefined && await handlers.files.handle(state.principal, clientFrame)) return
     // 文件分块下载/上传（跨连接共享，按 connectionKey 隔离归属）+ file-resolve 预览元数据。
     if (type.startsWith('file-download-') || type.startsWith('file-upload-') || type === 'file-resolve') {
@@ -949,6 +970,9 @@ export class MobileGatewayWsHandler {
     // 队列/目标的首屏快照：新连接没有「上次签名」，推一次即得到当前状态
     // （issue IKX1ZM —— 否则订阅后要等下一次变化才看得到已经在排的队）。
     this.pushes.warm([sessionId])
+    // 后台任务推送：订阅即持有该会话的 roster 流（授权在 retain 内再做一次；
+    // 未授权订阅不启动内核流）。unsubscribe / 连接关闭时统一释放。
+    void this.jobWatchers?.retain(state.connectionKey, state.principal, sessionId)
   }
 
   private handleUnsubscribe(webSocket: WebSocket, _frame: ClientFrame): void {
@@ -956,6 +980,7 @@ export class MobileGatewayWsHandler {
     // 取消过滤：恢复「接收所有已授权会话」的缺省语义。
     state.subscribed = undefined
     this.eventBridge.clearFilter(webSocket)
+    this.jobWatchers?.releaseAll(state.connectionKey)
     this.sendFrame(webSocket, { kind: 'sent', data: { type: 'unsubscribe', acknowledged: true } })
   }
 
@@ -1088,6 +1113,8 @@ export class MobileGatewayWsHandler {
     this.eventBridge.dispose()
     // 推送定时器也要停：否则测试收尾后仍有一条 setTimeout 在跑。
     this.pushes.dispose()
+    // 后台任务 watcher 持有内核 list 流：进程级 stop 时一并 abort，避免遗留流。
+    this.jobWatchers?.dispose()
     const closures: Array<Promise<void>> = []
     for (const webSocket of [...this.sockets.keys()]) {
       closures.push(new Promise(resolve => {

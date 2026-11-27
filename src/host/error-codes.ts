@@ -4,7 +4,10 @@
  * 为什么集中成表而不是散在各发送点：`code` 此前是自由字符串，客户端无从区分
  * 「这个错可以重试」与「死了别再试」。参考 ds-harness-remote 的做法
  * （packages/protocol/src/index.ts 的 errorCodes 分组 + 每码 `retryable` 位），
- * 把桥实际会出现在 error 帧里的码分成五组，每组给一个明确的 `retryable` 判定。
+ * 把桥实际会出现在 error 帧里的码分成六组，每组给一个明确的 `retryable` 判定。
+ *
+ * `transport` 组专指连接/传输层限制：`FRAME_TOO_LARGE` 是连接级错误（超限帧
+ * 未解码，回显不了原帧的 `requestId`），客户端按连接级错误处理。
  *
  * 契约（docs/API.md 与 docs/api/asyncapi.yaml 同步成文）：
  * - `retryable: true`  ⇒ 同一请求原样重试**可能**成功（上游/内部暂时性故障）；
@@ -16,7 +19,13 @@
  */
 
 /** 错误码分组：帧上不出现，用于文档与测试对账（与 API.md 的分组表一一对应）。 */
-export type ErrorFrameGroup = 'usage' | 'auth' | 'state' | 'upstream' | 'internal'
+export type ErrorFrameGroup =
+  | 'usage'
+  | 'auth'
+  | 'state'
+  | 'transport'
+  | 'upstream'
+  | 'internal'
 
 /**
  * code → 分组。只收录桥现在真的会放进 error 帧的码（`grep "code: '" src/host` 全集
@@ -48,6 +57,9 @@ const ERROR_FRAME_TABLE: Record<string, { group: ErrorFrameGroup; retryable: boo
   SESSION_NOT_FOUND: { group: 'state', retryable: false },
   CONFLICT: { group: 'state', retryable: false },
   PAYLOAD_TOO_LARGE: { group: 'state', retryable: false },
+
+  // transport：单帧超过连接上限 —— 压缩/拆分后重连重发可能成功。
+  FRAME_TOO_LARGE: { group: 'transport', retryable: true },
 
   // upstream：桥背后的内核/上游暂时性故障 —— 原样重试可能成功。
   UPSTREAM_UNAVAILABLE: { group: 'upstream', retryable: true },

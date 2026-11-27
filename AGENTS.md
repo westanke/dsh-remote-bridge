@@ -65,7 +65,7 @@
 |---|---|---|---|
 | **移动端网关（新）** | `ws://HOST:PORT/ws/mobile`：客户端发 `{type:…}` 帧、服务端回 `{kind:…}` 帧，`hello` 携带能力位；子协议 `dsh-mobile-v1`，`dshrb-v1` 另开通用内核调用面 | **首选；新能力的唯一落点**。v2.8 起 | `docs/api/asyncapi.yaml` + `API.md` §移动端网关 |
 | **REST（老）** | `http://HOST:PORT/api/v1` | **老协议，逐步下线**：已冻结，只减不增 | `docs/api/openapi.yaml` + `API.md` |
-| 事件流（老） | `GET /api/v1/events`（SSE，单向） | 老协议；只作 WS 断线/降级的兜底 | `docs/api/asyncapi.yaml` |
+| 事件流（老） | WebSocket 广播通道 `/api/v1/events`（不是 SSE；帧形 `{id,type,time,data}`） | 老协议；只作 `/ws/mobile` 断线/降级的兜底 | `docs/api/asyncapi.yaml` |
 | 管理面 | `/manage/*`（仅回环） | 永久保留，不是设备契约 | `API.md` |
 
 **四条铁律**：

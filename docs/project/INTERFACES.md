@@ -296,6 +296,7 @@
 - `message` 帧：`sessionId` 可选（省略自动建会话）、`mode:'queue'|'steer'`、`content`（PromptContentPart[]，图片 Base64 无 `data:` 前缀）、`clientTimeZone`、`workspaceId`/`cwd`。
 - `history` 帧：`beforeSeq`/`maxMessages`（`maxBytes`/`view` 虽在类型里声明但**服务端不读**，字节上限是服务端固定的 2 MiB，见 `API.md` 的 `history` 帧脚注）；响应带 `hasMore`，**不带** `nextBeforeSeq`。
 - HITL：`question-answer` / `question-cancel` / `approval-response` 由客户端发起；`questions`（只读，2026-11-27）拉会话待处理提问的**并集**（本桥前台接管 + 内核 `continued`），与 REST `GET /chat/sessions/{id}/questions` 同一实现，供重连后补齐、替掉那条 3.0.0 要删的 REST；**待处理项的推送走 `event` 帧**（`chat.userQuestions/*` / `chat.approval.*` 载荷），`outcome: 'allowed-once'|'rejected'`，**不支持始终允许**；重放待处理项 `replayed=true`，客户端按 `approvalId`/`callId` 去重。
+- 后台任务（2026-11-27，`ws-jobs.ts`）：`job-list` / `job-output` / `job-kill` 三条拉取帧，应答**与请求同名**：`{sessionId,jobs}`、`{jobId,output,nextCursor,truncated}`、`{jobId,killed}`。字段与 REST 三条 jobs 端点等价，但做了归一（`output`=REST `text`，`nextCursor`=REST `next`，`truncated`=REST `lossy`；`killed`=REST `requested`）。`job-list`/`job-output` 要 `chat.read`，`job-kill` 要 `chat.write`，三者都要 `isSessionAuthorized`；未注入 `jobController` 时回 `error NOT_FOUND`。**状态推送不新增 kind**：`subscribe` 后桥为该会话启动 `JobWatchers`（按连接引用计数），消费内核 `list` 流的后续帧，变化发 `event` 帧 `chat.job.updated` / `chat.job.finished`（载荷 `{sessionId,jobId,status,progress?,finishedAt?}`）；只对已订阅且授权通过的连接推送，无回放，重连后先 `job-list` 拉基线。
 - 背压与关闭：同 §3.1（单帧 1 MiB、发送队列 512 帧、30s ping、连续错过 2 周期 terminate、设备撤销 close(4001)）；`connection.resyncRequired` 通知客户端改走 REST 重取基线。
 - 鉴权与授权：复用 `principal()` 与 `eventAllowed`（scope/root/session 三层）；会话级操作再用 `isSessionAuthorized` 过滤；未带凭据 401，越权 scope 403，系统错误不回显绝对路径。
 
@@ -483,7 +484,8 @@ export class FileService {  // 构造 (database, emit)
 | `DshSettingsAdapter`（`listProviders` / `catalog` / `updateProvider` / `createProvider` / `removeProvider` / `discover` / `describeNamespaces` / `mutateNamespace`） | `settings-adapter.ts` | 提供商与模型目录、通用设置命名空间读写 |
 | `isSettingsNamespaceWriteAllowed` / `settingsNamespaceReason` / `redactSettingsSecrets` / `parseSettingsNamespaceOps` / `settingsNamespaceOpFields` / `settingsNamespaceCredentialChanged` / `projectSettingsNamespace` | `settings-namespace.ts` | 命名空间写策略、密钥脱敏、ops 校验与响应投影（纯函数） |
 | `readPluginInventory` / `withUpdateCheck` / `resolveState` / `togglePlugin` / `PluginToggleError` / `resolveDshHome` / `resolveProfileName` / `normalizeProfileName` | `plugin-inventory.ts` | 插件清单与启停 |
-| `JobAdapter`（`list` / `follow` / `kill`）、`JobApiError` | `job-adapter.ts` | 后台任务 |
+| `JobAdapter`（`list` / `follow` / `watch` / `kill`）、`JobApiError` | `job-adapter.ts` | 后台任务（`watch` 只给 WS 推送消费内核 `list` 的后续帧，REST 仍只读首帧） |
+| `JobsHandler` / `JobWatchers` | `ws-jobs.ts` | 后台任务 WS 拉取帧 + 状态推送 watcher（引用计数、授权过滤） |
 | `WorkspaceEventBus`（`emit` / `subscribe`） | `event-bus.ts` | 进程内事件总线 |
 | `FixedWindowLimiter`（`consume`） | `rate-limit.ts` | 限流 |
 | `ApiError` / `asApiError` | `errors.ts` | 错误载体 |
@@ -670,6 +672,8 @@ export const PLUGIN_VERSION: string          // shared/version.ts，与 package.
 | `export function isSettingsNamespaceWriteAllowed` | `src/host/settings-namespace.ts` | function |
 | `export function parseSettingsNamespaceOps` | `src/host/settings-namespace.ts` | function |
 | `export class JobAdapter` | `src/host/job-adapter.ts` | class |
+| `export class JobsHandler` | `src/host/ws-jobs.ts` | class（job-list/job-output/job-kill 三帧） |
+| `export class JobWatchers` | `src/host/ws-jobs.ts` | class（订阅会话的内核 list 流 watcher，变化发 chat.job.* 事件） |
 | `export class WorkspaceEventBus` | `src/host/event-bus.ts` | class |
 | `export class FixedWindowLimiter` | `src/host/rate-limit.ts` | class |
 | `export class ApiError` | `src/host/errors.ts` | class |

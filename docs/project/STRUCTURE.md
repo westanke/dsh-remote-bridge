@@ -124,7 +124,7 @@ host services 之上重建 0.1.x 的 `apiProxy` 面容，让 `chat-adapter` / `s
 | `provider-url-policy.ts` | 供应商 `baseURL` 的地址策略（SEC-H11）：协议白名单、私网/回环默认拒绝、`allowPrivateProviderHosts` 显式放行 | `settings-adapter.ts` |
 | `device-identity.ts` | 设备身份的探测与展示：解析 `X-Dsh-Device` 头、从 `User-Agent` 兜底判平台、拼「平台 · 型号」显示名（纯函数，不做授权判断） | `auth.ts`、`router.ts` |
 | `plugin-inventory.ts` | 插件清单读取、状态裁决（`resolveState`）、启停（`togglePlugin`）、更新检查 | `router.ts` |
-| `job-adapter.ts` | `JobAdapter`：后台任务 roster / 输出 / kill（依赖可选服务 `jobController`） | `router.ts` |
+| `job-adapter.ts` | `JobAdapter`：后台任务 roster / 输出 / kill / `watch`（依赖可选服务 `jobController`；`watch` 消费同一 list 流的后续帧，供 WS 推送） | `router.ts`、`ws-jobs.ts` |
 
 **适配层**
 
@@ -367,6 +367,7 @@ host services 之上重建 0.1.x 的 `apiProxy` 面容，让 `chat-adapter` / `s
 | `src/host/ws-hitl.ts` | file | 移动端网关 WS 人机交互域（approval-response/question-answer，/ws/mobile） |
 | `src/host/ws-host.ts` | file | 移动端网关 WS 主机快照域（host：版本/主目录/附着会话数/默认模型精简版，/ws/mobile） |
 | `src/host/ws-host-services.ts` | file | 可选内核远程服务封装（typertGateway+owner peer，定时任务/语音代理用，缺失即降级） |
+| `src/host/ws-jobs.ts` | file | 移动端网关 WS 后台任务域（2026-11-27）：job-list/job-output/job-kill 三帧（字段与 REST 三条 jobs 等价，会话授权 + scope），JobWatchers 按订阅会话引用计数消费内核 list 流，变化发 event 帧 chat.job.updated / chat.job.finished（只推授权订阅者，无回放） |
 | `src/host/ws-models.ts` | file | 移动端网关 WS 会话模型域（models/select-model，无会话全局目录交 ws-settings，/ws/mobile） |
 | `src/host/ws-presets.ts` | file | 移动端网关 WS agent 预设域（agent-presets/select-agent-preset，/ws/mobile） |
 | `src/host/ws-queues.ts` | file | 移动端网关 WS 队列域（issue IKX1ZM）：session-queues 读 inbox 投影归一成 QueueEntry[]，queue-update 代理内核 session/updateQueue（remove/steer/edit），成功即通知 SessionPushes 推队列快照（/ws/mobile） |

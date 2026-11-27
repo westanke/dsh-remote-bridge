@@ -335,7 +335,7 @@ Authorization: Bearer DEVICE_TOKEN
 | `POST /chat/runs/{id}/cancel` | Cancel a running session |
 | `GET/POST/PATCH/DELETE /settings/...` | Providers, credential status, model discovery, and custom providers |
 | `WS /ws/mobile` | **Primary surface**: bidirectional frames (messages, history, approvals, questions, files, plugins, schedules, speech) |
-| `WS /events` | Legacy: one-way event stream, kept only as a reconnect fallback |
+| `WS /events` | Legacy: **broadcast WS** (desktop/browser), kept only as a reconnect fallback |
 
 See the [OpenAPI 3.1 contract](./docs/api/openapi.yaml), [AsyncAPI contract](./docs/api/asyncapi.yaml), and included [Kotlin SDK](./kotlin-sdk/README.md) for exact schemas.
 
@@ -426,11 +426,13 @@ pnpm check
 pnpm pack
 ```
 
-`pnpm check` covers type-checking, documentation consistency, and tests. It currently passes **93 test files / 1021 cases**, plus **9 browser-layer cases** (Playwright measuring real computed styles, including the 375px narrow-viewport contract).
+`pnpm check` covers type-checking, documentation consistency, and tests. Its current test set is **97 test files / 1112 cases**, plus **9 browser-layer cases** (Playwright measuring real computed styles, including the 375px narrow-viewport contract). The WS specs touched by the current frame-limit change pass; `pnpm check` before merge is the full gate.
 
 `npm pack` produces roughly a **0.64 MB** archive (v2.6.1 measured 669,434 bytes, SHA-256 `9bf0189b…2cd35`): 2.2.0 dropped the standalone page and its editor dependencies and turned source maps off, down from 1.72 MB; it has since grown slightly with projection passthrough, the permission BFF, and the five-dimension hardening.
 
 v2.5.0 was verified on DSH **0.2.1-rc.2** on real hardware: all 14/14 host services injected, the three jobs endpoints exercised, and the permission catalog returned the kernel's real three presets. **The current development baseline** is upstream `dsh-v0.2.2-rc.4` (commit `3f321d32bfe382212a8ed8785c1d47a5a300aa23`); see `engines.dsh` above for the supported range. CI covers Windows, Ubuntu, and macOS on **two kernel versions each** (`0.2.2-rc.1` and `0.2.2-rc.4`) — the lower bound and the near-upper bound of the range declared in `engines.dsh` (issue #26, phase 0.1).
+
+**Current HEAD (v2.17.4 + unreleased changes) test set**: 97 test files / **1112 cases** (`npx vitest list`). Unreleased changes include the read-only `questions` frame, frame-limit failure handling (`/ws/mobile` sends a `FRAME_TOO_LARGE` error frame before closing with `1009` and a `limitBytes` close reason), and the background-job fetch frames; the default 1 MiB frame limit is unchanged. Run `pnpm check` before merging for the full gate.
 
 **v2.14.0 verification status**: 93 test files / **1021 cases** green; `typecheck`, `docs:check`,
 and the build all pass. This release catches dsh-Chat up on queue management and goal activation

@@ -1,6 +1,15 @@
 # 当前状态
 
-- 日期：2026-11-22（**已发版 v2.16.0：多路配置码（一个 DSH1 同时带隧道 / LAN / 虚拟网）+ `open_tunnel_config` 回执改形**；再往前 v2.15.0 是 dsh-Go 原生界面 + kernel-call 白名单放行 `skills/list`，v2.12.1 是大文件上传流式化 + 隧道工具 schema 修形**；`main` 上另有未发版的 issue #26 阶段 0 / 1 / 2 / 3a / 3b / 3c / 3d / 4 / 5 / 6 / 7 / 8 / 9、完工检修一批，以及真机测试期修的两个 bug）
+- 日期：2026-11-27（**已发版 v2.17.4：IPv6 支持、设备名同步与 App 下载二维码收口**；再往前 v2.16.0 是多路配置码 + `open_tunnel_config` 回执改形，v2.15.0 是 dsh-Go 原生界面 + kernel-call 白名单放行 `skills/list`；`main` 上另有未发布的 issue #26 阶段 0–9、完工检修一批、真机测试期两个 bug，以及待处理提问清单 `questions` 帧、帧超限失败体验、后台任务拉取帧）
+- **当前未发布（2026-11-27）· 帧上限失败体验 + `questions` 帧 + 后台任务拉取帧**：
+  `/ws/mobile` 入站单帧超过 `maxFrameBytes` 时，先发 `kind:'error'`（`code:'FRAME_TOO_LARGE'`、
+  `retryable:true`、`details.limitBytes`）再以 `1009` 关闭；close reason 为
+  `FRAME_TOO_LARGE limitBytes=…`。`/api/v1/events` 的帧格式没有 `kind:'error'`，只带 close reason。
+  `hello.maxFrameBytes` 仍是唯一权威值，默认保持 1 MiB（未调大）。
+  `questions` 帧与后台任务三帧使当前词表为**客户端 91 / 服务端 94 / 去重 129**；
+  测试集 97 文件 / **1112 用例**（`npx vitest list`）。**验证**：`npx tsc --noEmit` 通过；
+  相关 WS/协议 spec 通过；`docs:check` 四段通过。
+
 - **已发版（v2.16.0，2026-11-22）· 多路配置码：一个 DSH1 同时带隧道 / LAN / 虚拟网**（`MOB-016`，
   issue IKX5K7）：用户提出「一个配置码支持多种链接，优先 LAN，再 P2P，不通再 Relay，最后隧道」。
   做法是把 `endpoints` 从「一个地址」变成**有序候选列表**：新增
@@ -74,7 +83,7 @@
   `setCapabilityResolver`，`hello` 的能力位每次现算；`/ws/mobile` 的 hello 由 ws-handler 自己发，
   所以 `server.ts` 与 `ws-handler.ts` 两侧都要注入（只改 server 时用例仍红）。
   ②**伴生仓｜能力位竞态**：客户端能力位只来自 `connection.ready`，而 WS 事件通道一旦接管就关掉
-  REST `/api/v1/events` 流 —— 真机上出现过「WS 先接管，`connection.ready` 永远没送到」的时序，
+  `/api/v1/events` 这条广播 WS —— 真机上出现过「WS 先接管，`connection.ready` 永远没送到」的时序，
   结果是内核调用入口整段不显示（桥明明宣告了）。修法：`MobileWsTransport` 把 `hello.capabilities`
   也交上去兜底（`onHelloCapabilities`），ViewModel 侧取**并集**。
   ③**伴生仓｜结果看不见**：内核调用的结果原本渲染在 23 条端点列表末尾（几千像素外），

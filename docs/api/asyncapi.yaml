@@ -24,7 +24,7 @@ info:
       default cap is 32 accepted WebSocket connections (configurable); the
       33rd authenticated upgrade is refused at the HTTP Upgrade stage with
       `429 Too Many Requests` and `Retry-After: 5`.
-    - Frames larger than 1 MiB are refused with WebSocket close `1009`
+    - Frames larger than the effective `maxFrameBytes` are answered with a `FRAME_TOO_LARGE` error frame (on `/ws/mobile`) and then closed with `1009`; `/api/v1/events` only carries the close reason
       (message too big).
     - A server ping is sent every 30 seconds; a connection that misses the
       pong for two consecutive intervals is terminated.
@@ -742,6 +742,11 @@ components:
             - schedule-view
             - schedule-run
             - schedule-delete-inactive
+            # 后台任务拉取帧（2026-11-27，ws-jobs.ts）：与 REST 三条 jobs 端点同义；
+            # 状态推送不新增 kind，走 event 帧的 chat.job.updated / chat.job.finished。
+            - job-list
+            - job-output
+            - job-kill
             # 通用内核调用面（issue #26 阶段 5，仅 dshrb-v1 子协议）
             - kernel-call
             - kernel-call-cancel
@@ -900,6 +905,10 @@ components:
             - schedule-view
             - schedule-run
             - schedule-delete-inactive
+            # 后台任务拉取帧应答（2026-11-27，同 kind 回包）
+            - job-list
+            - job-output
+            - job-kill
             # 插件族应答（issue #26 阶段 7，同 kind 回包；data 为 {ok,value|error}）
             - plugin-catalog
             - plugin-detail
@@ -954,7 +963,7 @@ components:
           type: integer
           description: |
             Effective inbound per-frame limit in bytes for this connection.
-            Frames above it are refused by the transport with close `1009`.
+            Frames above it are answered with a `FRAME_TOO_LARGE` error frame and then closed with `1009` (reason includes `limitBytes`); the event channel only carries the close reason.
             Always present from protocol revision 3 servers of 2026-11-23 and
             later; older servers omit it (clients fall back to 1 MiB).
         device:
@@ -1185,7 +1194,7 @@ components:
         maxFrameBytes:
           type: integer
           const: 1048576
-          description: 1 MiB default per frame; larger frames are refused with close `1009`. This is the **default** — the effective limit for a connection is declared per-connection in `hello.maxFrameBytes` (issue #IKXGYX) and may be configured smaller or larger (issue #10).
+          description: 1 MiB default per frame; larger frames are answered with a `FRAME_TOO_LARGE` error frame and then closed with `1009` (reason includes `limitBytes`). This is the **default** — the effective limit for a connection is declared per-connection in `hello.maxFrameBytes` (issue #IKXGYX) and may be configured smaller or larger (issue #10).
         maxWebSocketPayloadBytes:
           type: integer
           const: 150994944

@@ -242,17 +242,20 @@ describe('/ws/mobile 通道与握手在 asyncapi 里有形状', () => {
     expect(errorSchema.required).not.toContain('details')
     // 「缺字段 = 未知码 = 按 false」必须写进契约，客户端才知道保守方向。
     expect(asyncapiText).toMatch(/Absent means an\s*\n?\s*unknown code|absent means an unknown code/i)
-    // 服务端语义表与文档相互指认：实现文件存在，且 API.md 分组表列了五个组。
+    // 服务端语义表与文档相互指认：实现文件存在，且 API.md 分组表列了六个组。
     const errorCodesSource = readFileSync(new URL('../src/host/error-codes.ts', import.meta.url), 'utf8')
     expect(errorCodesSource).toContain("export function errorFrameRetryable")
     const apiDoc = readFileSync(new URL('../docs/project/API.md', import.meta.url), 'utf8')
-    for (const group of ['usage', 'auth', 'state', 'upstream', 'internal']) {
+    for (const group of ['usage', 'auth', 'state', 'transport', 'upstream', 'internal']) {
       expect(apiDoc).toContain(`| ${group}`)
     }
     // 抽查语义表内容与 API.md 分组表一致（防止两处文档各改各的）。
     expect(errorCodesSource).toContain("UPSTREAM_UNAVAILABLE: { group: 'upstream', retryable: true }")
     expect(errorCodesSource).toContain("INTERNAL_ERROR: { group: 'internal', retryable: true }")
     expect(errorCodesSource).toContain("UNKNOWN_TYPE: { group: 'usage', retryable: false }")
+    // 帧超限是连接级错误：先 error 帧再 1009，按 transport 组登记（2026-11-27）。
+    expect(errorCodesSource).toContain("FRAME_TOO_LARGE: { group: 'transport', retryable: true }")
+    expect(apiDoc).toContain('| transport（传输层限制） | `true` | `FRAME_TOO_LARGE`')
   })
 
   it('history 帧的可选 compact 参数成文，且与实现/能力位互指（issue #IKXGYV）', () => {

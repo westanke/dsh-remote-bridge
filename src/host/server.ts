@@ -13,7 +13,7 @@ import type { WorkspaceDatabase } from './database.ts'
 import { ApiError } from './errors.ts'
 import type { WorkspaceEventBus } from './event-bus.ts'
 import { MobileGatewayWsHandler } from './ws-handler.ts'
-import { pickMobileSubprotocol, WS_PATH, WS_PERMESSAGE_DEFLATE } from './ws-protocol.ts'
+import { makeServerFrame, pickMobileSubprotocol, WS_PATH, WS_PERMESSAGE_DEFLATE } from './ws-protocol.ts'
 import { DEFAULT_REMOTE_HOST, loopbackFor, normalizeListenerHost, normalizeListenerPort } from './listener-config.ts'
 import {
   recordBroadcastEvent,
@@ -43,7 +43,7 @@ interface RemoteApiServerOptions {
    * 未鉴权用户可探测的攻击面。
    */
   maxConnections?: number
-  /** 单帧最大字节数（默认 1 MiB）。超限由 `ws` 直接 `close(1009)`。 */
+  /** 单帧最大字节数（默认 1 MiB）。超限先补 `FRAME_TOO_LARGE` error 帧或 close reason，再 `close(1009)`。 */
   maxPayloadBytes?: number
   /** 心跳间隔（默认 30 s）。测试传小值，不必干等半分钟。 */
   heartbeatIntervalMs?: number
@@ -140,6 +140,22 @@ function isRebuildable(event: WorkspaceEvent): boolean {
   return event.type === 'chat.message.delta'
 }
 
+/**
+ * 这条连接是否还没收到对端的 close 帧。
+ *
+ * `ws` 的两种超限路径（未压缩走 `Receiver.createError`，协商了压缩则走
+ * `permessage-deflate` 的 `inflateOnData`）都会在 readyState 仍为 OPEN 时调用
+ * `close(1009)`，此时 `_closeFrameReceived` 为 false；对端主动 close(1009)
+ * 则先在 `receiverOnConclude` 里把该标志置真，再回声 close。用它区分两者，
+ * 避免在对端已发 close 后回数据帧（WebSocket 关闭握手不允许）。
+ *
+ * 这是对 `ws` 内部字段的依赖（8.21.x）；若 `ws` 升级后字段改名，最坏结果是
+ * 超限时只带 close reason，不会影响关闭本身。
+ */
+function closeFrameReceived(webSocket: WebSocket): boolean {
+  return (webSocket as unknown as { _closeFrameReceived?: boolean })._closeFrameReceived === true
+}
+
 export class RemoteApiServer implements RemoteControl {
   private server: Server | undefined
   private host: string = '127.0.0.1'
@@ -174,6 +190,8 @@ export class RemoteApiServer implements RemoteControl {
   private changeTimer: NodeJS.Timeout | undefined
   private changing = false
   private readonly maxConnections: number
+  /** 生效的单帧上限：构造期同时喂给两个 `WebSocketServer` 与网关。 */
+  private readonly maxPayloadBytes: number
   private readonly socketQueueLimit: number
   private readonly highWaterMarkBytes: number
   private readonly heartbeatIntervalMs: number
@@ -187,10 +205,12 @@ export class RemoteApiServer implements RemoteControl {
     this.configuredPort = readStoredPort(options.database, fallbackPort)
     this.actualPort = this.configuredPort
     this.maxConnections = Math.max(1, options.maxConnections ?? DEFAULT_MAX_CONNECTIONS)
+    this.maxPayloadBytes = Math.max(1, options.maxPayloadBytes ?? DEFAULT_MAX_PAYLOAD_BYTES)
     this.socketQueueLimit = Math.max(1, options.socketQueueLimit ?? DEFAULT_SOCKET_QUEUE_LIMIT)
     this.highWaterMarkBytes = Math.max(1, options.highWaterMarkBytes ?? DEFAULT_HIGH_WATER_MARK_BYTES)
     this.heartbeatIntervalMs = Math.max(1, options.heartbeatIntervalMs ?? DEFAULT_HEARTBEAT_INTERVAL_MS)
-    // `maxPayload` 只在构造时能设，所以放进构造：超限帧由 `ws` 自己 `close(1009)`。
+    // `maxPayload` 只在构造时能设，所以放进构造：超限帧由 `guardFrameLimit` 接管，
+    // 先补 `FRAME_TOO_LARGE` error 帧（/ws/mobile）或 close reason（/api/v1/events），再 `close(1009)`。
     //
     // **两条通道各建一个 `WebSocketServer`**（issue #31）：`ws` 的 `perMessageDeflate`
     // 是**实例级**选项，共享实例就等于「要么两条通道都压，要么都不压」。
@@ -202,7 +222,7 @@ export class RemoteApiServer implements RemoteControl {
     this.mobileWebSockets = new WebSocketServer({
       noServer: true,
       clientTracking: false,
-      maxPayload: Math.max(1, options.maxPayloadBytes ?? DEFAULT_MAX_PAYLOAD_BYTES),
+      maxPayload: this.maxPayloadBytes,
       // permessage-deflate：隧道上 history 首屏那种 600 KB 的帧压完约 140 KB（见
       // `WS_PERMESSAGE_DEFLATE` 的说明）。只在客户端提出时协商，老客户端行为不变。
       perMessageDeflate: WS_PERMESSAGE_DEFLATE,
@@ -227,7 +247,7 @@ export class RemoteApiServer implements RemoteControl {
     this.eventWebSockets = new WebSocketServer({
       noServer: true,
       clientTracking: false,
-      maxPayload: Math.max(1, options.maxPayloadBytes ?? DEFAULT_MAX_PAYLOAD_BYTES),
+      maxPayload: this.maxPayloadBytes,
     })
     // 移动端网关 WS（/ws/mobile）：与 /api/v1/events 共享同一 HTTP server upgrade，
     // 各自按 pathname 分流。
@@ -247,7 +267,7 @@ export class RemoteApiServer implements RemoteControl {
         // 帧上限同源下发：语音的 audioLimit 必须按真实 `ws` maxPayload 算，
         // 否则 SpeechHandler 自带 64 MiB 默认值得出 4 MiB 限额，而底层 1 MiB
         // 就 `close(1009)` —— 两个数字互相不知情（issue #10）。
-        maxPayloadBytes: Math.max(1, options.maxPayloadBytes ?? DEFAULT_MAX_PAYLOAD_BYTES),
+        maxPayloadBytes: this.maxPayloadBytes,
       },
     )
     // 隧道专用监听端口（issue #26 阶段 0.2）：只放行数据面（`/ws/mobile` + `/api/v1/**`），
@@ -256,9 +276,64 @@ export class RemoteApiServer implements RemoteControl {
     // 于是「隧道指向哪个端口」由代码定死，而不是由调用方传参决定。
     this.tunnelListener = new TunnelListener({
       handle: options.handle,
-      mobile: this.wsMobile,
-      maxPayloadBytes: Math.max(1, options.maxPayloadBytes ?? DEFAULT_MAX_PAYLOAD_BYTES),
+      // 隧道端口有自己的 WebSocketServer，但连接仍交给主端口同一个网关。
+      // 入口再包一层，保证从隧道进来的超限帧也有同样的结构化 error 帧。
+      mobile: {
+        ownsPath: req => this.wsMobile.ownsPath(req),
+        connectionCount: () => this.wsMobile.connectionCount(),
+        connectionLimit: () => this.wsMobile.connectionLimit(),
+        onConnection: (webSocket, req) => this.acceptMobileConnection(webSocket, req),
+      },
+      maxPayloadBytes: this.maxPayloadBytes,
     })
+  }
+
+  /**
+   * 移动端连接统一入口（主端口与隧道端口共用）。
+   *
+   * 帧上限保护必须赶在 `wsMobile.onConnection` 注册 `message` 监听之前装好：
+   * 接收器发现超限时会**同步**调用 `close(1009)`，晚一步就再没有 OPEN 状态可发帧。
+   */
+  private acceptMobileConnection(webSocket: WebSocket, req: IncomingMessage): boolean {
+    this.guardFrameLimit(webSocket, true)
+    return this.wsMobile.onConnection(webSocket, req)
+  }
+
+  /**
+   * 接管 1009 关闭：先尽力补一帧结构化 `error`，再带 `FRAME_TOO_LARGE` 原因关闭。
+   *
+   * **为什么不能监听 `'error'`**：`ws` 的接收器在超限时先调用 `close(1009)`，之后
+   * 才 emit `'error'`；事件到达时 readyState 已是 CLOSING，`send()` 会被静默丢弃。
+   * 所以只能在连接创建后立刻包住 `close` 方法，在 `ws` 调它的当下（仍是 OPEN）
+   * 把 error 帧塞进发送队列。发送队列与关闭帧同序，客户端会先收到 error 帧。
+   *
+   * `/api/v1/events` 的帧格式没有 `kind:'error'`（它用 `type`），故那条通道只加
+   * close reason，不塞移动端协议帧。
+   */
+  private guardFrameLimit(webSocket: WebSocket, emitErrorFrame: boolean): void {
+    const originalClose = webSocket.close.bind(webSocket) as WebSocket['close']
+    webSocket.close = ((code?: number, reason?: string | Buffer) => {
+      // 只接管入站帧超限触发的 close(1009)；对端主动 close(1009) 不在此列，
+      // 否则会在对端已发 close 后回数据帧。
+      if (code !== 1009 || closeFrameReceived(webSocket)) {
+        originalClose(code, reason)
+        return
+      }
+      if (emitErrorFrame && webSocket.readyState === WebSocket.OPEN) {
+        try {
+          const errorFrame = makeServerFrame('error', {
+            code: 'FRAME_TOO_LARGE',
+            message: `Inbound frame exceeds maxFrameBytes (${this.maxPayloadBytes} bytes); compress or split it before reconnecting.`,
+            retryable: true,
+            details: { limitBytes: this.maxPayloadBytes },
+          })
+          webSocket.send(stringifyWire(errorFrame))
+        } catch {
+          // 尽力而为：error 帧发不出去也必须继续关闭，不能留下半开连接。
+        }
+      }
+      originalClose(1009, `FRAME_TOO_LARGE limitBytes=${this.maxPayloadBytes}`)
+    }) as WebSocket['close']
   }
 
   /**
@@ -573,7 +648,7 @@ export class RemoteApiServer implements RemoteControl {
           return
         }
         this.mobileWebSockets.handleUpgrade(req, socket, head, (webSocket) => {
-          this.wsMobile.onConnection(webSocket, req)
+          this.acceptMobileConnection(webSocket, req)
         })
         return
       }
@@ -607,6 +682,9 @@ export class RemoteApiServer implements RemoteControl {
       // permessage-deflate —— 背压判据（`noteHighWater`）依赖 `bufferedAmount` 的
       // 未压缩字节语义，压缩会让高水位永远越不过、慢客户端关不掉。
       this.eventWebSockets.handleUpgrade(req, socket, head, (webSocket) => {
+        // 这条通道的对外帧没有 `kind:'error'`（用 `type`），所以只补 close reason：
+        // 超限时客户端能从 1009 的原因串里看到 `FRAME_TOO_LARGE` 与生效上限。
+        this.guardFrameLimit(webSocket, false)
         const state: SocketState = {
           principal,
           queue: [],
