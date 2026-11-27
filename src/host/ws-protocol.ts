@@ -174,6 +174,9 @@ export type ClientFrameType =
   | 'agent-presets'
   | 'question-answer'
   | 'question-cancel'
+  // 只读：拉会话待处理提问（帧版 `GET /chat/sessions/{id}/questions`，2026-11-27）。
+  // 断线重连时客户端靠它补齐内核 `continued` 里那半（event 重放只覆盖本桥前台接管的部分）。
+  | 'questions'
   | 'approval-response'
   | 'session-create'
   | 'session-cancel'
@@ -314,6 +317,8 @@ export type ServerFrameKind =
   | 'goals-get'
   | 'goal-updated'
   | 'question-response'
+  // 待处理提问清单应答：`{sessionId, items}`，与 REST 同形（2026-11-27）。
+  | 'questions'
   | 'approval-response'
   | 'approval-resolved'
   // 通用内核调用面（issue #26 阶段 5）：只在 dshrb-v1 子协议下发出。
@@ -437,6 +442,18 @@ export interface QuestionCancelFrame extends ClientFrame {
   rpcId?: string
   /** 本桥字段：内核 callId。 */
   callId?: string
+}
+
+/**
+ * 待处理提问清单客户端帧（2026-11-27）。
+ *
+ * 为什么要有帧版：REST `GET /chat/sessions/{id}/questions` 在 3.0.0 的弃用表里，
+ * 而 WS 重放只覆盖本桥前台接管的提问；客户端重连后要拿到内核 `continued` 那半
+ * 只能走这条 REST。给一条只读帧，客户端就能把「刷新待处理提问」整个搬到 WS 上。
+ */
+export interface QuestionsFrame extends ClientFrame {
+  type: 'questions'
+  sessionId?: string
 }
 
 /** 会话创建客户端帧。 */

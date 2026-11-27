@@ -9,7 +9,7 @@
 import type { Principal } from '../shared/contracts.ts'
 import type { DshChatAdapter, UserQuestionAnswerItem } from './chat-adapter.ts'
 import { ApiError } from './errors.ts'
-import type { ApprovalResponseFrame, ClientFrame, QuestionAnswerFrame, QuestionCancelFrame, SendFrame } from './ws-protocol.ts'
+import type { ApprovalResponseFrame, ClientFrame, QuestionAnswerFrame, QuestionCancelFrame, QuestionsFrame, SendFrame } from './ws-protocol.ts'
 
 /** HITL 处理器。 */
 export class HitlHandler {
@@ -27,6 +27,8 @@ export class HitlHandler {
         return await this.handleQuestionAnswer(principal, frame as QuestionAnswerFrame)
       case 'question-cancel':
         return await this.handleQuestionCancel(principal, frame as QuestionCancelFrame)
+      case 'questions':
+        return await this.handleQuestions(principal, frame as QuestionsFrame)
       default:
         return false
     }
@@ -74,6 +76,30 @@ export class HitlHandler {
       } else {
         this.reportError(error, 'Failed to answer question.')
       }
+    }
+    return true
+  }
+
+  // ───────────────────────── questions（只读清单） ─────────────────────────
+
+  /**
+   * 拉会话待处理提问（2026-11-27）。
+   *
+   * 与 REST `GET /chat/sessions/{id}/questions` 走同一个适配层方法，返回结构一致，
+   * 只是搬到了 WS 上：重连后客户端一次请求就能补齐「本桥前台接管」与「内核 continued」
+   * 两半，不必再依赖 3.0.0 要删的那条 REST。只读，不改变任何挂起状态。
+   */
+  private async handleQuestions(principal: Principal, frame: QuestionsFrame): Promise<boolean> {
+    const sessionId = typeof frame.sessionId === 'string' ? frame.sessionId : undefined
+    if (sessionId === undefined) {
+      this.sendFrame({ kind: 'error', data: { code: 'MISSING_PARAMS', message: 'questions needs sessionId.' } })
+      return true
+    }
+    try {
+      const items = await this.chat.listUserQuestions(principal, sessionId)
+      this.sendFrame({ kind: 'questions', data: { sessionId, items } })
+    } catch (error) {
+      this.reportError(error, 'Failed to list questions.')
     }
     return true
   }

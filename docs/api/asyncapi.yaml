@@ -715,6 +715,9 @@ components:
             # HITL（ws-hitl.ts）
             - question-answer
             - question-cancel
+            # 只读待处理提问清单（2026-11-27）。帧版 REST /chat/sessions/{id}/questions：
+            # 断线重连时补齐内核 continued 那半，客户端不必再依赖 3.0.0 要删的 REST。
+            - questions
             - approval-response
             # 主机快照（ws-host.ts）
             - host
@@ -871,6 +874,8 @@ components:
             - goal-updated
             # HITL
             - question-response
+            # 待处理提问清单应答（2026-11-27）：{sessionId, items}，items 与 REST 同形。
+            - questions
             - approval-response
             - approval-resolved
             # 语音

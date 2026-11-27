@@ -1,3 +1,26 @@
+## 未发布 · 待处理提问清单新增 `questions` 帧（2026-11-27）
+
+**起因**：dsh-Chat 断线重连后靠 REST `GET /chat/sessions/{id}/questions` 补齐内核 `continued`
+那半提问——WS 的待处理重放只覆盖桥前台接管的部分。那条 REST 在 3.0.0 的弃用表里，而
+`ROADMAP.md` 的 PROTO-001 要求「dsh-Chat 确认不再调用」才能删；补一条只读帧，客户端就能把
+这次补齐整个搬到 WS 上。
+
+**协议（加性，旧客户端零破坏）**：
+
+- 客户端帧 `questions`：`{type:'questions', sessionId, requestId?}`；缺 `sessionId` 回
+  `error MISSING_PARAMS`。
+- 服务端 `kind:'questions'`：`{sessionId, items}`，`items` 与 REST 同形（`UserQuestionView[]`，
+  含本桥前台接管 + 内核 `continued`）；应答帧照常回显 `data.requestId`。**不新增主动推送**：
+  挂起项变化仍走 `event` 帧（`chat.userQuestions/*`）。
+- 词表两侧各 +1（客户端 / 服务端），asyncapi `MobileClientFrame.type` 与
+  `MobileServerFrame.kind` 同步；`tsc` 联合类型 + `mobile-frame-contract.spec.ts` 双向对账。
+
+**实现**：`ws-hitl.ts` 新增 `handleQuestions()`，复用适配层 `chat.listUserQuestions()` —— 与 REST
+同一个方法，只换传输面，不复制语义，也不改任何挂起状态。
+
+**测试**：`tests/mobile-gateway-ws.spec.ts` +2（清单应答含 requestId 回显；缺参结构化错误）；
+`vitest run` 96 文件 **1104** 用例全绿；`tsc --noEmit`、`docs:check` 绿（`build` 见发布记录）。
+
 ## v2.17.4 · IPv6 支持、设备名同步与 App 下载二维码收口（2026-11-25，issue #IKXRAD）
 
 **同版另外两项**：`ac9bfc9` 让候选地址、配置文本与监听过滤支持 IPv6（具体 IPv6 literal / `::`，URL 自动加方括号）；`fb2f877` 在 token 重连时读取 `X-DSH-Device-Name`，调用 `database.renameDevice()` 同步设备展示名，已配对设备重连一次即可改名，无需重新配对。

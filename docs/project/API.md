@@ -999,6 +999,7 @@ v2.8 新增，**现在是桥的第一协议面**：新能力只在这里落帧�
 | `plugin-catalog` / `plugin-inspect` / `plugin-install` / `plugin-settings` | 插件管理（paired 控制连接） | — |
 | `agent-presets` / `session-agent-preset` / `select-agent-preset` | Agent 预设 | `agent-presets` 列清单；`session-agent-preset`（`sessionId`+`agentPresetId`，锁定后不可改）与 `select-agent-preset`（`sessionId`+`agentPresetId`，为会话选一个预设）**均已实现**，二者应答都是 `kind:'sent'` + `data.type` 为同名帧（配对应看 `data.type`，别只看 kind） |
 | `question-answer` / `question-cancel` | HITL 提问回应 | answer：`callId`/`rpcId`,`answers[]`；cancel：`sessionId`+`rpcId`（上游）或 `callId`（本桥），回 `{kind:'question-response',action:'answer'\|'cancel',accepted}`。cancel 只能作废本桥接管、正阻塞 agent 的前台提问；内核无 continued 提问取消通道 |
+| `questions` | 拉会话待处理提问（只读，2026-11-27） | `sessionId`；回 `{kind:'questions',data:{sessionId,items}}`，`items` 与 REST `GET /chat/sessions/{id}/questions` 同形（含内核 `continued` 那半）。客户端重连后用它补齐待处理项，不必再依赖该 REST；只读，不改任何挂起状态 |
 | `approval-response` | HITL 审批回应 | `approvalId`, `outcome: 'allowed-once'|'rejected'` |
 | `session-create` | 提前建空会话（不发消息） | 两种寻址，与 REST `POST /chat/sessions` 同语义：① `workspaceId`（只认工作区，推荐 —— 客户端不必知道「哪个根 + 相对路径」）；② `rootId?`（缺省取首个授权根）+ `cwd?`（相对根）。另带 `agentPreset?` 与 `reuseBlank?`：`reuseBlank !== false` 时优先复用同路径的空白会话，`false` 则强制新建。响应 `session-created` 带 `{sessionId, rootId \| workspaceId, agentPreset?}`，`agentPreset` 是内核落定后的值（可能被改写），客户端应据此刷新而不是假定自己选的那个生效 |
 | `session-cancel` / `session-archive` / `session-rename` / `fork` | 会话生命周期 | `sessionId` |
@@ -1066,6 +1067,7 @@ v2.8 新增，**现在是桥的第一协议面**：新能力只在这里落帧�
 | `goal-updated` | **主动推送**（整份快照，不带 `requestId`）：`{sessionId, goal, activation, clearedAt?}`。时机：`goal/*` 事件（含 `goal/change`、`goal/activation-changed`）、`goal-*` 写成功、新订阅补首屏。`goal-clear` 之后内核日志追上前读到旧快照时，桥用墓碑（同 id 且 revision ≤ 墓碑）把它压成 `goal:null` 并带 `clearedAt`，客户端不会闪回 |
 | `session-stats` / `context-usage` | 会话统计与上下文占用投影响应 |
 | `question-response` | HITL 提问回执（`{action, accepted}`）；**主动推送走 `event` 帧**（`chat.userQuestions/*` 载荷），不是专用 kind |
+| `questions` | 待处理提问清单应答（只读，2026-11-27）：`{sessionId, items: UserQuestionView[]}`，与 REST 同形。应答帧照常回显 `data.requestId`；不发主动推送（变化仍走 `event` 帧） |
 | `approval-response` / `approval-resolved` | HITL 审批回执（outcome `allowed-once`\|`rejected`，不支持始终允许）；**主动推送走 `event` 帧**（`chat.approval.*` 载荷） |
 | `paired` / `host` / `models` / `default-model` / `providers` / `permission` / `permission-options` / `agent-presets` | 配对流程与设置面查询/写入应答（`paired` 先于 `hello`，见握手一节） |
 | `connection-resync-required` | 反压溢出丢帧后的全量重同步提示（`{dropped, reason}`，多次溢出合并成一条） |
@@ -1080,6 +1082,7 @@ v2.8 新增，**现在是桥的第一协议面**：新能力只在这里落帧�
 ### HITL（提问与审批）双向
 
 - `question-answer` / `question-cancel`：客户端回应的是 `event` 帧里推送的待处理提问（`chat.userQuestions/*` 载荷）；迟到或非待处理返回 `{accepted:false, reason:'not-pending'|'reply-queued'|'answer-invalid'|'not-answerable'|'unavailable'}`。
+- `questions`（只读，2026-11-27）：一次请求拉回当前会话全部待处理提问，**并集**是「本桥前台接管 + 内核 `continued`」——`event` 重放只覆盖前者，所以重连后的补齐必须用它（或等价的 REST）。它与 3.0.0 弃用表里的 `GET /chat/sessions/{id}/questions` 同一实现，客户端迁到帧后那条 REST 才能删（PROTO-001 的前置之一）。
 - `approval-response`：`outcome` 为 `allowed-once` 或 `rejected`，**v1 不提供永久允许**；已解决、过期或重复决定返回 `APPROVAL_NOT_PENDING` 等价帧。
 - 重放：建立后，待处理的审批与提问按本条连接的授权逐条补推（`replayed=true`），客户端按 `approvalId`/`callId` 去重。
 - 审批/提问卡片对应 DSH 内部 `chat.approval.*` / `chat.userQuestions/*` 事件，通过 `/api/v1` REST 兜底同步。

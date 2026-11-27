@@ -488,8 +488,8 @@ CI 覆盖 Windows、Ubuntu 和 macOS **各两档内核**（`0.2.2-rc.1` 与 `0.2
 
 **v2.16.0 的验证状态**：95 个测试文件 / **1073 个用例**全绿、`typecheck`/`docs:check`/构建通过。
 这一版把配置码升级成**有序候选列表**（`MOB-016`，issue IKX5K7）：一个 `DSH1:` 同时带隧道、LAN
-与虚拟网地址，隧道排第一（`dsh-Chat` 的 `decodeDsh1` 只取 `endpoints[0]`，隧道在家在外都通），
-「局域网优先」交给客户端探活排序（`dsh-companion` 已实现，`dsh-Chat` 见 IKX5KQ）。新增
+与虚拟网地址，隧道排第一（隧道在家在外都通，老客户端只读 `endpoints[0]` 也能用），
+「局域网优先」交给客户端探活排序（`dsh-companion`、`dsh-Chat` Flutter/Harmony 均已实现）。新增
 `composeCandidates()`；`POST /manage/config/text` 支持 `includeTunnel: true`（**缺省关** —— 生成
 文本是只读动作，不许它偷偷拉起公网入口）；`open_tunnel_config` 的回执改成要求模型把 `DSH1:`
 那一行原样放到回复第一行（IKX5N7）。**真机**：dsh-Chat 已有会话里 `/tunnel` 直接回完整配置码；

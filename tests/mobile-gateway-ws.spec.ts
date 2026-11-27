@@ -659,6 +659,55 @@ describe('mobile gateway WebSocket (/ws/mobile) — WS-first RPC', () => {
     socket.close()
   })
 
+  it('lists pending questions over the questions frame (2026-11-27)', async () => {
+    const listCalls: string[] = []
+    const { database, root, url } = await startHarness({
+      apiOverrides: api => ({
+        userQuestions: {
+          ...api.userQuestions,
+          list: async (request: { rpcId: string; payload: { sessionId: string } }) => {
+            listCalls.push(request.payload.sessionId)
+            return {
+              rpcId: request.rpcId,
+              result: {
+                ok: true,
+                value: {
+                  items: [{
+                    callId: 'call-7',
+                    sessionId: 'sess-1',
+                    questions: [{ id: 'q1', title: '继续吗？', options: [] }],
+                    requestedAt: 1_000,
+                  }],
+                },
+              },
+            }
+          },
+        },
+      }),
+    })
+    const { socket, frames } = await authed(database, root.id, url)
+    socket.send(JSON.stringify({ type: 'questions', requestId: 'q-list', sessionId: 'sess-1' }))
+    await nextKind(frames, 'questions')
+    const reply = frames.find(frame => frame.kind === 'questions')?.data as
+      { sessionId?: string; items?: Array<{ callId?: string }>; requestId?: string }
+    expect(reply.sessionId).toBe('sess-1')
+    expect(reply.items?.map(item => item.callId)).toEqual(['call-7'])
+    // 应答帧统一回显 requestId（与其它请求应答同规）。
+    expect(reply.requestId).toBe('q-list')
+    expect(listCalls).toEqual(['sess-1'])
+    socket.close()
+  })
+
+  it('rejects questions without sessionId via structured error', async () => {
+    const { database, root, url } = await startHarness()
+    const { socket, frames } = await authed(database, root.id, url)
+    socket.send(JSON.stringify({ type: 'questions', requestId: 'q-bad' }))
+    await nextKind(frames, 'error')
+    const error = frames.find(frame => frame.kind === 'error')?.data as { code?: string }
+    expect(error.code).toBe('MISSING_PARAMS')
+    socket.close()
+  })
+
   it('returns accepted:false reason:not-pending when nothing is pending to cancel', async () => {
     const { database, root, url } = await startHarness()
     const { socket, frames } = await authed(database, root.id, url)
