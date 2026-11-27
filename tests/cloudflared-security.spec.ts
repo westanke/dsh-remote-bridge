@@ -111,6 +111,7 @@ describe('UI-03：activity 用 labelKey 而不是中文文案', () => {
       'tunnelStageDownloadDeb',
       'tunnelStageDownloadProgress',
       'tunnelStageUnpackDeb',
+      'tunnelStageUnpackTgz',
       'tunnelStageWriteBinary',
       'tunnelStageStarting',
     ])

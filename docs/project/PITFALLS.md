@@ -1585,3 +1585,50 @@ never negotiates permessage-deflate on the broadcast channel（钉住广播通�
 closes a connection that stays over the high-water mark twice（背压真的触发）；
 `tests/mobile-gateway-ws.spec.ts` › negotiates permessage-deflate when the client offers it /
 stays uncompressed when the client turns compression off（钉住 `/ws/mobile` 仍按 issue #29 开压缩）。
+
+---
+
+### Windows 绑 0.0.0.0 不是双栈
+
+**症状**：Windows 机器上有公网 IPv6，接入面板却只列 IPv4；手动把设置的
+`listener_host` 改成 `::` 重启后才出现。另一个方向：以为绑了 `::` 就双栈，实际
+Linux 上 `net.ipv6.bindv6only=1` 时 IPv4 连不上。
+
+**根因**：`0.0.0.0` 是 IPv4 地址，绑它就是**纯 IPv4** socket。Linux 的
+`net.ipv6.bindv6only` 默认为 0，`::` 会自动接受 IPv4；Windows 要双栈必须绑 `::`
+且 `IPV6_V6ONLY = 0`。面板的 `allowsAddress` 按监听地址族过滤候选 —— 绑 IPv4 就
+正确地只给 IPv4，于是 IPv6 永远「不存在」（AtomGit issue #1）。
+
+**现在怎么办**：默认值走 `defaultRemoteHost()`（`win32 ? '::' : '0.0.0.0'`），
+绑定走 `listenOptionsFor()`（`::` 显式 `ipv6Only: false`），历史值走
+`resolveListenerHost()` 迁移（Windows 的 `0.0.0.0` → `::`）。**别在 Windows 上把
+`0.0.0.0` 当双栈**。
+
+**还有一个反向坑**：Windows 上把**回环**监听也换成 `::1` 会把本机访问全断掉 ——
+`::1` 与 `127.0.0.1` 在 Windows 是两套独立的栈。所以 `loopbackFor()` 在 Windows 上
+固定 `127.0.0.1`，只有**远程启用**时才按配置绑 `::`（双栈，IPv4 照样能连）。
+
+**回归锚**：`tests/listener-config.spec.ts` › platform-aware listener host。
+
+---
+
+### cloudflared 归档名只按 linux 拼
+
+**症状**：Windows / macOS 上 `/tunnel` 永远 502 `TUNNEL_DOWNLOAD_FAILED`，原因是
+`cloudflared 尚不支持 win32 平台`。
+
+**根因**：`archSuffix()` 早先只认 linux，`ensureCloudflared()` 又只查
+`<dataDir>/cloudflared` 就下载。用户机器上其实已经有
+`~/.dsh/cloudflared-bin/2026.9.3-win32-x64.exe`（DSH 生态下的），插件看不到，于是
+每次都走那条必抛错的下载路径。另外 Windows 的可执行文件名必须带 `.exe`
+（`spawn` 不会自动补）。
+
+**现在怎么办**：三平台归档名 —— linux 裸二进制、win32 `windows-amd64.exe` /
+`windows-386.exe`、darwin `darwin-amd64.tgz` / `darwin-arm64.tgz`（2024.11.1
+**没有** `windows-arm64.exe`）。`ensureCloudflared()` 先查 `<dataDir>` →
+`<dataDir>/../cloudflared-bin` 与 `~/.dsh/cloudflared-bin`（mgw 命名
+`<version>-<platform>-<arch>[.exe]`）→ `PATH`，都没有才下载；darwin `.tgz` 用系统
+`tar` 解包。**别假设官方 Windows 资产是 zip，也别假设 spawn 会自动补 `.exe`**。
+
+**回归锚**：`tests/cloudflared.spec.ts` › archSuffix / cloudflaredBinaryName /
+writeFromTgz / ensureCloudflared reuse。

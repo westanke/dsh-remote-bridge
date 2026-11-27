@@ -92,6 +92,7 @@ export type TunnelStageKey =
   // 第 9 键（H5）：镜像源下载且没有可用的内置校验和时的「未校验」可见态。
   | 'tunnelStageDownloadUnverified'
   | 'tunnelStageUnpackDeb'
+  | 'tunnelStageUnpackTgz'
   | 'tunnelStageWriteBinary'
   | 'tunnelStageStarting'
 

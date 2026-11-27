@@ -2,7 +2,7 @@
 
 ## 信任边界
 
-- 安装后 listener 默认只绑定回环地址。远程启用成功后才绑定管理员配置的数值 IPv4/IPv6 地址并生成配对码；默认远程目标为 `0.0.0.0:3090`。
+- 安装后 listener 默认只绑定回环地址（Windows 上回环固定 `127.0.0.1`；远程启用时才按配置绑 `::` 双栈，IPv4 仍可达）。远程启用成功后才绑定管理员配置的数值 IPv4/IPv6 地址并生成配对码；默认远程目标为 `0.0.0.0:3090`。
 - 绑定 IP 和端口只能由回环管理面修改。远程已启用时必须先关闭再修改；重绑定失败会恢复原监听地址，不提交错误配置。
 - 登记根、授权设备、撤销、切换监听和永久清理只接受回环 socket 与可信本机 Origin；`Origin: null` 被拒绝。内部文件调用还必须携带插件管理头。不信任 `X-Forwarded-For`，普通本机 API 请求不会自动提升为管理员。
 - **管理身份的判据不是「来源是回环」，而是四层同时成立**（2.5.1 起，见下节「管理面的信任边界」）。判据实现在 `src/host/auth.ts` 的 `adminRefusal`，`requireAdmin`（`/manage`）与 `principal({allowAdmin})`（`/api/v1`）**共用同一份**，两者对同一请求必须给出同一结论。
@@ -11,6 +11,7 @@
 - 审计不保存令牌、文件正文或聊天正文。
 - host 斜杠命令要求设备同时具备 `chat.write` 和会话所属 root grant；服务端只允许执行当前 DSH command registry 已列出的命令。审计保存命令名但不保存整行参数，避免 `/model` 等命令参数进入日志。
 - 未分类系统错误统一脱敏，不把绝对路径或底层数据库错误发给外部客户端。未知异常经 `asApiError`（`src/host/errors.ts`）归一为固定文案的 500 `INTERNAL_ERROR`；cloudflared 下载/解包错误在 `src/host/cloudflared.ts` 的 `sanitizeDownloadError` 先过一遍（完整 URL → 仅保留 host、绝对路径 → 仅保留 basename），`router.ts` 的 `TUNNEL_DOWNLOAD_FAILED` 出口再固定兜底文案并附结构化 `errorKey`，两层脱敏（2.5.2 / SEC-H7）。
+- cloudflared 二进制的查找范围是**固定三条**（`src/host/cloudflared.ts` 的 `findExistingCloudflared`）：`<dataDir>/cloudflared[.exe]` → DSH 生态缓存 `cloudflared-bin/`（`<dataDir>/../cloudflared-bin` 与 `~/.dsh/cloudflared-bin`，文件名必须匹配 `-<platform>-<arch>[.exe]` 后缀）→ `PATH` 上的 `cloudflared[.exe]`；只认普通文件（`isFile`），不接受目录、不做 `glob`、不从环境变量指到任意路径。**可证伪断言**：这三条任一路径命中时，`ensureCloudflared` **不发起任何网络请求、不查远程哈希**（复用即信任），回归 `tests/cloudflared.spec.ts` › `ensureCloudflared reuse`（三个用例：dataDir 已有 / 生态缓存 / `PATH`）。写清楚收益与代价：能改这三处的人本来就能在当前用户下直接执行任意命令，插件因此不多给一分权限；代价是本地那份二进制不再校验来源，发行方要保证的是「下载来的那份」走 TLS + 可选 `CLOUDFLARED_SHA256`（2.18.0 起的三平台下载）。
 - DSH 工作区列表必须同时通过设备 `chat.read` 和 root grant；响应使用 `workspaceId` 与根内相对路径，不返回 DSH 工作区绝对路径。Agent Preset 只暴露选择所需元数据，损坏详情等宿主内部诊断不进入外部响应。
 - WebSocket 使用 Upgrade Authorization 或 `bearer.<token>` 子协议，不接受会进入代理日志的 query token。每条事件重新读取设备状态，并同时检查实时 root grant 与 `files.read`/`chat.read` scope。连接级闸口（真值在 `src/host/server.ts`）：默认最多 32 条连接（可配置），**鉴权先于计数**——超额连接在通过鉴权后才于 Upgrade 阶段收到 HTTP 429（`Retry-After: 5`），未鉴权请求不消耗名额；单帧上限 1 MiB，超限 close(1009)；30 秒 ping 心跳，连续 2 个周期缺 pong 即 terminate；每连接发送队列 512 帧，背压溢出时优先丢可重建的 `chat.message.delta` 并补发 `connection.resyncRequired` 通知客户端改走 REST 补历史，状态帧也塞不进时 close(1013,'Backpressure')。
 - Provider 列表只返回凭据的 `configured/source/writable` 元数据，绝不读取或回传 API 密钥。供应商读取和修改分别要求 `settings.read`、`settings.write`；密钥只通过 DSH credential service 写入或清除，审计不记录正文。

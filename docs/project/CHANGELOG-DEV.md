@@ -1,3 +1,35 @@
+## 未发布 · Windows 双栈监听与 cloudflared 三平台下载（AtomGit issue #1，2026-11-28）
+
+**起因**：Windows 11 上接入面板只列 IPv4（机器其实有 3 个公网 IPv6）；`/tunnel` 永远
+502 `TUNNEL_DOWNLOAD_FAILED`（"Failed to download or unpack cloudflared"）。
+
+**根因**：① 默认监听 `0.0.0.0`，而 Windows 的 `0.0.0.0` 是**纯 IPv4** socket（没有
+Linux 的自动双栈语义），`allowsAddress` 按监听地址族过滤候选，于是 IPv6 永远不出现；
+② `archSuffix()` 遇到非 linux 直接抛错，`ensureCloudflared()` 又只认
+`<dataDir>/cloudflared` —— Windows 上已有的 `~/.dsh/cloudflared-bin/2026.9.3-win32-x64.exe`
+用不上，下载也起不来。
+
+**改动**：
+
+- `src/host/listener-config.ts`：新增 `defaultRemoteHost()`（`win32` → `::`）、
+  `resolveListenerHost()`（把历史存下的 / 显式传的 `0.0.0.0` 在 Windows 上迁移成 `::`）、
+  `listenOptionsFor()`（绑 `::` 时显式 `ipv6Only: false`）。
+- `src/host/server.ts` / `src/index.ts`：默认值与 `readStoredHost` 改用上面三个函数；
+  升级后旧 `listener_host = 0.0.0.0` 自动写回 `::`。
+- `src/host/listener-config.ts`：`loopbackFor()` 在 Windows 上**固定**返回 `127.0.0.1`
+  （即使配置的是 IPv6）。Windows 的 `::1` 是独立的一套栈，只绑它会让
+  `http://127.0.0.1:PORT` 全断——而本机消费者（面板复制出的地址、`curl`、测试）全走
+  IPv4 回环。远程关闭时仍只监听回环，安全面不变。
+- `src/host/cloudflared.ts`：`archSuffix()` 补 `win32`（`windows-amd64.exe` /
+  `windows-386.exe`）与 `darwin`（`darwin-amd64.tgz` / `darwin-arm64.tgz`）；
+  `ensureCloudflared()` 先查 `<dataDir>` → DSH 生态 `cloudflared-bin/` → `PATH`，都没有
+  才下载；darwin `.tgz` 用系统 `tar` 解包（新增 `writeFromTgz`）；Windows 可执行文件名
+  带 `.exe`。
+- 面板新增进度键 `tunnelStageUnpackTgz`。
+
+**兼容性**：无 REST/帧变更。Windows 上 `0.0.0.0` 的语义从「只 IPv4」变为「双栈」，
+这正是 issue 要的行为；Linux / macOS 的默认值不变。deb 兜底仍只在 Linux 上启用。
+
 ## v2.17.5 · 帧上限失败体验、后台任务三帧、待处理提问 `questions` 帧与内核超时归一（2026-11-27）
 
 **同版四项**：`/ws/mobile` 入站帧超限改为「先 error 帧、再 close 1009」；后台任务新增

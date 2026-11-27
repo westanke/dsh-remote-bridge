@@ -1,6 +1,7 @@
 import { spawn, execFile, type ChildProcess } from 'node:child_process'
 import { createHash, randomBytes } from 'node:crypto'
-import { chmod, mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises'
+import { chmod, mkdir, readdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises'
+import { homedir } from 'node:os'
 import path from 'node:path'
 
 /**
@@ -112,6 +113,8 @@ export type TunnelStageKey =
   | 'tunnelStageDownloadUnverified'
   /** 正在解包 deb 并提取二进制。 */
   | 'tunnelStageUnpackDeb'
+  /** 正在解包 darwin `.tgz` 并提取二进制。 */
+  | 'tunnelStageUnpackTgz'
   /** 正在写入二进制并赋执行权限。 */
   | 'tunnelStageWriteBinary'
   /** 正在启动 cloudflared 隧道。 */
@@ -125,6 +128,7 @@ export const TunnelStageKeys: readonly TunnelStageKey[] = [
   'tunnelStageDownloadDeb',
   'tunnelStageDownloadProgress',
   'tunnelStageUnpackDeb',
+  'tunnelStageUnpackTgz',
   'tunnelStageWriteBinary',
   'tunnelStageStarting',
 ] as const
@@ -161,16 +165,57 @@ export function archSuffix(
   platform: NodeJS.Platform = process.platform,
   arch: string = process.arch,
 ): string {
-  if (platform !== 'linux') {
-    throw new Error(`cloudflared 尚不支持 ${platform} 平台。`)
+  if (platform === 'linux') {
+    switch (arch) {
+      case 'x64':
+        return 'linux-amd64'
+      case 'arm64':
+        return 'linux-arm64'
+      default:
+        throw new Error(`cloudflared 尚不支持 ${arch} 架构（${platform}）。`)
+    }
   }
+  if (platform === 'win32') {
+    // 2024.11.1 官方资产只有 `cloudflared-windows-amd64.exe` 与 `-386.exe`，
+    // **没有** arm64 的 exe；不要凭空拼一个会 404 的名字。
+    switch (arch) {
+      case 'x64':
+        return 'windows-amd64.exe'
+      case 'ia32':
+        return 'windows-386.exe'
+      default:
+        throw new Error(`cloudflared 尚不支持 ${arch} 架构（${platform}）。`)
+    }
+  }
+  if (platform === 'darwin') {
+    switch (arch) {
+      case 'x64':
+        return 'darwin-amd64.tgz'
+      case 'arm64':
+        return 'darwin-arm64.tgz'
+      default:
+        throw new Error(`cloudflared 尚不支持 ${arch} 架构（${platform}）。`)
+    }
+  }
+  throw new Error(`cloudflared 尚不支持 ${platform} 平台。`)
+}
+
+/** cloudflared 可执行文件名：Windows 必须带 `.exe`，否则 `spawn` 找不到。 */
+export function cloudflaredBinaryName(platform: NodeJS.Platform = process.platform): string {
+  return platform === 'win32' ? 'cloudflared.exe' : 'cloudflared'
+}
+
+/** deb 兜底仓库使用的架构名（`amd64`/`arm64`/`386`，与官方归档名不同）。 */
+function debArch(arch: string = process.arch): string {
   switch (arch) {
     case 'x64':
-      return 'linux-amd64'
+      return 'amd64'
     case 'arm64':
-      return 'linux-arm64'
+      return 'arm64'
+    case 'ia32':
+      return '386'
     default:
-      throw new Error(`cloudflared 尚不支持 ${process.arch} 架构。`)
+      return 'amd64'
   }
 }
 
@@ -377,25 +422,27 @@ export async function ensureCloudflared(
   dataDir: string,
   report?: (a: TunnelActivity) => void,
 ): Promise<string> {
-  const existing = path.join(dataDir, 'cloudflared')
   report?.({ stage: 'locating', labelKey: 'tunnelStageLocating', percent: null })
-  try {
-    if ((await stat(existing)).isFile()) {
-      report?.({ stage: 'locating', labelKey: 'tunnelStageBinaryFound', percent: 100 })
-      return existing
-    }
-  } catch {
-    // 不存在，继续下载
+  // 顺序：本插件自己下的 → DSH 生态缓存 → PATH。命中就**不再下载**，
+  // 这也是 Windows 用户「机器上已经有 cloudflared、插件却永远下载失败」的修复（issue #1）。
+  const found = await findExistingCloudflared(dataDir)
+  if (found !== null) {
+    report?.({ stage: 'locating', labelKey: 'tunnelStageBinaryFound', percent: 100 })
+    return found
   }
   await mkdir(dataDir, { recursive: true })
+  const destination = path.join(dataDir, cloudflaredBinaryName())
 
-  // 取源顺序：显式 `CLOUDFLARED_MIRROR`（若设）→ 官方 GitHub → 官方 deb 兜底。
+  // 取源顺序：显式 `CLOUDFLARED_MIRROR`（若设）→ 官方 GitHub → 官方 deb 兜底（仅 Linux：
+  // deb 靠 `dpkg-deb` 解包，Windows/macOS 没有这个工具，也没有对应 deb 资产）。
   // 逐个尝试，命中即落盘；全部失败则抛出带具体原因的错误（面板可见）。
   const explicit = mirrorBase()
   const candidates: Array<{ url: string; deb: boolean }> =
     explicit !== ''
       ? [{ url: downloadUrlFor(), deb: isDebSource() }]
-      : [{ url: downloadUrlFor(), deb: false }, { url: debFallbackUrl('amd64'), deb: true }]
+      : process.platform === 'linux'
+        ? [{ url: downloadUrlFor(), deb: false }, { url: debFallbackUrl(debArch()), deb: true }]
+        : [{ url: downloadUrlFor(), deb: false }]
 
   // 期望校验和：声明了就**强校验**（不匹配即拒绝落盘），没声明就放行但把
   // 「未校验」显式上报。理由见文件头 H5 那一段与 `verifySha256` 的注释。
@@ -445,14 +492,18 @@ export async function ensureCloudflared(
         report?.({ stage: 'unpacking', labelKey: 'tunnelStageUnpackDeb', percent: null })
         return writeFromDeb(dataDir, res.body, url)
       }
+      if (isTarball(url)) {
+        report?.({ stage: 'unpacking', labelKey: 'tunnelStageUnpackTgz', percent: null })
+        return writeFromTgz(dataDir, res.body, url)
+      }
       report?.({ stage: 'unpacking', labelKey: 'tunnelStageWriteBinary', percent: null })
       // 临时名同样带随机后缀（#11）：并发调用共用 `.tmp-<pid>` 时，A 的 rename 可能
       // 拿到 B 写了一半的文件，或 B 的 writeFile 截断 A 正在 rename 的源。
       const tmp = path.join(dataDir, `.cloudflared.tmp-${process.pid}-${randomBytes(6).toString('hex')}`)
       await writeFile(tmp, res.body)
       await chmod(tmp, 0o755)
-      await rename(tmp, existing)
-      return existing
+      await rename(tmp, destination)
+      return destination
     } catch (cause) {
       // 脱敏后再收集（H7）：完整 URL 与绝对路径都不留。
       errors.push(sanitizeDownloadError(cause instanceof Error ? cause.message : String(cause)))
@@ -466,6 +517,96 @@ export async function ensureCloudflared(
     `下载 cloudflared 失败（已尝试 ${candidates.length} 个源：${triedHosts}）`
     + (errors.length === 0 ? '' : `；原因：${errors.join('；')}`),
   )
+}
+
+/** 下载 URL 是否是 tar.gz / tgz 归档（darwin 资产是 `.tgz`）。 */
+function isTarball(url: string): boolean {
+  try {
+    return /\.(tgz|tar\.gz)$/i.test(new URL(url).pathname)
+  } catch {
+    return false
+  }
+}
+
+async function isFile(candidate: string): Promise<boolean> {
+  try {
+    return (await stat(candidate)).isFile()
+  } catch {
+    return false
+  }
+}
+
+/**
+ * 在磁盘上找一个可复用的 cloudflared，找不到返回 null。
+ *
+ * 1. `<dataDir>/cloudflared[.exe]` —— 本插件自己下载的；
+ * 2. `<dataDir>/../cloudflared-bin/`、`~/.dsh/cloudflared-bin/` —— DSH 生态
+ *    （`dsh-plugin-mobile-gateway`）已经下过的缓存；
+ * 3. `PATH` 里的 `cloudflared[.exe]` —— 用户系统级安装。
+ *
+ * 第 2/3 步是 issue #1 要求的：Windows 用户机器上已有
+ * `2026.9.3-win32-x64.exe`，插件却只认 `<dataDir>/cloudflared`，于是每次都走下载。
+ *
+ * 安全边界：只接受**普通文件**，且必须在上述三个位置之一（不递归、不 glob）；
+ * PATH 是用户自己控制的进程环境，能改写 PATH 的攻击者本来就能劫持 node 本身。
+ */
+async function findExistingCloudflared(dataDir: string): Promise<string | null> {
+  const own = path.join(dataDir, cloudflaredBinaryName())
+  if (await isFile(own)) return own
+
+  const ext = process.platform === 'win32' ? '.exe' : ''
+  const cacheDirs = new Set([
+    path.join(path.dirname(dataDir), 'cloudflared-bin'),
+    path.join(homedir(), '.dsh', 'cloudflared-bin'),
+  ])
+  for (const dir of cacheDirs) {
+    const hit = await findInCacheDir(dir, ext)
+    if (hit !== null) return hit
+  }
+  return findOnPath()
+}
+
+async function findInCacheDir(dir: string, ext: string): Promise<string | null> {
+  const fixed = path.join(dir, `cloudflared${ext}`)
+  if (await isFile(fixed)) return fixed
+  let names: string[]
+  try {
+    names = await readdir(dir)
+  } catch {
+    return null
+  }
+  // mgw 的落盘名是 `<version>-<platform>-<arch>[.exe]`；同平台同架构可能留了多个版本，
+  // 按版本号从大到小取第一个存在的。
+  const suffix = `-${process.platform}-${process.arch}${ext}`
+  const matches = names
+    .filter((name) => name.endsWith(suffix))
+    .sort((a, b) => compareVersion(b.slice(0, -suffix.length), a.slice(0, -suffix.length)))
+  for (const name of matches) {
+    const candidate = path.join(dir, name)
+    if (await isFile(candidate)) return candidate
+  }
+  return null
+}
+
+function compareVersion(a: string, b: string): number {
+  const pa = a.split('.').map(Number)
+  const pb = b.split('.').map(Number)
+  const n = Math.max(pa.length, pb.length)
+  for (let i = 0; i < n; i += 1) {
+    const delta = (pa[i] ?? 0) - (pb[i] ?? 0)
+    if (delta !== 0) return delta
+  }
+  return 0
+}
+
+async function findOnPath(): Promise<string | null> {
+  const exe = cloudflaredBinaryName()
+  const dirs = (process.env.PATH ?? '').split(path.delimiter).filter((dir) => dir !== '')
+  for (const dir of dirs) {
+    const candidate = path.join(dir, exe)
+    if (await isFile(candidate)) return candidate
+  }
+  return null
 }
 
 /**
@@ -500,7 +641,7 @@ export async function writeFromDeb(dataDir: string, debBuffer: Buffer, url: stri
       })
     })
     const inner = path.join(extractDir, 'usr', 'bin', 'cloudflared')
-    const out = path.join(dataDir, 'cloudflared')
+    const out = path.join(dataDir, cloudflaredBinaryName())
     // 解包里没有那个二进制（损坏的 deb / 结构不符）必须明确报错，
     // 而不是把空文件当成功 —— 否则下一次 spawn 会在更难懂的地方失败。
     const bin = await readFile(inner)
@@ -510,6 +651,45 @@ export async function writeFromDeb(dataDir: string, debBuffer: Buffer, url: stri
     return out
   } finally {
     await rm(debPath, { force: true }).catch(() => {})
+    await rm(extractDir, { recursive: true, force: true }).catch(() => {})
+  }
+}
+
+/**
+ * 从 darwin 官方的 `.tgz` 归档中解出 `cloudflared`，原子落到 `dataDir/cloudflared`。
+ *
+ * macOS 资产是 `cloudflared-darwin-<arch>.tgz`（不是裸二进制，也没有 deb），
+ * 必须解包。用系统 `tar`（macOS 自带 bsdtar，Windows 10+ 也自带）而不是引入新依赖。
+ *
+ * 错误脱敏同 `writeFromDeb`：`execFile` 的原始错误含绝对路径。
+ * 导出仅供回归测试用，生产入口是 `ensureCloudflared`。
+ */
+export async function writeFromTgz(dataDir: string, tgzBuffer: Buffer, url: string): Promise<string> {
+  await mkdir(dataDir, { recursive: true })
+  const uniq = `${process.pid}-${randomBytes(6).toString('hex')}`
+  const archivePath = path.join(dataDir, `.cloudflared.tgz-${uniq}`)
+  const extractDir = path.join(dataDir, `.cloudflared-extract-${uniq}`)
+  await writeFile(archivePath, tgzBuffer)
+  await mkdir(extractDir, { recursive: true })
+  try {
+    await new Promise<void>((resolve, reject) => {
+      execFile('tar', ['-xzf', archivePath, '-C', extractDir], (err) => {
+        if (err === null) {
+          resolve()
+          return
+        }
+        reject(new Error(sanitizeDownloadError(`tar 解包失败：${err.message}`)))
+      })
+    })
+    const inner = path.join(extractDir, 'cloudflared')
+    const out = path.join(dataDir, cloudflaredBinaryName())
+    const bin = await readFile(inner)
+    if (bin.byteLength === 0) throw new Error('解包后的 cloudflared 为空文件')
+    await writeFile(out, bin)
+    await chmod(out, 0o755)
+    return out
+  } finally {
+    await rm(archivePath, { force: true }).catch(() => {})
     await rm(extractDir, { recursive: true, force: true }).catch(() => {})
   }
 }

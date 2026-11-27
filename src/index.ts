@@ -18,7 +18,7 @@ import {
 import { runStartupRetention } from './host/retention.ts'
 import { JobAdapter } from './host/job-adapter.ts'
 import { createImageRouteHandler, IMAGE_ROUTE, readHandoffSubdir } from './host/image-handoff.ts'
-import { DEFAULT_REMOTE_HOST, normalizeListenerHost, normalizeListenerPort } from './host/listener-config.ts'
+import { defaultRemoteHost, normalizeListenerPort, resolveListenerHost } from './host/listener-config.ts'
 import { ApiRouter } from './host/router.ts'
 import { attachEmbeddedRoutes, RemoteApiServer } from './host/server.ts'
 import {
@@ -130,7 +130,7 @@ interface HostContext extends Dsh02HostServices, DshGoHost {
 export async function apply(ctx: HostContext, config: Config = {}): Promise<void> {
   const dataDir = path.resolve(config.dataDir ?? path.join(process.cwd(), '.dsh-workspace'))
   const port = normalizeListenerPort(config.port ?? 3090, true)
-  const remoteHost = normalizeListenerHost(config.remoteHost ?? DEFAULT_REMOTE_HOST)
+  const remoteHost = resolveListenerHost(config.remoteHost ?? defaultRemoteHost())
   const maxUploadBytes = config.maxUploadBytes ?? 20 * 1024 * 1024
   if (!Number.isSafeInteger(maxUploadBytes) || maxUploadBytes < 1) throw new Error('dsh-remote-bridge: maxUploadBytes must be positive')
   const maxPayloadBytes = config.maxPayloadBytes ?? 1024 * 1024

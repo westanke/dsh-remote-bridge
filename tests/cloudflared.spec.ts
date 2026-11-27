@@ -1,12 +1,22 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { createServer } from 'node:http'
+import { execFile } from 'node:child_process'
+import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import path from 'node:path'
+import { promisify } from 'node:util'
 import {
   archSuffix,
+  cloudflaredBinaryName,
   downloadHttps,
   downloadUrlFor,
+  ensureCloudflared,
   extractQuickTunnelUrl,
   isDebSource,
+  writeFromTgz,
 } from '../src/host/cloudflared.ts'
+
+const execFileP = promisify(execFile)
 
 /**
  * cloudflared 模块的单元测试。
@@ -50,16 +60,24 @@ describe('extractQuickTunnelUrl', () => {
 })
 
 describe('archSuffix', () => {
-  it('resolves linux x64 to the official amd64 archive name', () => {
+  it('resolves the official archive name for linux, windows and macOS', () => {
     // 架构必须**显式传入**。旧实现里 platform 是参数、arch 却读 `process.arch`，
-    // 于是这条断言在 macOS runner（arm64）上返回 linux-arm64 而红 ——
-    // 全平台矩阵里只有 Linux 那两格能过。修复后 arch 也是入参，结果只由入参决定。
+    // 于是 `archSuffix('linux')` 在 macOS runner（arm64）上返回 linux-arm64 而红。
+    // 修复后 arch 也是入参，结果只由入参决定。
     expect(archSuffix('linux', 'x64')).toBe('linux-amd64')
     expect(archSuffix('linux', 'arm64')).toBe('linux-arm64')
+    // issue #1 Bug 2：此前非 linux 直接 throw，Windows/macOS 永远下载失败。
+    expect(archSuffix('win32', 'x64')).toBe('windows-amd64.exe')
+    expect(archSuffix('win32', 'ia32')).toBe('windows-386.exe')
+    expect(archSuffix('darwin', 'x64')).toBe('darwin-amd64.tgz')
+    expect(archSuffix('darwin', 'arm64')).toBe('darwin-arm64.tgz')
   })
 
-  it('throws on unsupported non-linux platform', () => {
-    expect(() => archSuffix('darwin')).toThrow(/不支持/)
+  it('throws only when there is no official asset for that platform/arch', () => {
+    expect(() => archSuffix('aix')).toThrow(/不支持/)
+    // 2024.11.1 的 Windows 资产只有 amd64/386，没有 arm64 exe。
+    expect(() => archSuffix('win32', 'arm64')).toThrow(/不支持/)
+    expect(() => archSuffix('linux', 'ia32')).toThrow(/不支持/)
   })
 })
 
@@ -93,6 +111,12 @@ describe('downloadUrlFor', () => {
     } finally {
       delete process.env.CLOUDFLARED_MIRROR
     }
+  })
+
+  it('builds Windows and macOS URLs from the same pinned version', () => {
+    delete process.env.CLOUDFLARED_MIRROR
+    expect(downloadUrlFor('win32', 'x64')).toMatch(/\/cloudflared-windows-amd64\.exe$/)
+    expect(downloadUrlFor('darwin', 'arm64')).toMatch(/\/cloudflared-darwin-arm64\.tgz$/)
   })
 
   it('does not treat a plain mirror base as a deb source', () => {
@@ -142,6 +166,96 @@ describe('ensureCloudflared download chain', () => {
       expect(res.status).toBe(404)
     } finally {
       server.close()
+    }
+  })
+})
+describe('cloudflaredBinaryName', () => {
+  it('appends .exe on Windows only', () => {
+    expect(cloudflaredBinaryName('win32')).toBe('cloudflared.exe')
+    expect(cloudflaredBinaryName('linux')).toBe('cloudflared')
+    expect(cloudflaredBinaryName('darwin')).toBe('cloudflared')
+  })
+})
+
+describe('writeFromTgz', () => {
+  it('extracts cloudflared from a darwin .tgz and leaves no temp files behind', async () => {
+    const stage = await mkdtemp(path.join(tmpdir(), 'dsh-cloudflared-tgz-'))
+    try {
+      const src = path.join(stage, 'src')
+      await mkdir(src, { recursive: true })
+      await writeFile(path.join(src, 'cloudflared'), '#!/bin/sh\necho cloudflared-ok\n')
+      const archive = path.join(stage, 'pkg.tgz')
+      await execFileP('tar', ['-czf', archive, '-C', src, 'cloudflared'])
+
+      const dataDir = path.join(stage, 'data')
+      const out = await writeFromTgz(
+        dataDir,
+        await readFile(archive),
+        'https://example.invalid/cloudflared-darwin-amd64.tgz',
+      )
+      expect(path.basename(out)).toBe(cloudflaredBinaryName())
+      expect(await readFile(out, 'utf8')).toContain('cloudflared-ok')
+      // 归档与解包目录必须清掉，数据目录里只剩可执行文件本身。
+      expect(await readdir(dataDir)).toEqual([cloudflaredBinaryName()])
+    } finally {
+      await rm(stage, { recursive: true, force: true })
+    }
+  })
+})
+
+/**
+ * issue #1 Bug 2：Windows 用户机器上已经有 `~/.dsh/cloudflared-bin/2026.9.3-win32-x64.exe`，
+ * 插件却只认 `<dataDir>/cloudflared`，于是每次都走下载，而下载路径在 `archSuffix` 处抛错。
+ * 这三条把「先复用、后下载」的顺序钉死。
+ */
+describe('ensureCloudflared reuse', () => {
+  afterEach(() => {
+    vi.unstubAllEnvs()
+  })
+
+  it('returns the binary already present in the plugin data dir without downloading', async () => {
+    const stage = await mkdtemp(path.join(tmpdir(), 'dsh-cloudflared-reuse-'))
+    try {
+      const dataDir = path.join(stage, 'workspace')
+      await mkdir(dataDir, { recursive: true })
+      const exe = path.join(dataDir, cloudflaredBinaryName())
+      await writeFile(exe, 'binary')
+      await expect(ensureCloudflared(dataDir)).resolves.toBe(exe)
+    } finally {
+      await rm(stage, { recursive: true, force: true })
+    }
+  })
+
+  it('reuses the DSH ecosystem cache next to the data dir', async () => {
+    const stage = await mkdtemp(path.join(tmpdir(), 'dsh-cloudflared-cache-'))
+    try {
+      const dataDir = path.join(stage, 'workspace')
+      const cacheDir = path.join(stage, 'cloudflared-bin')
+      await mkdir(cacheDir, { recursive: true })
+      const ext = process.platform === 'win32' ? '.exe' : ''
+      const cached = path.join(cacheDir, `2026.9.3-${process.platform}-${process.arch}${ext}`)
+      await writeFile(cached, 'binary')
+      await expect(ensureCloudflared(dataDir)).resolves.toBe(cached)
+    } finally {
+      await rm(stage, { recursive: true, force: true })
+    }
+  })
+
+  it('falls back to PATH when no cached copy exists', async () => {
+    const stage = await mkdtemp(path.join(tmpdir(), 'dsh-cloudflared-path-'))
+    try {
+      const binDir = path.join(stage, 'bin')
+      await mkdir(binDir, { recursive: true })
+      const exe = path.join(binDir, cloudflaredBinaryName())
+      await writeFile(exe, 'binary')
+      vi.stubEnv('PATH', binDir)
+      // 隔离 ~/.dsh/cloudflared-bin，避免开发机的真缓存让断言失真。
+      vi.stubEnv('HOME', stage)
+      vi.stubEnv('USERPROFILE', stage)
+      const dataDir = path.join(stage, 'workspace')
+      await expect(ensureCloudflared(dataDir)).resolves.toBe(exe)
+    } finally {
+      await rm(stage, { recursive: true, force: true })
     }
   })
 })

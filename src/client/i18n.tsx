@@ -239,6 +239,7 @@ const zh = {
   tunnelStageDownloadProgress: '正在下载 cloudflared… {mb}/{all} MB',
   tunnelStageDownloadUnverified: '镜像源没有可用的校验和，仍在下载但本次不做完整性校验…',
   tunnelStageUnpackDeb: '解包官方 deb 并提取二进制…',
+  tunnelStageUnpackTgz: '解包 darwin tgz 并提取二进制…',
   tunnelStageWriteBinary: '写入二进制并赋予执行权限…',
   tunnelStageStarting: '正在启动 cloudflared 隧道…',
   // 隧道错误（errorKey 优先于 error 渲染；细节留在服务端日志，不进响应体）
@@ -524,6 +525,7 @@ const en: Messages = {
   tunnelStageDownloadProgress: 'Downloading cloudflared… {mb}/{all} MB',
   tunnelStageDownloadUnverified: 'No checksum is published for this mirror; downloading without an integrity check…',
   tunnelStageUnpackDeb: 'Unpacking the deb and extracting the binary…',
+  tunnelStageUnpackTgz: 'Unpacking the darwin tgz and extracting the binary…',
   tunnelStageWriteBinary: 'Writing the binary and marking it executable…',
   tunnelStageStarting: 'Starting the cloudflared tunnel…',
   // Tunnel errors (errorKey wins over error; details stay in the server log, never in the response body)

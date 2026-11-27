@@ -14,7 +14,7 @@ import { ApiError } from './errors.ts'
 import type { WorkspaceEventBus } from './event-bus.ts'
 import { MobileGatewayWsHandler } from './ws-handler.ts'
 import { makeServerFrame, pickMobileSubprotocol, WS_PATH, WS_PERMESSAGE_DEFLATE } from './ws-protocol.ts'
-import { DEFAULT_REMOTE_HOST, loopbackFor, normalizeListenerHost, normalizeListenerPort } from './listener-config.ts'
+import { defaultRemoteHost, listenOptionsFor, loopbackFor, normalizeListenerPort, resolveListenerHost } from './listener-config.ts'
 import {
   recordBroadcastEvent,
   recordDroppedEvent,
@@ -199,7 +199,8 @@ export class RemoteApiServer implements RemoteControl {
   private readonly tunnelListener: TunnelListener
 
   constructor(private readonly options: RemoteApiServerOptions) {
-    const fallbackHost = normalizeListenerHost(options.remoteHost ?? DEFAULT_REMOTE_HOST)
+    // 默认值按平台取：Windows 必须是 `::` 才有双栈（issue #1）。
+    const fallbackHost = resolveListenerHost(options.remoteHost ?? defaultRemoteHost())
     const fallbackPort = normalizeListenerPort(options.port, true)
     this.configuredHost = readStoredHost(options.database, fallbackHost)
     this.configuredPort = readStoredPort(options.database, fallbackPort)
@@ -445,7 +446,7 @@ export class RemoteApiServer implements RemoteControl {
 
   configure(host: string, port: number): RemoteOperationView {
     if (this.remoteEnabled) throw new ApiError(409, 'REMOTE_ENABLED', 'Disable remote access before changing the listener address.')
-    const configuredHost = normalizeListenerHost(host)
+    const configuredHost = resolveListenerHost(host)
     const configuredPort = normalizeListenerPort(port)
     return this.scheduleChange({
       kind: 'configure',
@@ -569,7 +570,7 @@ export class RemoteApiServer implements RemoteControl {
     await new Promise<void>((resolve, reject) => {
       const onError = (error: Error): void => reject(error)
       server.once('error', onError)
-      server.listen(port, host, () => {
+      server.listen(listenOptionsFor(host, port), () => {
         server.off('error', onError)
         resolve()
       })
@@ -1151,7 +1152,11 @@ function readStoredHost(database: WorkspaceDatabase, fallback: string): string {
   const stored = database.getSetting('listener_host')
   if (stored === undefined) return fallback
   try {
-    return normalizeListenerHost(stored)
+    // 顺带做 Windows 迁移：历史版本存下的 `0.0.0.0` 提升为 `::` 并写回，
+    // 否则升级后仍然是纯 IPv4 监听（issue #1）。
+    const resolved = resolveListenerHost(stored)
+    if (resolved !== stored) database.setSetting('listener_host', resolved)
+    return resolved
   } catch {
     database.setSetting('listener_host', fallback)
     return fallback

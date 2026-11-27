@@ -58,6 +58,8 @@ describe('remote HTTP API', () => {
       expect(invalidListener.status).toBe(400)
       await expect(invalidListener.json()).resolves.toMatchObject({ error: { code: 'LISTENER_HOST_INVALID' } })
 
+      // Windows 上 `0.0.0.0` 由 `resolveListenerHost` 提升成 `::`（双栈，issue #1）。
+      const allInterfaces = process.platform === 'win32' ? '::' : '0.0.0.0'
       const customPort = await availablePort()
       const configure = await fetch(`${baseUrl}/manage/remote/listener`, {
         method: 'PUT',
@@ -71,11 +73,11 @@ describe('remote HTTP API', () => {
       expect(remote.status()).toMatchObject({
         host: '127.0.0.1',
         port: customPort,
-        configuredHost: '0.0.0.0',
+        configuredHost: allInterfaces,
         configuredPort: customPort,
         remoteEnabled: false,
       })
-      expect(database.getSetting('listener_host')).toBe('0.0.0.0')
+      expect(database.getSetting('listener_host')).toBe(allInterfaces)
       expect(database.getSetting('listener_port')).toBe(String(customPort))
       baseUrl = `http://127.0.0.1:${customPort}`
       expect((await fetch(`${baseUrl}/api/v1/healthz`)).status).toBe(200)
@@ -132,7 +134,7 @@ describe('remote HTTP API', () => {
       expect(enableResponse.headers.get('connection')).toBe('close')
       const enableOperation = await enableResponse.json() as { id: string }
       const enabled = await waitForOperation(remote, enableOperation.id, 'succeeded')
-      expect(remote.status()).toMatchObject({ host: '0.0.0.0', port: customPort, remoteEnabled: true })
+      expect(remote.status()).toMatchObject({ host: allInterfaces, port: customPort, remoteEnabled: true })
       const pairing = { code: enabled.operation?.pairingCode as string }
 
       const configureWhileEnabled = await fetch(`${baseUrl}/manage/remote/listener`, {

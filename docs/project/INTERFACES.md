@@ -495,9 +495,9 @@ export class FileService {  // 构造 (database, emit)
 | `matchAuthorizedRoot` / `matchAuthorizedRootResolved` / `inspectResolvedPath` | `root-resolver.ts` | 绝对路径 → 授权根 |
 | `HISTORY_BYTE_BUDGET` / `HISTORY_EVENT_BYTE_BUDGET` / `HISTORY_KEEP_CHARS` / `HISTORY_COMPACT_KEEP_CHARS` / `clampHistoryEvents` / `selectWithinBudget` / `applyHistoryBudget` / `compactHistoryEvents` | `history-budget.ts` | 历史字节预算与 compact 摘要投影（`history-compact-v1`） |
 | `normalizeHandoffSubdir` / `readHandoffSubdir` / `saveHandoffSubdir` / `imageHandoffView` / `declaredMediaType` / `sniffMediaType` / `loopbackHost` / `pluginPageReferer` / `sameOrigin` / `createImageRouteHandler` / `IMAGE_ROUTE` / `HANDOFF_FILE_NAME` / `HANDOFF_MEDIA_TYPES` | `image-handoff.ts` | 识图路径与只读图片路由 |
-| `CloudflaredTunnelManager` / `ensureCloudflared` / `downloadUrlFor` / `archSuffix` / `extractQuickTunnelUrl` / `downloadHttps` / `isDebSource` | `cloudflared.ts` | 隧道管理 |
+| `CloudflaredTunnelManager` / `ensureCloudflared` / `downloadUrlFor` / `archSuffix` / `cloudflaredBinaryName` / `writeFromDeb` / `writeFromTgz` / `extractQuickTunnelUrl` / `downloadHttps` / `isDebSource` | `cloudflared.ts` | 隧道管理（三平台归档：linux 裸二进制 / windows `.exe` / darwin `.tgz`；先复用本机/DSH 缓存/PATH 再下载，issue #1） |
 | `classifyHost` / `detectEndpoints` / `normalizeBaseUrl` / `composeCandidates` / `defaultDisplayName` / `DEFAULT_PORT` / `KIND_LABEL` / `EndpointKind` / `CandidateSources` | `config-text.ts` | 候选地址表与多路候选（`composeCandidates`：隧道在前 + 本机 LAN/虚拟网，地址去重）。2.17.0 起不再导出 `DSH1:` 编码器（issue #28：IM 长文本掉字符） |
-| `normalizeListenerHost` / `normalizeListenerPort` / `loopbackFor` / `DEFAULT_REMOTE_HOST` | `listener-config.ts` | 监听配置 |
+| `defaultRemoteHost` / `resolveListenerHost` / `listenOptionsFor` / `normalizeListenerHost` / `normalizeListenerPort` / `loopbackFor` / `DEFAULT_REMOTE_HOST` | `listener-config.ts` | 监听配置（Windows 默认 `::` 双栈并迁移历史 `0.0.0.0`，回环仍绑 `127.0.0.1`，issue #1） |
 | `probeHostServices` / `INJECTED_SERVICE_NAMES` / `OPTIONAL_SERVICE_NAMES` / `HostServiceReport` | `host-service-probe.ts` | 注入面探针 |
 | `BffRest` / `createBffRest` / `BffRoute` / `BffRestOptions` / `RestIo` / `ScheduleCreatePort` | `bff-rest.ts` | App 侧 REST BFF 的薄分发层（九条路由 → 三个域模块；JSON 体 32 KiB、chunk 体 1 MiB+4 KiB、speech 体 8 MiB） |
 | `ChunkedUploadStore`（`open` / `writeChunk` / `complete` / `status` / `list` / `cancel` / `dispose`）/ `UPLOAD_CHUNK_BYTES` / `MAX_CHUNKED_UPLOAD_BYTES` / `CHUNKED_UPLOAD_TTL_MS` | `bff-upload.ts` | 分块上传票据与 spool 落盘（1 MiB 切片、1 小时、alreadyReceived 续传、缺块 409）；提交优先流式喂内核，不可流式才回落 base64（issue #23） |
@@ -760,6 +760,13 @@ export const PLUGIN_VERSION: string          // shared/version.ts，与 package.
 | `export function buildConfigText` | `src/host/routes/cloudflare.ts` | function |
 | `export function ensureTunnelUrl` | `src/host/routes/cloudflare.ts` | function |
 | `export function normalizeListenerPort` | `src/host/listener-config.ts` | function |
+| `export function defaultRemoteHost` | `src/host/listener-config.ts` | function |
+| `export function resolveListenerHost` | `src/host/listener-config.ts` | function |
+| `export function listenOptionsFor` | `src/host/listener-config.ts` | function |
+| `export function archSuffix` | `src/host/cloudflared.ts` | function |
+| `export async function ensureCloudflared` | `src/host/cloudflared.ts` | function |
+| `export function cloudflaredBinaryName` | `src/host/cloudflared.ts` | function |
+| `export async function writeFromTgz` | `src/host/cloudflared.ts` | function |
 | `export function probeHostServices` | `src/host/host-service-probe.ts` | function |
 | `export async function readPluginInventory` | `src/host/plugin-inventory.ts` | function |
 | `export async function togglePlugin` | `src/host/plugin-inventory.ts` | function |
