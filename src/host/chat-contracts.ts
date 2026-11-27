@@ -498,6 +498,12 @@ export function principalKey(principal: Principal): string {
 export function unwrapDsh<T>(response: RpcResponse<T>): T {
   if (response.result.ok) return response.result.value
   const error = response.result.error
+  // rpc/timeout（rpc.ts 的统一上限）不是客户端用法错：宿主只是这一会儿没回话。
+  // 必须映射成可重试的 TIMEOUT/504 —— 否则会变成 400 DSH_RPC_TIMEOUT，客户端
+  // 既不会自动重试，UI 也把它当成「请求本身有问题」的红字（真机 2026-11-27）。
+  if (error.code === 'rpc/timeout') {
+    throw new ApiError(504, 'TIMEOUT', error.message)
+  }
   const status = error.code.includes('not-found') ? 404 : error.code.includes('busy') || error.code.includes('locked') ? 409 : 400
   throw new ApiError(status, `DSH_${error.code.replaceAll('-', '_').toUpperCase()}`, error.message)
 }

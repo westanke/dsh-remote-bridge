@@ -135,10 +135,16 @@ export function createDsh02ApiProxy(
     respond: message => approvals.respond(message),
 
     sessions: {
-      list: request => call('sessions.list', signal => listSessions(host, kernel, request.payload, signal) as never),
+      // 会话列表要读每个会话的 meta（上百个会话时在慢盘/高负载下会超过 10 s）。
+      // 10 s 的统一上限会把「宿主正在跑长回合」误判成「内核卡死」，真机上表现为
+      // 抽屉里反复出现「did not answer sessions.list within 10000ms」（2026-11-27）。
+      list: request => call('sessions.list', signal => listSessions(host, kernel, request.payload, signal) as never,
+        { timeoutMs: 20_000 }),
       create: request => call('sessions.create', signal =>
         invokeRequestEndpoint(kernel.caller, kernel.catalog.byName, 'session/create', request.payload, signal)),
-      history: request => call('sessions.history', signal => readSessionHistory(host, kernel, request.payload, signal) as never),
+      // history 同理：大会话读事件 + 序列化会顶到 10 s 上限（尤其宿主同时在出活时）。
+      history: request => call('sessions.history', signal => readSessionHistory(host, kernel, request.payload, signal) as never,
+        { timeoutMs: 20_000 }),
       prompt: request => call('sessions.prompt', signal =>
         promptSession(host, kernel, request.payload, {
           imageHandoff,

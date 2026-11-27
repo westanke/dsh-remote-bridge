@@ -1,3 +1,20 @@
+## 未发布 · 内核 RPC 超时归一为可重试 TIMEOUT、会话列表/历史上限放宽（2026-11-27）
+
+**起因**：真机反复出现「加载历史失败：The host did not answer sessions.list within 10000ms.」。
+根因是 `rpc.ts` 的统一 10 s 上限在慢盘/长回合/上百会话时被打穿，而 `unwrapDsh()`
+把 `rpc/timeout` 映射成 400 `DSH_RPC_TIMEOUT` —— 不在错误码表里，客户端拿不到
+`retryable`，只能刷红条，不会自动重试。
+
+**改动**：
+
+- `src/host/chat-contracts.ts`：`unwrapDsh()` 先把 `rpc/timeout` 归一成 `504 TIMEOUT`
+  （upstream 组，`retryable: true`），其余未知码维持原映射。
+- `src/host/dsh-0.2-bridge.ts`：`sessions.list` / `sessions.history` 的单次 RPC 上限
+  从 10 s 放宽到 20 s（会话多、事件多的真实负载）。
+
+**兼容性**：错误码从 `DSH_RPC_TIMEOUT`（400，不可重试）变为 `TIMEOUT`（504，可重试）；
+客户端 `RequestException.retryable` 会为 true。没有新增帧/能力位。
+
 ## 未发布 · 帧超限失败体验：先 `FRAME_TOO_LARGE` error 帧，再 close `1009`（2026-11-27）
 
 **起因**：`/ws/mobile` 的入站单帧超过 `hello.maxFrameBytes` 时，`ws` 直接 `close(1009)`，
