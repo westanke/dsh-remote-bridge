@@ -1,7 +1,13 @@
-# 当前状态
-
-- 日期：2026-11-27（**已发版 v2.17.5：帧上限失败体验、后台任务三帧、待处理提问 `questions` 帧、内核 RPC 超时归一**；上一版 v2.17.4 是 IPv6 支持、设备名同步与 App 下载二维码收口，v2.16.0 是多路配置码 + `open_tunnel_config` 回执改形，v2.15.0 是 dsh-Go 原生界面 + kernel-call 白名单放行 `skills/list`）
-- **v2.17.5（2026-11-27）· 帧上限失败体验 + `questions` 帧 + 后台任务拉取帧**：
+- 日期：2026-11-28（**已发版 v2.18.0：Windows 双栈与 cloudflared 三平台下载、`/tunnel` 与设置面板的地址范围、`/remote` 不开 WebUI 开远程 + dsh-Go 面板下载二维码**；上一版 v2.17.5 是帧上限失败体验、后台任务三帧、待处理提问 `questions` 帧与内核 RPC 超时归一，v2.17.4 是 IPv6 支持、设备名同步与 App 下载二维码收口）
+- **v2.18.0（2026-11-28）· Windows 双栈 + cloudflared 三平台 + 两处地址范围 + `/remote`**（AtomGit issue #1 #2 #3 #4）：
+  Windows 默认监听改为 `::` 双栈（存量 `0.0.0.0` 启动时就地迁移），回环仍固定 `127.0.0.1`；
+  cloudflared 认三平台归档名（`windows-amd64.exe` / `darwin-*.tgz`）、tgz 解包、`.exe` 落盘，
+  下载前先找数据目录 → `~/.dsh/cloudflared-bin/` → `PATH`；`/tunnel [lan|wan|tun|all]` 与设置面板
+  四段选择器共用 `filterCandidatesByScope`，`lan`/`wan` 不启 cloudflared；配对码改 10 位纯数字
+  并在码下列出地址；新增宿主命令 `/remote [lan|wan|all|off]` 与 `open_remote_access` 工具
+  （不开 WebUI 也能开远程取码），dsh-Go 面板加两张下载二维码与「开启并取码」（`command` 效果，
+  面板不写状态）。测试集 99 文件 / **1169 用例**；**验证**：`pnpm check` 四道门通过。
+- **已发版（v2.17.5，2026-11-27）· 帧上限失败体验 + `questions` 帧 + 后台任务拉取帧**：
   `/ws/mobile` 入站单帧超过 `maxFrameBytes` 时，先发 `kind:'error'`（`code:'FRAME_TOO_LARGE'`、
   `retryable:true`、`details.limitBytes`）再以 `1009` 关闭；close reason 为
   `FRAME_TOO_LARGE limitBytes=…`。`/api/v1/events` 的帧格式没有 `kind:'error'`，只带 close reason。

@@ -439,7 +439,9 @@ describe('package.json 的 dshGo 清单', () => {
   }
 
   it('存在且协议版本是 1', () => {
-    expect(pkg.version).toBe('2.17.5')
+    // 不钉死具体版本：这条用例守的是「清单在、协议 v1」，版本号由 package.json 自己说了算
+    // （钉死过一次 —— 2.17.5→2.18.0 发版时它先红）。
+    expect(pkg.version).toMatch(/^\d+\.\d+\.\d+(?:-[\w.]+)?$/)
     expect(manifest?.v).toBe(1)
   })
 
