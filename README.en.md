@@ -234,6 +234,28 @@ The public API is independent of DSH private wire protocols. Authorized clients 
 - inspect or update built-in and fully custom model providers;
 - manage files and trash within explicitly granted roots.
 
+### Turning remote access on without the WebUI: `/remote`
+
+The command above opens a tunnel. If all you need is the phone connecting **at home**, use `/remote`:
+it turns the listener on, issues a pairing code, and hands back **the addresses and the code together** —
+no trip back to the desktop UI.
+
+```
+/remote [lan|wan|all|off]
+```
+
+`lan` / `wan` return that class of address only (no tunnel, same meaning as the `/tunnel` arguments),
+`all` is the default (unchanged from 2.17.x), and `off` closes remote access (back to loopback only).
+`tun` is deliberately not accepted — use `/tunnel` when you want a public tunnel; `/remote` never starts
+cloudflared, because getting a LAN code should not depend on whether cloudflared can be downloaded (issue #1).
+In an IM window the agent can call the `open_remote_access` tool (`{action, scope}`) and replies with the
+same "addresses + code" pair, credential first so it can be forwarded verbatim.
+
+**No QR code on the client? You do not need one**: the one-line code is the credential — paste it into the
+app's import box. For installing the client itself, the dsh-Go **Access** panel shows two download QR codes
+(GitHub / Gitee, the same `assets/app-qr-chat-*.png` files the WebUI uses) plus an "Enable & get code"
+button that simply asks dsh-Go to run `/remote` in the current conversation.
+
 ## Remote access and security
 
 The default remote target is `0.0.0.0:3090`; both values are configurable. Clients may connect through any reachable IP address or domain name.

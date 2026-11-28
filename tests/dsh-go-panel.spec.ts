@@ -7,6 +7,7 @@ import {
   attachDshGoPanel,
   copyText,
   PANEL_ID,
+  QR_ASSETS,
   readState,
   STRIP_ID,
   stripData,
@@ -14,6 +15,7 @@ import {
   type AccessSource,
   type DshGoService,
 } from '../src/host/dsh-go-panel.ts'
+import { CLIENT_DOWNLOADS } from '../src/host/remote-command.ts'
 import type { DeviceView } from '../src/shared/contracts.ts'
 
 /**
@@ -24,8 +26,11 @@ import type { DeviceView } from '../src/shared/contracts.ts'
  * 1. **协议预算**：视图 ≤ 32 KiB / 120 节点、状态条文字 ≤ 24 字、复制文本 ≤ 8000 字、
  *    清单 ≤ 16 KiB 且长度上限（panel 标题 16、面板 ≤ 4、strip ≤ 1）。这些数字是 App 的硬上限，
  *    超了不是「显示得丑」，是被截断或整块丢弃。
- * 2. **只读**：面板与状态条里出现的效果只有 copy/toast —— 放写操作等于让任意 dsh-Go 客户端
- *    绕过管理面鉴权改本插件的安全状态（理由写在 src/host/dsh-go-panel.ts 头注释）。
+ * 2. **面板不写状态**：面板自己不调 `remote.enable()` / `createPairing()`，也不出现
+ *    copy/toast 之外的「本地副作用」—— dsh-Go 的连接身份是内核客户端，没有回环判据，
+ *    放写操作等于让任意 dsh-Go 客户端绕过管理面鉴权（理由写在 src/host/dsh-go-panel.ts 头注释）。
+ *    issue #4 起多了一个 `enable` 按钮，但它只回一条 `command` 效果（让 App 在**当前对话**里
+ *    执行 `/remote`），真正的写操作落在用户自己的会话身份上 —— 与手打命令等价，不是后门。
  * 3. **注册失败不外溢**：没有注入器、桥接拒绝注册、回调内部抛错，都只能 warn，
  *    不能让 apply 抛错（那会拆掉整个 fiber，见 PITFALLS「apply 尾部抛错会留下半死桥」）。
  */
@@ -228,8 +233,30 @@ describe('accessView', () => {
     }
   })
 
-  it('唯一的动作是 copy，与 panel 定义里的 actions 对得上', () => {
-    expect(actionIds(accessView('zh'))).toEqual(['copy'])
+  it('两个动作：enable 只回 command 效果、copy 是本地复制', () => {
+    expect(actionIds(accessView('zh'))).toEqual(['enable', 'copy'])
+  })
+
+  it('二维码是 asset: 引用，指向清单 assets 目录里真实存在的文件', () => {
+    const images: Array<{ src: string; caption?: string; aspect?: number }> = []
+    const walk = (node: unknown): void => {
+      if (node === null || typeof node !== 'object') return
+      if (Array.isArray(node)) { node.forEach(walk); return }
+      const record = node as Record<string, unknown>
+      if (record['type'] === 'image') images.push(record as never)
+      for (const value of Object.values(record)) walk(value)
+    }
+    walk(accessView('zh'))
+    expect(images).toHaveLength(QR_ASSETS.length)
+    for (const [index, image] of images.entries()) {
+      expect(image.src).toBe(QR_ASSETS[index]?.src)
+      expect(image.src.startsWith('asset:')).toBe(true)
+      expect(image.aspect).toBe(1)
+      // 说明文字是下载页地址：手机上点开图也能照着念/粘。
+      expect(image.caption).toBe(CLIENT_DOWNLOADS[index]?.url)
+      const file = path.join(import.meta.dirname, '..', 'assets', image.src.slice('asset:'.length))
+      expect(readFileSync(file).length).toBeGreaterThan(0)
+    }
   })
 
   it('中文与英文视图结构一致（只有文字不同）', () => {
@@ -308,6 +335,15 @@ describe('attachDshGoPanel', () => {
     expect(effects.map(effect => effect.type)).toEqual(['copy', 'toast'])
     expect(effects[0]?.text).toContain('dsh-remote-bridge 接入信息')
     expect(Array.from(effects[1]?.text ?? '').length).toBeLessThanOrEqual(40)
+  })
+
+  it('enable 只把「执行 /remote」交回会话，面板自己不改状态', () => {
+    const captured: Captured = { panels: new Map(), strips: new Map() }
+    const { ctx } = host(captured)
+    attachDshGoPanel(ctx, source())
+    const effects = captured.panels.get(PANEL_ID)?.actions['enable']?.(undefined, { locale: 'zh' })
+    // 协议 §5 的效果白名单里，command 是「在当前对话执行斜杠命令」。
+    expect(effects).toEqual([{ type: 'command', name: 'remote', args: 'all' }])
   })
 
   it('数据只在值变化时发：同一状态第二次不 emit', () => {
@@ -395,6 +431,7 @@ describe('package.json 的 dshGo 清单', () => {
     v: number
     title: Record<string, string>
     icon: string
+    assets?: string
     contributes: {
       panels: Array<{ id: string; title: Record<string, string>; icon: string; placement: string[] }>
       'composer.strip': Array<{ id: string; icon: string; panel: string }>
@@ -408,6 +445,14 @@ describe('package.json 的 dshGo 清单', () => {
 
   it('清单序列化不超过 16 KiB', () => {
     expect(Buffer.byteLength(JSON.stringify(manifest), 'utf8')).toBeLessThanOrEqual(16 * 1024)
+  })
+
+  it('声明 assets 目录（面板里的二维码靠它取图）', () => {
+    expect(manifest.assets).toBe('./assets')
+    for (const asset of QR_ASSETS) {
+      const file = path.join(import.meta.dirname, '..', 'assets', asset.src.slice('asset:'.length))
+      expect(readFileSync(file).length).toBeGreaterThan(0)
+    }
   })
 
   it('id / icon / 标题长度都合格', () => {

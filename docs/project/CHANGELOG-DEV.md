@@ -1,3 +1,35 @@
+## 未发布 · 不开 WebUI 也能开远程访问并取配对码、dsh-Go 面板放下载二维码（AtomGit issue #4，2026-11-28）
+
+**起因**：远程访问与配对码此前只有两个入口 —— 本机 WebUI 的「远程访问」卡，或手机 App 连上之后。
+装了 dsh-Go 的用户在手机上翻到「接入」面板，只能看见读数，要开远程还得回电脑上点。另一件事：
+客户端下载二维码只在 WebUI 的「App 下载」卡里，手机上没有「从哪装」的实物入口。
+
+**改动**：
+
+| 面 | 之前 | 现在 |
+| --- | --- | --- |
+| 宿主命令 | 只有 `/tunnel` | 新增 `/remote [lan\|wan\|all\|off]`：开远程访问（必要时）+ 签发配对码；回执第一行 `<urls>#<code>`，第二行范围/监听/有效期 + 客户端下载入口 |
+| 工具 | 只有 `open_tunnel_config` | 新增 `open_remote_access`（`{action?: enable\|disable, scope?}`），给「只会说话」的 IM 窗口 |
+| dsh-Go 面板 | 只读，唯一动作是复制接入信息 | 多一个「开启并取码」按钮：只回 `command` 效果让 App 在当前对话执行 `/remote`，**面板自己不写状态**；清单新增 `dshGo.assets`，面板里放两张 `asset:` 客户端下载二维码；`placement` 增加 `session.tab`（`command` 效果需要当前对话） |
+| 桌面面板 | 无变化 | 无变化（WebUI 那条路照旧） |
+
+**为什么不把 enable 直接放进面板**：`/dsh-go/v1/invoke` 只校验注册令牌与参数形状，没有回环判据，
+App 侧身份是「内核客户端」，与设备表无映射。面板里直接调 `remote.enable()` 等于给任意 dsh-Go
+客户端一个绕过管理面鉴权的开机按钮；改用 `command` 效果把动作交回用户自己的会话，等价于手打命令。
+「客户端没有二维码」的答案是**面板**：聊天回执只能放文字，`image` 组件的 `asset:` 正好读仓库里的
+`assets/app-qr-chat-*.png`（与 WebUI「App 下载」卡同一份文件）。
+
+**能力边界**：`/remote` 只接受 `lan` / `wan` / `all`（`tun` 明确指路 `/tunnel`），**不启动 cloudflared**
+（家用访问不该依赖它能否下载，见 issue #1），不读文件；没有授权根目录时报错且不动监听。
+
+**兼容性**：新增命令/工具都是加法，老客户端不受影响；面板的 `assets` 与 `enable` 都是可选能力 ——
+App 不认识时二维码不出现、按钮无反应，读数照常。新增 `assets` 字段要求宿主把 `dshGo.assets` 目录
+随包发布（`package.json` 的 `files` 已含 `assets/**`）。
+
+**回归锚**：`tests/remote-command.spec.ts`（16 例：默认 all、lan/wan 归一、off、tun 拒绝、无根目录、审计、
+工具 schema、下载入口与 `app-qr.ts` 一致）、`tests/dsh-go-panel.spec.ts`（二维码是 `asset:` 且文件存在、
+`enable` 只回一条 `command` 效果）。
+
 ## 未发布 · 设置面板按 lan/wan/tun/all 出码、配对码显示地址并改纯数字（AtomGit issue #3，2026-11-28）
 
 **起因**：`/tunnel` 有了地址范围参数（issue #2），设置面板却没有；「新建配对码」只给一串码，

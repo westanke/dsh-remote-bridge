@@ -242,6 +242,29 @@ IM 里发 `/tunnel` 只会当成普通消息交给智能体。所以命令服务
 > 且白名单只包含自己。若把机器人设为「允许所有用户执行命令」，本命令就是一个公开的开机按钮 ——
 > 这一点写进 README「在聊天窗口里远程开隧道」一节的告警框。
 
+### `/remote` 与 dsh-Go 面板：写操作只走会话身份（issue #4 起）
+
+不开 WebUI 也能开远程访问、取配对码，于是有两个新入口要考虑：宿主命令 `/remote`（+ 工具
+`open_remote_access`）与 dsh-Go 原生面板上的「开启并取码」按钮。两者的信任成色**不一样**，所以处理方式也不一样：
+
+- **命令/工具**跑在用户自己的会话里：能发一句话的人，本来就能让智能体在这台机器上执行命令，
+  因此 `/remote` 没有比「对智能体说：把远程打开」多给任何东西。它不新增 REST 端点，
+  复用 `ApiRouter.openRemoteForCommand()` → `remote.enable()` / `createPairing()`，与面板上点一次
+  「开启 + 生成配对码」同一套实现、同一套审计（`listener.enable` / `remote.pairing`，标签 `im-command`）。
+  能力边界：只开不停到 `off` 为止、只收 `lan`/`wan`/`all`、**不启动 cloudflared**、不读文件；`tun` 明确拒绝并指路 `/tunnel`。
+- **dsh-Go 面板不写状态**：`/dsh-go/v1/invoke` 只校验注册令牌与参数形状（`core.admitInvoke`），
+  **没有回环判据**，App 侧的连接身份是「内核客户端」，与设备表里的设备没有映射。面板里直接调
+  `remote.enable()` 等于给任意 dsh-Go 客户端一个绕过管理面鉴权的开机按钮。因此面板的动作只有两种效果：
+  `copy`/`toast`（本地）与 `command`（让 App 在**当前对话**里执行 `/remote`）——后者把决定权交回
+  用户自己的会话，和手打命令完全等价，不构成第二条写路径。
+
+**可证伪断言**（任一条不成立就是回归）：
+
+1. `tests/dsh-go-panel.spec.ts` › `enable 只把「执行 /remote」交回会话，面板自己不改状态`：
+   `enable` 动作的返回值**恰好**是 `[{type:'command', name:'remote', args:'all'}]`，没有任何 `refresh`/`patch`。
+2. `AccessSource` 里没有 `enable`/`disable`/`createPairing` 这类写接口 —— 面板拿不到写句柄。
+3. `tests/remote-command.spec.ts`：没有授权根目录时 `/remote` **报错且不碰监听**（`enable` 未被调用）。
+
 ### 信任边界的两个前提（2.5.1）
 
 管理面的安全性建立在**两个**前提之上，缺一个都不成立：

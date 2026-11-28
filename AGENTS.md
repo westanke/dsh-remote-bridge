@@ -338,6 +338,8 @@ minor、`openapi.yaml` 里 `deprecated` 已存在至少一个 minor、两个客�
 - `wss 端点必须归一成 https`
 - `国内下载 cloudflared 必须择源`
 - `Quick 隧道地址漂移后不会自动更新`
+- `dsh-Go 面板里别直接写状态：用 command 效果交回会话`
+- `面板放图要先声明 dshGo.assets`
 - `配对码别用 toString 拼位数`
 - `删一张设置卡要连清四处`
 - `创建隧道无提示`

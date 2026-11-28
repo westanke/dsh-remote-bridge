@@ -16,6 +16,14 @@ import {
   type TunnelToolRegistry,
 } from './host/im-command.ts'
 import { runStartupRetention } from './host/retention.ts'
+import {
+  registerRemoteCommand,
+  registerRemoteTool,
+  REMOTE_COMMAND_NAME,
+  REMOTE_TOOL_NAME,
+  type RemoteCommandRegistry,
+  type RemoteToolRegistry,
+} from './host/remote-command.ts'
 import { JobAdapter } from './host/job-adapter.ts'
 import { createImageRouteHandler, IMAGE_ROUTE, readHandoffSubdir } from './host/image-handoff.ts'
 import { defaultRemoteHost, normalizeListenerPort, resolveListenerHost } from './host/listener-config.ts'
@@ -388,6 +396,42 @@ export async function apply(ctx: HostContext, config: Config = {}): Promise<void
       )
     } catch (error) {
       ctx.logger.warn(new Error(`dsh-remote-bridge: open_tunnel_config registration failed (ignored): ${String(error)}`))
+    }
+  }
+  // `/remote`（issue #4）：不开 WebUI 也能开远程访问、取配对码。
+  // 写操作放在**命令/工具**里而不是 dsh-Go 面板里，理由见 remote-command.ts 头注释：
+  // 命令跑在用户自己的会话里（能发话的人本来就能在这台机器上执行命令），而 dsh-Go 的
+  // invoke 面没有身份判据。注册失败与 `/tunnel` 同样只降级、不让 apply 抛错。
+  try {
+    ctx.effect(
+      () => registerRemoteCommand(ctx.commands as unknown as RemoteCommandRegistry, {
+        openRemote: scope => router.openRemoteForCommand(scope),
+        closeRemote: () => router.closeRemoteForCommand(),
+        logger: {
+          info: (message) => ctx.logger.info(message),
+          warn: (error) => ctx.logger.warn(error),
+        },
+      }),
+      `dsh-remote-bridge /${REMOTE_COMMAND_NAME} command`,
+    )
+  } catch (error) {
+    ctx.logger.warn(new Error(`dsh-remote-bridge: /${REMOTE_COMMAND_NAME} command registration failed (ignored): ${String(error)}`))
+  }
+  if (toolsService !== undefined) {
+    try {
+      ctx.effect(
+        () => registerRemoteTool(toolsService as unknown as RemoteToolRegistry, {
+          openRemote: scope => router.openRemoteForCommand(scope),
+          closeRemote: () => router.closeRemoteForCommand(),
+          logger: {
+            info: (message) => ctx.logger.info(message),
+            warn: (error) => ctx.logger.warn(error),
+          },
+        }),
+        `dsh-remote-bridge ${REMOTE_TOOL_NAME} tool`,
+      )
+    } catch (error) {
+      ctx.logger.warn(new Error(`dsh-remote-bridge: ${REMOTE_TOOL_NAME} registration failed (ignored): ${String(error)}`))
     }
   }
   // dsh-Go 的原生界面（只读「接入」面板 + 状态条）。三层静默失败：宿主没有注入器、

@@ -27,10 +27,22 @@
 
 import type { DeviceView } from '../shared/contracts.ts'
 import { detectEndpoints } from './config-text.ts'
+import { CLIENT_DOWNLOADS } from './remote-command.ts'
 
 /** 面板与状态条在清单里的 id（package.json 的 `dshGo.contributes`）。 */
 export const PANEL_ID = 'access'
 export const STRIP_ID = 'remote'
+
+/**
+ * 面板里的两张客户端下载二维码（`dshGo.assets` 指向 `./assets`，协议 `asset:` 前缀）。
+ *
+ * 为什么放面板而不是聊天里：聊天回执只能放文字，二维码必须靠图。dsh-Go 的 `image`
+ * 组件正好吃 `asset:`；这两个文件本来就在仓库里（WebUI「App 下载」卡用的同一份）。
+ */
+export const QR_ASSETS = [
+  { src: 'asset:app-qr-chat-github.png', alt: 'dsh-Chat GitHub' },
+  { src: 'asset:app-qr-chat-gitee.png', alt: 'dsh-Chat Gitee' },
+] as const
 
 /**
  * 面板数据的刷新间隔。
@@ -123,6 +135,11 @@ interface Words {
   devicesHeading: string
   copy: string
   copied: string
+  /** 「客户端下载」小标题与提示（二维码在面板里，聊天里放不了图）。 */
+  downloadHeading: string
+  downloadHint: string
+  /** 「开启并取码」按钮：它只是让 App 在当前对话里执行 `/remote`。 */
+  enable: string
   stripOn(devices: number): string
   stripOff: string
   tunnelOff: string
@@ -151,8 +168,8 @@ const WORDINGS: { zh: Words; en: Words } = {
         : `远程访问已开启：已授权 ${devices} 台设备可以连上这台机器。`,
     offStatus: (roots: number) =>
       roots === 0
-        ? '远程访问没开，也还没有授权根目录 —— 两件都要在本机 WebUI 的「远程访问」里做。'
-        : '远程访问没开：现在只有这台机器自己连得上。',
+        ? '远程访问没开，也还没有授权根目录 —— 在对话里发 /remote 可以开监听并拿配对码；根目录要先加一个。'
+        : '远程访问没开：现在只有这台机器自己连得上 —— 在对话里发 /remote 就能开并拿配对码。',
     port: '端口',
     devices: '设备',
     roots: '根目录',
@@ -162,6 +179,9 @@ const WORDINGS: { zh: Words; en: Words } = {
     devicesHeading: '已授权设备',
     copy: '复制接入信息',
     copied: '接入信息已复制',
+    downloadHeading: '客户端下载',
+    downloadHint: '用手机相机扫下面任一码下载客户端（GitHub 慢就扫 Gitee）。',
+    enable: '开启并取码',
     stripOn: (devices: number) => (devices === 0 ? '远程已开' : `远程已开 · ${devices} 台`),
     stripOff: '仅本机',
     tunnelOff: '未开启',
@@ -188,8 +208,8 @@ const WORDINGS: { zh: Words; en: Words } = {
         : `Remote access is on: ${devices} authorized device${devices === 1 ? '' : 's'} can reach this machine.`,
     offStatus: (roots: number) =>
       roots === 0
-        ? 'Remote access is off and there are no authorized roots yet — do both in the local WebUI under “Remote access”.'
-        : 'Remote access is off: only this machine can connect right now.',
+        ? 'Remote access is off and there are no authorized roots yet — send /remote in a conversation to turn the listener on; add a root first.'
+        : 'Remote access is off: only this machine can connect right now — send /remote in a conversation to turn it on and get a pairing code.',
     port: 'Port',
     devices: 'Devices',
     roots: 'Roots',
@@ -199,6 +219,9 @@ const WORDINGS: { zh: Words; en: Words } = {
     devicesHeading: 'Authorized devices',
     copy: 'Copy access info',
     copied: 'Access info copied',
+    downloadHeading: 'Download the client',
+    downloadHint: 'Scan either code with the phone camera (use Gitee if GitHub is slow).',
+    enable: 'Enable & get code',
     stripOn: (devices: number) => (devices === 0 ? 'Remote on' : `Remote on · ${devices}`),
     stripOff: 'Local only',
     tunnelOff: 'Off',
@@ -305,7 +328,24 @@ export function accessView(locale: string | undefined): Record<string, unknown> 
       },
       { type: 'text', text: w.devicesHeading, tone: 'muted' },
       { type: 'list', items: { $: 'data.devices' } },
-      { type: 'actions', items: [{ label: w.copy, icon: 'copy', style: 'primary', action: 'copy' }] },
+      { type: 'text', text: w.downloadHeading, tone: 'muted' },
+      { type: 'text', text: w.downloadHint, tone: 'muted' },
+      ...QR_ASSETS.map((asset, index) => ({
+        type: 'image',
+        src: asset.src,
+        alt: asset.alt,
+        aspect: 1,
+        caption: CLIENT_DOWNLOADS[index]?.url ?? '',
+      })),
+      {
+        type: 'actions',
+        items: [
+          // 这个按钮**不写状态**：它只让 App 在当前对话里执行 `/remote`（协议 §5 的
+          // `command` 效果），真正的变更发生在用户自己的会话里 —— 理由见本文件头注释。
+          { label: w.enable, icon: 'plus', action: 'enable' },
+          { label: w.copy, icon: 'copy', style: 'primary', action: 'copy' },
+        ],
+      },
     ],
   }
 }
@@ -388,7 +428,11 @@ export function attachDshGoPanel(
             return () => clearInterval(timer)
           },
           actions: {
-            // 复制是这一屏唯一「有用」的动作：把面板上看见的东西带走，粘到别的客户端里。
+            // 不在这里调 `remote.enable()`：dsh-Go 的连接身份是内核客户端，没有回环判据
+            // （见文件头注释）。这里只把「执行 /remote」这个意图交回会话 —— App 会在**当前
+            // 对话**里跑斜杠命令，于是写操作落在用户自己的身份上，与手打 /remote 等价。
+            enable: () => [{ type: 'command', name: 'remote', args: 'all' }],
+            // 复制是这一屏唯一「有用」的本地动作：把面板上看见的东西带走，粘到别的客户端里。
             copy: (_scope, event) => {
               const values = read()
               const w = words(event?.locale)

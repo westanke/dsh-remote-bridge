@@ -12,6 +12,7 @@ import { ApiError, asApiError } from './errors.ts'
 import { type FileService } from './file-service.ts'
 import { type HostServiceReport } from './host-service-probe.ts'
 import { JobAdapter } from './job-adapter.ts'
+import { closeRemoteForCommand, openRemoteForCommand, type RemoteCommandResult } from './remote-command.ts'
 import { openTunnelForCommand } from './routes/cloudflare.ts'
 import { imageFallbackDir } from './routes/files.ts'
 import { API_ROUTE_BLOCKS, MANAGE_ROUTE_BLOCKS } from './routes/registry.ts'
@@ -291,6 +292,19 @@ export class ApiRouter {
     scope: CandidateScope = DEFAULT_CANDIDATE_SCOPE,
   ): Promise<{ urls: string[]; pairingCode: string; expiresAt: number }> {
     return openTunnelForCommand(this.options, scope)
+  }
+
+  /**
+   * `/remote` 命令与 `open_remote_access` 工具的宿主侧入口（issue #4）：
+   * 开启远程访问（必要时）并签发配对码 —— 不开 WebUI 也能拿到第一步。
+   */
+  async openRemoteForCommand(scope: CandidateScope = 'all'): Promise<RemoteCommandResult> {
+    return openRemoteForCommand(this.options, scope)
+  }
+
+  /** `/remote off`：关闭远程访问（回到回环）。 */
+  async closeRemoteForCommand(): Promise<RemoteCommandResult> {
+    return closeRemoteForCommand(this.options)
   }
 }
 

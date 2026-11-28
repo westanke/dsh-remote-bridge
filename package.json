@@ -54,6 +54,7 @@
       "en": "Remote bridge"
     },
     "icon": "server",
+    "assets": "./assets",
     "contributes": {
       "composer.strip": [
         {
@@ -71,6 +72,7 @@
           },
           "icon": "server",
           "placement": [
+            "session.tab",
             "features"
           ]
         }

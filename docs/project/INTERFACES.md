@@ -133,6 +133,14 @@
 工具给「IM 里只会说自然语言」的场景（dsh-im 的斜杠命令表封闭，无通用派发）。
 实现 `src/host/im-command.ts`，宿主侧入口 `ApiRouter.openTunnelForCommand(scope)`（与 `POST /manage/cloudflare/create`
 共用 `createTunnel()`）；审计 `action=cloudflare.create`、来源标签 `im-command`。
+
+**宿主命令 `/remote` 与工具 `open_remote_access`（issue #4 起）** 同样不在 REST 表里：不打开 WebUI 也能开启远程访问并取配对码。
+`/remote [lan|wan|all|off]`（缺省 `all`；`off`/`close`/`stop` 关闭）；工具收 `{action?: 'enable'|'disable', scope?: 'lan'|'wan'|'all'}`。
+回执形状与 `/tunnel` 一致：第一行 `<url1>,<url2>…#<pairingCode>`（**原样回给用户**），第二行注明范围/监听位置/有效期，
+关时只报监听位置。**`tun` 明确不接受**：要公网隧道用 `/tunnel`；本命令**不启动 cloudflared**（家用访问不该依赖它能否下载，见 issue #1）。
+未开启时走 `remote.enable(rootIds, DEFAULT_DEVICE_SCOPES, scope)` 并用 operation 的 `pairingCode`/`pairingUrls`
+（审计 `listener.enable`）；已开启时直接 `createPairing()` 补齐新码（审计 `remote.pairing`）。没有授权根目录时先报错，不改监听。
+实现 `src/host/remote-command.ts`，宿主侧入口 `ApiRouter.openRemoteForCommand(scope)` / `closeRemoteForCommand()`。
 **身份校验不在这里**：由 IM 插件的访问策略（allowlist + `canExecuteCommands`）在派发前完成，见 SECURITY.md。
 | GET | `/api/v1/chat/sessions/{sessionId}/models` | `scope:chat.read` | 会话可选模型 | `router.ts` sessionModelsRoute 块 |
 | GET | `/api/v1/chat/sessions/{sessionId}/model` | `scope:chat.read` | 同上的别名（路由正则 `model(?:s)?$` 同时收两种拼法，新客户端请用 `/models`） | 同上 |
@@ -548,8 +556,10 @@ export const PLUGIN_VERSION: string          // shared/version.ts，与 package.
 | `copyText(state, locale)` | 「复制接入信息」的正文（≤ 8000 字） |
 | `PANEL_ID` / `STRIP_ID` | `access` / `remote` —— 必须与 `package.json` 的 `dshGo.contributes` 一致 |
 
-调用方只有 `index.ts`（`apply` 尾部，`remote.start()` 之后）。**没有写操作**：面板里出现的效果只有
-`copy` 与 `toast`，测试 `tests/dsh-go-panel.spec.ts` 对这一点有断言。
+调用方只有 `index.ts`（`apply` 尾部，`remote.start()` 之后）。**面板自己不写状态**：它不调 `remote.enable()` / `createPairing()`，
+只回两种效果 —— `copy`/`toast`（本地）与 `command`（issue #4 起的「开启并取码」按钮，把执行 `/remote` 交回**当前对话**，
+由内核 `commands/execute` 派发，写操作落在用户自己的会话身份上）。dsh-Go 的 `/dsh-go/v1/invoke` 没有回环判据，
+在面板里直接调 enable 才是后门 —— 理由与可证伪断言见 SECURITY.md；测试 `tests/dsh-go-panel.spec.ts` 对效果形态有断言。
 
 ## 5. 改接口的检查清单
 
@@ -700,6 +710,13 @@ export const PLUGIN_VERSION: string          // shared/version.ts，与 package.
 | `export function stripData` | `src/host/dsh-go-panel.ts` | function |
 | `export function copyText` | `src/host/dsh-go-panel.ts` | function |
 | `export const PANEL_ID` | `src/host/dsh-go-panel.ts` | const |
+| `export const QR_ASSETS` | `src/host/dsh-go-panel.ts` | const（面板里两张客户端下载二维码的 `asset:` 引用，须与 `package.json` 的 `dshGo.assets` 并存） |
+| `export function createRemoteCommand` | `src/host/remote-command.ts` | function（`/remote` 命令：空参=all，off/close/stop=关闭，tun 指路 /tunnel） |
+| `export function formatRemoteReply` | `src/host/remote-command.ts` | function（回执：第一行短码，第二行范围/监听/有效期） |
+| `export async function openRemoteForCommand` | `src/host/remote-command.ts` | function（宿主半侧：未开→enable+轮询 operation；已开→createPairing） |
+| `export async function closeRemoteForCommand` | `src/host/remote-command.ts` | function |
+| `export function createRemoteTool` | `src/host/remote-command.ts` | function（`open_remote_access` 工具） |
+| `export const CLIENT_DOWNLOADS` | `src/host/remote-command.ts` | const（客户端下载入口，须与 `src/client/app-qr.ts` 的 URL 一致） |
 | `export const STRIP_ID` | `src/host/dsh-go-panel.ts` | const |
 | `export interface AccessSource` | `src/host/dsh-go-panel.ts` | interface |
 | `export interface AccessState` | `src/host/dsh-go-panel.ts` | interface |

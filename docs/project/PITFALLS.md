@@ -1703,3 +1703,29 @@ App 里看得到候选、连哪条都超时。
 最后 `docs:check` 确认锚点同步。
 
 **回归锚**：`pnpm check` 的 typecheck + docs:check 两道门。
+
+### dsh-Go 面板里别直接写状态：用 command 效果交回会话
+
+**症状**：在 dsh-Go 原生面板加一个「开启远程访问」按钮，回调里直接调 `remote.enable()` —— 本地没装 App 时一切正常，
+装上以后任何连上 dsh-Go 的客户端都能把监听开到公网，而管理面（`/manage/*`）的回环判据一次都没走。
+
+**根因**：`POST /dsh-go/v1/invoke` 只校验注册令牌、参数形状与限流（`core.admitInvoke`），**没有 peer/回环信息**；
+App 侧身份是「内核客户端」，与设备表里的设备没有映射（`src/host/dsh-go-panel.ts` 头注释记的就是这件事）。
+
+**现在怎么办**：面板只回效果，不拿写句柄。本插件要加动作时，写成协议 §5 的
+`{type:'command', name:'<斜杠命令>', args}`，由 App 在**当前对话**里执行 —— 写操作落在用户自己的会话身份上，
+和手打命令等价。真正的实现放命令/工具模块（如 `src/host/remote-command.ts`），面板只留只读读数 + 复制。
+
+**回归锚**：`tests/dsh-go-panel.spec.ts` › `enable 只把「执行 /remote」交回会话，面板自己不改状态`（断言返回值恰好一条 command 效果）。
+
+### 面板放图要先声明 dshGo.assets
+
+**症状**：面板里加了 `{type:'image', src:'asset:app-qr-chat-github.png'}`，本地视图断言全过，装到 App 里却是一块空白（或裂图）。
+
+**根因**：`asset:` 前缀由 App 通过 `GET /dsh-go/v1/assets/<pkg>/<path>` 取，路由只在清单声明了
+`dshGo.assets` 时才挂；路径是**相对该目录**的，文件还必须随包发布（`package.json` 的 `files` 得含进去）。
+
+**现在怎么办**：清单加 `"assets": "./assets"`，图放 `assets/` 下，测试里 `readFileSync` 一次确认文件非空
+（`QR_ASSETS` 与清单断言同处）；不要把图塞成 64 KiB 的 data URL —— 协议有上限且每次 invoke 都会重发。
+
+**回归锚**：`tests/dsh-go-panel.spec.ts` › `声明 assets 目录（面板里的二维码靠它取图）`。

@@ -264,6 +264,39 @@ https://<random>.trycloudflare.com,http://<LAN-IP>:3090,http://<virtual-IP>:3090
 > allowlist）。如果机器人设成「允许所有用户私聊执行命令」，那等于把开机按钮放到公共群里 ——
 > 这是部署问题，代码替你兜不住。详见 [SECURITY.md](docs/project/SECURITY.md#im-命令tunnel的信任边界)。
 
+### 不开 WebUI 也能开远程访问：`/remote`
+
+上面那条是**开隧道**；如果你只是想让手机在家里连上（不需要公网入口），用 `/remote`：
+它开监听、签发一枚配对码，并把**地址和码**一起回给你 —— 不必先回到电脑上点 WebUI。
+
+```
+/remote [lan|wan|all|off]
+```
+
+| 参数 | 意思 |
+| --- | --- |
+| `lan` / `wan` | 只回这一类地址（不启隧道）；与 `/tunnel` 的同名参数一个口径 |
+| `all` | 全部本机地址（默认，与 2.17.x 行为一致） |
+| `off` | 关掉远程访问，回到只监听回环 |
+
+回执两行：
+
+```
+http://192.168.1.126:3090,http://100.64.250.1:3090#48291-30675
+（本范围：全部地址；远程访问已开启，监听 :::3090；10 分钟内有效、只能用一次；一行粘进 App 的导入框即可）
+客户端下载：dsh-Chat GitHub https://github.com/westanke/dsh-Chat/releases · Gitee https://gitee.com/westanke/dsh-Chat/releases
+```
+
+`tun` 不在这个命令里 —— 要公网隧道请用 `/tunnel`。`/remote` **不启动 cloudflared**：
+开一份家用码不该取决于 cloudflared 能不能下载（见 Windows 的 issue #1）。
+IM 里同理，可以让智能体调 `open_remote_access` 工具（参数 `{action, scope}`），
+它回的是同一份「地址 + 码」（凭据在第一块，方便原样转发）。
+
+**客户端没有二维码时放哪里**：不用二维码。上面那行短码本身就是导入凭据，
+粘进 App 的「导入」框即可；要下载客户端的话，dsh-Go 的「接入」面板里有**两张下载二维码**
+（GitHub / Gitee，即本仓 `assets/app-qr-chat-*.png`，与 WebUI「App 下载」卡同一份图），
+面板里还有一个「开启并取码」按钮 —— 它只是让 dsh-Go 在当前对话里替你执行 `/remote`。
+
 ## 远程访问与安全
 
 默认远程地址为 `0.0.0.0:3090`，IP 和端口都可修改。客户端可以使用能到达服务器的 IP、域名或 IPv6 地址连接。需要 IPv6 时，把绑定地址改为 `::`（Linux 默认双栈，同时监听 IPv4/IPv6）或某个具体 IPv6 地址；候选地址表会按实际监听的地址族过滤，IPv6 URL 会自动加方括号。`0.0.0.0` 只监听 IPv4。
