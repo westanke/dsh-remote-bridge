@@ -1,4 +1,14 @@
-- 日期：2026-11-28（**已发版 v2.18.0：Windows 双栈与 cloudflared 三平台下载、`/tunnel` 与设置面板的地址范围、`/remote` 不开 WebUI 开远程 + dsh-Go 面板下载二维码**；上一版 v2.17.5 是帧上限失败体验、后台任务三帧、待处理提问 `questions` 帧与内核 RPC 超时归一，v2.17.4 是 IPv6 支持、设备名同步与 App 下载二维码收口）
+- 日期：2026-11-28（**已发版 v2.18.1：dsh-Go 面板二维码挪到最后并排缩小、非会话入口「开启并取码」直接执行、`/remote` 空根不再拦路**；上一版 v2.18.0 是 Windows 双栈与 cloudflared 三平台下载、`/tunnel` 与设置面板的地址范围、`/remote` 不开 WebUI 开远程 + dsh-Go 面板下载二维码，v2.17.5 是帧上限失败体验与 `questions` 帧）
+- **v2.18.1（2026-11-28）· dsh-Go 面板排布与按钮、空根不再拦路**（AtomGit issue #5 #6 #7 #8）：
+  接入面板两张下载二维码挪到**最底部**、放进一个 `row`（`style.columns:'equal'`、`gap:'S'`、`align:'center'`，
+  根节点 `v: 2` 让老 App 之外的渲染器按 flex 平分而不是按 160dp 最小宽塌成一列）、`aspect: 1`，
+  窄屏实际尺寸约为改前一半；`caption` 从下载页 URL 改成 `GitHub` / `Gitee` 短标签，文案改「第一次装客户端」。
+  面板「开启并取码」在**非会话入口直接执行**（后台 `openRemoteForCommand('all','dsh-go-panel')`，
+  2 秒内完成就把码与地址写进 `data.pairingCode` / `data.pairingUrls`，超时回「完成后会自己出现」；
+  会话入口仍走 `command` 效果），审计带 `via: 'dsh-go-panel'`。
+  `/remote` 空根不再拦路：`rootIdsOrThrow` → async `rootIdsFor`（为空先现场补登记一次工作区根再读，
+  仍为空也照开照发码），`RemoteCommandResult.rootCount` 让回执在空根时追加 `NO_ROOT_HINT`。
+  测试集 99 文件 / **1182 用例**；**验证**：`pnpm check` 四道门通过。
 - **v2.18.0（2026-11-28）· Windows 双栈 + cloudflared 三平台 + 两处地址范围 + `/remote`**（AtomGit issue #1 #2 #3 #4）：
   Windows 默认监听改为 `::` 双栈（存量 `0.0.0.0` 启动时就地迁移），回环仍固定 `127.0.0.1`；
   cloudflared 认三平台归档名（`windows-amd64.exe` / `darwin-*.tgz`）、tgz 解包、`.exe` 落盘，
