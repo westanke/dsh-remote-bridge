@@ -710,7 +710,7 @@ export const PLUGIN_VERSION: string          // shared/version.ts，与 package.
 | `export function stripData` | `src/host/dsh-go-panel.ts` | function |
 | `export function copyText` | `src/host/dsh-go-panel.ts` | function |
 | `export const PANEL_ID` | `src/host/dsh-go-panel.ts` | const |
-| `export const QR_ASSETS` | `src/host/dsh-go-panel.ts` | const（面板里两张客户端下载二维码的 `asset:` 引用，须与 `package.json` 的 `dshGo.assets` 并存） |
+| `export const QR_ASSETS` | `src/host/dsh-go-panel.ts` | const（面板最底部并排的两张客户端下载二维码：`asset:` 引用 + 短标签 `caption`，须与 `package.json` 的 `dshGo.assets` 并存） |
 | `export function createRemoteCommand` | `src/host/remote-command.ts` | function（`/remote` 命令：空参=all，off/close/stop=关闭，tun 指路 /tunnel） |
 | `export function formatRemoteReply` | `src/host/remote-command.ts` | function（回执：第一行短码，第二行范围/监听/有效期） |
 | `export async function openRemoteForCommand` | `src/host/remote-command.ts` | function（宿主半侧：未开→enable+轮询 operation；已开→createPairing） |

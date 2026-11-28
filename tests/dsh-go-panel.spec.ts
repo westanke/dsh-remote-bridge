@@ -15,7 +15,6 @@ import {
   type AccessSource,
   type DshGoService,
 } from '../src/host/dsh-go-panel.ts'
-import { CLIENT_DOWNLOADS } from '../src/host/remote-command.ts'
 import type { DeviceView } from '../src/shared/contracts.ts'
 
 /**
@@ -252,11 +251,27 @@ describe('accessView', () => {
       expect(image.src).toBe(QR_ASSETS[index]?.src)
       expect(image.src.startsWith('asset:')).toBe(true)
       expect(image.aspect).toBe(1)
-      // 说明文字是下载页地址：手机上点开图也能照着念/粘。
-      expect(image.caption).toBe(CLIENT_DOWNLOADS[index]?.url)
+      // 说明文字只放短标签：整串下载页地址在 320dp 的窄屏上会折成两行。
+      expect(image.caption).toBe(QR_ASSETS[index]?.caption)
       const file = path.join(import.meta.dirname, '..', 'assets', image.src.slice('asset:'.length))
       expect(readFileSync(file).length).toBeGreaterThan(0)
     }
+  })
+
+  it('二维码在面板最底部、两张并排（v2 row + columns equal）', () => {
+    type Node = Record<string, unknown>
+    const view = accessView('zh') as Node & { v?: number; children: Node[] }
+    // v2 才能让这一行平分：v1 的 row 对 image 按 160dp 最小宽算列数，320dp 的窄屏
+    // 会算成 1 列，两张码又堆回上下两张。
+    expect(view.v).toBe(2)
+    const last = view.children.at(-1) as Node & { type: string; style?: Node; children: Node[] }
+    expect(last.type).toBe('row')
+    expect(last.style).toEqual({ columns: 'equal', gap: 'S', align: 'center' })
+    expect(last.children.map(child => child['src'])).toEqual(QR_ASSETS.map(asset => asset.src))
+    // 动作按钮在二维码之前：二维码不是每次都要用的动作，不该挡在按钮前面。
+    const actionIndex = view.children.findIndex(child => child['type'] === 'actions')
+    expect(actionIndex).toBeGreaterThan(-1)
+    expect(actionIndex).toBeLessThan(view.children.indexOf(last))
   })
 
   it('中文与英文视图结构一致（只有文字不同）', () => {

@@ -27,7 +27,6 @@
 
 import type { DeviceView } from '../shared/contracts.ts'
 import { detectEndpoints } from './config-text.ts'
-import { CLIENT_DOWNLOADS } from './remote-command.ts'
 
 /** 面板与状态条在清单里的 id（package.json 的 `dshGo.contributes`）。 */
 export const PANEL_ID = 'access'
@@ -40,8 +39,8 @@ export const STRIP_ID = 'remote'
  * 组件正好吃 `asset:`；这两个文件本来就在仓库里（WebUI「App 下载」卡用的同一份）。
  */
 export const QR_ASSETS = [
-  { src: 'asset:app-qr-chat-github.png', alt: 'dsh-Chat GitHub' },
-  { src: 'asset:app-qr-chat-gitee.png', alt: 'dsh-Chat Gitee' },
+  { src: 'asset:app-qr-chat-github.png', alt: 'dsh-Chat GitHub', caption: 'GitHub' },
+  { src: 'asset:app-qr-chat-gitee.png', alt: 'dsh-Chat Gitee', caption: 'Gitee' },
 ] as const
 
 /**
@@ -135,7 +134,10 @@ interface Words {
   devicesHeading: string
   copy: string
   copied: string
-  /** 「客户端下载」小标题与提示（二维码在面板里，聊天里放不了图）。 */
+  /**
+   * 二维码上方的小标题与提示。二维码在面板最底部、两张并排、尺寸减半 —— 这里要
+   * 说清「只在第一次装客户端时用」，否则每次开面板都像在催人重下一遍。
+   */
   downloadHeading: string
   downloadHint: string
   /** 「开启并取码」按钮：它只是让 App 在当前对话里执行 `/remote`。 */
@@ -179,8 +181,8 @@ const WORDINGS: { zh: Words; en: Words } = {
     devicesHeading: '已授权设备',
     copy: '复制接入信息',
     copied: '接入信息已复制',
-    downloadHeading: '客户端下载',
-    downloadHint: '用手机相机扫下面任一码下载客户端（GitHub 慢就扫 Gitee）。',
+    downloadHeading: '第一次装客户端',
+    downloadHint: '已经有客户端就不用管下面的码；没有才扫（GitHub 慢就扫 Gitee）。',
     enable: '开启并取码',
     stripOn: (devices: number) => (devices === 0 ? '远程已开' : `远程已开 · ${devices} 台`),
     stripOff: '仅本机',
@@ -219,8 +221,8 @@ const WORDINGS: { zh: Words; en: Words } = {
     devicesHeading: 'Authorized devices',
     copy: 'Copy access info',
     copied: 'Access info copied',
-    downloadHeading: 'Download the client',
-    downloadHint: 'Scan either code with the phone camera (use Gitee if GitHub is slow).',
+    downloadHeading: 'First install',
+    downloadHint: 'Skip the codes below if the client is already installed; scan one only if it is not (Gitee if GitHub is slow).',
     enable: 'Enable & get code',
     stripOn: (devices: number) => (devices === 0 ? 'Remote on' : `Remote on · ${devices}`),
     stripOff: 'Local only',
@@ -307,6 +309,10 @@ export function accessView(locale: string | undefined): Record<string, unknown> 
   const w = words(locale)
   return {
     type: 'stack',
+    // v2 只为了让二维码那一行按 `columns: equal` 平分宽度：v1 的 row 按 160dp 最小
+    // 宽算列数，320dp 的窄屏会算成 1 列，两张码又堆回上下两张。老 App 忽略 `v`，
+    // 退回 v1 排版（宽屏仍是一行两张）。
+    v: 2,
     title: w.title,
     children: [
       { type: 'callout', tone: { $: 'data.statusTone' }, text: { $: 'data.statusText' } },
@@ -328,15 +334,6 @@ export function accessView(locale: string | undefined): Record<string, unknown> 
       },
       { type: 'text', text: w.devicesHeading, tone: 'muted' },
       { type: 'list', items: { $: 'data.devices' } },
-      { type: 'text', text: w.downloadHeading, tone: 'muted' },
-      { type: 'text', text: w.downloadHint, tone: 'muted' },
-      ...QR_ASSETS.map((asset, index) => ({
-        type: 'image',
-        src: asset.src,
-        alt: asset.alt,
-        aspect: 1,
-        caption: CLIENT_DOWNLOADS[index]?.url ?? '',
-      })),
       {
         type: 'actions',
         items: [
@@ -345,6 +342,20 @@ export function accessView(locale: string | undefined): Record<string, unknown> 
           { label: w.enable, icon: 'plus', action: 'enable' },
           { label: w.copy, icon: 'copy', style: 'primary', action: 'copy' },
         ],
+      },
+      // 二维码放最后：它不是每次都要用的动作，放在按钮后面才不挡手。
+      { type: 'text', text: w.downloadHeading, tone: 'muted' },
+      { type: 'text', text: w.downloadHint, tone: 'muted' },
+      {
+        type: 'row',
+        style: { columns: 'equal', gap: 'S', align: 'center' },
+        children: QR_ASSETS.map(asset => ({
+          type: 'image',
+          src: asset.src,
+          alt: asset.alt,
+          aspect: 1,
+          caption: asset.caption,
+        })),
       },
     ],
   }
