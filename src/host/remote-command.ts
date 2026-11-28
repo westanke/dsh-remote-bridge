@@ -81,6 +81,13 @@ export interface RemoteCommandResult {
   port: number
   /** 这次用的地址范围。 */
   scope: CandidateScope
+  /**
+   * 这次配对码授出去几条根目录（issue #8）。
+   *
+   * `0` 表示一条都没有：码照发，但手机连上来之后看不到任何文件 —— 回执里必须把这句话
+   * 说出来，否则用户会以为「码拿到了 = 能用了」。
+   */
+  rootCount: number
 }
 
 /** 命令与工具共用的宿主侧依赖；测试里换成假实现即可。 */
@@ -99,6 +106,11 @@ export type RemoteCommandOutcome =
 export interface RemoteCommandInvocation {
   readonly rawInput: string
 }
+
+/** 一条根都没有时的提醒（issue #8）。命令回执与工具输出共用同一句。 */
+export const NO_ROOT_HINT =
+  '注意：这台机器还没有授权根目录 —— 码能用，但手机连上来之后看不到任何文件。' +
+  '到设置面板「根目录」里加一个，再发一次 /remote 换一枚新码。'
 
 /** 配对码有效期（分钟），仅用于拼人话。 */
 function pairingMinutes(expiresAt: number): number {
@@ -124,10 +136,13 @@ export function formatRemoteReply(result: RemoteCommandResult): string {
   }
   const range = result.scope === 'all' ? '' : `本范围：${CANDIDATE_SCOPE_LABEL[result.scope]}；`
   const expiresIn = result.expiresAt === null ? '' : `${pairingMinutes(result.expiresAt)} 分钟内有效、只能用一次；`
-  return [
+  const lines = [
     `${result.urls.join(',')}#${result.pairingCode}`,
     `（${range}远程访问已开启，监听 ${result.host}:${result.port}；${expiresIn}一行粘进 App 的导入框即可）\n${formatDownloads()}`,
-  ].join('\n')
+  ]
+  // 空根是合法状态（issue #8）：码能用，但手机看不到文件 —— 不说清楚会变成「连上了却什么都打不开」。
+  if (result.rootCount === 0) lines.push(NO_ROOT_HINT)
+  return lines.join('\n')
 }
 
 /** 创建 `/remote` 的命令定义（不注册，纯数据，便于单测）。 */
@@ -374,13 +389,25 @@ function requireUrls(urls: string[], scope: CandidateScope): string[] {
   return urls
 }
 
-/** 没有根目录时配对码批不出任何路径，先拦住并说清怎么办。 */
-function rootIdsOrThrow(options: RouterOptions): string[] {
-  const rootIds = options.database.listRoots().map(root => root.id)
-  if (rootIds.length === 0) {
-    throw new Error('还没有授权根目录：先在「根目录」里加一个（WebUI 或 App），否则配对码批不了任何路径。')
+/**
+ * 取这次要授出去的根（issue #8）。
+ *
+ * 先按库里已有的根来；一条都没有时**现场补登记一次** DSH 工作区根 —— 插件启动时那次
+ * 登记可能什么都没做（当时还没有工作区，或首个工作区路径还不存在），而这个进程之后
+ * 不会重启，于是 `/remote` 就永远撞上「没有授权根目录」。
+ *
+ * 补完仍然为空也**照常往下走**：空根配对只是手机看不到文件，不该把「拿码」这条路一起
+ * 堵死。调用方按 `rootCount === 0` 在回执里提醒一句就够了。
+ */
+async function rootIdsFor(options: RouterOptions): Promise<string[]> {
+  const existing = options.database.listRoots().map(root => root.id)
+  if (existing.length > 0) return existing
+  try {
+    await options.ensureWorkspaceRoot?.()
+  } catch {
+    // 补登记失败不是「拿不到码」的理由：底下按 0 条根继续，回执里提醒。
   }
-  return rootIds
+  return options.database.listRoots().map(root => root.id)
 }
 
 /**
@@ -402,7 +429,7 @@ export async function openRemoteForCommand(
   via: string = REMOTE_COMMAND_NAME,
 ): Promise<RemoteCommandResult> {
   const requestId = `remote-command-${Date.now().toString(36)}`
-  const rootIds = rootIdsOrThrow(options)
+  const rootIds = await rootIdsFor(options)
   const status = options.remote.status()
 
   if (!status.remoteEnabled) {
@@ -430,6 +457,7 @@ export async function openRemoteForCommand(
       host: status.host,
       port: status.port,
       scope,
+      rootCount: rootIds.length,
     }
   }
 
@@ -453,6 +481,7 @@ export async function openRemoteForCommand(
     host: status.host,
     port: status.port,
     scope,
+    rootCount: rootIds.length,
   }
 }
 
@@ -474,5 +503,7 @@ export async function closeRemoteForCommand(options: RouterOptions): Promise<Rem
     host: status.host,
     port: status.port,
     scope: 'all',
+    // 关掉之后没有码，也就没有「授出几条根」可言。
+    rootCount: 0,
   }
 }

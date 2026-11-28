@@ -178,7 +178,10 @@ export async function apply(ctx: HostContext, config: Config = {}): Promise<void
   //
   // 拿不到工作区、或那个目录已经不存在，就什么都不做 —— 留一条指向虚空的授权根只会
   // 让手机浏览一路报错，比不显示更糟。
-  await registerBuiltinWorkspaceRoot(ctx, database)
+  // 这块快照留给 `/remote` 的「空根时再补一次」（issue #8）：apply 之后 ctx 上就读不到
+  // workspaceRegistry 了，届时要重启登记只能靠这里抄下来的路径。
+  const workspaceRoots = workspaceRootCandidates(ctx)
+  await registerBuiltinWorkspaceRoot(ctx, database, workspaceRoots)
   const events = new WorkspaceEventBus()
   // Cloudflare 隧道管理器：进程状态全部收敛在这一个实例里，router 只当 HTTP 门面。
   // 二进制不随插件发布，需按需下载（见 cloudflared.ts），位置在 `dataDir/cloudflared-bin`。
@@ -329,6 +332,8 @@ export async function apply(ctx: HostContext, config: Config = {}): Promise<void
     remote,
     tunnels,
     cloudflaredBinDir: path.join(dataDir, 'cloudflared-bin'),
+    // 空根时现场补一次工作区根（issue #8）：启动那次可能还没工作区可登记。
+    ensureWorkspaceRoot: () => registerBuiltinWorkspaceRoot(ctx, database, workspaceRoots),
     maxUploadBytes,
     imageFallbackDir: imageHandoffDir,
     ...(hostRemote.services === undefined ? {} : { hostRemote: hostRemote.services }),
@@ -464,11 +469,42 @@ export async function apply(ctx: HostContext, config: Config = {}): Promise<void
 export default apply
 
 /**
+ * 一条「可能的工作区根」候选：apply 期间抄下来的路径 + 标签。
+ *
+ * 为什么要抄：cordis 的注入属性（`ctx.workspaceRegistry`）只在 apply 期间可读，
+ * 而 `/remote` / dsh-Go 面板要等到命令执行时才可能再补登记一次（issue #8）。
+ */
+interface WorkspaceRootCandidate {
+  path: string
+  title: string
+}
+
+/** 抄一份工作区候选（apply 期间调用；注册表抛错只会少一条默认根，不影响启动）。 */
+function workspaceRootCandidates(ctx: HostContext): WorkspaceRootCandidate[] {
+  try {
+    const seen = new Set<string>()
+    const candidates: WorkspaceRootCandidate[] = []
+    for (const workspace of ctx.workspaceRegistry.list()) {
+      const path = workspace.path?.trim()
+      if (path === undefined || path === '' || seen.has(path)) continue
+      seen.add(path)
+      candidates.push({ path, title: workspace.title?.trim() || 'DSH 工作区' })
+    }
+    return candidates
+  } catch (error) {
+    ctx.logger.warn(new Error(`dsh-remote-bridge: could not read the workspace registry: ${String(error)}`))
+    return []
+  }
+}
+
+/**
  * 登记「DSH 工作区」为内置授权根。
  *
  * 取 `ctx.workspaceRegistry.list()` 的**第一个**工作区（用户明确要「只显示第一个」），
- * 登记成一条 `builtin` 根。四个必须静默失败的情形 —— 插件启动不该因为一个「锦上添花的
- * 默认根」而整个起不来：
+ * 登记成一条 `builtin` 根 —— 或者，按传进来的候选快照逐个登记（issue #8：`/remote`
+ * 发现库里一条根都没有时会拿这份快照再试一次）。
+ *
+ * 四个必须静默失败的情形 —— 插件启动不该因为一个「锦上添花的默认根」而整个起不来：
  *
  * - 没有工作区（用户从没建过）：什么都不做；
  * - 第一个工作区的路径已经不存在（用户把它删了）：什么都不做，否则留下一条指向虚空的
@@ -478,22 +514,34 @@ export default apply
  * 目录存在性用 `stat` 判，且必须是**目录**而不是文件 —— `canonicalRoot` 之后如果指向一个
  * 普通文件，后续列目录会一路报错。
  */
-async function registerBuiltinWorkspaceRoot(ctx: HostContext, database: WorkspaceDatabase): Promise<void> {
+async function registerBuiltinWorkspaceRoot(
+  ctx: HostContext,
+  database: WorkspaceDatabase,
+  candidates?: readonly WorkspaceRootCandidate[],
+): Promise<void> {
   try {
-    const registry = ctx.workspaceRegistry
-    // cordis 的注入属性只在 apply 期间可读（见 dsh-0.2-bridge 里的说明），
-    // 所以这里立刻取值，不把 registry 对象存起来再用。
-    const workspace = registry.list()[0]
-    if (workspace === undefined) return
-    const target = workspace.path?.trim()
-    if (target === undefined || target === '') return
-
-    const info = await stat(target)
-    if (!info.isDirectory()) return
-
-    const root = await database.ensureBuiltinRoot(target, workspace.title?.trim() || 'DSH 工作区')
-    if (root !== undefined) {
-      ctx.logger.info(`dsh-remote-bridge: registered the DSH workspace as a built-in root: ${root.realPath}`)
+    let targets: readonly WorkspaceRootCandidate[]
+    if (candidates === undefined) {
+      const workspace = ctx.workspaceRegistry.list()[0]
+      if (workspace === undefined) return
+      const target = workspace.path?.trim()
+      if (target === undefined || target === '') return
+      targets = [{ path: target, title: workspace.title?.trim() || 'DSH 工作区' }]
+    } else {
+      targets = candidates
+    }
+    for (const candidate of targets) {
+      try {
+        const info = await stat(candidate.path)
+        if (!info.isDirectory()) continue
+        const root = await database.ensureBuiltinRoot(candidate.path, candidate.title)
+        if (root !== undefined) {
+          ctx.logger.info(`dsh-remote-bridge: registered the DSH workspace as a built-in root: ${root.realPath}`)
+        }
+      } catch (error) {
+        // 单条候选失败（路径被删、权限不足）不该连累其它候选。
+        ctx.logger.warn(new Error(`dsh-remote-bridge: skipped a workspace root candidate: ${String(error)}`))
+      }
     }
   } catch (error) {
     ctx.logger.warn(new Error(`dsh-remote-bridge: could not register the DSH workspace root: ${String(error)}`))

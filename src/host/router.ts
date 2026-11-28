@@ -72,6 +72,14 @@ export interface RouterOptions {
   cloudflaredBinDir?: string
   maxUploadBytes: number
   /**
+   * 现场补登记 DSH 工作区根（issue #8）。
+   *
+   * `/remote` 与 dsh-Go 面板在「库里一条根都没有」时调它再读一次：插件启动时那次登记
+   * 可能因为当时还没有工作区而什么都没做，进程不重启就永远补不上，用户就被卡在
+   * 「还没有授权根目录」上。可选 —— 不注入就退化成原来的行为（空根照发码）。
+   */
+  ensureWorkspaceRoot?(): Promise<void>
+  /**
    * 解析不出会话工作目录时的图片兜底目录（设置面板里只读展示）。
    *
    * 可选：默认按 `database.dataDir` 推出来，测试因此不必每条都补一个字段。

@@ -35,6 +35,7 @@ function result(overrides: Partial<RemoteCommandResult> = {}): RemoteCommandResu
     host: '::',
     port: 3090,
     scope: 'all',
+    rootCount: 1,
     ...overrides,
   }
 }
@@ -157,6 +158,8 @@ function fakeOptions(input: {
   host?: string
   port?: number
   urls?: string[]
+  /** 空根时会被调一次（issue #8）；测试里通常顺手往 `roots` 里塞一条。 */
+  ensureWorkspaceRoot?: () => Promise<void>
 }): {
   options: RouterOptions
   enable: ReturnType<typeof vi.fn>
@@ -192,6 +195,7 @@ function fakeOptions(input: {
   }
   const options = {
     remote,
+    ...(input.ensureWorkspaceRoot === undefined ? {} : { ensureWorkspaceRoot: input.ensureWorkspaceRoot }),
     database: {
       listRoots: () => roots.map(id => ({ id })),
       createPairing,
@@ -213,6 +217,38 @@ describe('openRemoteForCommand / closeRemoteForCommand', () => {
     expect(value.urls).toEqual(['http://192.168.1.126:3090'])
     expect(value.scope).toBe('lan')
     expect(audit).toHaveBeenCalledWith('admin', 'im-command', 'listener.enable', undefined, undefined, expect.objectContaining({ scope: 'lan' }))
+  })
+
+  it('库里一条根都没有时：现场补登记一次工作区根，再用它发码（issue #8）', async () => {
+    const roots: string[] = []
+    const ensureWorkspaceRoot = vi.fn(async () => {
+      roots.push('root-workspace')
+    })
+    const { options, enable } = fakeOptions({ enabled: false, roots, ensureWorkspaceRoot })
+    const value = await openRemoteForCommand(options, 'all')
+    expect(ensureWorkspaceRoot).toHaveBeenCalledTimes(1)
+    expect(enable).toHaveBeenCalledWith(['root-workspace'], [...DEFAULT_DEVICE_SCOPES], 'all')
+    expect(value.rootCount).toBe(1)
+  })
+
+  it('补登记也补不出来时照发码，回执里提醒还没有授权根目录（issue #8）', async () => {
+    const ensureWorkspaceRoot = vi.fn(async () => {})
+    const { options, enable } = fakeOptions({ enabled: false, roots: [], ensureWorkspaceRoot })
+    const value = await openRemoteForCommand(options, 'all')
+    expect(ensureWorkspaceRoot).toHaveBeenCalledTimes(1)
+    expect(enable).toHaveBeenCalledWith([], [...DEFAULT_DEVICE_SCOPES], 'all')
+    expect(value.rootCount).toBe(0)
+    expect(formatRemoteReply(value)).toContain('还没有授权根目录')
+  })
+
+  it('已经有根就不再补登记，免得每次拿码都 stat 一遍（issue #8）', async () => {
+    const ensureWorkspaceRoot = vi.fn(async () => {})
+    const { options, enable } = fakeOptions({ enabled: false, roots: ['root-1'], ensureWorkspaceRoot })
+    const value = await openRemoteForCommand(options, 'all')
+    expect(ensureWorkspaceRoot).not.toHaveBeenCalled()
+    expect(enable).toHaveBeenCalledWith(['root-1'], [...DEFAULT_DEVICE_SCOPES], 'all')
+    expect(value.rootCount).toBe(1)
+    expect(formatRemoteReply(value)).not.toContain('还没有授权根目录')
   })
 
   it('via 参数进审计：面板点出来的动作能认得出（issue #7）', async () => {
@@ -239,10 +275,14 @@ describe('openRemoteForCommand / closeRemoteForCommand', () => {
     expect(Array.isArray(value.urls)).toBe(true)
   })
 
-  it('没有根目录时抛可读错误，不碰监听', async () => {
+  // issue #8 起：空根不再拦「拿码」这条路（拦了就等于把没配过根目录的人锁死在外面），
+  // 改成照常开监听、照常发码，再在回执里把「手机看不到文件」说清楚。
+  it('没有根目录也照开照发码，只在回执里提醒（issue #8）', async () => {
     const { options, enable } = fakeOptions({ enabled: false, roots: [] })
-    await expect(openRemoteForCommand(options, 'all')).rejects.toThrow(/还没有授权根目录/)
-    expect(enable).not.toHaveBeenCalled()
+    const value = await openRemoteForCommand(options, 'all')
+    expect(enable).toHaveBeenCalledWith([], [...DEFAULT_DEVICE_SCOPES], 'all')
+    expect(value.rootCount).toBe(0)
+    expect(formatRemoteReply(value)).toContain('看不到任何文件')
   })
 
   it('off 走 disable 并如实回报监听位置', async () => {

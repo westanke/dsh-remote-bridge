@@ -56,6 +56,7 @@ const OPEN_RESULT = {
   host: '192.168.1.9',
   port: 3090,
   scope: 'all' as const,
+  rootCount: 2,
 }
 
 function source(

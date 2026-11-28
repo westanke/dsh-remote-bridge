@@ -373,6 +373,7 @@ minor、`openapi.yaml` 里 `deprecated` 已存在至少一个 minor、两个客�
 - `压缩让 bufferedAmount 失效：背压判据不能建在压缩过的字节上`
 - `协议里的 row 不保证横排`
 - `command 效果在非会话入口不执行`
+- `内置根的登记只在 apply 期间读得到注册表`
 
 > 新坑位：名字加进上面清单 + 原文写进 `PITFALLS.md` 并补 `### 同名` 锚点。
 

@@ -1,3 +1,24 @@
+## 未发布 · 没有授权根目录时 `/remote` 不再拦路（AtomGit issue #8，2026-11-28）
+
+**起因**：在会话里发 `/remote` 直接失败：`远程访问变更失败：还没有授权根目录：先在「根目录」里加一个（WebUI 或 App），否则配对码批不了任何路径。`
+
+**根因**（两层）
+
+1. `rootIdsOrThrow()` 把「库里一条根都没有」当成硬错误，连监听都不开 —— 可空根配对只是手机看不到文件，不该把「拿码」这条路一起堵死。
+2. 内置根只在插件启动时登记一次，而且读的是 `ctx.workspaceRegistry`；cordis 的注入属性只在 apply 期间可读。启动那一刻还没有工作区（或首个工作区路径当时不存在），那次登记静默什么都不做，之后进程不重启就再也补不上。
+
+**改动**
+
+| 文件 | 改了什么 |
+| --- | --- |
+| `src/index.ts` | apply 期间抄一份工作区路径快照（`workspaceRootCandidates`），`registerBuiltinWorkspaceRoot(ctx, database, candidates?)` 支持按快照逐条重试；注入 `RouterOptions.ensureWorkspaceRoot` |
+| `src/host/router.ts` | `RouterOptions` 增加可选 `ensureWorkspaceRoot()`（不注入就退化成原行为） |
+| `src/host/remote-command.ts` | `rootIdsOrThrow` → async `rootIdsFor`：已有根直接用；为空先补登记一次再读；仍为空也照常发码。`RemoteCommandResult` 增加 `rootCount`，`formatRemoteReply` 在 `rootCount === 0` 时追加 `NO_ROOT_HINT` |
+
+**兼容性**：已有根目录的机器行为不变；空根时行为从「报错」变成「照发码 + 一句提醒」。`/remote`、`open_remote_access` 工具、dsh-Go 面板「开启并取码」共用同一条实现，一起生效。
+
+**回归**：`tests/remote-command.spec.ts`（补登记成功 / 补不出来照发码并提醒 / 已有根不重复登记 / 空根照开）。
+
 ## 未发布 · dsh-Go 面板「开启并取码」在非会话入口直接执行（AtomGit issue #7，2026-11-28）
 
 **起因**：#6 的退化方案（复制 `/remote all` 让用户自己粘）能用，但不满足「点了就好」。

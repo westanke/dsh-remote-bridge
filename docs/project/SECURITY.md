@@ -153,9 +153,16 @@ path/query 可能带凭据）。`discover` 的 `baseURL` 是临时覆盖、不�
 `1/I` 这类形近字符正是原先十六进制码最容易出错的地方。若将来放宽限流（例如给每台设备
 独立桶或提高阈值），**必须同步把位数加回来** —— 这两者是同一条安全断言的两半。
 
+**空根配对（issue #8 起）**：库里一条授权根都没有时，`/remote` **照发码**（空根不再拦路），
+但这样的码只授出 0 条路径 —— 设备连上来能配对，**看不到任何文件**，直到有人在设置面板里加了根
+目录。可证伪断言：空根时 `enable()` 收到的 `rootIds` 是空数组、`RemoteCommandResult.rootCount === 0`、
+回执里带 `NO_ROOT_HINT`；有根时 `ensureWorkspaceRoot()` 一次都不调用（不重复 stat）。
+新增权限面为零：能加根的人本来就有管理面。
+
 **回归断言**：`tests/database-auth.spec.ts`（10 位数字形状、前导零不丢 ⇒ 空间真的是 10^10）、
 `tests/tunnel-create-config.spec.ts`（`/manage/pairings` 回码 + 地址，未知范围 400）、
-`tests/http-api.spec.ts`（兑换路径 + operation 带 `pairingUrls`）。
+`tests/http-api.spec.ts`（兑换路径 + operation 带 `pairingUrls`）、
+`tests/remote-command.spec.ts`（空根照发码 + 补登记一次 + 已有根不重复登记）。
 
 ## 管理面的信任边界（2.5.1 起）
 

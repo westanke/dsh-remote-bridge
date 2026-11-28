@@ -1759,9 +1759,26 @@ App 里看得到候选、连哪条都超时。
 面板从 `features` 入口打开时请求 scope 里没有 `sessionId`（只有对话内的 `session.tab` 入口带），
 「有没有对话」和「这一屏绑没绑会话」是两件事。
 
-**现在怎么办**：面板动作按 scope 分支 —— 有 `sessionId` 才回 `command`，否则退化成
-`copy`（把斜杠命令放进剪贴板）+ `toast` 说明，视图里同步换按钮文案。别指望 App 替你开会话，
-也别为了绕过去面板里直接写状态（`/dsh-go/v1/invoke` 没有回环判据）。
+**现在怎么办**（issue #7 起）：面板不再回 `command` 效果 —— 非会话入口直接调宿主侧
+`openRemote('all')`，写完把配对码按 `data.pairingCode` 绑定推上屏。依据：`/dsh-go/v1/*` 过的是
+`Connection` 守卫（与 `/api` 同一套凭据），能加载面板的人本来就能发命令；面板仍不做破坏性写。
+别指望 App 替你开会话（它不会，也改不了）。
 
-**回归锚**：`tests/dsh-go-panel.spec.ts` › `enable 在没有会话时退化成复制 /remote all（issue #6）`
-与 `view 按 scope 决定按钮文案：无 sessionId 就是复制版`。
+**回归锚**：`tests/dsh-go-panel.spec.ts` › `enable 在对话里打开时…` 与
+`enable 在没有会话时直接执行…（issue #7）`。
+
+### 内置根的登记只在 apply 期间读得到注册表
+
+**症状**：`/remote` 报「还没有授权根目录」，但数据库 `roots` 表里明明有根（或者明明建过工作区）。
+
+**根因**：两件事叠在一起 —— ①`registerBuiltinWorkspaceRoot` 读 `ctx.workspaceRegistry`，而 cordis
+的注入属性**只在 apply 期间可读**，过了 apply 再读就是空；②它只在启动时跑一次，启动那一刻没有
+工作区（或首个工作区路径还不存在）就静默什么都不做，进程不重启永远补不上。于是「有工作区、没根目录」
+的进程会一直卡在这条错误上，而错误文案还让人以为是「忘了加根」。
+
+**现在怎么办**：apply 期间把工作区路径抄成快照（`workspaceRootCandidates`），`/remote` 发现库里
+一条根都没有时用 `RouterOptions.ensureWorkspaceRoot()` 按快照再登记一次；补不出来也**照常发码**
+（空根配对只是手机看不到文件），并在回执里说清楚。别在 apply 之后再去读 `ctx.workspaceRegistry`。
+
+**回归锚**：`tests/remote-command.spec.ts` › `库里一条根都没有时：现场补登记一次工作区根，再用它发码`
+与 `补登记也补不出来时照发码，回执里提醒还没有授权根目录`。

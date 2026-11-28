@@ -716,9 +716,11 @@ export const PLUGIN_VERSION: string          // shared/version.ts，与 package.
 | `export const PANEL_ID` | `src/host/dsh-go-panel.ts` | const |
 | `export const QR_ASSETS` | `src/host/dsh-go-panel.ts` | const（面板最底部并排的两张客户端下载二维码：`asset:` 引用 + 短标签 `caption`，须与 `package.json` 的 `dshGo.assets` 并存） |
 | `export function createRemoteCommand` | `src/host/remote-command.ts` | function（`/remote` 命令：空参=all，off/close/stop=关闭，tun 指路 /tunnel） |
-| `export function formatRemoteReply` | `src/host/remote-command.ts` | function（回执：第一行短码，第二行范围/监听/有效期） |
-| `export async function openRemoteForCommand` | `src/host/remote-command.ts` | function（宿主半侧：未开→enable+轮询 operation；已开→createPairing） |
+| `export function formatRemoteReply` | `src/host/remote-command.ts` | function（回执：第一行短码，第二行范围/监听/有效期；`rootCount === 0` 时追加一句「码能用但手机看不到文件」，issue #8） |
+| `export async function openRemoteForCommand` | `src/host/remote-command.ts` | function（宿主半侧：未开→enable+轮询 operation；已开→createPairing；库里没有根时先按 `RouterOptions.ensureWorkspaceRoot()` 补登记一次，仍为空也照发码，issue #8） |
 | `export async function closeRemoteForCommand` | `src/host/remote-command.ts` | function |
+| `export const NO_ROOT_HINT` | `src/host/remote-command.ts` | const（空根配对时追加的那句提醒，issue #8） |
+| `export interface RemoteCommandResult` | `src/host/remote-command.ts` | interface（`enabled` / `urls` / `pairingCode` / `expiresAt` / `host` / `port` / `scope` / `rootCount`，issue #8） |
 | `export function createRemoteTool` | `src/host/remote-command.ts` | function（`open_remote_access` 工具） |
 | `export const CLIENT_DOWNLOADS` | `src/host/remote-command.ts` | const（客户端下载入口，须与 `src/client/app-qr.ts` 的 URL 一致） |
 | `export const STRIP_ID` | `src/host/dsh-go-panel.ts` | const |
