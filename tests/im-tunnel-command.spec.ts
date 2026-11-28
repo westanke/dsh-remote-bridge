@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
+import type { CandidateScope } from '../src/host/config-text.ts'
 import {
   createTunnelCommand,
   createTunnelTool,
@@ -18,8 +19,9 @@ import {
  * `/tunnel` 命令的纯逻辑测试。
  *
  * 这条命令是把「公网入口」交到一个聊天窗口里，所以测试重点不是「能不能开」，
- * 而是三件事：**参数一律拒绝**（不给自己留第二个入口）、**失败要回可读原因**
- * （聊天记录里不该出现堆栈）、**并发要挡住**（IM 连发两条不该 spawn 两次）。
+ * 而是四件事：**参数只接受地址范围**（动词一律拒绝，不给自己留第二个入口）、
+ * **范围要原样传到宿主侧**（issue #2）、**失败要回可读原因**（聊天记录里不该出现
+ * 堆栈）、**并发要挡住**（IM 连发两条不该 spawn 两次）。
  */
 
 const RESULT: TunnelCommandResult = {
@@ -34,7 +36,7 @@ const RESULT: TunnelCommandResult = {
 /** 用户要照抄的那一行：多条候选地址用 `,` 连、配对码接在最后一个 `#` 后面。 */
 const SHORT_CODE = `${RESULT.urls.join(',')}#${RESULT.pairingCode}`
 
-function fakeDeps(openTunnel: () => Promise<TunnelCommandResult>) {
+function fakeDeps(openTunnel: (scope?: CandidateScope) => Promise<TunnelCommandResult>) {
   return { openTunnel, logger: { info: vi.fn(), warn: vi.fn() } }
 }
 
@@ -72,15 +74,55 @@ describe('/tunnel 命令', () => {
     expect(codes).toEqual(['CODE-1', 'CODE-2'])
   })
 
-  it('带参数一律拒绝（刻意不提供 /tunnel stop 这类第二个入口）', async () => {
-    const openTunnel = vi.fn(async () => RESULT)
+  it('不带参数按默认 all 走（不传范围，等于 2.17.x 的全量候选）', async () => {
+    const openTunnel = vi.fn(async (_scope?: CandidateScope) => RESULT)
     const command = createTunnelCommand(fakeDeps(openTunnel))
-    for (const rawInput of ['stop', 'open', ' status ', '--force']) {
+    const outcome = await command.handler({ rawInput: '' })
+    expect(outcome.kind).toBe('success')
+    expect(openTunnel).toHaveBeenCalledTimes(1)
+    expect(openTunnel.mock.calls[0]?.[0]).toBe('all')
+    // 默认范围不往回执里塞范围前缀：老消息形状不变。
+    expect((outcome as { text: string }).text.split('\n')[1]).not.toContain('本范围')
+  })
+
+  it('四个范围参数原样透传（大小写与空白不敏感）', async () => {
+    const seen: Array<CandidateScope | undefined> = []
+    const command = createTunnelCommand(fakeDeps(async (scope) => {
+      seen.push(scope)
+      return RESULT
+    }))
+    for (const rawInput of ['lan', ' LAN ', 'wan', 'Tun', 'all']) {
+      const outcome = await command.handler({ rawInput })
+      expect(outcome.kind).toBe('success')
+    }
+    expect(seen).toEqual(['lan', 'lan', 'wan', 'tun', 'all'])
+  })
+
+  it('回执第二行标出范围（lan / wan 与 all 的回执不能长得一样）', async () => {
+    const command = createTunnelCommand(fakeDeps(async () => RESULT))
+    const lan = await command.handler({ rawInput: 'lan' })
+    const wan = await command.handler({ rawInput: 'wan' })
+    expect((lan as { text: string }).text.split('\n')[1]).toContain('本范围：局域网')
+    expect((wan as { text: string }).text.split('\n')[1]).toContain('本范围：外网 + 虚拟网 + IPv6')
+    // 第一行仍是可直接复制的那一行短码，范围只进第二行的说明。
+    expect((lan as { text: string }).text.split('\n')[0]).toBe(SHORT_CODE)
+  })
+
+  it('动词参数仍一律拒绝，且不消耗一次开隧道（/tunnel stop 这类第二入口不存在）', async () => {
+    const openTunnel = vi.fn(async (_scope?: CandidateScope) => RESULT)
+    const command = createTunnelCommand(fakeDeps(openTunnel))
+    for (const rawInput of ['stop', 'open', ' status ', '--force', 'lan stop']) {
       const outcome = await command.handler({ rawInput })
       expect(outcome.kind).toBe('error')
       expect((outcome as { text: string }).text).toContain('用法')
     }
     expect(openTunnel).not.toHaveBeenCalled()
+  })
+
+  it('input.hint 列出四个范围（IM 没有补全，hint 是唯一的发现入口）', () => {
+    const command = createTunnelCommand(fakeDeps(async () => RESULT))
+    expect(command.input.hint).toBe('[lan|wan|tun|all]')
+    expect(TUNNEL_COMMAND_DESCRIPTION).toMatch(/lan \/ wan \/ tun \/ all/)
   })
 
   it('失败时只回可读原因，不把堆栈塞进聊天记录', async () => {
@@ -164,7 +206,16 @@ describe('open_tunnel_config 工具（IM 自然语言入口）', () => {
     const tool = createTunnelTool(fakeDeps(async () => RESULT))
     expect(tool.name).toBe(TUNNEL_TOOL_NAME)
     expect(tool.description).toBe(TUNNEL_TOOL_DESCRIPTION)
-    expect(tool.parameters).toEqual({})
+    // 参数只有一个地址范围（issue #2），不构成第二个操作入口。
+    const parameters = tool.parameters as {
+      type?: unknown
+      additionalProperties?: unknown
+      properties?: Record<string, { type?: unknown; enum?: unknown }>
+    }
+    expect(parameters.type).toBe('object')
+    expect(parameters.additionalProperties).toBe(false)
+    expect(parameters.properties?.scope?.type).toBe('string')
+    expect(parameters.properties?.scope?.enum).toEqual(['lan', 'wan', 'tun', 'all'])
     expect(tool.description).toMatch(/whenever the user asks to start the tunnel/i)
     // 明确承诺的能力边界，模型与人都能读到。
     expect(tool.description).toMatch(/never stops the tunnel/i)
@@ -178,6 +229,25 @@ describe('open_tunnel_config 工具（IM 自然语言入口）', () => {
       pairingCode: RESULT.pairingCode,
       expiresAt: RESULT.expiresAt,
     })
+  })
+
+  it('工具也接受 scope（IM 侧 /tunnel 到不了宿主命令表，只能靠这条工具拿范围能力）', async () => {
+    const seen: Array<CandidateScope | undefined> = []
+    const tool = createTunnelTool(fakeDeps(async (scope) => {
+      seen.push(scope)
+      return RESULT
+    }))
+    await tool.execute({}, {})
+    await tool.execute({ scope: 'lan' }, {})
+    await tool.execute({ scope: ' WAN ' }, {})
+    expect(seen).toEqual(['all', 'lan', 'wan'])
+  })
+
+  it('scope 非法时抛给模型（不静默退回 all：用户以为只要局域网、实际拿到隧道地址）', async () => {
+    const openTunnel = vi.fn(async (_scope?: CandidateScope) => RESULT)
+    const tool = createTunnelTool(fakeDeps(openTunnel))
+    await expect(tool.execute({ scope: 'stop' }, {})).rejects.toThrow(/lan \/ wan \/ tun \/ all/)
+    expect(openTunnel).not.toHaveBeenCalled()
   })
 
   it('output.schema 落在内核接受的 JSON Schema 子集里（否则工具会被内核静默拒注册）', () => {

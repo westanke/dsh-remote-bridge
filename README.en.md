@@ -215,6 +215,11 @@ probes picks the local address at home and the tunnel when you are away, so one 
 places; older clients that only read the first entry still get the tunnel, which works everywhere.
 Add your own public address (DDNS + port forwarding, or IPv6) by passing it in `endpoints`.
 
+Both the host command `/tunnel` and the `open_tunnel_config` tool accept one optional address
+range — `lan` (LAN addresses only, no tunnel), `wan` (public IPv4 + virtual network + every IPv6,
+no tunnel), `tun` (tunnel + every IPv6) or `all` (the default, unchanged from 2.17.x). The range
+only trims which addresses come back; verbs such as `stop` are still rejected.
+
 Since 2.17.0 the long `DSH1:` text is no longer generated (issue #28): a 400+ character single-line
 credential gets **characters dropped** when forwarded through WeChat or email, which turned the
 device token into a key that matched no row in the database — the phone only reported "token is

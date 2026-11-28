@@ -128,10 +128,10 @@
 **宿主命令 `/tunnel` 与工具 `open_tunnel_config`（2.6.0 起）** 都不在上表里：它不是 REST 路由，而是注册进内核命令表
 （`ctx.commands.register`，全局层）的一条人类命令，供 IM 适配器（`@xmanrui/dsh-im`）在聊天窗口里直接执行。
 语义：开 Cloudflare 隧道 → 等随机域名 → 回**一行短码 `<url1>,<url2>,…#<pairingCode>`**（候选地址表与配置文本同源 `composeCandidates`：隧道在前、其后 LAN/虚拟网；配对码 10 位 hex、10 分钟、单次；工具返回 `{addresses, pairingCode, expiresAt}`，`addresses` 为逗号分隔）；
-隧道已在运行时复用当前地址。**刻意不回 `DSH1:` 长文本**：400+ 字符单行经 IM 转发会掉字符，令牌变成库里不存在的一枚（issue #28）。
+隧道已在运行时复用当前地址。**2.18.0 起接受一个地址范围参数**（`lan` / `wan` / `tun` / `all`，缺省 `all`，issue #2）：`filterCandidatesByScope()` 只裁剪回哪几条地址，`lan`/`wan` 不启动 cloudflared（审计记 `cloudflare.pairing`），`tun`/`all` 才建隧道（审计记 `cloudflare.create`，meta 带 `scope`）；范围筛完为空回可读错误而不是一行残码。**刻意不回 `DSH1:` 长文本**：400+ 字符单行经 IM 转发会掉字符，令牌变成库里不存在的一枚（issue #28）。
 两者共用 `ApiRouter.openTunnelForCommand()`；命令给「能发 `/tunnel` 的客户端」，
 工具给「IM 里只会说自然语言」的场景（dsh-im 的斜杠命令表封闭，无通用派发）。
-实现 `src/host/im-command.ts`，宿主侧入口 `ApiRouter.openTunnelForCommand()`（与 `POST /manage/cloudflare/create`
+实现 `src/host/im-command.ts`，宿主侧入口 `ApiRouter.openTunnelForCommand(scope)`（与 `POST /manage/cloudflare/create`
 共用 `createTunnel()`）；审计 `action=cloudflare.create`、来源标签 `im-command`。
 **身份校验不在这里**：由 IM 插件的访问策略（allowlist + `canExecuteCommands`）在派发前完成，见 SECURITY.md。
 | GET | `/api/v1/chat/sessions/{sessionId}/models` | `scope:chat.read` | 会话可选模型 | `router.ts` sessionModelsRoute 块 |
@@ -496,7 +496,7 @@ export class FileService {  // 构造 (database, emit)
 | `HISTORY_BYTE_BUDGET` / `HISTORY_EVENT_BYTE_BUDGET` / `HISTORY_KEEP_CHARS` / `HISTORY_COMPACT_KEEP_CHARS` / `clampHistoryEvents` / `selectWithinBudget` / `applyHistoryBudget` / `compactHistoryEvents` | `history-budget.ts` | 历史字节预算与 compact 摘要投影（`history-compact-v1`） |
 | `normalizeHandoffSubdir` / `readHandoffSubdir` / `saveHandoffSubdir` / `imageHandoffView` / `declaredMediaType` / `sniffMediaType` / `loopbackHost` / `pluginPageReferer` / `sameOrigin` / `createImageRouteHandler` / `IMAGE_ROUTE` / `HANDOFF_FILE_NAME` / `HANDOFF_MEDIA_TYPES` | `image-handoff.ts` | 识图路径与只读图片路由 |
 | `CloudflaredTunnelManager` / `ensureCloudflared` / `downloadUrlFor` / `archSuffix` / `cloudflaredBinaryName` / `writeFromDeb` / `writeFromTgz` / `extractQuickTunnelUrl` / `downloadHttps` / `isDebSource` | `cloudflared.ts` | 隧道管理（三平台归档：linux 裸二进制 / windows `.exe` / darwin `.tgz`；先复用本机/DSH 缓存/PATH 再下载，issue #1） |
-| `classifyHost` / `detectEndpoints` / `normalizeBaseUrl` / `composeCandidates` / `defaultDisplayName` / `DEFAULT_PORT` / `KIND_LABEL` / `EndpointKind` / `CandidateSources` | `config-text.ts` | 候选地址表与多路候选（`composeCandidates`：隧道在前 + 本机 LAN/虚拟网，地址去重）。2.17.0 起不再导出 `DSH1:` 编码器（issue #28：IM 长文本掉字符） |
+| `classifyHost` / `detectEndpoints` / `normalizeBaseUrl` / `composeCandidates` / `filterCandidatesByScope` / `parseCandidateScope` / `defaultDisplayName` / `DEFAULT_PORT` / `KIND_LABEL` / `EndpointKind` / `CandidateSources` / `CandidateScope` / `CANDIDATE_SCOPES` / `DEFAULT_CANDIDATE_SCOPE` / `CANDIDATE_SCOPE_LABEL` | `config-text.ts` | 候选地址表与多路候选（`composeCandidates`：隧道在前 + 本机 LAN/虚拟网，地址去重）；`filterCandidatesByScope` 按 `/tunnel` 的范围参数裁剪（issue #2）。2.17.0 起不再导出 `DSH1:` 编码器（issue #28：IM 长文本掉字符） |
 | `defaultRemoteHost` / `resolveListenerHost` / `listenOptionsFor` / `normalizeListenerHost` / `normalizeListenerPort` / `loopbackFor` / `DEFAULT_REMOTE_HOST` | `listener-config.ts` | 监听配置（Windows 默认 `::` 双栈并迁移历史 `0.0.0.0`，回环仍绑 `127.0.0.1`，issue #1） |
 | `probeHostServices` / `INJECTED_SERVICE_NAMES` / `OPTIONAL_SERVICE_NAMES` / `HostServiceReport` | `host-service-probe.ts` | 注入面探针 |
 | `BffRest` / `createBffRest` / `BffRoute` / `BffRestOptions` / `RestIo` / `ScheduleCreatePort` | `bff-rest.ts` | App 侧 REST BFF 的薄分发层（九条路由 → 三个域模块；JSON 体 32 KiB、chunk 体 1 MiB+4 KiB、speech 体 8 MiB） |
@@ -757,6 +757,12 @@ export const PLUGIN_VERSION: string          // shared/version.ts，与 package.
 | `export class CloudflaredTunnelManager` | `src/host/cloudflared.ts` | class |
 | `export function composeCandidates` | `src/host/config-text.ts` | function |
 | `export interface CandidateSources` | `src/host/config-text.ts` | interface |
+| `export function filterCandidatesByScope` | `src/host/config-text.ts` | function |
+| `export function parseCandidateScope` | `src/host/config-text.ts` | function |
+| `export type CandidateScope` | `src/host/config-text.ts` | type |
+| `export const CANDIDATE_SCOPES` | `src/host/config-text.ts` | const |
+| `export const DEFAULT_CANDIDATE_SCOPE` | `src/host/config-text.ts` | const |
+| `export const CANDIDATE_SCOPE_LABEL` | `src/host/config-text.ts` | const |
 | `export function buildConfigText` | `src/host/routes/cloudflare.ts` | function |
 | `export function ensureTunnelUrl` | `src/host/routes/cloudflare.ts` | function |
 | `export function normalizeListenerPort` | `src/host/listener-config.ts` | function |

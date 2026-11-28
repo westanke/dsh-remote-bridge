@@ -32,6 +32,33 @@ import { hostname, networkInterfaces } from 'node:os'
 /** 地址类型，与 Kotlin `EndpointKind` 对齐。 */
 export type EndpointKind = 'LAN' | 'VIRTUAL_NET' | 'WAN' | 'UNKNOWN'
 
+/**
+ * `/tunnel` 的地址范围参数（issue #2）。
+ *
+ * 为什么要有它：同一份「地址 + 配对码」在家里和在外面要的东西不一样 ——
+ * 在家只想拿局域网 IP（最快、不绕公网），出门只想拿外网 / 虚拟网 / IPv6
+ * （局域网地址在外面是死的），而隧道地址是兜底那条。以前只有一个「全给」，
+ * 手机得在下班后把所有候选都探一遍才知道该连哪条。
+ *
+ * 四个取值与客户端的探活逻辑**不冲突**：筛选只减少候选数量，连哪条仍由
+ * 客户端探活决定（`dsh-companion` 的 `EndpointSelection.rank`）。
+ */
+export type CandidateScope = 'lan' | 'wan' | 'tun' | 'all'
+
+/** 可选范围参数（顺序即用法说明里的顺序）。 */
+export const CANDIDATE_SCOPES: readonly CandidateScope[] = ['lan', 'wan', 'tun', 'all']
+
+/** 不写参数时的默认范围：与 2.17.x 的行为一致（隧道 + 全部地址）。 */
+export const DEFAULT_CANDIDATE_SCOPE: CandidateScope = 'all'
+
+/** 范围标签，只用于聊天回执与错误文案。 */
+export const CANDIDATE_SCOPE_LABEL: Record<CandidateScope, string> = {
+  lan: '局域网',
+  wan: '外网 + 虚拟网 + IPv6',
+  tun: '隧道 + IPv6',
+  all: '全部地址',
+}
+
 export interface ConfigEndpoint {
   label: string
   baseUrl: string
@@ -257,6 +284,57 @@ export function normalizeBaseUrl(raw: string): string {
     return value.replace(/^http:\/\//i, 'http://').replace(/^https:\/\//i, 'https://')
   }
   return value
+}
+
+/**
+ * 解析 `/tunnel` 的范围参数：大小写不敏感、允许两侧空白。
+ *
+ * 返回 `null` 表示「不是一个已知范围」——**空串也返回 `null`**，由调用方决定
+ * 空参数算什么（命令里算默认 `all`）。这样这里就不会偷偷把空串解释成
+ * 「清空范围」，两条入口（命令 / 工具）的默认值只剩一处定义。
+ */
+export function parseCandidateScope(raw: unknown): CandidateScope | null {
+  const value = String(raw ?? '').trim().toLowerCase()
+  return (CANDIDATE_SCOPES as readonly string[]).includes(value) ? value as CandidateScope : null
+}
+
+/** 地址是不是 IPv6 —— 只用于按范围筛选（URL 里带方括号，必须先剥装饰）。 */
+function isIPv6BaseUrl(baseUrl: string): boolean {
+  return isIP(stripHostDecorations(hostOf(baseUrl))) === 6
+}
+
+/**
+ * 按 `/tunnel` 的范围参数裁剪候选地址表。
+ *
+ * 口径（与 issue #2 的需求逐条对应）：
+ *
+ * - `all`：原样返回（隧道在前 + 全部探测到的地址），与 2.17.x 完全一致；
+ * - `lan`：只留 `kind === 'LAN'` 的地址（10/8、192.168/16、172.16/12、IPv6 ULA、
+ *   `.local`），**不含隧道** —— 在家里走公网隧道只会更慢；
+ * - `wan`：外网 + 虚拟网 + **所有 IPv6**（用户口径：手机流量下能连的就是这三类；
+ *   IPv6 公网地址按 `classifyHost` 本来就归 WAN，单独再判一次是为了把 ULA
+ *   这类「标签是 LAN、但在 IPv6 直连里真能用」的地址也带上）；
+ * - `tun`：隧道地址 + 所有 IPv6（隧道兜底，IPv6 直连更快）。
+ *
+ * `tunnelUrl` 用来认出「哪一条是隧道」——不能靠 `kind` 认：`trycloudflare.com`
+ * 是域名不是 IP，`classifyHost` 会把它标成 `UNKNOWN`。
+ */
+export function filterCandidatesByScope(
+  endpoints: ConfigEndpoint[],
+  scope: CandidateScope = DEFAULT_CANDIDATE_SCOPE,
+  tunnelUrl: string | null = null,
+): ConfigEndpoint[] {
+  if (scope === 'all') return [...endpoints]
+  const tunnel = trimOrNull(tunnelUrl)
+  const tunnelBase = tunnel === null ? null : normalizeBaseUrl(tunnel)
+  const isTunnel = (endpoint: ConfigEndpoint) =>
+    tunnelBase !== null && normalizeBaseUrl(endpoint.baseUrl) === tunnelBase
+  // tun 要在原顺序上保留隧道；lan / wan 先摘掉隧道再按类型挑。
+  if (scope === 'tun') return endpoints.filter((endpoint) => isTunnel(endpoint) || isIPv6BaseUrl(endpoint.baseUrl))
+  const local = endpoints.filter((endpoint) => !isTunnel(endpoint))
+  if (scope === 'lan') return local.filter((endpoint) => endpoint.kind === 'LAN')
+  return local.filter((endpoint) =>
+    endpoint.kind === 'WAN' || endpoint.kind === 'VIRTUAL_NET' || isIPv6BaseUrl(endpoint.baseUrl))
 }
 
 /**

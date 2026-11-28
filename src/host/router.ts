@@ -6,6 +6,7 @@ import { type AuthService, requestAddress } from './auth.ts'
 import { createBffRest, type BffRest } from './bff-rest.ts'
 import { type DshChatAdapter } from './chat-adapter.ts'
 import { type CloudflaredTunnelManager } from './cloudflared.ts'
+import { DEFAULT_CANDIDATE_SCOPE, type CandidateScope } from './config-text.ts'
 import { type WorkspaceDatabase } from './database.ts'
 import { ApiError, asApiError } from './errors.ts'
 import { type FileService } from './file-service.ts'
@@ -281,8 +282,10 @@ export class ApiRouter {
     throw new ApiError(404, 'ROUTE_NOT_FOUND', 'The requested management route does not exist.')
   }
 
-  async openTunnelForCommand(): Promise<{ urls: string[]; pairingCode: string; expiresAt: number }> {
-    return openTunnelForCommand(this.options)
+  async openTunnelForCommand(
+    scope: CandidateScope = DEFAULT_CANDIDATE_SCOPE,
+  ): Promise<{ urls: string[]; pairingCode: string; expiresAt: number }> {
+    return openTunnelForCommand(this.options, scope)
   }
 }
 

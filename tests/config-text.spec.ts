@@ -1,9 +1,12 @@
 import { describe, expect, it } from 'vitest'
 import {
+  CANDIDATE_SCOPES,
   classifyHost,
   composeCandidates,
   detectEndpoints,
+  filterCandidatesByScope,
   normalizeBaseUrl,
+  parseCandidateScope,
 } from '../src/host/config-text.ts'
 
 /**
@@ -173,5 +176,78 @@ describe('composeCandidates（多路候选，2.16.0）', () => {
       explicit: [{ label: '  ', baseUrl: 'http://10.0.0.5:3090', kind: 'LAN' as const }],
     })
     expect(endpoints[0]?.label).toBe('http://10.0.0.5:3090')
+  })
+})
+
+/**
+ * `/tunnel` 的范围参数（issue #2）。
+ *
+ * 只测纯函数：范围筛选是「回哪几条地址」的唯一真值来源，命令、工具、宿主入口
+ * 三条路都调它。用 fixed 的 explicit 表而不是真网卡 —— 断言不能随测试机的
+ * 网卡数量漂移（CI 的 windows runner 只有一个 10.x）。
+ */
+describe('filterCandidatesByScope（/tunnel 的地址范围，issue #2）', () => {
+  const TUNNEL = 'https://abc.trycloudflare.com'
+  const endpoints = [
+    { label: '云隧道', baseUrl: TUNNEL, kind: 'WAN' as const },
+    { label: '局域网（eth0）', baseUrl: 'http://192.168.1.126:3090', kind: 'LAN' as const },
+    { label: '虚拟网（tailscale0）', baseUrl: 'http://100.101.102.103:3090', kind: 'VIRTUAL_NET' as const },
+    { label: '公网（eth0）', baseUrl: 'http://203.0.113.7:3090', kind: 'WAN' as const },
+    { label: '局域网（wlan0，ULA）', baseUrl: 'http://[fd00::1]:3090', kind: 'LAN' as const },
+    { label: '公网（wlan0，IPv6）', baseUrl: 'http://[2409:8a74::1]:3090', kind: 'WAN' as const },
+  ]
+
+  it('all：原样返回，顺序不变（等于 2.17.x 的行为）', () => {
+    expect(filterCandidatesByScope(endpoints, 'all', TUNNEL)).toEqual(endpoints)
+  })
+
+  it('lan：只留局域网地址（含 IPv6 ULA），不含隧道', () => {
+    const picked = filterCandidatesByScope(endpoints, 'lan', TUNNEL).map(e => e.baseUrl)
+    expect(picked).toEqual(['http://192.168.1.126:3090', 'http://[fd00::1]:3090'])
+  })
+
+  it('wan：外网 + 虚拟网 + 所有 IPv6，不含隧道与 IPv4 局域网', () => {
+    const picked = filterCandidatesByScope(endpoints, 'wan', TUNNEL).map(e => e.baseUrl)
+    expect(picked).toEqual([
+      'http://100.101.102.103:3090',
+      'http://203.0.113.7:3090',
+      'http://[fd00::1]:3090',
+      'http://[2409:8a74::1]:3090',
+    ])
+  })
+
+  it('tun：隧道排第一，其余只留 IPv6', () => {
+    const picked = filterCandidatesByScope(endpoints, 'tun', TUNNEL).map(e => e.baseUrl)
+    expect(picked).toEqual([TUNNEL, 'http://[fd00::1]:3090', 'http://[2409:8a74::1]:3090'])
+  })
+
+  it('隧道地址带尾斜杠 / /api/v1 后缀也认得出（不能靠 kind：域名会被标成 UNKNOWN）', () => {
+    for (const tunnelUrl of ['https://abc.trycloudflare.com/', 'https://abc.trycloudflare.com/api/v1']) {
+      expect(filterCandidatesByScope(endpoints, 'lan', tunnelUrl).every(e => e.baseUrl !== TUNNEL)).toBe(true)
+      expect(filterCandidatesByScope(endpoints, 'tun', tunnelUrl)[0]?.baseUrl).toBe(TUNNEL)
+    }
+  })
+
+  it('没给隧道地址时 tun 只剩 IPv6（不凭空造一条隧道候选）', () => {
+    expect(filterCandidatesByScope(endpoints, 'tun', null).map(e => e.baseUrl)).toEqual([
+      'http://[fd00::1]:3090',
+      'http://[2409:8a74::1]:3090',
+    ])
+  })
+
+  it('筛完为空就返回空表，由调用方决定报错 —— 这里不偷偷回落到 all', () => {
+    const onlyLan = [{ label: '局域网', baseUrl: 'http://192.168.1.126:3090', kind: 'LAN' as const }]
+    expect(filterCandidatesByScope(onlyLan, 'wan', null)).toEqual([])
+    expect(filterCandidatesByScope(onlyLan, 'tun', null)).toEqual([])
+  })
+
+  it('parseCandidateScope：大小写 / 空白不敏感，未知与空串返回 null', () => {
+    expect(parseCandidateScope(' LAN ')).toBe('lan')
+    expect(parseCandidateScope('All')).toBe('all')
+    expect(parseCandidateScope('tun')).toBe('tun')
+    for (const bad of ['', '  ', 'stop', 'open', 'lan wan', undefined, null, 7]) {
+      expect(parseCandidateScope(bad)).toBeNull()
+    }
+    expect([...CANDIDATE_SCOPES]).toEqual(['lan', 'wan', 'tun', 'all'])
   })
 })

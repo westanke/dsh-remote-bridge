@@ -29,11 +29,30 @@
  * @module dsh-remote-bridge/im-command
  */
 
+import {
+  CANDIDATE_SCOPES,
+  CANDIDATE_SCOPE_LABEL,
+  DEFAULT_CANDIDATE_SCOPE,
+  parseCandidateScope,
+  type CandidateScope,
+} from './config-text.ts'
+
 /** 命令名（不带斜杠）。 */
 export const TUNNEL_COMMAND_NAME = 'tunnel'
 
-/** 命令描述：会出现在 IM 的 `/help` 里。 */
-export const TUNNEL_COMMAND_DESCRIPTION = '开启 Cloudflare 隧道并返回地址与一次性配对码'
+/**
+ * 命令描述：会出现在 IM 的 `/help` 里。
+ *
+ * 带上参数列表，否则用户在 `/help` 里看不到「还能只要局域网地址」——
+ * 参数是 issue #2 的新能力，帮助文本是它唯一的发现入口（IM 侧没有补全）。
+ */
+export const TUNNEL_COMMAND_DESCRIPTION =
+  '开启 Cloudflare 隧道并返回地址与一次性配对码（可选 lan / wan / tun / all）'
+
+/** 用法说明：参数非法时原样回这句（不消耗一次开隧道）。 */
+const TUNNEL_COMMAND_USAGE =
+  '用法：/tunnel [lan|wan|tun|all]（默认 all）\n' +
+  'lan=局域网地址（不启隧道）· wan=外网+虚拟网+IPv6 · tun=隧道+IPv6 · all=隧道+全部地址'
 
 /**
  * 一次成功的开隧道结果。
@@ -70,8 +89,11 @@ export interface TunnelCommandDeps {
    *
    * 实现方负责：确保 cloudflared 存在 → startQuick → 等随机域名 → 建配置文本。
    * 隧道**已在运行**时实现方可以直接复用当前地址（不重复 spawn）。
+   *
+   * `scope` 是地址范围（issue #2）：`lan` / `wan` 只需要本机地址，实现方
+   * **不必启动 cloudflared**；`tun` / `all` 才需要公网隧道。
    */
-  openTunnel(): Promise<TunnelCommandResult>
+  openTunnel(scope?: CandidateScope): Promise<TunnelCommandResult>
   /** 可选日志；不传则静默。 */
   logger?: { info(message: string): void; warn(error: Error): void }
 }
@@ -92,19 +114,29 @@ function pairingMinutes(expiresAt: number): number {
   return remaining > 0 ? remaining : 10
 }
 
-/** 把结果拼成聊天消息。 */
-export function formatTunnelReply(result: TunnelCommandResult): string {
+/**
+ * 把结果拼成聊天消息。
+ *
+ * 第二行标出这次的范围（`all` 时省掉，保持老消息形状）—— 用户连发
+ * `/tunnel lan` 与 `/tunnel all` 时，两条回执长得一模一样会让人以为是同一条。
+ */
+export function formatTunnelReply(
+  result: TunnelCommandResult,
+  scope: CandidateScope = DEFAULT_CANDIDATE_SCOPE,
+): string {
+  const range = scope === DEFAULT_CANDIDATE_SCOPE ? '' : `本范围：${CANDIDATE_SCOPE_LABEL[scope]}；`
   return [
     `${result.urls.join(',')}#${result.pairingCode}`,
-    `（一行粘进 App 的导入框即可：它会拆成多条候选地址 + 配对码，连哪条自己探；每次 /tunnel 都重新签发，${pairingMinutes(result.expiresAt)} 分钟内有效、只能用一次）`,
+    `（${range}一行粘进 App 的导入框即可：它会拆成多条候选地址 + 配对码，连哪条自己探；每次 /tunnel 都重新签发，${pairingMinutes(result.expiresAt)} 分钟内有效、只能用一次）`,
   ].join('\n')
 }
 
 /**
  * 创建 `/tunnel` 的命令定义（不注册，纯数据，便于单测）。
  *
- * 参数只接受空串：本命令刻意**不接受**任何开关，避免出现「`/tunnel stop`」这种需要
- * 额外鉴权语义的入口。带参数一律回用法说明。
+ * 参数只接受**地址范围**（`lan` / `wan` / `tun` / `all`，issue #2）：它只裁剪
+ * 「回哪几条地址」，不开第二个入口 —— `stop` / `open` 这类动词仍然一律拒绝，
+ * 避免出现需要额外鉴权语义的操作面。未知参数回用法说明，且**不消耗**一次开隧道。
  */
 export function createTunnelCommand(deps: TunnelCommandDeps): {
   name: string
@@ -118,19 +150,21 @@ export function createTunnelCommand(deps: TunnelCommandDeps): {
   return {
     name: TUNNEL_COMMAND_NAME,
     description: TUNNEL_COMMAND_DESCRIPTION,
-    input: { hint: '（无需参数）' },
+    input: { hint: `[${CANDIDATE_SCOPES.join('|')}]` },
     async handler(invocation) {
-      if (invocation.rawInput.trim().length > 0) {
-        return { kind: 'error', text: '用法：/tunnel（不需要参数）' }
+      const raw = invocation.rawInput.trim()
+      const scope = raw === '' ? DEFAULT_CANDIDATE_SCOPE : parseCandidateScope(raw)
+      if (scope === null) {
+        return { kind: 'error', text: TUNNEL_COMMAND_USAGE }
       }
       if (inFlight) {
         return { kind: 'error', text: '上一次开隧道还没结束，请稍等几秒再发一次。' }
       }
       inFlight = true
       try {
-        const result = await deps.openTunnel()
-        deps.logger?.info(`[dsh-remote-bridge] /tunnel 已开启隧道 ${result.urls[0] ?? '(no url)'}`)
-        return { kind: 'success', text: formatTunnelReply(result) }
+        const result = await deps.openTunnel(scope)
+        deps.logger?.info(`[dsh-remote-bridge] /tunnel ${scope} 已取到地址 ${result.urls[0] ?? '(no url)'}`)
+        return { kind: 'success', text: formatTunnelReply(result, scope) }
       } catch (cause) {
         const message = cause instanceof Error ? cause.message : String(cause)
         // 命令返回值会原样进聊天记录，所以这里**只回可读原因**，不拼接堆栈。
@@ -201,6 +235,9 @@ export const TUNNEL_TOOL_DESCRIPTION =
   'one-time pairing code that a phone app can use to pair. Use it whenever the user asks to ' +
   'start the tunnel, to get the connection info, or says they are away from the computer and ' +
   'need remote access. ' +
+  'Pass `scope` to trim the returned addresses: "lan" = LAN addresses only (no tunnel is started), ' +
+  '"wan" = public IPv4 + virtual network + IPv6 (no tunnel), "tun" = the tunnel plus every IPv6 ' +
+  'address, or omit it for the tunnel plus every local address. ' +
   'It never stops the tunnel and never touches files. ' +
   'When you reply, give the `<url>#<pairingCode>` line as the very first line — ' +
   'no code fences, no re-wrapping, no reformatting — and keep any explanation to at most ' +
@@ -224,7 +261,7 @@ export interface TunnelToolRegistry {
       schema: Record<string, unknown>
       render: (args: Record<string, never>, value: TunnelToolOutput) => Array<{ type: string; text: string }>
     }
-    execute: (args: Record<string, never>, exec: unknown) => Promise<TunnelToolOutput>
+    execute: (args: Record<string, unknown>, exec: unknown) => Promise<TunnelToolOutput>
   }): () => void
 }
 
@@ -233,8 +270,23 @@ export function createTunnelTool(deps: TunnelCommandDeps): Parameters<TunnelTool
   return {
     name: TUNNEL_TOOL_NAME,
     description: TUNNEL_TOOL_DESCRIPTION,
-    // 无参数：这条工具只有一个用途，给它加开关等于给自己加鉴权面。
-    parameters: {},
+    // 参数只有一个「地址范围」（issue #2）：它只裁剪回哪几条地址，不构成第二个
+    // 操作入口（仍然不能停隧道、不能改配置）。IM 侧 `/tunnel` 到不了宿主命令表
+    // （见模块头注释），模型只能通过这条工具拿到范围能力，所以两边必须同名同义。
+    parameters: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        scope: {
+          type: 'string',
+          enum: [...CANDIDATE_SCOPES],
+          description:
+            'Address range: lan = LAN addresses only (does not start a tunnel), ' +
+            'wan = public IPv4 + virtual network + IPv6, tun = tunnel + IPv6, ' +
+            'all = tunnel + every local address (default).',
+        },
+      },
+    },
     output: {
       // 内核的 `assertSupportedJsonSchema` 只接受一个很小的子集：
       // `type` / `oneOf` / `properties` / `required` / `additionalProperties` /
@@ -273,9 +325,16 @@ export function createTunnelTool(deps: TunnelCommandDeps): Parameters<TunnelTool
         },
       ],
     },
-    async execute() {
-      const result = await deps.openTunnel()
-      deps.logger?.info(`[dsh-remote-bridge] ${TUNNEL_TOOL_NAME} 已开启隧道 ${result.urls[0] ?? '(no url)'}`)
+    async execute(args) {
+      const requested = (args as { scope?: unknown }).scope
+      const scope = requested === undefined || requested === null
+        ? DEFAULT_CANDIDATE_SCOPE
+        : parseCandidateScope(requested)
+      // 参数非法就抛给模型（它会向用户复述），不要静默退回 all —— 用户以为
+      // 只要局域网、实际拿到隧道地址，会以为参数没生效。
+      if (scope === null) throw new Error(`scope 只能是 ${CANDIDATE_SCOPES.join(' / ')}。`)
+      const result = await deps.openTunnel(scope)
+      deps.logger?.info(`[dsh-remote-bridge] ${TUNNEL_TOOL_NAME} ${scope} 已取到地址 ${result.urls[0] ?? '(no url)'}`)
       return {
         addresses: result.urls.join(','),
         pairingCode: result.pairingCode,

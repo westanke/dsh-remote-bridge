@@ -349,6 +349,8 @@ minor、`openapi.yaml` 里 `deprecated` 已存在至少一个 minor、两个客�
 - `改 node_modules 里的插件产物不生效（pnpm 硬链接）`
 - `Windows 绑 0.0.0.0 不是双栈`
 - `cloudflared 归档名只按 linux 拼`
+- `隧道候选不能靠 kind 认`
+- `tunnel 候选表必须带实际端口`
 - `apply 尾部抛错会留下「半死桥」`
 - `产物校验值必须在打 tag 之前提交（否则 tag 里的哈希是上一版的）`
 - `发版脚本不推 tag（默认行为与注释相反）`

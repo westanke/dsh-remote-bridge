@@ -1632,3 +1632,38 @@ Linux 上 `net.ipv6.bindv6only=1` 时 IPv4 连不上。
 
 **回归锚**：`tests/cloudflared.spec.ts` › archSuffix / cloudflaredBinaryName /
 writeFromTgz / ensureCloudflared reuse。
+
+---
+
+### 隧道候选不能靠 kind 认
+
+**症状**：`/tunnel lan` 回执里还带着 `https://xxx.trycloudflare.com`，或者「只留外网」的
+口径把隧道地址当成本机公网地址发出去。
+
+**根因**：隧道的 `baseUrl` 是**域名**（`trycloudflare.com`），`classifyHost()` 只认 IP，
+于是它被标成 `UNKNOWN`。任何「按 `kind === 'WAN'` 挑隧道」或「按 `kind === 'LAN'` 排除隧道」
+的写法都会静默错位 —— 空表时还会退化成一行只有 `#配对码` 的残码。
+
+**现在怎么办**：认隧道只比归一化后的 baseUrl（`normalizeBaseUrl(entry.baseUrl) ===
+normalizeBaseUrl(tunnelUrl)`，前缀 `/api/v1` 与尾斜杠都会剥掉），统一收在
+`filterCandidatesByScope()` 里，命令 / 工具 / 宿主入口三条路都调它。范围筛完为空要**抛可读
+错误**，不要回残码（用户复制过去只会一直连不上）。
+
+**回归锚**：`tests/config-text.spec.ts` › filterCandidatesByScope（/tunnel 的地址范围，issue #2）。
+
+---
+
+### tunnel 候选表必须带实际端口
+
+**症状**：用户把监听端口从 3090 改成别的之后，`/tunnel` 回的码里每条地址都是死的 ——
+App 里看得到候选、连哪条都超时。
+
+**根因**：`composeCandidates()` 的 `port` 默认 `DEFAULT_PORT`（3090）。`buildConfigText()`
+（面板「生成配置文本」）早就传了实际端口，`openTunnelForCommand()` 却只传了 `listenerHost`，
+于是 IM 那条路一直按 3090 拼。
+
+**现在怎么办**：`/tunnel` 的候选表用 `options.remote.status().port`（非正整数才回落
+`DEFAULT_PORT`），与配置文本同口径。
+
+**回归锚**：`tests/tunnel-create-config.spec.ts` › `/tunnel 的地址范围参数（issue #2）`
+（用例里的 `remote` 使用随机端口，写死 3090 会立刻红）。

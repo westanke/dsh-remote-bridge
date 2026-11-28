@@ -353,7 +353,7 @@ export async function apply(ctx: HostContext, config: Config = {}): Promise<void
   try {
     ctx.effect(
       () => registerTunnelCommand(ctx.commands as unknown as TunnelCommandRegistry, {
-        openTunnel: () => router.openTunnelForCommand(),
+        openTunnel: scope => router.openTunnelForCommand(scope),
         logger: {
           info: (message) => ctx.logger.info(message),
           warn: (error) => ctx.logger.warn(error),
@@ -378,7 +378,7 @@ export async function apply(ctx: HostContext, config: Config = {}): Promise<void
     try {
       ctx.effect(
         () => registerTunnelTool(toolsService as unknown as TunnelToolRegistry, {
-          openTunnel: () => router.openTunnelForCommand(),
+          openTunnel: scope => router.openTunnelForCommand(scope),
           logger: {
             info: (message) => ctx.logger.info(message),
             warn: (error) => ctx.logger.warn(error),

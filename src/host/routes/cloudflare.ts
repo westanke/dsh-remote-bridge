@@ -3,7 +3,17 @@ import { randomUUID } from 'node:crypto'
 import { type IncomingMessage } from 'node:http'
 import { adminRefusal } from '../auth.ts'
 import { type TunnelPublicState, ensureCloudflared, sanitizeDownloadError } from '../cloudflared.ts'
-import { DEFAULT_PORT, composeCandidates, defaultDisplayName, type ConfigEndpoint } from '../config-text.ts'
+import {
+  CANDIDATE_SCOPE_LABEL,
+  DEFAULT_CANDIDATE_SCOPE,
+  DEFAULT_PORT,
+  composeCandidates,
+  defaultDisplayName,
+  filterCandidatesByScope,
+  parseCandidateScope,
+  type CandidateScope,
+  type ConfigEndpoint,
+} from '../config-text.ts'
 import { DEFAULT_DEVICE_NAME } from '../device-identity.ts'
 import { ApiError } from '../errors.ts'
 import { type RouterOptions } from '../router.ts'
@@ -235,41 +245,71 @@ export async function createTunnel(options: RouterOptions,
     }
   }
 
-/** 一键建隧道（原 ApiRouter.openTunnelForCommand；router 保留同名委托，issue #3 搬移）。 */
-  /**
-   * IM `/tunnel` 命令的宿主侧入口：开隧道并返回 **地址 + 一次性配对码**。
-   *
-   * ## 为什么回配对码，不回 `DSH1:` 长文本（issue #28）
-   *
-   * 2026-11-22 真机实测：400+ 字符的 `DSH1:` 单行文本经微信转发/复制后会掉字符，
-   * 令牌变成「库里不存在的一枚」→ App 连上来只会被桥以 `TOKEN_INVALID` 拒掉，
-   * 现场表现为「码是新的却连不上」。配对码只有 10 位，复制不会坏，权限仍在配对
-   * 那一刻由同一套 `scopes` 决定。
-   *
-   * 顺带不再为 IM 路径**预建设备**：以前每发一次 `/tunnel` 就多一台设备（实测攒到
-   * 38 台），现在设备在手机真正兑换配对码时才建。
-   *
-   * 与 HTTP 路径的差别：**隧道已在运行时直接复用当前地址**，不重复 spawn
-   * （第二次 `startQuick` 会撞 `TUNNEL_ALREADY_RUNNING`，而用户在 IM 里连发两条很常见）。
-   *
-   * @throws 当 12 秒内没拿到公网地址，或 cloudflared 下载失败时。
-   */
+/**
+ * IM `/tunnel` 命令的宿主侧入口：签发一次性配对码，并按**地址范围**返回候选地址。
+ *
+ * ## 为什么回配对码，不回 `DSH1:` 长文本（issue #28）
+ *
+ * 2026-11-22 真机实测：400+ 字符的 `DSH1:` 单行文本经微信转发/复制后会掉字符，
+ * 令牌变成「库里不存在的一枚」→ App 连上来只会被桥以 `TOKEN_INVALID` 拒掉，
+ * 现场表现为「码是新的却连不上」。配对码只有 10 位，复制不会坏，权限仍在配对
+ * 那一刻由同一套 `scopes` 决定。
+ *
+ * 顺带不再为 IM 路径**预建设备**：以前每发一次 `/tunnel` 就多一台设备（实测攒到
+ * 38 台），现在设备在手机真正兑换配对码时才建。
+ *
+ * ## 范围参数（issue #2）
+ *
+ * `lan` / `wan` 只要本机地址 —— **完全不碰 cloudflared**，所以它们在一台
+ * 「cloudflared 下载不下来」的 Windows 机器上（issue #1）照样能用；`tun` / `all`
+ * 才需要公网入口，隧道已在运行时直接复用当前地址（第二次 `startQuick` 会撞
+ * `TUNNEL_ALREADY_RUNNING`，而用户在 IM 里连发两条很常见）。
+ *
+ * 筛选只减少候选数量，「连哪条」仍由客户端探活决定；`all` 保留隧道在第一位，
+ * 只认第一条的老客户端行为不变。
+ *
+ * @throws 当范围参数非法、范围筛完一条地址都不剩、`tun`/`all` 时 12 秒内没拿到
+ *   公网地址，或 cloudflared 下载失败时。
+ */
 export async function openTunnelForCommand(
   options: RouterOptions,
+  scope: CandidateScope = DEFAULT_CANDIDATE_SCOPE,
 ): Promise<{ urls: string[]; pairingCode: string; expiresAt: number }> {
+    const requested = parseCandidateScope(scope)
+    if (requested === null) {
+      throw new Error(`未知的地址范围：${String(scope)}（可选 lan / wan / tun / all）。`)
+    }
     const tunnels = options.tunnels
-    if (tunnels === undefined) throw new Error('隧道功能未启用。')
+    // lan / wan 不需要公网入口：不启动 cloudflared（见函数头「范围参数」）。
+    const needsTunnel = requested === 'tun' || requested === 'all'
+    if (needsTunnel && tunnels === undefined) throw new Error('隧道功能未启用。')
     const requestId = randomUUID()
 
     /**
      * 候选地址表：隧道在第一位，其后是这台机器此刻的局域网 / 虚拟网地址
      * （与 WebUI「生成配置文本」同一套 `composeCandidates`，顺序也同一套理由）。
      * 手机在家走 LAN、在外走隧道，由客户端探活择优决定，不需要用户换码。
+     *
+     * 端口用**实际监听端口**（与 buildConfigText 同口径）：用户改过监听端口后
+     * 按 3090 拼出来的地址全是死的，表现是「码里有、连不上」。
      */
-    const candidatesFor = (tunnelUrl: string): string[] =>
-      composeCandidates({ tunnelUrl, listenerHost: options.remote.status().host }).map(endpoint => endpoint.baseUrl)
+    const status = options.remote.status()
+    const port = Number.isInteger(status.port) && status.port > 0 ? status.port : DEFAULT_PORT
+    const candidatesFor = (tunnelUrl: string | null): string[] =>
+      filterCandidatesByScope(
+        composeCandidates({ port, listenerHost: status.host, tunnelUrl }),
+        requested,
+        tunnelUrl,
+      ).map(endpoint => endpoint.baseUrl)
 
-    const issuePairing = (url: string) => {
+    const issuePairing = (tunnelUrl: string | null) => {
+      const urls = candidatesFor(tunnelUrl)
+      // 空表时不要回一行只有 `#配对码` 的残码：用户复制过去只会一直连不上。
+      if (urls.length === 0) {
+        throw new Error(
+          `按「${CANDIDATE_SCOPE_LABEL[requested]}」筛完没有可用地址：这台机器此刻没有这一类地址，换个范围再发一次。`,
+        )
+      }
       // rootIds / scopes 与 WebUI「生成配对码」同口径：配对那一刻就把权限定死。
       const rootIds = options.database.listRoots().map(root => root.id)
       const pairing = options.database.createPairing(
@@ -278,19 +318,29 @@ export async function openTunnelForCommand(
         undefined,
         { requestId },
       )
-      return { urls: candidatesFor(url), pairingCode: pairing.code, expiresAt: pairing.expiresAt }
+      return { urls, pairingCode: pairing.code, expiresAt: pairing.expiresAt }
     }
 
-    const current = tunnels.publicState
+    if (!needsTunnel) {
+      // 只发本机地址：审计记 `cloudflare.pairing`，别让「谁开过隧道」的查询
+      // 被这类不建隧道的调用污染。
+      options.database.audit('admin', 'im-command', 'cloudflare.pairing', undefined, undefined, {
+        scope: requested,
+      }, requestId)
+      return issuePairing(null)
+    }
+
+    const current = tunnels!.publicState
     if (current.running === true && current.url !== null) {
       options.database.audit('admin', 'im-command', 'cloudflare.create', undefined, undefined, {
         reused: true,
+        scope: requested,
       }, requestId)
       return issuePairing(current.url)
     }
 
     const { state } = await createTunnel(options, {}, requestId, 'im-command')
-    const url = state.url ?? await tunnels.waitForUrl()
+    const url = state.url ?? await tunnels!.waitForUrl()
     if (url === null) {
       throw new Error('隧道已启动，但 12 秒内没拿到公网地址。稍等片刻再发一次 /tunnel 可复用当前地址。')
     }

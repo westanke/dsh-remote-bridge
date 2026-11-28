@@ -1,3 +1,38 @@
+## 未发布 · `/tunnel` 地址范围参数 lan / wan / tun / all（AtomGit issue #2，2026-11-28）
+
+**起因**：`/tunnel` 只回一份「隧道 + 全部本机地址」的码。在家里发一次，手机偏要走公网隧道；
+在 Windows 上 cloudflared 装不起来（issue #1）时，连一份家用码都拿不到。
+
+**改动**（命令与工具同一个参数，缺省 `all`，行为与 2.17.x 一致）：
+
+| 参数 | 候选地址 | 启隧道 | 审计 action |
+| --- | --- | --- | --- |
+| `lan` | 局域网（含 IPv6 ULA / `.local`） | 否 | `cloudflare.pairing` |
+| `wan` | 公网 IPv4 + 虚拟网 + 所有 IPv6 | 否 | `cloudflare.pairing` |
+| `tun` | 隧道（第一）+ 所有 IPv6 | 是 | `cloudflare.create`（meta 带 `scope`） |
+| `all` | 隧道 + 全部本机地址 | 是 | `cloudflare.create` |
+
+- `src/host/config-text.ts`：新增 `CandidateScope` / `CANDIDATE_SCOPES` / `DEFAULT_CANDIDATE_SCOPE` /
+  `CANDIDATE_SCOPE_LABEL` / `parseCandidateScope()` / `filterCandidatesByScope()`。认隧道按
+  **归一化后的 baseUrl** 比，不按 `kind`（`trycloudflare.com` 是域名 → `UNKNOWN`，见
+  `PITFALLS.md` §隧道候选不能靠 kind 认）。
+- `src/host/im-command.ts`：命令接受一个位置参数（大小写/空白不敏感，动词仍拒），用法说明
+  改为 `用法：/tunnel [lan|wan|tun|all]（默认 all）`；回执第二行标 `本范围：<label>；`（`all` 时不标）；
+  工具 `open_tunnel_config` 的 schema 增加 `scope` 枚举（非法值抛给模型，不静默退回 `all`）。
+- `src/host/routes/cloudflare.ts`：`openTunnelForCommand(options, scope)` 按范围裁剪；`lan`/`wan`
+  **不要求、也不启动 cloudflared**；范围筛完为空抛可读错误（「按「局域网」筛完没有可用地址…」），
+  不再回一行只有配对码的残码。
+- **顺带修掉一个既有缺陷**：IM 这条路的候选表此前没传实际端口，用户改过监听端口后码里的地址
+  全是死的；现在与 `buildConfigText()` 一样用 `remote.status().port`（见 `PITFALLS.md`
+  §tunnel 候选表必须带实际端口）。
+
+**兼容性**：不带参数 = 2.17.x；`all` 的候选顺序不变（隧道第一），只认第一条的老客户端
+行为不变；新增的 `tunnelStage*` 词表未动（与 issue #1 无关）。
+
+**回归**：`tests/config-text.spec.ts`（`filterCandidatesByScope` 8 例）、
+`tests/im-tunnel-command.spec.ts`（命令与工具的参数面）、
+`tests/tunnel-create-config.spec.ts`（宿主入口：不启隧道 / 隧道复用 / 空表报错 / 非法范围）。
+
 ## 未发布 · Windows 双栈监听与 cloudflared 三平台下载（AtomGit issue #1，2026-11-28）
 
 **起因**：Windows 11 上接入面板只列 IPv4（机器其实有 3 个公网 IPv6）；`/tunnel` 永远

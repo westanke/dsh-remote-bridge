@@ -6,6 +6,7 @@ import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { AuthService } from '../src/host/auth.ts'
 import { DshChatAdapter } from '../src/host/chat-adapter.ts'
+import { classifyHost } from '../src/host/config-text.ts'
 import { WorkspaceDatabase } from '../src/host/database.ts'
 import { WorkspaceEventBus } from '../src/host/event-bus.ts'
 import { FileService } from '../src/host/file-service.ts'
@@ -310,6 +311,86 @@ describe('IM /tunnel 命令的宿主入口 openTunnelForCommand', () => {
       expect(created.length).toBeGreaterThan(0)
       // 第二参数（来源标签）落库为 actor_id；actor_type 恒为 admin（两条入口都等价于本机管理员）。
       expect(created.some(entry => entry.actorId === 'im-command')).toBe(true)
+    } finally {
+      await harness.close()
+    }
+  })
+})
+
+describe('/tunnel 的地址范围参数（issue #2）', () => {
+  it('lan：不启动 cloudflared，只回局域网地址 + 新配对码', async () => {
+    const harness = await startHarness(false)
+    try {
+      const result = await harness.router.openTunnelForCommand('lan')
+      // 关键语义：lan 不需要公网入口，一台 cloudflared 装不上的机器也能用。
+      expect(harness.tunnels.startQuickCalls).toBe(0)
+      expect(harness.tunnels.waitForUrlCalls).toBe(0)
+      expect(result.urls.length).toBeGreaterThan(0)
+      for (const url of result.urls) {
+        expect(classifyHost(new URL(url).hostname)).toBe('LAN')
+        expect(url.startsWith('https://')).toBe(false)
+      }
+      expect(result.pairingCode.length).toBeGreaterThan(0)
+      expect(result.pairingCode.length).toBeLessThan(16)
+      expect(result.expiresAt).toBeGreaterThan(Date.now())
+      // 审计：只发本机地址的调用记 cloudflare.pairing，不能污染「谁开过隧道」的查询。
+      const entries = harness.database.listAudit(50)
+      expect(entries.some(entry => entry.action === 'cloudflare.pairing' && entry.actorId === 'im-command')).toBe(true)
+      expect(entries.some(entry => entry.action === 'cloudflare.create' && entry.actorId === 'im-command')).toBe(false)
+    } finally {
+      await harness.close()
+    }
+  })
+
+  it('tun：隧道排第一，其余只留 IPv6；隧道已在运行就复用地址、只换配对码', async () => {
+    const harness = await startHarness(false)
+    try {
+      const first = await harness.router.openTunnelForCommand('tun')
+      expect(harness.tunnels.startQuickCalls).toBe(1)
+      // 老客户端只读第一条：tun 也必须先给隧道地址。
+      expect(first.urls[0]).toBe('https://fake-example.trycloudflare.com')
+      for (const url of first.urls.slice(1)) {
+        expect(new URL(url).hostname.includes(':'), `${url} 应该是 IPv6`).toBe(true)
+      }
+      expect(first.pairingCode.length).toBeGreaterThan(0)
+
+      const second = await harness.router.openTunnelForCommand('tun')
+      expect(harness.tunnels.startQuickCalls).toBe(1)
+      expect(second.urls[0]).toBe(first.urls[0])
+      expect(second.pairingCode).not.toBe(first.pairingCode)
+    } finally {
+      await harness.close()
+    }
+  })
+
+  it('wan：不碰 cloudflared；本机没有公网/虚拟网/IPv6 时回可读错误，不回一行残码', async () => {
+    const harness = await startHarness(false)
+    try {
+      const outcome = await harness.router.openTunnelForCommand('wan').then(
+        (result) => ({ ok: true as const, result }),
+        (error: unknown) => ({ ok: false as const, error }),
+      )
+      expect(harness.tunnels.startQuickCalls).toBe(0)
+      if (outcome.ok) {
+        expect(outcome.result.urls.length).toBeGreaterThan(0)
+        for (const url of outcome.result.urls) {
+          const host = new URL(url).hostname
+          // wan 口径：IPv6 一律收（手机流量下的直连靠它），IPv4 只收公网 / 虚拟网。
+          if (!host.includes(':')) expect(['WAN', 'VIRTUAL_NET']).toContain(classifyHost(host))
+        }
+      } else {
+        expect(String((outcome.error as Error).message)).toContain('没有可用地址')
+      }
+    } finally {
+      await harness.close()
+    }
+  })
+
+  it('未知范围直接抛可读错误，且不开隧道（不静默退回 all）', async () => {
+    const harness = await startHarness(false)
+    try {
+      await expect(harness.router.openTunnelForCommand('stop' as never)).rejects.toThrow(/未知的地址范围/)
+      expect(harness.tunnels.startQuickCalls).toBe(0)
     } finally {
       await harness.close()
     }

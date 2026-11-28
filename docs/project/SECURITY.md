@@ -189,7 +189,8 @@ path/query 可能带凭据）。`discover` 的 `baseURL` 是临时覆盖、不�
 
 `/tunnel` 是**宿主命令**（`ctx.commands.register`），`open_tunnel_config` 是**工具**
 （`ctx.tools.register`），两者实现同在 `src/host/im-command.ts`、共用同一个
-`ApiRouter.openTunnelForCommand()`。它们让用户把隧道拉起来并取回一行 `DSH1:` 配置文本。
+`ApiRouter.openTunnelForCommand(scope)`。它们让用户把隧道拉起来并取回一行
+`<url1>,<url2>,…#<pairingCode>` 短码（2.17.0 起不再回 `DSH1:` 长文本，issue #28）。
 存在的理由是它绕开了本插件的整个入站面：IM 机器人是**本机主动连出去**的长连接，
 所以「没有隧道」时这条路照样通。
 
@@ -200,13 +201,17 @@ IM 里发 `/tunnel` 只会当成普通消息交给智能体。所以命令服务
 
 它对管理面判据 **没有任何豁免**，也不新增任何 REST 端点：
 
-- 命令在插件进程内直接调用 `ApiRouter.openTunnelForCommand()`，走的是与
+- 命令在插件进程内直接调用 `ApiRouter.openTunnelForCommand(scope)`，走的是与
   `POST /manage/cloudflare/create` **同一套** `createTunnel()` 实现（审计标签为 `im-command`，
   便于和本机管理面的 `loopback-admin` 分开查）。因此它不需要、也不应该给 `/manage` 开口子。
 - 隧道**已在运行时**复用当前地址出配置文本，不再 `startQuick` —— 这一条同样不是提权：
   它签发的新设备令牌与面板上点一次「生成配置文本」完全等价（一样的 scope、一样要落审计）。
-- **能力边界**：只开不停、不接受参数、不读文件。刻意不提供 `/tunnel stop`：停机已经有面板
-  出口，再开一个远程入口只会把「关掉公网入口」变成一个可被滥用的动作。
+- **能力边界**：只开不停、只收一个地址范围参数（`lan` / `wan` / `tun` / `all`，issue #2）、不读文件。
+  范围参数**只裁剪候选地址**，不构成第二入口：`stop` / `open` 这类动词一律仍是用法错误。
+  `lan` / `wan` 分支连 cloudflared 都不启动（审计记 `cloudflare.pairing`），因此它们
+  **不新增任何入站面**——签出的配对码与面板「生成配对码」同 scope、同审计口径。
+  刻意不提供 `/tunnel stop`：停机已经有面板出口，再开一个远程入口只会把
+  「关掉公网入口」变成一个可被滥用的动作。
 
 > ⚠️ **本命令的身份校验不在本仓**。它依赖 `@xmanrui/dsh-im` 的访问策略
 > （`canExecuteCommands` / `defaultCanExecuteCommands` + allowlist）：非白名单发送者的消息
