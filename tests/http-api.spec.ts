@@ -136,6 +136,12 @@ describe('remote HTTP API', () => {
       const enabled = await waitForOperation(remote, enableOperation.id, 'succeeded')
       expect(remote.status()).toMatchObject({ host: allInterfaces, port: customPort, remoteEnabled: true })
       const pairing = { code: enabled.operation?.pairingCode as string }
+      // issue #3：码是 10 位纯数字（给人念的），且 operation 回带这批码对应的地址 ——
+      // 面板要在码下面直接显示「地址 + 码」，不能让用户再去「生成配置文本」里找。
+      expect(pairing.code).toMatch(/^[0-9]{5}-[0-9]{5}$/)
+      const pairingUrls = enabled.operation?.pairingUrls ?? []
+      expect(Array.isArray(pairingUrls)).toBe(true)
+      for (const url of pairingUrls) expect(url).toContain(`:${customPort}`)
 
       const configureWhileEnabled = await fetch(`${baseUrl}/manage/remote/listener`, {
         method: 'PUT',

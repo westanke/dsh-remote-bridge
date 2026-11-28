@@ -28,6 +28,11 @@ export interface RemoteOperationView {
   message?: string
   pairingCode?: string
   pairingExpiresAt?: number
+  /**
+   * 这枚配对码对应的候选地址（issue #3）：面板要在码下面直接显示「地址 + 码」，
+   * 而不是让用户再去「生成配置文本」里找一遍 —— 两处口径可能对不上。
+   */
+  pairingUrls?: string[]
 }
 
 export interface RemoteControl {
@@ -44,7 +49,7 @@ export interface RemoteControl {
     tunnelPort?: number
     operation?: RemoteOperationView
   }
-  enable(rootIds: string[], scopes: DeviceScope[]): RemoteOperationView
+  enable(rootIds: string[], scopes: DeviceScope[], candidateScope?: CandidateScope): RemoteOperationView
   disable(): RemoteOperationView
   configure(host: string, port: number): RemoteOperationView
 }

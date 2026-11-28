@@ -25,7 +25,7 @@ import type { CloudflareTunnelActivity, CloudflareTunnelState, ConfigTextResult,
 import type { MessageKey, Translate } from '../i18n.tsx'
 
 /** 一张卡的标识。与 `workspace.tsx` 的 `AdminTab` 同源，这里不重复定义。 */
-export type CardTab = 'roots' | 'remote' | 'tunnel' | 'devices' | 'image' | 'trash' | 'plugins' | 'app-download'
+export type CardTab = 'roots' | 'remote' | 'tunnel' | 'devices' | 'image' | 'plugins' | 'app-download'
 
 /** 成功反馈条（UI-07）：与 `error` 分开存，互不覆盖，3.5s 后自己退场。 */
 export interface Notice {

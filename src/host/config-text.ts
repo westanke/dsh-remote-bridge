@@ -347,6 +347,28 @@ export function filterCandidatesByScope(
  * 客户端仍认 `DSH1:`（老用户手里可能还留着旧文本），解在客户端做；服务端不再生成。
  */
 
+/**
+ * 一份「给手机一个连法」的候选地址表 —— 按范围裁剪后的 URL 列表（issue #3）。
+ *
+ * 与 `filterCandidatesByScope(composeCandidates(...))` 完全同义，抽出来只是为了
+ * 让「配对码要显示哪些地址」在三条入口（`/manage/pairings`、启用远程访问的
+ * operation、`/manage/config/text`）里只有一处分法：口径一旦分叉，用户就会看到
+ * 「码下面列了三条地址，粘贴配置文本却只有一条」这种对不上的界面。
+ */
+export function candidateUrlsFor(input: {
+  port: number
+  listenerHost: string
+  tunnelUrl?: string | null
+  scope?: CandidateScope
+}): string[] {
+  const tunnelUrl = input.tunnelUrl ?? null
+  return filterCandidatesByScope(
+    composeCandidates({ port: input.port, listenerHost: input.listenerHost, tunnelUrl }),
+    input.scope ?? DEFAULT_CANDIDATE_SCOPE,
+    tunnelUrl,
+  ).map((endpoint) => endpoint.baseUrl)
+}
+
 /** 本机显示名：主机名的首段，为空时退回一个中性名字。 */
 export function defaultDisplayName(): string {
   const name = hostname().split('.')[0]?.trim()

@@ -4,7 +4,15 @@ import path from 'node:path'
 import { type DeviceScope, type Principal, DEFAULT_DEVICE_SCOPES, DEVICE_SCOPES } from '../../shared/contracts.ts'
 import { type BffRest } from '../bff-rest.ts'
 import { type PromptContentPart, type UserQuestionAnswer } from '../chat-adapter.ts'
-import { classifyHost, endpointHost, type ConfigEndpoint } from '../config-text.ts'
+import {
+  CANDIDATE_SCOPES,
+  DEFAULT_CANDIDATE_SCOPE,
+  classifyHost,
+  endpointHost,
+  parseCandidateScope,
+  type CandidateScope,
+  type ConfigEndpoint,
+} from '../config-text.ts'
 import { ApiError } from '../errors.ts'
 import { getMetricsSnapshot, type MetricsSnapshot } from '../metrics.ts'
 import { type RouterOptions } from '../router.ts'
@@ -254,6 +262,22 @@ export function readOptionalText(value: unknown): string | null {
   if (typeof value !== 'string') return null
   const text = value.trim()
   return text === '' ? null : text
+}
+
+/**
+ * 读取请求里的地址范围字段（issue #3）。
+ *
+ * 不传 / 传 null 用 `fallback`（默认 `all`，与 2.18.0 之前的行为一致）。
+ * **传了但不是已知值要报错**，而不是静默退回 `all` —— 静默退回的表现是
+ * 「用户明明选了局域网，码里却仍带公网地址」，比报错更难排查。
+ */
+export function readCandidateScopeField(value: unknown, fallback: CandidateScope = DEFAULT_CANDIDATE_SCOPE): CandidateScope {
+  if (value === undefined || value === null) return fallback
+  const parsed = parseCandidateScope(value)
+  if (parsed === null) {
+    throw new ApiError(400, 'CANDIDATE_SCOPE_INVALID', `scope must be one of ${CANDIDATE_SCOPES.join(' / ')}.`)
+  }
+  return parsed
 }
 
 /**

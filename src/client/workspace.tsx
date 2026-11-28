@@ -14,13 +14,12 @@ import { RemoteCard } from './cards/remote.tsx'
 import { RootsCard } from './cards/roots.tsx'
 import { delay, messageOf } from './cards/shared.tsx'
 import { AdvancedGroup } from './cards/shell.tsx'
-import { TrashCard } from './cards/trash.tsx'
 import { TunnelCard } from './cards/tunnel.tsx'
 import { LanguageToggle, type MessageKey, scopeLabel, useWorkspaceI18n } from './i18n.tsx'
 import { installWorkspaceStyles } from './styles.ts'
 import { PLUGIN_VERSION } from '../shared/version.ts'
 
-export type AdminTab = 'roots' | 'remote' | 'tunnel' | 'devices' | 'image' | 'trash' | 'plugins' | 'app-download'
+export type AdminTab = 'roots' | 'remote' | 'tunnel' | 'devices' | 'image' | 'plugins' | 'app-download'
 export type PanelSection = AdminTab
 
 /**
@@ -33,7 +32,7 @@ export type PanelSection = AdminTab
  * `openCards` 永远不会含它、请求永远不发 —— 那不是「隐藏」，是把功能连根拔了，
  * 而类型和接口还留着，留下一个「看着还支持」的假象。
  */
-export const ADMIN_TABS: readonly AdminTab[] = ['remote', 'tunnel', 'devices', 'trash', 'app-download']
+export const ADMIN_TABS: readonly AdminTab[] = ['remote', 'tunnel', 'devices', 'app-download']
 
 /**
  * 收进「高级设置」的分区：主列表不显示，但**每一个都照旧可用**。
@@ -73,7 +72,6 @@ const TAB_DESC_KEYS: Record<AdminTab, MessageKey> = {
   tunnel: 'tunnelTabDesc',
   devices: 'devicesTabDesc',
   image: 'imageTabDesc',
-  trash: 'trashTabDesc',
   plugins: 'pluginsTabDesc',
   'app-download': 'appDownloadTabDesc',
 }
@@ -456,7 +454,6 @@ export function AdminPanel(props: {
       <RemoteCard open={isOpen('remote')} onToggle={() => toggleCard('remote')} />
       <TunnelCard open={isOpen('tunnel')} onToggle={() => toggleCard('tunnel')} />
       <DevicesCard open={isOpen('devices')} onToggle={() => toggleCard('devices')} />
-      <TrashCard open={isOpen('trash')} onToggle={() => toggleCard('trash')} />
       <AppDownloadCard open={isOpen('app-download')} onToggle={() => toggleCard('app-download')} />
       {/* 高级设置：主列表不显示，但功能照旧 —— 点开就能改。见 ADVANCED_TABS。 */}
       <AdvancedGroup open={advancedOpen} onToggle={() => setAdvancedOpen(v => !v)}>

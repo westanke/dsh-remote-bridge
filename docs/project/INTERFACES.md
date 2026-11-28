@@ -336,7 +336,7 @@ export function attachEmbeddedRoutes(webServer, router, remote, extraRoutes?): (
 ```
 
 `RemoteApiServer` 方法：`start()` / `stop()` / `status(operationId?)` /
-`enable(rootIds, scopes)` / `disable()` / `configure(host, port)` / `setCapabilityResolver(resolver)`
+`enable(rootIds, scopes, candidateScope?)` / `disable()` / `configure(host, port)` / `setCapabilityResolver(resolver)`
 —— 前六个返回或操作 `RemoteOperationView`。`attachEmbeddedRoutes` 负责挂
 `/dsh-workspace-api` 与图片路由。
 
@@ -496,7 +496,7 @@ export class FileService {  // 构造 (database, emit)
 | `HISTORY_BYTE_BUDGET` / `HISTORY_EVENT_BYTE_BUDGET` / `HISTORY_KEEP_CHARS` / `HISTORY_COMPACT_KEEP_CHARS` / `clampHistoryEvents` / `selectWithinBudget` / `applyHistoryBudget` / `compactHistoryEvents` | `history-budget.ts` | 历史字节预算与 compact 摘要投影（`history-compact-v1`） |
 | `normalizeHandoffSubdir` / `readHandoffSubdir` / `saveHandoffSubdir` / `imageHandoffView` / `declaredMediaType` / `sniffMediaType` / `loopbackHost` / `pluginPageReferer` / `sameOrigin` / `createImageRouteHandler` / `IMAGE_ROUTE` / `HANDOFF_FILE_NAME` / `HANDOFF_MEDIA_TYPES` | `image-handoff.ts` | 识图路径与只读图片路由 |
 | `CloudflaredTunnelManager` / `ensureCloudflared` / `downloadUrlFor` / `archSuffix` / `cloudflaredBinaryName` / `writeFromDeb` / `writeFromTgz` / `extractQuickTunnelUrl` / `downloadHttps` / `isDebSource` | `cloudflared.ts` | 隧道管理（三平台归档：linux 裸二进制 / windows `.exe` / darwin `.tgz`；先复用本机/DSH 缓存/PATH 再下载，issue #1） |
-| `classifyHost` / `detectEndpoints` / `normalizeBaseUrl` / `composeCandidates` / `filterCandidatesByScope` / `parseCandidateScope` / `defaultDisplayName` / `DEFAULT_PORT` / `KIND_LABEL` / `EndpointKind` / `CandidateSources` / `CandidateScope` / `CANDIDATE_SCOPES` / `DEFAULT_CANDIDATE_SCOPE` / `CANDIDATE_SCOPE_LABEL` | `config-text.ts` | 候选地址表与多路候选（`composeCandidates`：隧道在前 + 本机 LAN/虚拟网，地址去重）；`filterCandidatesByScope` 按 `/tunnel` 的范围参数裁剪（issue #2）。2.17.0 起不再导出 `DSH1:` 编码器（issue #28：IM 长文本掉字符） |
+| `classifyHost` / `detectEndpoints` / `normalizeBaseUrl` / `composeCandidates` / `filterCandidatesByScope` / `parseCandidateScope` / `candidateUrlsFor` / `defaultDisplayName` / `DEFAULT_PORT` / `KIND_LABEL` / `EndpointKind` / `CandidateSources` / `CandidateScope` / `CANDIDATE_SCOPES` / `DEFAULT_CANDIDATE_SCOPE` / `CANDIDATE_SCOPE_LABEL` | `config-text.ts` | 候选地址表与多路候选（`composeCandidates`：隧道在前 + 本机 LAN/虚拟网，地址去重）；`filterCandidatesByScope` 按 `/tunnel` 的范围参数裁剪（issue #2）；`candidateUrlsFor` 是「配对码下面列哪些地址」的唯一出口（issue #3）。2.17.0 起不再导出 `DSH1:` 编码器（issue #28：IM 长文本掉字符） |
 | `defaultRemoteHost` / `resolveListenerHost` / `listenOptionsFor` / `normalizeListenerHost` / `normalizeListenerPort` / `loopbackFor` / `DEFAULT_REMOTE_HOST` | `listener-config.ts` | 监听配置（Windows 默认 `::` 双栈并迁移历史 `0.0.0.0`，回环仍绑 `127.0.0.1`，issue #1） |
 | `probeHostServices` / `INJECTED_SERVICE_NAMES` / `OPTIONAL_SERVICE_NAMES` / `HostServiceReport` | `host-service-probe.ts` | 注入面探针 |
 | `BffRest` / `createBffRest` / `BffRoute` / `BffRestOptions` / `RestIo` / `ScheduleCreatePort` | `bff-rest.ts` | App 侧 REST BFF 的薄分发层（九条路由 → 三个域模块；JSON 体 32 KiB、chunk 体 1 MiB+4 KiB、speech 体 8 MiB） |
@@ -759,6 +759,7 @@ export const PLUGIN_VERSION: string          // shared/version.ts，与 package.
 | `export interface CandidateSources` | `src/host/config-text.ts` | interface |
 | `export function filterCandidatesByScope` | `src/host/config-text.ts` | function |
 | `export function parseCandidateScope` | `src/host/config-text.ts` | function |
+| `export function candidateUrlsFor` | `src/host/config-text.ts` | function |
 | `export type CandidateScope` | `src/host/config-text.ts` | type |
 | `export const CANDIDATE_SCOPES` | `src/host/config-text.ts` | const |
 | `export const DEFAULT_CANDIDATE_SCOPE` | `src/host/config-text.ts` | const |

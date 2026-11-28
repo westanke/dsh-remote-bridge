@@ -1,7 +1,8 @@
 // 设备自省与管理路由块 —— 从 router.ts 纯搬移（issue #3）。
+import { candidateUrlsFor } from '../config-text.ts'
 import { ApiError } from '../errors.ts'
 import { buildConfigText, ensureTunnelUrl } from './cloudflare.ts'
-import { readJson, sendJson, validateScopes, validateStringArray, optionalInteger, decodePathSegment, audit, type ApiRouteCtx, type RouteCtx } from './shared.ts'
+import { readJson, sendJson, validateScopes, validateStringArray, optionalInteger, decodePathSegment, readCandidateScopeField, audit, type ApiRouteCtx, type RouteCtx } from './shared.ts'
 
 // deviceSelf：/api/v1/devices/self（原 router.ts dispatch 块，issue #3 纯搬移）
 export async function deviceSelf(ctx: ApiRouteCtx): Promise<boolean> {
@@ -111,14 +112,30 @@ export async function manageDevicesAndAccess(ctx: RouteCtx): Promise<boolean> {
     return true
   }
 
+  // 单独生成一枚配对码（issue #3）。
+  //
+  // 除了码，还要回 `urls`：手机上要输的是「地址 + 码」，而面板此前只显示码，
+  // 用户得自己回头去「生成配置文本」里找地址 —— 两处口径还可能对不上。
+  // 现在范围（scope）与 /tunnel 同一套 `filterCandidatesByScope`，地址表由
+  // `candidateUrlsFor()` 一处算出来。
   if (method === 'POST' && pathname === '/manage/pairings') {
     const body = await readJson(req, 64_000) as Record<string, unknown>
-    sendJson(res, 201, options.database.createPairing(
+    const scope = readCandidateScopeField(body.scope)
+    const pairing = options.database.createPairing(
       validateStringArray(body.rootIds, 'rootIds'),
       validateScopes(body.scopes),
       undefined,
       { requestId },
-    ))
+    )
+    const status = options.remote.status()
+    // 隧道运行期管理面是关着的（判据 0），能走到这里说明隧道没跑 —— 但状态端点
+    // 豁免，仍可能读到一个正在收尾的 url；带上它不会错，反而少一次「地址对不上」。
+    const tunnelUrl = options.tunnels?.publicState.url ?? null
+    sendJson(res, 201, {
+      ...pairing,
+      scope,
+      urls: candidateUrlsFor({ port: status.port, listenerHost: status.host, tunnelUrl, scope }),
+    })
     return true
   }
 
@@ -135,7 +152,11 @@ export async function manageDevicesAndAccess(ctx: RouteCtx): Promise<boolean> {
     //
     // 默认 false：生成文本是一个只读动作，不许它偷偷拉起一个公网入口 —— 开公网是
     // 「一键开隧道」那个按钮的语义，得用户自己点。隧道本来就在跑时这里拿到的是复用地址。
-    const includeTunnel = body.includeTunnel === true
+    //
+    // issue #3：地址范围是 lan / wan 时**根本不拉起隧道** —— 用户选「只要局域网」，
+    // 却因为一个 includeTunnel 把公网入口打开，是比地址不匹配更糟的意外。
+    const scope = readCandidateScopeField(body.scope)
+    const includeTunnel = body.includeTunnel === true && (scope === 'tun' || scope === 'all')
     const tunnelUrl = includeTunnel ? await ensureTunnelUrl(options, requestId, 'config-text') : null
     sendJson(res, 201, buildConfigText(ctx.options, body, requestId, { tunnelUrl }))
     return true
@@ -146,6 +167,7 @@ export async function manageDevicesAndAccess(ctx: RouteCtx): Promise<boolean> {
     const operation = options.remote.enable(
       validateStringArray(body.rootIds, 'rootIds'),
       validateScopes(body.scopes),
+      readCandidateScopeField(body.scope),
     )
     res.setHeader('Connection', 'close')
     sendJson(res, 202, operation)

@@ -1,3 +1,29 @@
+## 未发布 · 设置面板按 lan/wan/tun/all 出码、配对码显示地址并改纯数字（AtomGit issue #3，2026-11-28）
+
+**起因**：`/tunnel` 有了地址范围参数（issue #2），设置面板却没有；「新建配对码」只给一串码，
+手机上要输的「地址 + 码」得自己去别处找，两处口径还可能对不上（面板按 3090 拼、实际监听
+换过端口）。另外面板里堆了一批只读说明与整张「回收站」卡，用户反馈是纯展示、没有用。
+
+**改动**：
+
+| 面 | 之前 | 现在 |
+| --- | --- | --- |
+| 远程访问卡的地址范围 | 无 | 四段选择器（局域网 / 外网+虚拟网 / 隧道+IPv6 / 全部，默认全部），同时作用于「启用并创建配对」「新建配对码」「生成连接短码」 |
+| `POST /manage/pairings` | 只回 `{code, expiresAt}` | 多回 `scope` 与 `urls`（按范围裁好的地址表，带**实际监听端口**） |
+| 启用远程访问的 operation | 只带 `pairingCode` | 多带 `pairingUrls`，面板在码下面直接列出可复制地址 |
+| `POST /manage/config/text` | 只认 `includeTunnel` | 认 `scope`；`lan`/`wan` 时**即使 `includeTunnel: true` 也不拉起隧道** |
+| 配对码 | 10 位十六进制 `A1B2C-D3E4F`（2^40） | 10 位纯数字 `48291-30675`（10^10），见 SECURITY.md 的熵推导 |
+| 纯展示内容 | 回收站整卡、远程卡状态 pill 与「已配置/实际」两行、httpWarning、tunnelHint、tunnelSecurityWarning、configTextScopeNote、grantNotice、pluginTrashHint | 删除；「实际监听 ≠ 已配置」时才提示一行 |
+
+**兼容性**：不传 `scope` 一律等于 `all`，与 2.18.0 行为一致；`normalizePairingCode` 只剥
+非字母数字再大写，所以**老十六进制码照旧能兑换**（已签出的码在其 10 分钟窗口内仍有效）。
+回收站相关服务端端点（`/api/v1/trash*`、`/manage/trash*`）一个没删，只是桌面设置面板不再
+提供入口 —— 手机 App 与独立文件页仍在用。
+
+**回归锚**：`tests/database-auth.spec.ts`、`tests/config-text.spec.ts`（`candidateUrlsFor`）、
+`tests/tunnel-create-config.spec.ts`（`/manage/pairings` 与 `config/text` 的范围）、
+`tests/http-api.spec.ts`（operation 的 `pairingUrls`）。
+
 ## 未发布 · `/tunnel` 地址范围参数 lan / wan / tun / all（AtomGit issue #2，2026-11-28）
 
 **起因**：`/tunnel` 只回一份「隧道 + 全部本机地址」的码。在家里发一次，手机偏要走公网隧道；

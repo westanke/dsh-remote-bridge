@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   CANDIDATE_SCOPES,
+  candidateUrlsFor,
   classifyHost,
   composeCandidates,
   detectEndpoints,
@@ -249,5 +250,38 @@ describe('filterCandidatesByScope（/tunnel 的地址范围，issue #2）', () =
       expect(parseCandidateScope(bad)).toBeNull()
     }
     expect([...CANDIDATE_SCOPES]).toEqual(['lan', 'wan', 'tun', 'all'])
+  })
+})
+
+/**
+ * issue #3：面板与 `/tunnel` 共用的那一条「按范围出地址」的路径。
+ *
+ * 这里只钉两件路由层测不到的事：缺省是 `all`（老用户不传 scope 时行为不变），
+ * 以及隧道地址只有在 tun / all 里才出现（lan / wan 刻意不带公网入口）。
+ */
+describe('candidateUrlsFor（issue #3）', () => {
+  const tunnel = 'https://abc.trycloudflare.com'
+
+  it('缺省 scope 等于 all：隧道在前 + 本机地址全在', () => {
+    const all = candidateUrlsFor({ port: 3090, listenerHost: '0.0.0.0', tunnelUrl: tunnel })
+    expect(all[0]).toBe(tunnel)
+    expect(all.length).toBeGreaterThan(1)
+    expect(candidateUrlsFor({ port: 3090, listenerHost: '0.0.0.0', tunnelUrl: tunnel, scope: 'all' })).toEqual(all)
+  })
+
+  it('lan / wan 都不含隧道，tun 里隧道仍在', () => {
+    for (const scope of ['lan', 'wan'] as const) {
+      const urls = candidateUrlsFor({ port: 3090, listenerHost: '0.0.0.0', tunnelUrl: tunnel, scope })
+      expect(urls).not.toContain(tunnel)
+    }
+    const tun = candidateUrlsFor({ port: 3090, listenerHost: '0.0.0.0', tunnelUrl: tunnel, scope: 'tun' })
+    expect(tun).toContain(tunnel)
+    // tun 的其余项必须是 IPv6（公网 IPv4 属于 wan，不属于 tun）。
+    for (const url of tun.filter(url => url !== tunnel)) expect(url).toContain('[')
+  })
+
+  it('端口跟着入参走，不写死 3090', () => {
+    const urls = candidateUrlsFor({ port: 41234, listenerHost: '0.0.0.0', scope: 'lan' })
+    for (const url of urls) expect(url).toContain(':41234')
   })
 })

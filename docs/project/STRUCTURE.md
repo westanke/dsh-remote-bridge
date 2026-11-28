@@ -398,7 +398,6 @@ host services 之上重建 0.1.x 的 `apiProxy` 面容，让 `chat-adapter` / `s
 | `src/client/cards/remote.tsx` | file | 远程访问卡（绑定 IP/端口、配对码、权限勾选、操作轮询 poll） |
 | `src/client/cards/tunnel.tsx` | file | 外网隧道卡（Cloudflare 快速隧道的开关与进度） |
 | `src/client/cards/devices.tsx` | file | 设备卡（已配对手机、权限与吊销、DeviceRow） |
-| `src/client/cards/trash.tsx` | file | 回收站卡（手机端删除记录的恢复与彻底清理，展开才拉取） |
 | `src/client/cards/image.tsx` | file | 识图卡（图片落盘目录名，展开才拉取） |
 | `src/client/cards/plugins.tsx` | file | 插件卡（profile 插件清单、启停、检查更新） |
 | `src/client/cards/app-download.tsx` | file | App 下载卡（dsh-Chat × 双站二维码与地址） |

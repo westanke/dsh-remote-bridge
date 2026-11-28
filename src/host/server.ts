@@ -14,6 +14,7 @@ import { ApiError } from './errors.ts'
 import type { WorkspaceEventBus } from './event-bus.ts'
 import { MobileGatewayWsHandler } from './ws-handler.ts'
 import { makeServerFrame, pickMobileSubprotocol, WS_PATH, WS_PERMESSAGE_DEFLATE } from './ws-protocol.ts'
+import { candidateUrlsFor, type CandidateScope } from './config-text.ts'
 import { defaultRemoteHost, listenOptionsFor, loopbackFor, normalizeListenerPort, resolveListenerHost } from './listener-config.ts'
 import {
   recordBroadcastEvent,
@@ -72,6 +73,8 @@ interface OperationState extends RemoteOperationView {
   configuredPort?: number
   rootIds?: string[]
   scopes?: DeviceScope[]
+  /** 这条 enable 请求要的地址范围（issue #3）；缺省 all。 */
+  candidateScope?: CandidateScope
 }
 
 /**
@@ -424,7 +427,7 @@ export class RemoteApiServer implements RemoteControl {
     }
   }
 
-  enable(rootIds: string[], scopes: DeviceScope[]): RemoteOperationView {
+  enable(rootIds: string[], scopes: DeviceScope[], candidateScope?: CandidateScope): RemoteOperationView {
     return this.scheduleChange({
       kind: 'enable',
       targetHost: this.configuredHost,
@@ -432,6 +435,7 @@ export class RemoteApiServer implements RemoteControl {
       nextRemoteEnabled: true,
       rootIds,
       scopes,
+      ...(candidateScope === undefined ? {} : { candidateScope }),
     })
   }
 
@@ -511,6 +515,13 @@ export class RemoteApiServer implements RemoteControl {
         const pairing = this.options.database.createPairing(operation.rootIds ?? [], operation.scopes ?? [])
         operation.pairingCode = pairing.code
         operation.pairingExpiresAt = pairing.expiresAt
+        // 码要配地址用（issue #3）：这里用**实际**绑定的 host/port 算候选，
+        // 而且不带隧道 —— 隧道运行期管理面是关的，enable 根本走不到这里。
+        operation.pairingUrls = candidateUrlsFor({
+          port: this.actualPort,
+          listenerHost: this.host,
+          ...(operation.candidateScope === undefined ? {} : { scope: operation.candidateScope }),
+        })
       }
       operation.state = 'succeeded'
       this.options.database.audit('admin', 'loopback-admin', `listener.${operation.kind}`, undefined, undefined, {
@@ -1137,6 +1148,7 @@ function publicOperation(operation: OperationState): RemoteOperationView {
     ...(operation.message === undefined ? {} : { message: operation.message }),
     ...(operation.pairingCode === undefined ? {} : { pairingCode: operation.pairingCode }),
     ...(operation.pairingExpiresAt === undefined ? {} : { pairingExpiresAt: operation.pairingExpiresAt }),
+    ...(operation.pairingUrls === undefined ? {} : { pairingUrls: operation.pairingUrls }),
   }
 }
 

@@ -1667,3 +1667,39 @@ App 里看得到候选、连哪条都超时。
 
 **回归锚**：`tests/tunnel-create-config.spec.ts` › `/tunnel 的地址范围参数（issue #2）`
 （用例里的 `remote` 使用随机端口，写死 3090 会立刻红）。
+
+---
+
+### 配对码别用 toString 拼位数
+
+**症状**：配对码偶尔只有 9 位（`4829-13067`），仍然能被兑换，看不出异常。
+
+**根因**：`randomInt(0, 10^10).toString()` 在数字小于 10^9 时**丢掉前导零**；用
+`padStart(10, '0')` 之前，码空间就从 10^10 掉到 9×10^9，形状上也仍像一枚正常码，测试里
+`/^[0-9]{5}-[0-9]{5}$/` 一类的宽松写法照样通过。
+
+**现在怎么办**：生成走 `createPairingCode()`：`randomInt(...).toString().padStart(10, '0')`
+再插连字符；用 `randomInt` 而不是 `randomBytes % 10`（后者对 256 取模有偏）。改位数/放宽限流时
+记得同步 `docs/project/SECURITY.md` 的熵推导 —— 位数与限流是同一条安全断言的两半。
+
+**回归锚**：`tests/database-auth.spec.ts` › `keeps leading zeros so the space stays 10^10`
+（200 枚里必须出现 0 开头的码）。
+
+---
+
+### 删一张设置卡要连清四处
+
+**症状**：删掉 `src/client/cards/trash.tsx` 之后，`pnpm check` 或开发时页面报错各不相同 ——
+`docs:check` 说 STRUCTURE 锚点里的文件不存在、`tsc` 说 `'trash'` 不是 `AdminTab`、
+页面渲染出一行 `trashTabDesc` 字面量、i18n 测试说键不存在。
+
+**根因**：一张卡在四个地方各有一份登记：`src/client/workspace.tsx` 的 `ADMIN_TABS` /
+`TAB_DESC_KEYS` / 渲染处、`src/client/cards/context.ts` 的 `CardTab`、
+`src/client/cards/shell.tsx` 的 `tabIcon` 与描述表、`src/client/i18n.tsx` 的文案键，
+外加 `docs/project/STRUCTURE.md` 的机检锚点。漏一处就是上面四种报错里的一种。
+
+**现在怎么办**：按 `grep -rn "<tab>" src/client docs/project/STRUCTURE.md` 的顺序清，
+先删用到的文案键再删 i18n 条目（`MessageKey = keyof typeof zh` 会把漏网的地方变成类型错误），
+最后 `docs:check` 确认锚点同步。
+
+**回归锚**：`pnpm check` 的 typecheck + docs:check 两道门。

@@ -17,7 +17,7 @@ import {
 import { DEFAULT_DEVICE_NAME } from '../device-identity.ts'
 import { ApiError } from '../errors.ts'
 import { type RouterOptions } from '../router.ts'
-import { readJson, sendJson, validateScopes, validateStringArray, DEFAULT_CONFIG_SCOPES, readOptionalText, readRequestedEndpoints, audit, type RouteCtx } from './shared.ts'
+import { readJson, sendJson, validateScopes, validateStringArray, DEFAULT_CONFIG_SCOPES, readCandidateScopeField, readOptionalText, readRequestedEndpoints, audit, type RouteCtx } from './shared.ts'
 
 // manageCloudflare：/manage/cloudflare/status, /manage/cloudflare/activity, /manage/cloudflare/create, /manage/cloudflare/stop（原 router.ts dispatch 块，issue #3 纯搬移）
 export async function manageCloudflare(ctx: RouteCtx): Promise<boolean> {
@@ -118,19 +118,30 @@ export function buildConfigText(
       ? Number(body.port)
       : (Number.isInteger(listening) && listening > 0 ? listening : DEFAULT_PORT)
 
+    // 地址范围（issue #3）：与 /tunnel 同一套口径。不传 = all，与 2.18.0 之前的
+    // 行为完全一致；传了非法值要报错而不是静默退回 all —— 静默退回会让用户以为
+    // 「我明明选了局域网，怎么码里还有公网地址」。
+    const requestedScope = readCandidateScopeField(body.scope)
+    // 隧道是「公网入口」：lan / wan 这两个范围刻意不带上它（家里走隧道更慢，
+    // 而 wan 的语义是「出门能连的地址」，隧道由 tun 负责）。
+    const wantsTunnel = requestedScope === 'tun' || requestedScope === 'all'
+    const tunnelUrl = wantsTunnel ? (attach.tunnelUrl ?? null) : null
+
     // 多路候选：隧道（若本轮带上）+ 本机 LAN / 虚拟网。顺序口径见 composeCandidates。
-    const endpoints = composeCandidates({
+    const endpoints = filterCandidatesByScope(composeCandidates({
       port,
       listenerHost: options.remote.status().host,
-      tunnelUrl: attach.tunnelUrl ?? null,
+      tunnelUrl,
       explicit: readRequestedEndpoints(body.endpoints),
       ...(attach.tunnelLabel === undefined ? {} : { tunnelLabel: attach.tunnelLabel }),
-    })
+    }), requestedScope, tunnelUrl)
     if (endpoints.length === 0) {
       throw new ApiError(
         400,
         'NO_ENDPOINT',
-        'No usable local address was detected. Provide endpoints explicitly.',
+        requestedScope === 'all'
+          ? 'No usable local address was detected. Provide endpoints explicitly.'
+          : `按「${CANDIDATE_SCOPE_LABEL[requestedScope]}」筛完没有可用地址；换一个范围或显式给出 endpoints。`,
       )
     }
 

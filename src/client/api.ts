@@ -41,7 +41,20 @@ export interface ConfigTextEndpointDraft {
  * Do **not** blanket-forward `DEVICE_SCOPES` here — that array also contains `files.delete` and
  * `settings.write`, so it would silently hand a phone the right to delete files and rewrite settings.
  */
+/**
+ * 地址范围（issue #3）：与宿主的 `/tunnel [lan|wan|tun|all]` 同一套口径。
+ *
+ * 客户端只做「把这四个词传上去」，裁剪全在宿主（`filterCandidatesByScope`）——
+ * 两处各写一套筛选，迟早会出现「面板上说三条、码里只有一条」。
+ */
+export type CandidateScope = 'lan' | 'wan' | 'tun' | 'all'
+
+/** 可选范围的顺序即界面上按钮的顺序。 */
+export const CANDIDATE_SCOPES: readonly CandidateScope[] = ['lan', 'wan', 'tun', 'all']
+
 export interface ConfigTextDraft {
+  /** 地址范围；缺省 `all`（与 2.18.0 之前一致）。 */
+  scope?: CandidateScope
   displayName?: string
   deviceName?: string
   scopes?: DeviceScope[]
@@ -194,7 +207,15 @@ export class WorkspaceApi {
     remoteEnabled: boolean
     roots: (RootView & { realPath: string })[]
     devices: DeviceView[]
-    operation?: { state: string; code?: string; message?: string; pairingCode?: string; pairingExpiresAt?: number }
+    operation?: {
+      state: string
+      code?: string
+      message?: string
+      pairingCode?: string
+      pairingExpiresAt?: number
+      /** 这枚码对应的候选地址（issue #3），面板直接显示在码下面。 */
+      pairingUrls?: string[]
+    }
   }> {
     return this.manageJson('/status')
   }
@@ -211,8 +232,11 @@ export class WorkspaceApi {
     await this.manageJson(`/roots/${encodeURIComponent(rootId)}`, { method: 'DELETE' })
   }
 
-  async enableRemote(rootIds: string[], scopes: DeviceScope[]): Promise<{ id: string }> {
-    return this.manageJson('/remote/enable', { method: 'POST', body: JSON.stringify({ rootIds, scopes }) })
+  async enableRemote(rootIds: string[], scopes: DeviceScope[], scope?: CandidateScope): Promise<{ id: string }> {
+    return this.manageJson('/remote/enable', {
+      method: 'POST',
+      body: JSON.stringify({ rootIds, scopes, ...(scope === undefined ? {} : { scope }) }),
+    })
   }
 
   async disableRemote(): Promise<{ id: string }> {
@@ -223,8 +247,16 @@ export class WorkspaceApi {
     return this.manageJson('/remote/listener', { method: 'PUT', body: JSON.stringify({ host, port }) })
   }
 
-  async createPairing(rootIds: string[], scopes: DeviceScope[]): Promise<{ code: string; expiresAt: number }> {
-    return this.manageJson('/pairings', { method: 'POST', body: JSON.stringify({ rootIds, scopes }) })
+  /**
+   * 单独生成一枚配对码。
+   *
+   * 回 `urls`（issue #3）：码是「地址 + 码」的一半，面板要在码下面把地址也列出来。
+   */
+  async createPairing(rootIds: string[], scopes: DeviceScope[], scope?: CandidateScope): Promise<{ code: string; expiresAt: number; urls: string[]; scope?: CandidateScope }> {
+    return this.manageJson('/pairings', {
+      method: 'POST',
+      body: JSON.stringify({ rootIds, scopes, ...(scope === undefined ? {} : { scope }) }),
+    })
   }
 
   /**

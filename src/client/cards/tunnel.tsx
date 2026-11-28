@@ -43,8 +43,6 @@ export function TunnelCard(props: { open: boolean; onToggle(): void }): JSX.Elem
         <span><strong>{t('tunnelTitle')}</strong></span>
         <span className={`daw-pill${tunnel?.running ? ' on' : ''}`}>{tunnel?.running ? t('tunnelRunning') : t('tunnelStopped')}</span>
       </div>
-      <p className="daw-list-meta">{t('tunnelHint')}</p>
-      <div className="daw-warning">{t('tunnelSecurityWarning')}</div>
       {tunnel?.errorKey !== undefined && <div className="daw-warning" role="alert">{t(tunnel.errorKey, tunnel.errorParams ?? {})}</div>}
       {tunnel?.errorKey === undefined && tunnel?.error !== undefined && <div className="daw-warning" role="alert">{tunnel.error}</div>}
       {tunnel?.url !== undefined && tunnel.url !== null && (

@@ -134,6 +134,29 @@ path/query 可能带凭据）。`discover` 的 `baseURL` 是临时覆盖、不�
 在配对界面上手动勾选 —— 默认值与「能给它」是两件事。这与 `CHANGELOG-DEV.md` 里
 「`settings.write` 是用户显式要求才给的东西」那句声明对齐。
 
+### 配对码的熵与形状（issue #3 起）
+
+码从「10 位十六进制」改成「10 位纯数字」（`48291-30675`）。这是**有意的熵降级**，
+只在限流与有效期叠加下成立，三件事必须一起看：
+
+| 约束 | 值 | 实现在哪 |
+| --- | --- | --- |
+| 码空间 | 10^10（约 2^33.2） | `src/host/db/pairings.ts` 的 `createPairingCode` |
+| 有效期 | 10 分钟，一次有效 | `createPairing` 的 `ttlMs` 默认值 + `used_at` |
+| 兑换限流 | 每对端 10 次 / 10 分钟 | `AuthService.pairingAttemptsByPeer`（`local` / `tunnelled` 两桶） |
+
+隧道侧所有公网请求都经过 cloudflared，`remoteAddress` 恒为 `127.0.0.1`，因此**公网整体
+只有一个桶**：10 次 / 10 分钟。按上限估，一天 1440 次 × 10 分钟窗口，命中概率
+`1440 / 10^10` ≈ 1.4×10^-7，且还得正好落在这个码尚未被真主人兑换的那 10 分钟里。
+
+**为什么不再加长**：码是给人念的。位数一多，用户就回到「对着屏幕抄」的状态，而 `0/O`、
+`1/I` 这类形近字符正是原先十六进制码最容易出错的地方。若将来放宽限流（例如给每台设备
+独立桶或提高阈值），**必须同步把位数加回来** —— 这两者是同一条安全断言的两半。
+
+**回归断言**：`tests/database-auth.spec.ts`（10 位数字形状、前导零不丢 ⇒ 空间真的是 10^10）、
+`tests/tunnel-create-config.spec.ts`（`/manage/pairings` 回码 + 地址，未知范围 400）、
+`tests/http-api.spec.ts`（兑换路径 + operation 带 `pairingUrls`）。
+
 ## 管理面的信任边界（2.5.1 起）
 
 管理面 `/manage/**` 与「回环管理员」身份（`X-Dsh-Workspace-Admin: 1`）的判据是**四层**，

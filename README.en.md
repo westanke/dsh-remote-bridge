@@ -8,7 +8,7 @@
 </p>
 
 <p align="center">
-  <img src="assets/promo-16x9.en.png" alt="dsh-remote-bridge: the Phone settings panel (five cards in the main list plus an Advanced settings group)" width="100%">
+  <img src="assets/promo-16x9.en.png" alt="dsh-remote-bridge: the Phone settings panel (four cards in the main list plus an Advanced settings group)" width="100%">
 </p>
 
 <p align="center">
@@ -23,7 +23,7 @@
   <img alt="License" src="https://img.shields.io/badge/license-AGPL--3.0-2da44e">
 </p>
 
-`dsh-remote-bridge` is the remote-access bridge plugin for DeepSeek Harness (DSH). It translates DSH's private remote protocol into **two device protocol surfaces**: the bidirectional `/ws/mobile` frames (every new capability lands only here, since v2.8) and the versioned REST `/api/v1` (legacy: frozen, shrink-only, being retired) so dsh-Chat ([GitHub](https://github.com/westanke/dsh-Chat) · [Gitee](https://gitee.com/westanke/dsh-Chat)), among other trusted clients, can keep using the same chat, workspace, and file capabilities while away from the machine. On the desktop it provides a **Phone settings** section inside your DSH settings, rendering collapsible cards inline: five in the main list (Remote / Public tunnel / Devices / Trash / App download) plus a collapsed-by-default **Advanced settings** group holding Roots, Image reading and Plugins — every card folds on its own and several may stay open at once.
+`dsh-remote-bridge` is the remote-access bridge plugin for DeepSeek Harness (DSH). It translates DSH's private remote protocol into **two device protocol surfaces**: the bidirectional `/ws/mobile` frames (every new capability lands only here, since v2.8) and the versioned REST `/api/v1` (legacy: frozen, shrink-only, being retired) so dsh-Chat ([GitHub](https://github.com/westanke/dsh-Chat) · [Gitee](https://gitee.com/westanke/dsh-Chat)), among other trusted clients, can keep using the same chat, workspace, and file capabilities while away from the machine. On the desktop it provides a **Phone settings** section inside your DSH settings, rendering collapsible cards inline: four in the main list (Remote / Public tunnel / Devices / App download) plus a collapsed-by-default **Advanced settings** group holding Roots, Image reading and Plugins — every card folds on its own and several may stay open at once.
 
 **Who it is for**: people who use DSH as their main tool but do not want to be tied to the desk. Remote access is **off by default** — until you enable it, the plugin listens on loopback only, so installing it never exposes the machine to the LAN by itself.
 
@@ -38,7 +38,7 @@ The interface is bilingual and defaults to Chinese. Prebuilt packages run on Win
 
 ## What it looks like
 
-The desktop entry lives **inside your DSH settings**: look for the section titled **📱 Phone settings**, which renders collapsible cards inline (five in the main list plus an Advanced settings group) — no second dialog. It is settings-only and contains **no file tree**: the standalone page `/dsh-workspace` and its file tree and CodeMirror editor were deleted in 2.2.0. The reason and the cost are covered in "No file-management UI on the desktop" below.
+The desktop entry lives **inside your DSH settings**: look for the section titled **📱 Phone settings**, which renders collapsible cards inline (four in the main list plus an Advanced settings group) — no second dialog. It is settings-only and contains **no file tree**: the standalone page `/dsh-workspace` and its file tree and CodeMirror editor were deleted in 2.2.0. The reason and the cost are covered in "No file-management UI on the desktop" below.
 
 Remote access remains disabled until a local administrator chooses a bind address, port, and initial device permissions.
 
@@ -145,10 +145,9 @@ The entry lives in DSH settings under the title **Phone settings**. It renders s
 | Section | Purpose |
 | --- | --- |
 | Roots | Add or remove authorized directories and set display labels. The current DSH workspace is registered automatically as a **default root** — it cannot be removed, but it stays fully accessible |
-| Remote | Set bind IP/port, enable remote access, and create pairing codes |
+| Remote | Set bind IP/port, pick an address range (LAN / WAN+private net / tunnel+IPv6 / everything), enable remote access, and create pairing codes — the addresses appear right under the code |
 | Devices | Inspect and revoke device scopes and per-root grants |
 | Image reading | Set the handoff directory (the image-reading path); shows the read-only factory default `.dsh-images` and the fallback directory |
-| Trash | View and restore deleted entries (only deletions made from the phone app appear here) |
 | Plugins | See what this profile has installed, enable or disable it, check for updates, and jump to the kernel's plugin list |
 | App download | Scan to install dsh-Chat; the codes point at both hosts' Releases list pages |
 
@@ -210,7 +209,7 @@ Once the app is installed, generate a **connection code** or a pairing code unde
 
 The connection code is one line, `<url1>,<url2>,…#<pairingCode>`: the left half is an
 **ordered candidate list** (tunnel first, then the LAN and virtual-network addresses detected on
-this machine), the right half is an 8-character, 10-minute, single-use pairing code. A client that
+this machine), the right half is a 10-digit, 10-minute, single-use pairing code (such as `48291-30675`). A client that
 probes picks the local address at home and the tunnel when you are away, so one line works in both
 places; older clients that only read the first entry still get the tunnel, which works everywhere.
 Add your own public address (DDNS + port forwarding, or IPv6) by passing it in `endpoints`.
@@ -253,7 +252,7 @@ The following controls remain active over both HTTP and HTTPS:
   provider that already stores a credential to a new host also requires a fresh API key
   (the kernel sends that key to the address, so this is a credential boundary, not just SSRF).
 
-Only a loopback client may add roots, change device grants, create pairing codes, configure the listener, or permanently purge trash.
+Only a loopback client may add roots, change device grants, create pairing codes, configure the listener, or permanently purge trash; the desktop settings panel no longer offers a trash card (the phone app and the REST file endpoints still do).
 
 ### Local LLM endpoints (ollama / LM Studio)
 

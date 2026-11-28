@@ -488,3 +488,99 @@ describe('POST /manage/config/text 多路配置码（2.16.0）', () => {
       await harness.close()
     }
   })
+
+/** 从候选 URL 里取出裸主机（IPv6 带方括号，`classifyHost` 要的是裸形式）。 */
+function hostOfUrl(url: string): string {
+  const hostname = new URL(url).hostname
+  return hostname.startsWith('[') ? hostname.slice(1, -1) : hostname
+}
+
+/**
+ * issue #3：设置面板与 `/tunnel` 共用同一套地址范围口径。
+ *
+ * 三处入口（配对码 / 配置文本 / 启用远程访问的 operation）都走
+ * `filterCandidatesByScope`，这里从 HTTP 面确认「传下去的 scope 真被用上了」——
+ * 只测 `filterCandidatesByScope` 本身挡不住「路由读了 scope 但没往下传」。
+ */
+describe('/manage/pairings 与 /manage/config/text 的地址范围（issue #3）', () => {
+  it('默认不传 scope = all：回码 + 码下地址，码是 10 位数字', async () => {
+    const harness = await startHarness(false)
+    try {
+      const rootId = harness.database.listRoots()[0]?.id ?? ''
+      const response = await adminRequest(harness.port, '/manage/pairings', {
+        method: 'POST',
+        body: JSON.stringify({ rootIds: [rootId], scopes: ['files.read'] }),
+      })
+      expect(response.status).toBe(201)
+      const parsed = JSON.parse(response.body) as { code: string; scope: string; urls: string[] }
+      expect(parsed.code).toMatch(/^[0-9]{5}-[0-9]{5}$/)
+      expect(parsed.scope).toBe('all')
+      expect(Array.isArray(parsed.urls)).toBe(true)
+      // 码里的地址必须带**实际监听端口**：按 3090 默认值拼出来的地址在改过端口的
+      // 机器上全是死的（与 `/tunnel` 同一个坑，见 PITFALLS）。
+      for (const url of parsed.urls) expect(url).toContain(`:${harness.port}`)
+    } finally {
+      await harness.close()
+    }
+  })
+
+  it('lan 只回局域网地址，wan 只回外网 / 虚拟网 / IPv6', async () => {
+    const harness = await startHarness(false)
+    try {
+      const rootId = harness.database.listRoots()[0]?.id ?? ''
+      const post = (scope: string) => adminRequest(harness.port, '/manage/pairings', {
+        method: 'POST',
+        body: JSON.stringify({ rootIds: [rootId], scopes: ['files.read'], scope }),
+      })
+      const lan = JSON.parse((await post('lan')).body) as { urls: string[] }
+      const wan = JSON.parse((await post('wan')).body) as { urls: string[] }
+
+      for (const url of lan.urls) expect(classifyHost(hostOfUrl(url))).toBe('LAN')
+      for (const url of wan.urls) {
+        const kind = classifyHost(hostOfUrl(url))
+        const ipv6 = hostOfUrl(url).includes(':')
+        expect(kind === 'WAN' || kind === 'VIRTUAL_NET' || ipv6).toBe(true)
+        // wan 的语义是「出门能连的地址」：回环绝不该出现在这里。
+        expect(hostOfUrl(url)).not.toBe('127.0.0.1')
+      }
+      // 同一台机器上两类地址不该完全一样（LAN 是内网口，wan 是公网/虚拟网）。
+      expect(lan.urls.join(',')).not.toBe(wan.urls.join(','))
+    } finally {
+      await harness.close()
+    }
+  })
+
+  it('未知 scope 回 400 CANDIDATE_SCOPE_INVALID，不静默退回 all', async () => {
+    const harness = await startHarness(false)
+    try {
+      const rootId = harness.database.listRoots()[0]?.id ?? ''
+      const response = await adminRequest(harness.port, '/manage/pairings', {
+        method: 'POST',
+        body: JSON.stringify({ rootIds: [rootId], scopes: ['files.read'], scope: 'everything' }),
+      })
+      expect(response.status).toBe(400)
+      expect(response.body).toContain('CANDIDATE_SCOPE_INVALID')
+      // 静默退 all 会让用户以为「我选了局域网，怎么码里还有公网地址」。
+    } finally {
+      await harness.close()
+    }
+  })
+
+  it('config/text 选 lan 时即使 includeTunnel 也不拉起隧道', async () => {
+    const harness = await startHarness(false)
+    try {
+      const response = await adminRequest(harness.port, '/manage/config/text', {
+        method: 'POST',
+        body: JSON.stringify({ scope: 'lan', includeTunnel: true }),
+      })
+      expect(response.status).toBe(201)
+      // 用户选「只要局域网」却因为 includeTunnel 把公网入口打开，是比地址不匹配
+      // 更糟的意外 —— 这条断言守的就是它。
+      expect(harness.tunnels.startQuickCalls).toBe(0)
+      const parsed = JSON.parse(response.body) as { endpoints: Array<{ baseUrl: string }> }
+      for (const endpoint of parsed.endpoints) expect(classifyHost(hostOfUrl(endpoint.baseUrl))).toBe('LAN')
+    } finally {
+      await harness.close()
+    }
+  })
+})

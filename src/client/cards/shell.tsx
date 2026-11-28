@@ -17,7 +17,6 @@ import {
   Package,
   SlidersHorizontal,
   Smartphone,
-  Trash2,
   Upload,
 } from 'lucide-react'
 
@@ -36,7 +35,6 @@ export function tabIcon(tab: CardTab): JSX.Element {
   if (tab === 'roots') return <HardDrive size={15} />
   if (tab === 'devices') return <Smartphone size={15} />
   if (tab === 'image') return <ImageIcon size={15} />
-  if (tab === 'trash') return <Trash2 size={15} />
   if (tab === 'plugins') return <Package size={15} />
   if (tab === 'remote') return <Upload size={15} />
   if (tab === 'tunnel') return <Cloud size={15} />
@@ -132,7 +130,6 @@ const TAB_DESC_KEYS: Record<CardTab, MessageKey> = {
   tunnel: 'tunnelTabDesc',
   devices: 'devicesTabDesc',
   image: 'imageTabDesc',
-  trash: 'trashTabDesc',
   plugins: 'pluginsTabDesc',
   'app-download': 'appDownloadTabDesc',
 }

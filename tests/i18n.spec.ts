@@ -28,7 +28,6 @@ describe('workspace translations', () => {
     expect(translate('zh-CN', 'remoteTab')).toBe('远程访问')
     expect(translate('zh-CN', 'devicesTab')).toBe('设备')
     expect(translate('zh-CN', 'imageTab')).toBe('识图')
-    expect(translate('zh-CN', 'trashTab')).toBe('回收站')
     expect(translate('zh-CN', 'auditTab')).toBe('审计')
     expect(translate('zh-CN', 'appDownloadTab')).toBe('App 下载')
     expect(translate('en', 'rootsTab')).toBe('Roots')
@@ -76,7 +75,7 @@ describe('workspace translations', () => {
   it('translates every card description in both locales', () => {
     const keys = [
       'rootsTabDesc', 'remoteTabDesc', 'devicesTabDesc', 'imageTabDesc',
-      'trashTabDesc', 'auditTabDesc', 'appDownloadTabDesc',
+      'auditTabDesc', 'appDownloadTabDesc',
     ] as const
     for (const key of keys) {
       expect(translate('zh-CN', key)).not.toBe('')

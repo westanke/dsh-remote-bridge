@@ -24,7 +24,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 
 import type { DeviceScope } from '../../shared/contracts.ts'
 import { DEFAULT_DEVICE_SCOPES, DEVICE_SCOPES } from '../../shared/contracts.ts'
-import type { ConfigTextResult } from '../api.ts'
+import { CANDIDATE_SCOPES, type CandidateScope, type ConfigTextResult } from '../api.ts'
 import { scopeLabel, useWorkspaceI18n } from '../i18n.tsx'
 import { useCards } from './context.ts'
 import {
@@ -37,6 +37,14 @@ import {
   POLL_INTERVAL_MS,
 } from './shared.tsx'
 import { SettingsCard, tabDescKey, tabLabelKey } from './shell.tsx'
+
+/** 地址范围的按钮文案键（与服务端 `/tunnel` 的四个取值一一对应）。 */
+const CANDIDATE_SCOPE_KEYS = {
+  lan: 'candidateScopeLan',
+  wan: 'candidateScopeWan',
+  tun: 'candidateScopeTun',
+  all: 'candidateScopeAll',
+} as const
 
 export function RemoteCard(props: { open: boolean; onToggle(): void }): JSX.Element {
   const { t, locale } = useWorkspaceI18n()
@@ -65,7 +73,10 @@ export function RemoteCard(props: { open: boolean; onToggle(): void }): JSX.Elem
   // 「这张卡正在编辑什么」泄漏到全局（判据见 cards/context.ts）。
   const [listenerHost, setListenerHost] = useState('0.0.0.0')
   const [listenerPort, setListenerPort] = useState('3090')
-  const [pairing, setPairing] = useState<{ code: string; expiresAt?: number }>()
+  const [pairing, setPairing] = useState<{ code: string; expiresAt?: number; urls?: string[] }>()
+  // 地址范围（issue #3）：与 `/tunnel [lan|wan|tun|all]` 同一套口径。默认 all ——
+  // 与 2.18.0 之前的行为一致，老用户不该因为升级而少拿到地址。
+  const [candidateScope, setCandidateScope] = useState<CandidateScope>('all')
   // 当前时间（每 30s 走一格），只用于配对码倒计时（UI-10）。
   const [now, setNow] = useState(() => Date.now())
 
@@ -110,6 +121,9 @@ export function RemoteCard(props: { open: boolean; onToggle(): void }): JSX.Elem
     : (status?.devices?.length ?? 0) === 0
       ? t('scopeGrantNotice')
       : t('scopeGrantNoticeExisting')
+  // 实际监听与已配置不一致（端口被占用回退、或配置写进去了但重绑失败）。
+  // 只在这一态提示；其余时候把两行常驻展示等于重复用户已知的信息。
+  const listenerMismatch = status !== undefined && (status.host !== status.configuredHost || status.port !== status.configuredPort)
   const parsedListenerPort = Number(listenerPort)
   const listenerPortValid = Number.isInteger(parsedListenerPort) && parsedListenerPort >= 1 && parsedListenerPort <= 65535
   const listenerDirty = status !== undefined && (
@@ -132,6 +146,7 @@ export function RemoteCard(props: { open: boolean; onToggle(): void }): JSX.Elem
         if (operation.pairingCode !== undefined) setPairing({
           code: operation.pairingCode,
           ...(operation.pairingExpiresAt === undefined ? {} : { expiresAt: operation.pairingExpiresAt }),
+          ...(operation.pairingUrls === undefined ? {} : { urls: operation.pairingUrls }),
         })
         return
       }
@@ -147,7 +162,6 @@ export function RemoteCard(props: { open: boolean; onToggle(): void }): JSX.Elem
     open={props.open}
     onToggle={props.onToggle}
   >
-    <div className="daw-warning">{t('httpWarning')}</div>
     {roots.length === 0 && !managementLocked && <div className="daw-warning">{t('addRootBeforeRemote')}</div>}
     <div className="daw-listener-form">
       <label className="daw-field"><span>{t('bindIp')}</span><input className="daw-input" value={listenerHost} disabled={status?.remoteEnabled || managementLocked} spellCheck={false} placeholder="0.0.0.0 / ::" onChange={event => setListenerHost(event.target.value)} /></label>
@@ -160,17 +174,31 @@ export function RemoteCard(props: { open: boolean; onToggle(): void }): JSX.Elem
           .catch(setError)
       }}>{t('saveListener')}</button>
     </div>
-    <div className="daw-listener-status">
-      <span><strong>{t('configuredListener')}:</strong> {formatEndpoint(status?.configuredHost ?? listenerHost, status?.configuredPort ?? parsedListenerPort)}</span>
-      <span><strong>{t('actualListener')}:</strong> {formatEndpoint(status?.host ?? '127.0.0.1', status?.port ?? parsedListenerPort)}</span>
-    </div>
+    {/* 实际监听与已配置不一致才算异常（端口被占用后回退到回环是真实发生过的）：
+        常态下把「已配置 / 实际」两行常驻念一遍，是把已知信息重复两次。 */}
+    {listenerMismatch && <div className="daw-warning">{t('listenerMismatch', {
+      configured: formatEndpoint(status!.configuredHost, status!.configuredPort),
+      actual: formatEndpoint(status!.host, status!.port),
+    })}</div>}
     {status?.remoteEnabled && <div className="daw-list-meta daw-listener-hint">{t('disableToEditListener')}</div>}
     {!status?.remoteEnabled && listenerDirty && <div className="daw-list-meta daw-listener-hint">{t('saveBeforeEnable')}</div>}
-    <p><span className={`daw-pill${status?.remoteEnabled ? ' on' : ''}`}>{status?.remoteEnabled ? t('remoteEnabled') : t('loopbackOnly')}</span></p>
     <fieldset disabled={managementLocked} style={{ border: 'none', margin: 0, padding: 0 }}>
       <div className="daw-scope-grid">{DEVICE_SCOPES.map(scope => <label className="daw-check" key={scope}><input type="checkbox" checked={grantedScopes.includes(scope)} onChange={() => toggleScope(scope)} /> {scopeLabel(locale, scope)}</label>)}</div>
     </fieldset>
-    <div className="daw-list-meta">{grantNotice}</div>
+    {/* 地址范围：启用配对 / 生成配对码 / 生成配置文本三处共用这一个选择。
+        口径见宿主 `filterCandidatesByScope` —— 面板只负责把词传上去。 */}
+    <div className="daw-inline-command" role="radiogroup" aria-label={t('candidateScopeLabel')}>
+      <span className="daw-list-meta">{t('candidateScopeLabel')}</span>
+      {CANDIDATE_SCOPES.map(scope => <button
+        key={scope}
+        type="button"
+        role="radio"
+        aria-checked={candidateScope === scope}
+        className={`daw-command${candidateScope === scope ? ' primary' : ''}`}
+        disabled={managementLocked}
+        onClick={() => setCandidateScope(scope)}
+      >{t(CANDIDATE_SCOPE_KEYS[scope])}</button>)}
+    </div>
     {status?.remoteEnabled
       ? <button className="daw-command danger" disabled={managementLocked} title={managementLocked ? t('managementLockedWhileTunnel') : undefined} onClick={() => {
         // 关闭远程会立刻断开所有手机（UI-06）：原先一点即发，现在先确认。
@@ -183,7 +211,7 @@ export function RemoteCard(props: { open: boolean; onToggle(): void }): JSX.Elem
       }}>{t('disableRemote')}</button>
       : <button className="daw-command primary" disabled={managementLocked || roots.length === 0 || listenerDirty || !listenerPortValid || listenerHost.trim() === '' || grantedScopes.length === 0} onClick={() => {
         setError(undefined)
-        void api.enableRemote(roots.map(root => root.id), grantedScopes).then(result => poll(result.id)).catch(setError)
+        void api.enableRemote(roots.map(root => root.id), grantedScopes, candidateScope).then(result => poll(result.id)).catch(setError)
       }}>{t('enablePairing')}</button>}
     {/* 隧道运行 ⇒ 远程访问必然已启用（隧道只是已启用监听器的前置）；重进页面时
         /manage/status 403 拿不到 remoteEnabled，用 managementLocked 补这个真值，否则
@@ -191,7 +219,7 @@ export function RemoteCard(props: { open: boolean; onToggle(): void }): JSX.Elem
     {(status?.remoteEnabled === true || managementLocked) && <>
       <button className="daw-command daw-inline-command" disabled={managementLocked || grantedScopes.length === 0} title={managementLocked ? t('managementLockedWhileTunnel') : undefined} onClick={() => {
         setError(undefined)
-        void api.createPairing(roots.map(root => root.id), grantedScopes)
+        void api.createPairing(roots.map(root => root.id), grantedScopes, candidateScope)
           .then(value => { setPairing(value); notify('pairingCreated') })
           .catch(setError)
       }}>{t('newPairingCode')}</button>
@@ -203,6 +231,7 @@ export function RemoteCard(props: { open: boolean; onToggle(): void }): JSX.Elem
         // which exclude `files.delete` and `settings.write`. Forwarding `DEVICE_SCOPES`
         // here would silently widen the phone's rights to include file deletion.
         void api.createConfigText({
+          scope: candidateScope,
           ...(roots.length === 0 ? {} : { rootIds: roots.map(root => root.id) }),
           ...(manual === '' ? {} : { endpoints: [{ label: t('configTextManualLabel'), baseUrl: manual }] }),
         }).then(value => { setConfigText(value); notify('configCreated') }).catch(setError).finally(() => setConfigTextBusy(false))
@@ -217,13 +246,18 @@ export function RemoteCard(props: { open: boolean; onToggle(): void }): JSX.Elem
             : t('tunnelRestartAndGenConfig')}
         </button>
       )}
-      <div className="daw-list-meta daw-listener-hint">{t('configTextScopeNote')}</div>
     </>}
     {pairing !== undefined && <>
       <div className="daw-code-row">
         <div className="daw-code">{pairing.code}</div>
         <CopyButton className="daw-copy-inline" text={pairing.code} title={t('copyPairing')} copiedText={t('copied')} manualText={t('copyManual')} copyText={copyText} />
       </div>
+      {(pairing.urls?.length ?? 0) > 0 && <div className="daw-list">
+        {pairing.urls!.map(url => <div className="daw-url-row" key={url}>
+          <div className="daw-tunnel-url">{url}</div>
+          <CopyButton className="daw-copy-inline" text={url} title={t('copyUrl')} copiedText={t('copied')} manualText={t('copyManual')} copyText={copyText} />
+        </div>)}
+      </div>}
       {pairing.expiresAt !== undefined && pairing.expiresAt > now && (
         <div className="daw-list-meta" style={{ marginTop: -4 }}>{t('pairingExpiresAt', { minutes: pairingMinutesLeft(pairing.expiresAt, now) })}</div>
       )}
