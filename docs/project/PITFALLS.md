@@ -1744,3 +1744,20 @@ App 侧身份是「内核客户端」，与设备表里的设备没有映射（`
 320dp 屏上两列仍成立。顺带：`caption` 放短标签，别放整串 URL（窄屏会折行）。
 
 **回归锚**：`tests/dsh-go-panel.spec.ts` › `二维码在面板最底部、两张并排（v2 row + columns equal）`。
+
+### command 效果在非会话入口不执行
+
+**症状**：dsh-Go 面板里的按钮回的是 `command` 效果，用户在「全部功能」页点它，只弹一句
+「先打开一个对话」，即使 App 里已经有对话在跑；不跳转，也不新建会话。
+
+**根因**：App 的 `_runEffect` 取 `sessionId = scope.sessionId ?? composer?.sessionId`
+（`app/lib/ui/plugins/native/native_taps.dart`），为空就 `_toast(plugslotsNeedsChat)` 后 return。
+面板从 `features` 入口打开时请求 scope 里没有 `sessionId`（只有对话内的 `session.tab` 入口带），
+「有没有对话」和「这一屏绑没绑会话」是两件事。
+
+**现在怎么办**：面板动作按 scope 分支 —— 有 `sessionId` 才回 `command`，否则退化成
+`copy`（把斜杠命令放进剪贴板）+ `toast` 说明，视图里同步换按钮文案。别指望 App 替你开会话，
+也别为了绕过去面板里直接写状态（`/dsh-go/v1/invoke` 没有回环判据）。
+
+**回归锚**：`tests/dsh-go-panel.spec.ts` › `enable 在没有会话时退化成复制 /remote all（issue #6）`
+与 `view 按 scope 决定按钮文案：无 sessionId 就是复制版`。

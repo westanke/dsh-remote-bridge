@@ -232,8 +232,19 @@ describe('accessView', () => {
     }
   })
 
-  it('两个动作：enable 只回 command 效果、copy 是本地复制', () => {
+  it('两个动作：enable（有会话回 command）、copy 是本地复制', () => {
     expect(actionIds(accessView('zh'))).toEqual(['enable', 'copy'])
+  })
+
+  it('不在对话里打开时：按钮改成复制、上方写明原因（issue #6）', () => {
+    const bound = JSON.stringify(accessView('zh'))
+    const loose = JSON.stringify(accessView('zh', false))
+    expect(bound).toContain('开启并取码')
+    expect(bound).not.toContain('复制 /remote all')
+    expect(loose).toContain('复制 /remote all')
+    expect(loose).toContain('不会替你开会话')
+    // 动作名不变：App 回执仍落在同一个 handler 上。
+    expect(actionIds(accessView('zh', false))).toEqual(['enable', 'copy'])
   })
 
   it('二维码是 asset: 引用，指向清单 assets 目录里真实存在的文件', () => {
@@ -345,20 +356,41 @@ describe('attachDshGoPanel', () => {
     attachDshGoPanel(ctx, source())
     const definition = captured.panels.get(PANEL_ID)
     expect(definition).toBeDefined()
-    expect(definition?.view(undefined, { locale: 'zh' })).toEqual(accessView('zh'))
+    // 没有 scope（「全部功能」入口）→ 视图是「复制版」，不是默认的会话版。
+    expect(definition?.view(undefined, { locale: 'zh' })).toEqual(accessView('zh', false))
     const effects = definition?.actions['copy']?.(undefined, { locale: 'zh' }) as Array<{ type: string; text: string }>
     expect(effects.map(effect => effect.type)).toEqual(['copy', 'toast'])
     expect(effects[0]?.text).toContain('dsh-remote-bridge 接入信息')
     expect(Array.from(effects[1]?.text ?? '').length).toBeLessThanOrEqual(40)
   })
 
-  it('enable 只把「执行 /remote」交回会话，面板自己不改状态', () => {
+  it('enable 在对话里打开时只把「执行 /remote」交回会话，面板自己不改状态', () => {
     const captured: Captured = { panels: new Map(), strips: new Map() }
     const { ctx } = host(captured)
     attachDshGoPanel(ctx, source())
-    const effects = captured.panels.get(PANEL_ID)?.actions['enable']?.(undefined, { locale: 'zh' })
+    const effects = captured.panels.get(PANEL_ID)?.actions['enable']?.({ sessionId: 's-1' }, { locale: 'zh' })
     // 协议 §5 的效果白名单里，command 是「在当前对话执行斜杠命令」。
     expect(effects).toEqual([{ type: 'command', name: 'remote', args: 'all' }])
+  })
+
+  it('enable 在没有会话时退化成复制 /remote all（issue #6）', () => {
+    const captured: Captured = { panels: new Map(), strips: new Map() }
+    const { ctx } = host(captured)
+    attachDshGoPanel(ctx, source())
+    const effects = captured.panels.get(PANEL_ID)?.actions['enable']?.(undefined, { locale: 'zh' }) as Array<{ type: string; text: string }>
+    expect(effects).toEqual([
+      { type: 'copy', text: '/remote all' },
+      { type: 'toast', text: '已复制 /remote all —— 到对话里发送' },
+    ])
+  })
+
+  it('view 按 scope 决定按钮文案：无 sessionId 就是复制版', () => {
+    const captured: Captured = { panels: new Map(), strips: new Map() }
+    const { ctx } = host(captured)
+    attachDshGoPanel(ctx, source())
+    const definition = captured.panels.get(PANEL_ID)
+    expect(JSON.stringify(definition?.view({ sessionId: 's-1' }, { locale: 'zh' }))).toContain('开启并取码')
+    expect(JSON.stringify(definition?.view({}, { locale: 'zh' }))).toContain('复制 /remote all')
   })
 
   it('数据只在值变化时发：同一状态第二次不 emit', () => {

@@ -551,7 +551,7 @@ export const PLUGIN_VERSION: string          // shared/version.ts，与 package.
 | `attachDshGoPanel(ctx, source, logger?)` | `ctx.inject(['dshGo'], scoped => …)` 注册面板与状态条；没有注入器 / 桥接缺席 / 注册抛错 → 只 `warn`，**绝不让 `apply` 抛错** |
 | `AccessSource` | 四个 getter：`status()` / `tunnel()` / `roots()` / `devices()`，由 `index.ts` 接到现有实例上 |
 | `readState(source, now?)` | `AccessState`：远程未开启时 `endpoints` 为空数组（不枚举网卡） |
-| `accessView(locale)` / `accessData(state, locale)` | 视图树与数据模型；读数一律 `{$: 'data.*'}` 绑定 |
+| `accessView(locale, sessionBound?)` / `accessData(state, locale)` | 视图树与数据模型；读数一律 `{$: 'data.*'}` 绑定。`sessionBound=false`（「全部功能」入口没有 `sessionId`）时按钮退化成「复制 /remote all」并多一行说明 —— App 的 `command` 效果只在有当前会话时执行 |
 | `stripData(state, locale)` | 状态条一行（≤ 24 字，协议上限） |
 | `copyText(state, locale)` | 「复制接入信息」的正文（≤ 8000 字） |
 | `PANEL_ID` / `STRIP_ID` | `access` / `remote` —— 必须与 `package.json` 的 `dshGo.contributes` 一致 |

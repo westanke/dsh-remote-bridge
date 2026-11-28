@@ -142,6 +142,14 @@ interface Words {
   downloadHint: string
   /** 「开启并取码」按钮：它只是让 App 在当前对话里执行 `/remote`。 */
   enable: string
+  /**
+   * 没有当前会话时的退化按钮与提示（issue #6）：App 的 `command` 效果只在有会话时执行，
+   * 从「全部功能」入口打开时只会弹一句「先打开一个对话」，也不会替你开会话。这时按钮
+   * 改成「复制 /remote all」，提示告诉用户粘到任意对话里发送。
+   */
+  enableCopy: string
+  enableNeedsChat: string
+  commandCopied: string
   stripOn(devices: number): string
   stripOff: string
   tunnelOff: string
@@ -184,6 +192,9 @@ const WORDINGS: { zh: Words; en: Words } = {
     downloadHeading: '第一次装客户端',
     downloadHint: '已经有客户端就不用管下面的码；没有才扫（GitHub 慢就扫 Gitee）。',
     enable: '开启并取码',
+    enableCopy: '复制 /remote all',
+    enableNeedsChat: '这一屏不是从对话里打开的：App 只会在当前对话里执行 /remote，不会替你开会话。点按钮复制 /remote all，粘到任意对话里发送即可。',
+    commandCopied: '已复制 /remote all —— 到对话里发送',
     stripOn: (devices: number) => (devices === 0 ? '远程已开' : `远程已开 · ${devices} 台`),
     stripOff: '仅本机',
     tunnelOff: '未开启',
@@ -224,6 +235,10 @@ const WORDINGS: { zh: Words; en: Words } = {
     downloadHeading: 'First install',
     downloadHint: 'Skip the codes below if the client is already installed; scan one only if it is not (Gitee if GitHub is slow).',
     enable: 'Enable & get code',
+    enableCopy: 'Copy /remote all',
+    enableNeedsChat:
+      'This screen was not opened from a chat: the app only runs /remote in the current conversation and will not start one. Tapping copies /remote all — paste it into any chat and send.',
+    commandCopied: '/remote all copied — paste it into a chat',
     stripOn: (devices: number) => (devices === 0 ? 'Remote on' : `Remote on · ${devices}`),
     stripOff: 'Local only',
     tunnelOff: 'Off',
@@ -304,8 +319,23 @@ function deviceSubtitle(device: AccessDevice, now: number, w: Words): string {
   return head === '' ? tail : `${head} · ${tail}`
 }
 
-/** 面板结构。文字随 locale，数字全部走绑定 —— 数值刷新只推补丁，不重发整棵树。 */
-export function accessView(locale: string | undefined): Record<string, unknown> {
+/**
+ * 这一屏是不是从**对话里**打开的：`session.tab` 入口的 scope 带 `sessionId`，
+ * 「全部功能」(`features`) 入口不带。App 的 `command` 效果只在有当前会话时执行。
+ */
+function hasSession(scope: unknown): boolean {
+  if (typeof scope !== 'object' || scope === null) return false
+  const id = (scope as { sessionId?: unknown }).sessionId
+  return typeof id === 'string' && id !== ''
+}
+
+/**
+ * 面板结构。文字随 locale，数字全部走绑定 —— 数值刷新只推补丁，不重发整棵树。
+ *
+ * `sessionBound`：这一屏是不是从对话里打开的。不是的话按钮退化成「复制 /remote all」
+ * （App 在没有当前会话时只弹一句「先打开一个对话」，见 issue #6）。
+ */
+export function accessView(locale: string | undefined, sessionBound = true): Record<string, unknown> {
   const w = words(locale)
   return {
     type: 'stack',
@@ -334,12 +364,16 @@ export function accessView(locale: string | undefined): Record<string, unknown> 
       },
       { type: 'text', text: w.devicesHeading, tone: 'muted' },
       { type: 'list', items: { $: 'data.devices' } },
+      // 不在对话里打开时，先在按钮上方说清楚这一屏为什么会「复制而不是执行」。
+      ...(sessionBound ? [] : [{ type: 'text', text: w.enableNeedsChat, tone: 'muted' }]),
       {
         type: 'actions',
         items: [
           // 这个按钮**不写状态**：它只让 App 在当前对话里执行 `/remote`（协议 §5 的
           // `command` 效果），真正的变更发生在用户自己的会话里 —— 理由见本文件头注释。
-          { label: w.enable, icon: 'plus', action: 'enable' },
+          sessionBound
+            ? { label: w.enable, icon: 'plus', action: 'enable' }
+            : { label: w.enableCopy, icon: 'copy', action: 'enable' },
           { label: w.copy, icon: 'copy', style: 'primary', action: 'copy' },
         ],
       },
@@ -422,7 +456,7 @@ export function attachDshGoPanel(
       try {
         const read = () => readState(source)
         scoped.dshGo.panel(PANEL_ID, {
-          view: (_scope, caps) => accessView(caps?.locale),
+          view: (scope, caps) => accessView(caps?.locale, hasSession(scope)),
           // 订阅期间才轮询：没有订阅者时桥接不会调用这个函数（`feedLingerMs` 之后收回），
           // 所以「没人看」这一屏时一次读库都不发生。
           data: (_scope, emit, caps) => {
@@ -442,7 +476,16 @@ export function attachDshGoPanel(
             // 不在这里调 `remote.enable()`：dsh-Go 的连接身份是内核客户端，没有回环判据
             // （见文件头注释）。这里只把「执行 /remote」这个意图交回会话 —— App 会在**当前
             // 对话**里跑斜杠命令，于是写操作落在用户自己的身份上，与手打 /remote 等价。
-            enable: () => [{ type: 'command', name: 'remote', args: 'all' }],
+            // 有当前会话才把「执行 /remote」交回会话；没有会话（「全部功能」入口）时
+            // App 只弹一句「先打开一个对话」—— 那就退化成复制命令，用户粘到对话里发送。
+            enable: (scope, event) => {
+              if (hasSession(scope)) return [{ type: 'command', name: 'remote', args: 'all' }]
+              const w = words(event?.locale)
+              return [
+                { type: 'copy', text: '/remote all' },
+                { type: 'toast', text: w.commandCopied },
+              ]
+            },
             // 复制是这一屏唯一「有用」的本地动作：把面板上看见的东西带走，粘到别的客户端里。
             copy: (_scope, event) => {
               const values = read()

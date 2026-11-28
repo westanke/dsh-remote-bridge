@@ -1,4 +1,20 @@
-## 未发布 · dsh-Go 面板二维码挪到底部、并排小尺寸（AtomGit issue #5，2026-11-28）
+## 未发布 · dsh-Go 面板「开启并取码」在非会话入口退化成复制命令（AtomGit issue #6，2026-11-28）
+
+**为什么改**：从 dsh-Go 的「全部功能」入口打开接入面板，点「开启并取码」只弹一句「先打开一个对话」；
+即使 App 里已经开着对话也不跳转、不新建 —— App 执行 `command` 效果时要求 scope 里带 `sessionId`，
+而「全部功能」入口的 scope 没有。我们改不了 App，于是让按钮在那种入口下退化成能用的动作。
+
+- 面板动作按 scope 分支：带 `sessionId` → 仍回 `{type:'command', name:'remote', args:'all'}`；
+  不带 → 回 `{type:'copy'}`（`/remote all`）+ `{type:'toast'}`，用户粘到任意对话里发送。
+- 视图同步：非会话入口下按钮文案改「复制 /remote all」、图标换 `copy`，并在按钮上方加一行说明
+  「App 只会在当前对话里执行 /remote，不会替你开会话」。
+- 仍然**不在面板里写状态**（不调 `remote.enable()` / `createPairing()`）：`/dsh-go/v1/invoke`
+  没有回环判据，那等于让任意能连到内核端口的客户端开端口，见 `docs/project/SECURITY.md`。
+
+**兼容性**：`accessView(locale)` 的第二参默认 `true`，老调用方与老 App 行为不变；
+`session.tab` 入口打开时一切照旧。
+
+
 
 **为什么改**：手机「接入」面板里两张下载二维码是上下堆叠、各占满宽，一屏几乎全是码；
 位置还在动作按钮之前，看着像每次开面板都催人重下一遍客户端。
