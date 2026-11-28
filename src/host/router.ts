@@ -298,8 +298,11 @@ export class ApiRouter {
    * `/remote` 命令与 `open_remote_access` 工具的宿主侧入口（issue #4）：
    * 开启远程访问（必要时）并签发配对码 —— 不开 WebUI 也能拿到第一步。
    */
-  async openRemoteForCommand(scope: CandidateScope = 'all'): Promise<RemoteCommandResult> {
-    return openRemoteForCommand(this.options, scope)
+  async openRemoteForCommand(
+    scope: CandidateScope = 'all',
+    via?: string,
+  ): Promise<RemoteCommandResult> {
+    return openRemoteForCommand(this.options, scope, via)
   }
 
   /** `/remote off`：关闭远程访问（回到回环）。 */

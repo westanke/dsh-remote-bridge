@@ -242,7 +242,7 @@ IM 里发 `/tunnel` 只会当成普通消息交给智能体。所以命令服务
 > 且白名单只包含自己。若把机器人设为「允许所有用户执行命令」，本命令就是一个公开的开机按钮 ——
 > 这一点写进 README「在聊天窗口里远程开隧道」一节的告警框。
 
-### `/remote` 与 dsh-Go 面板：写操作只走会话身份（issue #4 起）
+### `/remote` 与 dsh-Go 面板：两条入口、同一份写实现（issue #4 起，#7 修正）
 
 不开 WebUI 也能开远程访问、取配对码，于是有两个新入口要考虑：宿主命令 `/remote`（+ 工具
 `open_remote_access`）与 dsh-Go 原生面板上的「开启并取码」按钮。两者的信任成色**不一样**，所以处理方式也不一样：
@@ -252,18 +252,25 @@ IM 里发 `/tunnel` 只会当成普通消息交给智能体。所以命令服务
   复用 `ApiRouter.openRemoteForCommand()` → `remote.enable()` / `createPairing()`，与面板上点一次
   「开启 + 生成配对码」同一套实现、同一套审计（`listener.enable` / `remote.pairing`，标签 `im-command`）。
   能力边界：只开不停到 `off` 为止、只收 `lan`/`wan`/`all`、**不启动 cloudflared**、不读文件；`tun` 明确拒绝并指路 `/tunnel`。
-- **dsh-Go 面板不写状态**：`/dsh-go/v1/invoke` 只校验注册令牌与参数形状（`core.admitInvoke`），
-  **没有回环判据**，App 侧的连接身份是「内核客户端」，与设备表里的设备没有映射。面板里直接调
-  `remote.enable()` 等于给任意 dsh-Go 客户端一个绕过管理面鉴权的开机按钮。因此面板的动作只有两种效果：
-  `copy`/`toast`（本地）与 `command`（让 App 在**当前对话**里执行 `/remote`）——后者把决定权交回
-  用户自己的会话，和手打命令完全等价，不构成第二条写路径。
+- **dsh-Go 面板**（issue #7 起可以写，但只走上面那条实现）：2.18.0 时的判断是「native 路由没有
+  回环判据，面板一律不写」。核对 `dsh-go-bridge` 源码后这条不成立 —— 桥接的 native 路由在进
+  handler 前过的是 `Connection` 守卫（`lib/index.js` 头注释：与 `/api` 同一套 Host/Origin 栅栏 +
+  浏览器 cookie），**能加载这一屏的客户端，本来就能在这个内核里发命令**，面板写操作不是新增的门。
+  因此面板的「开启并取码」调 `openRemoteForCommand(options, 'all', 'dsh-go-panel')`：权限固定
+  `DEFAULT_DEVICE_SCOPES`、根目录用内置根、审计带 `via: dsh-go-panel`；**破坏性写一概不放**
+  （关闭远程、撤销设备、改权限位仍只留 WebUI 与 `/remote off`）。从对话里打开时按钮仍交回会话
+  （`command` 效果），两种入口落在同一份实现上。
 
 **可证伪断言**（任一条不成立就是回归）：
 
-1. `tests/dsh-go-panel.spec.ts` › `enable 只把「执行 /remote」交回会话，面板自己不改状态`：
-   `enable` 动作的返回值**恰好**是 `[{type:'command', name:'remote', args:'all'}]`，没有任何 `refresh`/`patch`。
-2. `AccessSource` 里没有 `enable`/`disable`/`createPairing` 这类写接口 —— 面板拿不到写句柄。
-3. `tests/remote-command.spec.ts`：没有授权根目录时 `/remote` **报错且不碰监听**（`enable` 未被调用）。
+1. `tests/dsh-go-panel.spec.ts` › `enable 在对话里打开时只把「执行 /remote」交回会话，面板自己不改状态`：
+   有 `sessionId` 时返回值**恰好**是 `[{type:'command', name:'remote', args:'all'}]`，且 `openRemote` 一次都没被调用。
+2. `AccessSource` 里**没有** `enable`/`disable`/`createPairing` 这类原始写接口，只有 `openRemote(scope)`
+   这一个已经定死权限与根目录的入口 —— 面板拿不到「关掉远程」「撤销设备」的句柄。
+3. `tests/dsh-go-panel.spec.ts` › `开得慢就先把「正在开」回给 App，别撞 3 秒预算（issue #7）`：
+   handler 不会因为等监听起来而超过桥接的 3 秒预算（`lib/native/limits.js`）。
+4. `tests/remote-command.spec.ts` › `via 参数进审计`：面板发起的动作在审计里带 `via: 'dsh-go-panel'`。
+5. `tests/remote-command.spec.ts`：没有授权根目录时 `/remote` **报错且不碰监听**（`enable` 未被调用）。
 
 ### 信任边界的两个前提（2.5.1）
 

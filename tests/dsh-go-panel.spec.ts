@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from 'vitest'
 import {
   accessData,
   accessView,
+  EMPTY_PAIRING_STATE,
   attachDshGoPanel,
   copyText,
   PANEL_ID,
@@ -14,6 +15,7 @@ import {
   words,
   type AccessSource,
   type DshGoService,
+  type PanelPairing,
 } from '../src/host/dsh-go-panel.ts'
 import type { DeviceView } from '../src/shared/contracts.ts'
 
@@ -46,7 +48,26 @@ const device = (over: Partial<DeviceView> = {}): DeviceView => ({
   ...over,
 } as DeviceView)
 
-function source(over: Partial<{ remoteEnabled: boolean; tunnelRunning: boolean; tunnelUrl: string | null; roots: number; devices: DeviceView[] }> = {}): AccessSource {
+const OPEN_RESULT = {
+  enabled: true,
+  urls: ['http://192.168.1.9:3090'],
+  pairingCode: '12345-67890',
+  expiresAt: Date.now() + 10 * 60_000,
+  host: '192.168.1.9',
+  port: 3090,
+  scope: 'all' as const,
+}
+
+function source(
+  over: Partial<{
+    remoteEnabled: boolean
+    tunnelRunning: boolean
+    tunnelUrl: string | null
+    roots: number
+    devices: DeviceView[]
+    openRemote: AccessSource['openRemote']
+  }> = {},
+): AccessSource & { enableCalls: string[] } {
   const state = {
     remoteEnabled: true,
     tunnelRunning: false,
@@ -55,11 +76,18 @@ function source(over: Partial<{ remoteEnabled: boolean; tunnelRunning: boolean; 
     devices: [device()],
     ...over,
   }
+  const enableCalls: string[] = []
   return {
+    enableCalls,
     status: () => ({ host: '0.0.0.0', port: 3090, remoteEnabled: state.remoteEnabled }),
     tunnel: () => ({ running: state.tunnelRunning, url: state.tunnelUrl }),
     roots: () => state.roots,
     devices: () => state.devices,
+    openRemote: async (scope) => {
+      enableCalls.push(scope)
+      if (state.openRemote !== undefined) return state.openRemote(scope)
+      return OPEN_RESULT
+    },
   }
 }
 
@@ -236,15 +264,32 @@ describe('accessView', () => {
     expect(actionIds(accessView('zh'))).toEqual(['enable', 'copy'])
   })
 
-  it('不在对话里打开时：按钮改成复制、上方写明原因（issue #6）', () => {
-    const bound = JSON.stringify(accessView('zh'))
-    const loose = JSON.stringify(accessView('zh', false))
-    expect(bound).toContain('开启并取码')
-    expect(bound).not.toContain('复制 /remote all')
-    expect(loose).toContain('复制 /remote all')
-    expect(loose).toContain('不会替你开会话')
-    // 动作名不变：App 回执仍落在同一个 handler 上。
-    expect(actionIds(accessView('zh', false))).toEqual(['enable', 'copy'])
+  it('配对码一节按 data 绑定：码与地址都在视图里，靠推送刷新（issue #7）', () => {
+    const rendered = JSON.stringify(accessView('zh'))
+    expect(rendered).toContain('"$":"data.pairingCode"')
+    expect(rendered).toContain('"$":"data.pairingUrls"')
+    // 只有一种视图形态：按钮不再随 scope 变文案。
+    expect(JSON.stringify(accessView('zh'))).toContain('开启并取码')
+  })
+
+  it('还没有码时数据也给一句话，不给空串（空绑定会画破折号）', () => {
+    const empty = accessData(readState(source()), 'zh', EMPTY_PAIRING_STATE)
+    expect(empty['pairingCode']).toBe('还没有配对码 —— 点上面的按钮')
+    expect(empty['pairingUrls']).toBe('')
+  })
+
+  it('有码时把码、剩余分钟与地址一起写进数据', () => {
+    const pairing: PanelPairing = { code: '12345-67890', urls: ['http://192.168.1.9:3090'], expiresAt: Date.now() + 8 * 60_000 }
+    const data = accessData(readState(source()), 'zh', { pairing, failure: null })
+    expect(data['pairingCode']).toContain('12345-67890')
+    expect(data['pairingCode']).toContain('分钟')
+    expect(data['pairingUrls']).toBe('http://192.168.1.9:3090')
+  })
+
+  it('开启失败时数据里是可读原因，不出现码', () => {
+    const data = accessData(readState(source()), 'zh', { pairing: null, failure: '隧道功能未启用。' })
+    expect(data['pairingCode']).toBe('开启失败：隧道功能未启用。')
+    expect(data['pairingUrls']).toBe('')
   })
 
   it('二维码是 asset: 引用，指向清单 assets 目录里真实存在的文件', () => {
@@ -357,40 +402,80 @@ describe('attachDshGoPanel', () => {
     const definition = captured.panels.get(PANEL_ID)
     expect(definition).toBeDefined()
     // 没有 scope（「全部功能」入口）→ 视图是「复制版」，不是默认的会话版。
-    expect(definition?.view(undefined, { locale: 'zh' })).toEqual(accessView('zh', false))
+    expect(definition?.view(undefined, { locale: 'zh' })).toEqual(accessView('zh'))
     const effects = definition?.actions['copy']?.(undefined, { locale: 'zh' }) as Array<{ type: string; text: string }>
     expect(effects.map(effect => effect.type)).toEqual(['copy', 'toast'])
     expect(effects[0]?.text).toContain('dsh-remote-bridge 接入信息')
     expect(Array.from(effects[1]?.text ?? '').length).toBeLessThanOrEqual(40)
   })
 
-  it('enable 在对话里打开时只把「执行 /remote」交回会话，面板自己不改状态', () => {
+  it('enable 在对话里打开时只把「执行 /remote」交回会话，面板自己不改状态', async () => {
     const captured: Captured = { panels: new Map(), strips: new Map() }
     const { ctx } = host(captured)
-    attachDshGoPanel(ctx, source())
-    const effects = captured.panels.get(PANEL_ID)?.actions['enable']?.({ sessionId: 's-1' }, { locale: 'zh' })
+    const values = source()
+    attachDshGoPanel(ctx, values)
+    const effects = await captured.panels.get(PANEL_ID)?.actions['enable']?.({ sessionId: 's-1' }, { locale: 'zh' })
     // 协议 §5 的效果白名单里，command 是「在当前对话执行斜杠命令」。
     expect(effects).toEqual([{ type: 'command', name: 'remote', args: 'all' }])
+    // 交回会话时面板自己一次都不动状态。
+    expect(values.enableCalls).toEqual([])
   })
 
-  it('enable 在没有会话时退化成复制 /remote all（issue #6）', () => {
+  it('enable 在没有会话时由面板自己开（走 openRemote，与 /remote 同一份实现，issue #7）', async () => {
     const captured: Captured = { panels: new Map(), strips: new Map() }
     const { ctx } = host(captured)
-    attachDshGoPanel(ctx, source())
-    const effects = captured.panels.get(PANEL_ID)?.actions['enable']?.(undefined, { locale: 'zh' }) as Array<{ type: string; text: string }>
-    expect(effects).toEqual([
-      { type: 'copy', text: '/remote all' },
-      { type: 'toast', text: '已复制 /remote all —— 到对话里发送' },
-    ])
+    const values = source()
+    attachDshGoPanel(ctx, values)
+    const effects = await captured.panels.get(PANEL_ID)?.actions['enable']?.(undefined, { locale: 'zh' }) as Array<{ type: string; text: string }>
+    expect(values.enableCalls).toEqual(['all'])
+    expect(effects).toEqual([{ type: 'toast', text: '已开启远程访问，配对码就在面板上' }])
   })
 
-  it('view 按 scope 决定按钮文案：无 sessionId 就是复制版', () => {
+  it('开完之后数据里就有码：App 不用再点一次（issue #7）', async () => {
     const captured: Captured = { panels: new Map(), strips: new Map() }
     const { ctx } = host(captured)
     attachDshGoPanel(ctx, source())
     const definition = captured.panels.get(PANEL_ID)
-    expect(JSON.stringify(definition?.view({ sessionId: 's-1' }, { locale: 'zh' }))).toContain('开启并取码')
-    expect(JSON.stringify(definition?.view({}, { locale: 'zh' }))).toContain('复制 /remote all')
+    await definition?.actions['enable']?.(undefined, { locale: 'zh' })
+    const payloads: Array<Record<string, unknown>> = []
+    definition?.data?.(undefined, payload => payloads.push(payload as never), { locale: 'zh' })
+    expect(String(payloads[0]?.['pairingCode'])).toContain('12345-67890')
+  })
+
+  it('开失败时回可读原因，数据里也没有码（issue #7）', async () => {
+    const captured: Captured = { panels: new Map(), strips: new Map() }
+    const { ctx } = host(captured)
+    attachDshGoPanel(ctx, source({
+      openRemote: async () => {
+        throw new Error('隧道功能未启用。')
+      },
+    }))
+    const definition = captured.panels.get(PANEL_ID)
+    const effects = await definition?.actions['enable']?.(undefined, { locale: 'zh' }) as Array<{ type: string; text: string }>
+    expect(effects).toEqual([{ type: 'toast', text: '开启失败：隧道功能未启用。' }])
+    const payloads: Array<Record<string, unknown>> = []
+    definition?.data?.(undefined, payload => payloads.push(payload as never), { locale: 'zh' })
+    expect(String(payloads[0]?.['pairingCode'])).toContain('开启失败')
+  })
+
+  it('开得慢就先把「正在开」回给 App，别撞 3 秒预算（issue #7）', async () => {
+    vi.useFakeTimers()
+    try {
+      const captured: Captured = { panels: new Map(), strips: new Map() }
+      const { ctx } = host(captured)
+      let release: () => void = () => {}
+      attachDshGoPanel(ctx, source({
+        openRemote: () => new Promise<typeof OPEN_RESULT>(resolve => {
+          release = () => resolve(OPEN_RESULT)
+        }),
+      }))
+      const running = captured.panels.get(PANEL_ID)?.actions['enable']?.(undefined, { locale: 'zh' }) as Promise<Array<{ text: string }>>
+      await vi.advanceTimersByTimeAsync(2_100)
+      expect((await running)[0]?.text).toBe('正在开远程访问；完成后配对码会自己出现在面板上')
+      release()
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('数据只在值变化时发：同一状态第二次不 emit', () => {
@@ -436,6 +521,7 @@ describe('attachDshGoPanel', () => {
         tunnel: () => ({ running: false, url: null }),
         roots: () => 1,
         devices: () => devices,
+        openRemote: async () => OPEN_RESULT,
       }
       const captured: Captured = { panels: new Map(), strips: new Map() }
       const { ctx } = host(captured)

@@ -1704,19 +1704,23 @@ App 里看得到候选、连哪条都超时。
 
 **回归锚**：`pnpm check` 的 typecheck + docs:check 两道门。
 
-### dsh-Go 面板里别直接写状态：用 command 效果交回会话
+### dsh-Go 面板的写操作只走既有那条实现
 
-**症状**：在 dsh-Go 原生面板加一个「开启远程访问」按钮，回调里直接调 `remote.enable()` —— 本地没装 App 时一切正常，
-装上以后任何连上 dsh-Go 的客户端都能把监听开到公网，而管理面（`/manage/*`）的回环判据一次都没走。
+**症状**：在 dsh-Go 原生面板加写操作时，很容易写成「回调里直接 `remote.enable()`」或者「在面板里自己拼
+一份状态变更」—— 前者越过了 `/manage/*` 那套判断，后者会和 `/remote`、WebUI 各写一套、迟迟对不上。
 
-**根因**：`POST /dsh-go/v1/invoke` 只校验注册令牌、参数形状与限流（`core.admitInvoke`），**没有 peer/回环信息**；
-App 侧身份是「内核客户端」，与设备表里的设备没有映射（`src/host/dsh-go-panel.ts` 头注释记的就是这件事）。
+**根因（修正过一次结论）**：2026-11-28 之前本仓的判断是「`/dsh-go/v1/invoke` 没有回环判据，所以面板一律不能写」。
+核对桥接源码后这条不成立：native 路由在进 handler 之前过的是 `Connection` 守卫（`dsh-go-bridge/lib/index.js`
+头注释：与 `/api` 同一套 Host/Origin 栅栏 + 浏览器 cookie）。能加载这一屏的客户端，本来就是已经能在这个内核里
+发命令的那一个 —— 面板写操作不是新增的一道门。**但**「能写」不等于「随便怎么写」。
 
-**现在怎么办**：面板只回效果，不拿写句柄。本插件要加动作时，写成协议 §5 的
-`{type:'command', name:'<斜杠命令>', args}`，由 App 在**当前对话**里执行 —— 写操作落在用户自己的会话身份上，
-和手打命令等价。真正的实现放命令/工具模块（如 `src/host/remote-command.ts`），面板只留只读读数 + 复制。
+**现在怎么办**：面板要改状态就调既有的命令实现（`openRemoteForCommand(options, scope, 'dsh-go-panel')`），
+权限固定 `DEFAULT_DEVICE_SCOPES`、根目录用内置根、审计带 `via` 好区分入口；破坏性写（关远程、撤设备、改权限）
+仍然只留 WebUI 与 `/remote off`。另外桥接的 handler 预算是 3 秒（`lib/native/limits.js` 的 `handlerTimeoutMs`），
+等监听这类慢活儿要在预算内先回话、后台跑完再把结果推给订阅者。
 
-**回归锚**：`tests/dsh-go-panel.spec.ts` › `enable 只把「执行 /remote」交回会话，面板自己不改状态`（断言返回值恰好一条 command 效果）。
+**回归锚**：`tests/dsh-go-panel.spec.ts` › `enable 在没有会话时由面板自己开（走 openRemote，与 /remote 同一份实现，issue #7）`
+与 `开得慢就先把「正在开」回给 App，别撞 3 秒预算（issue #7）`；`tests/remote-command.spec.ts` › `via 参数进审计`。
 
 ### 面板放图要先声明 dshGo.assets
 

@@ -443,6 +443,9 @@ export async function apply(ctx: HostContext, config: Config = {}): Promise<void
       tunnel: () => tunnels.publicState,
       roots: () => database.listRoots().length,
       devices: () => database.listDevices(),
+      // 面板里唯一的写操作（issue #7）：与 `/remote` 同一个函数、同一份权限与审计，
+      // 只是把 `via` 换成 `dsh-go-panel`，好让审计里看得出是面板点的。
+      openRemote: scope => router.openRemoteForCommand(scope, 'dsh-go-panel'),
     }, ctx.logger)
   } catch (error) {
     ctx.logger.warn(new Error(`dsh-remote-bridge: dsh-Go panel attach failed (ignored): ${String(error)}`))

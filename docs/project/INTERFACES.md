@@ -140,7 +140,8 @@
 关时只报监听位置。**`tun` 明确不接受**：要公网隧道用 `/tunnel`；本命令**不启动 cloudflared**（家用访问不该依赖它能否下载，见 issue #1）。
 未开启时走 `remote.enable(rootIds, DEFAULT_DEVICE_SCOPES, scope)` 并用 operation 的 `pairingCode`/`pairingUrls`
 （审计 `listener.enable`）；已开启时直接 `createPairing()` 补齐新码（审计 `remote.pairing`）。没有授权根目录时先报错，不改监听。
-实现 `src/host/remote-command.ts`，宿主侧入口 `ApiRouter.openRemoteForCommand(scope)` / `closeRemoteForCommand()`。
+实现 `src/host/remote-command.ts`，宿主侧入口 `ApiRouter.openRemoteForCommand(scope, via?)` / `closeRemoteForCommand()`；
+`via` 进审计（默认 `im-command`，dsh-Go 面板传 `dsh-go-panel`，见 issue #7）。
 **身份校验不在这里**：由 IM 插件的访问策略（allowlist + `canExecuteCommands`）在派发前完成，见 SECURITY.md。
 | GET | `/api/v1/chat/sessions/{sessionId}/models` | `scope:chat.read` | 会话可选模型 | `router.ts` sessionModelsRoute 块 |
 | GET | `/api/v1/chat/sessions/{sessionId}/model` | `scope:chat.read` | 同上的别名（路由正则 `model(?:s)?$` 同时收两种拼法，新客户端请用 `/models`） | 同上 |
@@ -549,11 +550,11 @@ export const PLUGIN_VERSION: string          // shared/version.ts，与 package.
 | 导出 | 签名要点 |
 | --- | --- |
 | `attachDshGoPanel(ctx, source, logger?)` | `ctx.inject(['dshGo'], scoped => …)` 注册面板与状态条；没有注入器 / 桥接缺席 / 注册抛错 → 只 `warn`，**绝不让 `apply` 抛错** |
-| `AccessSource` | 四个 getter：`status()` / `tunnel()` / `roots()` / `devices()`，由 `index.ts` 接到现有实例上 |
+| `AccessSource` | 四个只读 getter：`status()` / `tunnel()` / `roots()` / `devices()`；另加唯一的写入口 `openRemote(scope)`（转调 `ApiRouter.openRemoteForCommand`，issue #7），由 `index.ts` 接到现有实例上 |
 | `readState(source, now?)` | `AccessState`：远程未开启时 `endpoints` 为空数组（不枚举网卡） |
-| `accessView(locale, sessionBound?)` / `accessData(state, locale)` | 视图树与数据模型；读数一律 `{$: 'data.*'}` 绑定。`sessionBound=false`（「全部功能」入口没有 `sessionId`）时按钮退化成「复制 /remote all」并多一行说明 —— App 的 `command` 效果只在有当前会话时执行 |
+| `accessView(locale)` / `accessData(state, locale, pairingState?)` | 视图树与数据模型；读数一律 `{$: 'data.*'}` 绑定。配对码一节（标题 + 码 + 地址）也按 `data.pairingCode` / `data.pairingUrls` 绑定，`pairingState` 缺省时给「还没有配对码」的占位（空绑定在 App 里会画破折号）（issue #7） |
 | `stripData(state, locale)` | 状态条一行（≤ 24 字，协议上限） |
-| `copyText(state, locale)` | 「复制接入信息」的正文（≤ 8000 字） |
+| `copyText(state, locale, pairing?)` | 「复制接入信息」的正文（≤ 8000 字）；有码时把 `地址#码` 一起放进去 |
 | `PANEL_ID` / `STRIP_ID` | `access` / `remote` —— 必须与 `package.json` 的 `dshGo.contributes` 一致 |
 
 调用方只有 `index.ts`（`apply` 尾部，`remote.start()` 之后）。**面板自己不写状态**：它不调 `remote.enable()` / `createPairing()`，
@@ -706,6 +707,9 @@ export const PLUGIN_VERSION: string          // shared/version.ts，与 package.
 | `export function attachDshGoPanel` | `src/host/dsh-go-panel.ts` | function |
 | `export function readState` | `src/host/dsh-go-panel.ts` | function |
 | `export function accessView` | `src/host/dsh-go-panel.ts` | function |
+| `export interface PanelPairing` | `src/host/dsh-go-panel.ts` | interface |
+| `export interface PanelPairingState` | `src/host/dsh-go-panel.ts` | interface |
+| `export const EMPTY_PAIRING_STATE` | `src/host/dsh-go-panel.ts` | const |
 | `export function accessData` | `src/host/dsh-go-panel.ts` | function |
 | `export function stripData` | `src/host/dsh-go-panel.ts` | function |
 | `export function copyText` | `src/host/dsh-go-panel.ts` | function |

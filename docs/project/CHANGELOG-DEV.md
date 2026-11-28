@@ -1,3 +1,25 @@
+## 未发布 · dsh-Go 面板「开启并取码」在非会话入口直接执行（AtomGit issue #7，2026-11-28）
+
+**起因**：#6 的退化方案（复制 `/remote all` 让用户自己粘）能用，但不满足「点了就好」。
+
+**根因**：`/dsh-go/v1/invoke` 之前被当成「没有身份判据」，核对桥接源码后推翻 —— native 路由过的是
+`Connection` 守卫（与 `/api` 同一套 Host/Origin 栅栏 + cookie），能加载面板的客户端本来就能发命令。
+
+**改动**
+
+| 文件 | 改了什么 |
+| --- | --- |
+| `src/host/dsh-go-panel.ts` | 面板唯一的写操作：非会话入口直接 `openRemote('all')`，配对码与地址按 `data.pairingCode` / `data.pairingUrls` 绑定显示；慢活儿在 2 秒预算内先回「正在开」，开完推数据上屏 |
+| `src/host/remote-command.ts` | `openRemoteForCommand(options, scope, via?)`，`via` 进 `listener.enable` / `remote.pairing` 两处审计 |
+| `src/host/router.ts` / `src/index.ts` | 透传 `via`，面板注入 `openRemote: scope => router.openRemoteForCommand(scope, 'dsh-go-panel')` |
+| 文案 | 删 #6 的「复制 /remote all」三句，加配对码一节与成功/失败/进行中三种回执 |
+
+**兼容性**：面板视图只有一种形态（按钮不再随 scope 变文案）；`command` 效果仍在对话内入口保留。
+破坏性写（关远程、撤设备、改权限）仍然只留 WebUI 与 `/remote off`。
+
+**回归**：`tests/dsh-go-panel.spec.ts`（47 例，含无会话直接执行、失败回读、超预算先回话、码走绑定）、
+`tests/remote-command.spec.ts` › `via 参数进审计`。
+
 ## 未发布 · dsh-Go 面板「开启并取码」在非会话入口退化成复制命令（AtomGit issue #6，2026-11-28）
 
 **为什么改**：从 dsh-Go 的「全部功能」入口打开接入面板，点「开启并取码」只弹一句「先打开一个对话」；

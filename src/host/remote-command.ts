@@ -395,6 +395,11 @@ function rootIdsOrThrow(options: RouterOptions): string[] {
 export async function openRemoteForCommand(
   options: RouterOptions,
   scope: CandidateScope = 'all',
+  /**
+   * 谁发起的，进审计的 `via`。默认是 `/remote`（智能体/斜杠命令）；dsh-Go 面板传
+   * `'dsh-go-panel'`，这样同一个动作从哪条入口来在审计里分得清（issue #7）。
+   */
+  via: string = REMOTE_COMMAND_NAME,
 ): Promise<RemoteCommandResult> {
   const requestId = `remote-command-${Date.now().toString(36)}`
   const rootIds = rootIdsOrThrow(options)
@@ -415,7 +420,7 @@ export async function openRemoteForCommand(
     const urls = requireUrls(operation.pairingUrls ?? [], scope)
     options.database.audit('admin', 'im-command', 'listener.enable', undefined, undefined, {
       scope,
-      via: REMOTE_COMMAND_NAME,
+      via,
     })
     return {
       enabled: true,
@@ -438,7 +443,7 @@ export async function openRemoteForCommand(
   const pairing = options.database.createPairing(rootIds, [...DEFAULT_DEVICE_SCOPES], undefined, { requestId })
   options.database.audit('admin', 'im-command', 'remote.pairing', undefined, undefined, {
     scope,
-    via: REMOTE_COMMAND_NAME,
+    via,
   })
   return {
     enabled: true,

@@ -215,6 +215,19 @@ describe('openRemoteForCommand / closeRemoteForCommand', () => {
     expect(audit).toHaveBeenCalledWith('admin', 'im-command', 'listener.enable', undefined, undefined, expect.objectContaining({ scope: 'lan' }))
   })
 
+  it('via 参数进审计：面板点出来的动作能认得出（issue #7）', async () => {
+    const { options, audit } = fakeOptions({ enabled: true, host: '192.168.1.126', port: 3090 })
+    await openRemoteForCommand(options, 'all', 'dsh-go-panel')
+    expect(audit).toHaveBeenCalledWith(
+      'admin',
+      'im-command',
+      'remote.pairing',
+      undefined,
+      undefined,
+      expect.objectContaining({ scope: 'all', via: 'dsh-go-panel' }),
+    )
+  })
+
   it('已经开着时直接签发新码，地址用 present 状态现算', async () => {
     const { options, enable, createPairing, audit, } = fakeOptions({ enabled: true, host: '::', port: 3090 })
     const value = await openRemoteForCommand(options, 'all')
